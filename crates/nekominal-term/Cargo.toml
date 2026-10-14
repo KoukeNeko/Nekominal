@@ -1,0 +1,25 @@
+[package]
+name = "nekominal-term"
+description = "VT emulator core (alacritty_terminal) with an OSC/CSI sniffer, snapshots, selection and search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+alacritty_terminal = { workspace = true }
+base64 = { workspace = true }
+memchr = { workspace = true }
+
+[dev-dependencies]
+unicode-width = { workspace = true }
+nekominal-pty = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
