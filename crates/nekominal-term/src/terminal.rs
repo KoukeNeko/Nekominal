@@ -13,7 +13,7 @@ use alacritty_terminal::{
     index::{Boundary, Column, Direction, Line, Point, Side},
     selection::{Selection, SelectionRange, SelectionType},
     term::{
-        cell::{Cell, Flags, Hyperlink},
+        cell::{Cell, Flags, Hyperlink, LineLength},
         point_to_viewport,
         search::{Match, RegexIter, RegexSearch},
         viewport_to_point, ClipboardType, Config, Osc52, Term, TermDamage, TermMode,
@@ -25,7 +25,7 @@ use alacritty_terminal::{
 use crate::{
     agent_status::{AgentRecord, AgentStatus, Report},
     guard::StringGuard,
-    osc::{strip_control, Notification, Progress, PromptMark},
+    osc::{is_control_or_bidi, strip_control, Notification, Progress, PromptMark},
     sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported},
     theme::Palette,
 };
@@ -1051,8 +1051,37 @@ impl TerminalCore {
         self.dirty = true;
     }
 
+    /// A selection exists, even an empty one that a drag is still growing.
+    pub fn selection_active(&self) -> bool {
+        self.term.selection.is_some()
+    }
+
+    /// The selected text as the clipboard gets it, `None` when nothing is selected. It comes from the cells, so no
+    /// escape sequence can be in it: wide characters appear once, a soft-wrapped line continues without a line
+    /// break, trailing blanks are dropped from every line, and a line-wise selection (triple click) carries no
+    /// final line break (pasting it would run it). Control and bidirectional-override characters that ended up
+    /// in cells are dropped; line feed and tab stay.
     pub fn selection_text(&self) -> Option<String> {
-        self.term.selection_to_string()
+        let text = self.term.selection_to_string()?;
+        let by_line = self.term.selection.as_ref().is_some_and(|selection| selection.ty == SelectionType::Lines);
+        let text = if by_line { text.strip_suffix('\n').unwrap_or(&text) } else { &text };
+        Some(text.chars().filter(|c| matches!(c, '\n' | '\t') || !is_control_or_bidi(*c)).collect())
+    }
+
+    /// Selects the whole buffer, scrollback included, down to the last line that has text: the blank rows under
+    /// the prompt are not part of what anyone copies. A buffer without text selects nothing.
+    pub fn select_all(&mut self) {
+        let grid = self.term.grid();
+        let last_text = (self.term.topmost_line().0..=self.term.bottommost_line().0)
+            .rev()
+            .find(|line| grid[Line(*line)].line_length().0 > 0);
+        self.term.selection = last_text.map(|last| {
+            let top = Point::new(self.term.topmost_line(), Column(0));
+            let mut selection = Selection::new(SelectionType::Simple, top, Side::Left);
+            selection.update(Point::new(Line(last), self.term.last_column()), Side::Right);
+            selection
+        });
+        self.dirty = true;
     }
 
     /// Text between two grid points, for example a search match or an OSC 8 link.

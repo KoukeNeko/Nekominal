@@ -73,6 +73,31 @@ pub fn fill_cells(snapshot: &Snapshot, cells: &mut Vec<r::Cell>) {
     }
 }
 
+/// Fills `spans` (reused between frames) with the selected columns of every visible row. The snapshot holds the
+/// selection in grid coordinates, so a selection that is partly in the scrollback shows on the rows in view.
+pub fn selection_spans(snapshot: &Snapshot, spans: &mut Vec<r::RowSpan>) {
+    spans.clear();
+    let Some(range) = snapshot.selection else { return };
+    let (first, last) = (range.start.line.0, range.end.line.0);
+    for row in 0..snapshot.rows {
+        let line = row as i32 - snapshot.display_offset as i32;
+        if line < first || line > last {
+            continue;
+        }
+        let (start, end) = if range.is_block {
+            (range.start.column.0, range.end.column.0)
+        } else {
+            (
+                if line == first { range.start.column.0 } else { 0 },
+                if line == last { range.end.column.0 } else { snapshot.columns.saturating_sub(1) },
+            )
+        };
+        if start <= end {
+            spans.push(r::RowSpan { row: row as u16, start: start as u16, end: (end + 1) as u16 });
+        }
+    }
+}
+
 pub fn cursor(snapshot: &Snapshot, focused: bool, visible: bool) -> Option<r::CursorView> {
     let (row, col) = snapshot.cursor.position?;
     let shape = match snapshot.cursor.shape {
@@ -126,6 +151,8 @@ pub fn themed(base: &r::Theme, snapshot: &Snapshot) -> r::Theme {
 
 #[cfg(test)]
 mod tests {
+    use nekominal_term::{CellSide, CoreConfig, SelectionKind, TerminalCore};
+
     use super::*;
 
     fn distance(a: r::Rgb, b: r::Rgb) -> i32 {
@@ -144,6 +171,54 @@ mod tests {
             let (before, after) = (theme.indexed(slot), dimmed.indexed(slot));
             assert!(distance(after, theme.background) <= distance(before, theme.background), "slot {slot}");
         }
+    }
+
+    /// (row, start, end) of every selected span of the visible rows.
+    fn spans(core: &mut TerminalCore) -> Vec<(u16, u16, u16)> {
+        let mut snapshot = Snapshot::default();
+        core.snapshot(&mut snapshot);
+        let mut spans = Vec::new();
+        selection_spans(&snapshot, &mut spans);
+        spans.iter().map(|span| (span.row, span.start, span.end)).collect()
+    }
+
+    fn select(core: &mut TerminalCore, kind: SelectionKind, from: (usize, usize), to: (usize, usize)) {
+        core.selection_start(kind, from.0, from.1, CellSide::Left);
+        core.selection_update(to.0, to.1, CellSide::Right);
+    }
+
+    #[test]
+    fn a_selection_is_drawn_from_its_start_to_the_end_of_the_first_row_whole_rows_between_and_the_end_of_the_last() {
+        let mut core = TerminalCore::new(10, 5, CoreConfig::default());
+        core.feed(b"aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc");
+        assert_eq!(spans(&mut core), []);
+        select(&mut core, SelectionKind::Simple, (0, 3), (2, 4));
+        assert_eq!(spans(&mut core), [(0, 3, 10), (1, 0, 10), (2, 0, 5)]);
+        select(&mut core, SelectionKind::Simple, (1, 2), (1, 6));
+        assert_eq!(spans(&mut core), [(1, 2, 7)]);
+        select(&mut core, SelectionKind::Block, (0, 2), (2, 4));
+        assert_eq!(spans(&mut core), [(0, 2, 5), (1, 2, 5), (2, 2, 5)]);
+        select(&mut core, SelectionKind::Lines, (1, 3), (1, 3));
+        assert_eq!(spans(&mut core), [(1, 0, 10)]);
+        core.selection_clear();
+        assert_eq!(spans(&mut core), []);
+    }
+
+    #[test]
+    fn a_selection_that_reaches_into_the_scrollback_shows_on_the_rows_in_view() {
+        let mut core = TerminalCore::new(10, 3, CoreConfig::default());
+        for i in 0..8 {
+            core.feed(format!("line{i}\r\n").as_bytes());
+        }
+        // The live screen shows line6, line7 and the empty cursor row. Select the first two, look from further back.
+        select(&mut core, SelectionKind::Simple, (0, 0), (1, 4));
+        assert_eq!(spans(&mut core), [(0, 0, 10), (1, 0, 5)]);
+        core.scroll_display(nekominal_term::alacritty_terminal::grid::Scroll::Delta(1));
+        assert_eq!(spans(&mut core), [(1, 0, 10), (2, 0, 5)], "one row further down in the view");
+        core.scroll_display(nekominal_term::alacritty_terminal::grid::Scroll::Delta(2));
+        assert_eq!(spans(&mut core), [], "scrolled out of view");
+        core.scroll_display(nekominal_term::alacritty_terminal::grid::Scroll::Top);
+        assert_eq!(spans(&mut core), [], "the lines are not at the top of the buffer either");
     }
 
     #[test]

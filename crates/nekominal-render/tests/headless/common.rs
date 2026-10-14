@@ -198,7 +198,7 @@ pub fn update(renderer: &mut Renderer, pane: &mut PaneState, scene: &Scene) -> U
             cursor: scene.cursor,
             selection: &scene.selection,
             highlights: &scene.highlights,
-            hover_link: None,
+            hover_link: &[],
             preedit: scene.preedit.as_ref(),
             scrollbar: None,
         },

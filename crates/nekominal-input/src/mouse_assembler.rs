@@ -202,6 +202,13 @@ fn locate(x: f32, y: f32, grid: &PointerGrid) -> Location {
     Location { point: CellPoint { col, row, side }, overshoot_rows, pixel }
 }
 
+/// The cell a pixel position falls in, as `(column, row)`; a position outside the grid is clamped to its edge.
+/// The pane uses it to ask what lies under the pointer without a gesture (hover).
+pub fn cell_at(x: f32, y: f32, grid: &PointerGrid) -> (u16, u16) {
+    let at = locate(x, y, grid);
+    (at.point.col, at.point.row)
+}
+
 /// Stateful translation of [`PointerEvent`]s. One per pane.
 #[derive(Debug)]
 pub struct MouseAssembler {
@@ -255,8 +262,7 @@ impl MouseAssembler {
         }
         let at = locate(event.x, event.y, grid);
         let mut out = Vec::new();
-        let shift = event.mods.contains(Mods::SHIFT);
-        let program_wants_pointer = modes.mouse_tracking() && !shift;
+        let program_wants_pointer = modes.program_gets_pointer(event.mods);
 
         match event.kind {
             PointerKind::Press(button) => {

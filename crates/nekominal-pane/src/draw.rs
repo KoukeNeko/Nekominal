@@ -14,6 +14,10 @@ pub struct PaneRenderer {
     theme: r::Theme,
     snapshot: Snapshot,
     cells: Vec<r::Cell>,
+    /// The selected columns of every visible row, from the last snapshot.
+    selection: Vec<r::RowSpan>,
+    /// The cells of the link under the pointer, one span per row.
+    hover_link: Vec<r::RowSpan>,
     preedit: Option<String>,
     preedit_at: Option<r::Preedit>,
     force_draw: bool,
@@ -45,6 +49,8 @@ impl PaneRenderer {
             theme,
             snapshot: Snapshot::default(),
             cells: Vec::new(),
+            selection: Vec::new(),
+            hover_link: Vec::new(),
             preedit: None,
             preedit_at: None,
             force_draw: true,
@@ -98,6 +104,14 @@ impl PaneRenderer {
         self.force_draw = true;
     }
 
+    /// The link under the pointer is underlined; an empty list removes the underline.
+    pub fn set_hover_link(&mut self, spans: Vec<r::RowSpan>) {
+        if spans != self.hover_link {
+            self.hover_link = spans;
+            self.force_draw = true;
+        }
+    }
+
     /// The text being composed by the IME, drawn at the cursor cell.
     pub fn set_preedit(&mut self, text: Option<String>) {
         if text != self.preedit {
@@ -132,6 +146,7 @@ impl PaneRenderer {
         };
         if dirty {
             view::fill_cells(&self.snapshot, &mut self.cells);
+            view::selection_spans(&self.snapshot, &mut self.selection);
         }
         if self.snapshot.columns == 0 || (!dirty && !self.force_draw) {
             return Prepared::default();
@@ -147,9 +162,9 @@ impl PaneRenderer {
             rows: self.snapshot.rows,
             cells: &self.cells,
             cursor: view::cursor(&self.snapshot, self.focused, true),
-            selection: &[],
+            selection: &self.selection,
             highlights: &[],
-            hover_link: None,
+            hover_link: &self.hover_link,
             preedit: self.preedit_at.as_ref(),
             scrollbar: None,
         };

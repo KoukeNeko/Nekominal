@@ -27,7 +27,7 @@ pub use mouse::{
     encode_mouse, MouseButton, MouseInput, MouseKind, MouseState, WheelAccumulator, WheelDirection,
 };
 pub use mouse_assembler::{
-    CellPoint, MouseAssembler, PointerConfig, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
+    cell_at, CellPoint, MouseAssembler, PointerConfig, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
     SelectionKind, Side,
 };
 pub use paste::{encode_focus, prepare_paste};

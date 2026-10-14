@@ -149,10 +149,10 @@ impl Renderer {
                 hl.hash(&mut h);
             }
         }
-        if let Some(l) = view.hover_link
-            && l.row as usize == r
-        {
-            l.hash(&mut h);
+        for l in view.hover_link {
+            if l.row as usize == r {
+                l.hash(&mut h);
+            }
         }
         if let Some(c) = view.cursor {
             // Only the focused visible block cursor changes the row's text colors;
@@ -388,7 +388,7 @@ impl Renderer {
                     color: fg_col,
                 });
             }
-            if view.hover_link.is_some_and(|l| (0..span).any(|k| span_contains(&l, r, c + k))) {
+            if view.hover_link.iter().any(|l| (0..span).any(|k| span_contains(l, r, c + k))) {
                 link_rects.push(RectInstance {
                     rect: [x0 as f32, (y0 + m.underline_top as i32) as f32, span_w, m.underline_thickness as f32],
                     color: rgba(theme.link_underline, 255),

@@ -350,7 +350,7 @@ fn selection_simple_block_lines_and_semantic() {
     assert_eq!(core.selection_text().as_deref(), Some("hell\nseco"));
 
     core.selection_start(SelectionKind::Lines, 0, 3, CellSide::Left);
-    assert_eq!(core.selection_text().as_deref(), Some("hello world\n"));
+    assert_eq!(core.selection_text().as_deref(), Some("hello world"), "no final line break: see a_line_selection_copies...");
 
     core.selection_start(SelectionKind::Semantic, 0, 8, CellSide::Left);
     assert_eq!(core.selection_text().as_deref(), Some("world"));
@@ -380,6 +380,123 @@ fn selection_is_dropped_when_the_column_count_changes() {
     assert!(core.selection_text().is_some());
     core.resize(10, 5);
     assert_eq!(core.selection_text(), None);
+}
+
+/// Selects from `from` to `to` (viewport row, column; both cells included) and returns the text a copy gives.
+fn copied(core: &mut TerminalCore, from: (usize, usize), to: (usize, usize)) -> Option<String> {
+    core.selection_start(SelectionKind::Simple, from.0, from.1, CellSide::Left);
+    core.selection_update(to.0, to.1, CellSide::Right);
+    core.selection_text()
+}
+
+#[test]
+fn a_soft_wrapped_line_is_copied_without_a_line_break_and_a_hard_one_with() {
+    let mut core = core(10, 4);
+    feed(&mut core, "0123456789abcdef\r\nsecond");
+    assert_eq!(snap(&mut core).text(), "0123456789\nabcdef\nsecond");
+    assert_eq!(copied(&mut core, (0, 0), (2, 5)).as_deref(), Some("0123456789abcdef\nsecond"));
+    assert_eq!(copied(&mut core, (0, 7), (1, 2)).as_deref(), Some("789abc"), "across the wrap, no break inside");
+    assert_eq!(copied(&mut core, (0, 0), (0, 9)).as_deref(), Some("0123456789"), "the wrapped row alone ends without one");
+}
+
+#[test]
+fn trailing_blanks_are_dropped_from_every_copied_line_and_inner_blanks_stay() {
+    let mut core = core(10, 4);
+    feed(&mut core, "a  b   \r\n\r\nlast   ");
+    assert_eq!(copied(&mut core, (0, 0), (2, 9)).as_deref(), Some("a  b\n\nlast"));
+    // blanks that were painted with a background colour are still blanks
+    feed(&mut core, "\x1b[2;1H\x1b[44m   \x1b[0m");
+    assert_eq!(copied(&mut core, (0, 0), (2, 9)).as_deref(), Some("a  b\n\nlast"));
+    core.selection_start(SelectionKind::Block, 0, 0, CellSide::Left);
+    core.selection_update(2, 5, CellSide::Right);
+    assert_eq!(core.selection_text().as_deref(), Some("a  b\n\nlast"), "a block is trimmed per line too");
+}
+
+#[test]
+fn wide_characters_and_emoji_are_copied_once_whatever_part_of_them_is_selected() {
+    let mut core = core(30, 2);
+    feed(&mut core, "你好😀 a👨\u{200d}👩\u{200d}👧b\tc");
+    let whole = snap(&mut core).row_text(0);
+    assert_eq!(copied(&mut core, (0, 0), (0, 29)).as_deref(), Some(whole.as_str()));
+    assert_eq!(whole, "你好😀 a👨\u{200d}👩\u{200d}👧b\tc");
+    assert_eq!(copied(&mut core, (0, 0), (0, 0)).as_deref(), Some("你"), "the first half");
+    assert_eq!(copied(&mut core, (0, 1), (0, 1)).as_deref(), Some("你"), "the second half (the spacer)");
+    assert_eq!(copied(&mut core, (0, 1), (0, 2)).as_deref(), Some("你好"), "the end of one and the start of the next");
+    assert_eq!(copied(&mut core, (0, 4), (0, 5)).as_deref(), Some("😀"));
+}
+
+#[test]
+fn a_wide_character_that_wrapped_early_is_copied_once() {
+    let mut core = core(5, 3);
+    // The wide 世 does not fit in the last column and moves to the next row, leaving a spacer behind.
+    feed(&mut core, "abcd世e");
+    assert_eq!(snap(&mut core).text(), "abcd\n世e");
+    assert_eq!(copied(&mut core, (0, 0), (1, 4)).as_deref(), Some("abcd世e"));
+}
+
+#[test]
+fn a_line_selection_copies_the_line_without_a_final_line_break() {
+    let mut core = core(20, 4);
+    feed(&mut core, "hello world\r\nsecond line");
+    core.selection_start(SelectionKind::Lines, 0, 3, CellSide::Left);
+    assert_eq!(core.selection_text().as_deref(), Some("hello world"), "pasting it must not run it");
+    core.selection_update(1, 3, CellSide::Right);
+    assert_eq!(core.selection_text().as_deref(), Some("hello world\nsecond line"));
+}
+
+#[test]
+fn control_and_bidi_override_characters_do_not_reach_the_clipboard() {
+    let mut core = core(20, 2);
+    feed(&mut core, "a\u{9b}b\u{202e}c\u{2066}d");
+    assert_eq!(copied(&mut core, (0, 0), (0, 19)).as_deref(), Some("abcd"));
+}
+
+#[test]
+fn select_all_takes_the_scrollback_down_to_the_last_line_with_text() {
+    let mut core = core(20, 4);
+    assert!(core.selection_text().is_none());
+    core.select_all();
+    assert!(core.selection_text().is_none(), "nothing to select in an empty buffer: {:?}", core.selection_text());
+    for i in 0..10 {
+        feed(&mut core, &format!("line{i}\r\n"));
+    }
+    assert!(core.history_size() > 0);
+    core.select_all();
+    let all: Vec<String> = (0..10).map(|i| format!("line{i}")).collect();
+    assert_eq!(core.selection_text().as_deref(), Some(all.join("\n").as_str()), "the blank rows under the text stay out");
+    assert!(core.selection_active());
+    core.selection_clear();
+    assert!(!core.selection_active());
+}
+
+#[test]
+fn a_selection_follows_its_text_into_the_scrollback_and_the_view() {
+    let mut core = core(20, 5);
+    for i in 0..5 {
+        feed(&mut core, &format!("line{i}\r\n"));
+    }
+    // Five lines and the line break after the last scroll line0 into the scrollback: the rows are line1 to line4.
+    core.selection_start(SelectionKind::Simple, 1, 0, CellSide::Left);
+    core.selection_update(2, 4, CellSide::Right);
+    assert_eq!(core.selection_text().as_deref(), Some("line2\nline3"));
+    for i in 5..12 {
+        feed(&mut core, &format!("line{i}\r\n"));
+    }
+    assert_eq!(core.selection_text().as_deref(), Some("line2\nline3"), "new output scrolled the lines away, the selection went along");
+    core.scroll_display(Scroll::Top);
+    let view = snap(&mut core);
+    let marked: Vec<(String, bool)> = (0..5).map(|row| (view.row_text(row), view.is_selected(row, 0))).collect();
+    let expected = [("line0", false), ("line1", false), ("line2", true), ("line3", true), ("line4", false)];
+    assert_eq!(marked, expected.map(|(text, selected)| (text.to_owned(), selected)));
+    // Rows only: a change of height keeps the selection on its text.
+    core.scroll_display(Scroll::Bottom);
+    core.selection_start(SelectionKind::Simple, 3, 0, CellSide::Left);
+    core.selection_update(3, 4, CellSide::Right);
+    assert_eq!(core.selection_text().as_deref(), Some("line1"), "the first five characters of line11");
+    core.resize(20, 8);
+    assert_eq!(core.selection_text().as_deref(), Some("line1"), "a taller terminal keeps the selected text");
+    core.resize(20, 3);
+    assert_eq!(core.selection_text().as_deref(), Some("line1"), "so does a shorter one");
 }
 
 #[test]

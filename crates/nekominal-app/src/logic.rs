@@ -1,8 +1,9 @@
-//! Toolkit-free decisions of the shell: tab titles, tab drag targets and the pixel geometry of split panes.
-//! Kept apart from the WinUI code so they can be tested without a window.
+//! Toolkit-free decisions of the shell: tab titles, tab drag targets, the pixel geometry of split panes and the
+//! terminal setup (OSC 52 policy, when a paste asks first). Kept apart from the WinUI code so they can be tested
+//! without a window.
 
 use nekominal_model::layout::{Axis, Rect, Splitter};
-use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, Settings};
+use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, PasteSettings, Settings};
 use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
 use nekominal_term::alacritty_terminal::term::Osc52;
@@ -555,6 +556,43 @@ pub fn tab_title(raw: &str, fallback: &str) -> String {
     if name.is_empty() { fallback.to_owned() } else { name.to_owned() }
 }
 
+/// Why a paste asks first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PasteWarning {
+    /// The text has this many lines: a shell runs every one of them.
+    Lines(usize),
+    /// The text is this big, in bytes.
+    Bytes(usize),
+}
+
+/// Whether pasting `text` asks first. Several lines ask unless the program turned on bracketed paste (it then
+/// takes the paste as data, not as typing); a size over `warn_large_bytes` asks always. A limit of 0 turns the size
+/// check off.
+pub fn paste_warning(text: &str, bracketed: bool, settings: &PasteSettings) -> Option<PasteWarning> {
+    // The same line breaks `prepare_paste` turns into Enter: CR LF, LF and CR each count once.
+    let breaks = text.chars().filter(|c| *c == '\n').count()
+        + text.char_indices().filter(|(at, c)| *c == '\r' && text.as_bytes().get(at + 1) != Some(&b'\n')).count();
+    if settings.warn_multiline && !bracketed && breaks > 0 {
+        return Some(PasteWarning::Lines(breaks + 1));
+    }
+    (settings.warn_large_bytes > 0 && text.len() as u64 > settings.warn_large_bytes)
+        .then_some(PasteWarning::Bytes(text.len()))
+}
+
+/// A size for a dialog title: `812 B`, `5.3 KiB`, `12 MiB`.
+pub fn size_label(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    let size = bytes as f64;
+    let (value, unit) = if size < KIB {
+        return format!("{bytes} B");
+    } else if size < KIB * KIB {
+        (size / KIB, "KiB")
+    } else {
+        (size / (KIB * KIB), "MiB")
+    };
+    if value < 10.0 { format!("{} {unit}", (value * 10.0).round() / 10.0) } else { format!("{value:.0} {unit}") }
+}
+
 /// What the emulator lets OSC 52 do under a policy of the settings.
 pub fn osc52_for(policy: Osc52Policy) -> Osc52 {
     match policy {
@@ -574,6 +612,47 @@ mod tests {
     use nekominal_model::layout::{Axis, Node, UNIT};
 
     use super::*;
+
+    fn paste_settings() -> PasteSettings {
+        Settings::default().paste
+    }
+
+    #[test]
+    fn a_paste_of_several_lines_asks_unless_the_program_took_bracketed_paste() {
+        let settings = paste_settings();
+        assert_eq!(paste_warning("ls", false, &settings), None);
+        assert_eq!(paste_warning("a\nb", false, &settings), Some(PasteWarning::Lines(2)));
+        assert_eq!(paste_warning("a\r\nb\r\nc", false, &settings), Some(PasteWarning::Lines(3)), "CR LF is one break");
+        assert_eq!(paste_warning("a\rb", false, &settings), Some(PasteWarning::Lines(2)));
+        assert_eq!(paste_warning("ls\n", false, &settings), Some(PasteWarning::Lines(2)), "a final break runs the line");
+        assert_eq!(paste_warning("a\nb", true, &settings), None, "bracketed paste is data");
+        let quiet = PasteSettings { warn_multiline: false, ..settings };
+        assert_eq!(paste_warning("a\nb", false, &quiet), None);
+    }
+
+    #[test]
+    fn a_big_paste_asks_even_to_a_program_with_bracketed_paste_and_zero_turns_it_off() {
+        let settings = paste_settings();
+        let big = "x".repeat(settings.warn_large_bytes as usize + 1);
+        assert_eq!(paste_warning(&big, true, &settings), Some(PasteWarning::Bytes(5121)));
+        assert_eq!(paste_warning(&big[1..], true, &settings), None, "exactly the limit does not ask");
+        let lines = format!("{big}\n{big}");
+        assert_eq!(paste_warning(&lines, false, &settings), Some(PasteWarning::Lines(2)), "lines are named first");
+        let off = PasteSettings { warn_large_bytes: 0, ..settings };
+        assert_eq!(paste_warning(&big, true, &off), None);
+    }
+
+    #[test]
+    fn sizes_are_short_and_use_binary_units() {
+        assert_eq!(size_label(0), "0 B");
+        assert_eq!(size_label(812), "812 B");
+        assert_eq!(size_label(1024), "1 KiB");
+        assert_eq!(size_label(5121), "5 KiB");
+        assert_eq!(size_label(5400), "5.3 KiB");
+        assert_eq!(size_label(12 * 1024 + 300), "12 KiB");
+        assert_eq!(size_label(1024 * 1024), "1 MiB");
+        assert_eq!(size_label(37 * 1024 * 1024), "37 MiB");
+    }
 
     #[test]
     fn the_osc52_policy_decides_what_the_emulator_lets_a_program_do() {

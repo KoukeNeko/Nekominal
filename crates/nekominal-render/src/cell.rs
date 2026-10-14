@@ -378,7 +378,8 @@ pub struct GridView<'a> {
     pub cursor: Option<CursorView>,
     pub selection: &'a [RowSpan],
     pub highlights: &'a [Highlight],
-    pub hover_link: Option<RowSpan>,
+    /// The cells of the link under the pointer, one span per row it covers (a link that wraps covers several).
+    pub hover_link: &'a [RowSpan],
     pub preedit: Option<&'a Preedit>,
     pub scrollbar: Option<Scrollbar>,
 }
@@ -392,7 +393,7 @@ impl<'a> GridView<'a> {
             cursor: None,
             selection: &[],
             highlights: &[],
-            hover_link: None,
+            hover_link: &[],
             preedit: None,
             scrollbar: None,
         }

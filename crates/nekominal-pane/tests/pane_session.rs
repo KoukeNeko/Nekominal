@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nekominal_input::{Key, KeyEvent, KeyInput};
 use nekominal_pane::{Pane, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_term::{CoreConfig, alacritty_terminal::term::Osc52};
@@ -112,6 +113,41 @@ fn scrolling_moves_through_the_history_and_stops_at_its_ends() {
     pane.scroll_lines(10_000);
     let history = pane.term.lock().history_size();
     assert_eq!(pane.term.lock().display_offset(), history, "the top is the oldest line");
+    pane.shutdown();
+}
+
+#[test]
+fn typing_pasting_and_composing_dismiss_the_selection_and_return_to_the_live_screen_but_output_does_not() {
+    let pane = Pane::spawn(cmd(), Vec::new(), 80, 24).expect("cmd.exe starts under ConPTY");
+    let mut text = String::new();
+    for line in 0..60 {
+        text.push_str(&format!("line {line}\r\n"));
+    }
+    pane.term.lock().feed(text.as_bytes());
+    let key = KeyInput::new(Key::Escape);
+    let release = KeyInput::new(Key::Escape).with_event(KeyEvent::Release);
+    let actions: [(&str, &dyn Fn()); 3] = [
+        ("a key", &|| assert!(pane.send_key(&key))),
+        ("composed text", &|| pane.send_text("你")),
+        ("a paste", &|| pane.paste("x")),
+    ];
+    for (name, act) in actions {
+        pane.scroll_lines(10);
+        pane.select_all();
+        assert!(pane.selection_text().is_some() && pane.term.lock().display_offset() == 10, "{name}: set up");
+        // Output arrives: the view the user scrolled back to stays, and so does the selection.
+        pane.term.lock().feed(b"more output\r\n");
+        assert!(pane.selection_text().is_some(), "{name}: output keeps the selection");
+        assert_eq!(pane.term.lock().display_offset(), 11, "{name}: and does not move the view");
+        act();
+        assert!(pane.selection_text().is_none(), "{name} dismissed the selection");
+        assert_eq!(pane.term.lock().display_offset(), 0, "{name} returned to the live screen");
+    }
+    // Letting go of a key is not typing.
+    pane.scroll_lines(5);
+    pane.select_all();
+    pane.send_key(&release);
+    assert!(pane.selection_text().is_some());
     pane.shutdown();
 }
 

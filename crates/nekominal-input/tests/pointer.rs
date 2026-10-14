@@ -67,6 +67,23 @@ fn pixels_become_zero_based_cells() {
 }
 
 #[test]
+fn the_program_gets_the_pointer_only_while_it_tracks_the_mouse_and_shift_is_up() {
+    let tracking = modes(MouseMode::Normal, MouseEncoding::Sgr);
+    assert!(tracking.program_gets_pointer(Mods::NONE));
+    assert!(tracking.program_gets_pointer(Mods::CTRL), "only Shift is the bypass");
+    assert!(!tracking.program_gets_pointer(Mods::SHIFT));
+    assert!(!InputModes::default().program_gets_pointer(Mods::NONE));
+}
+
+#[test]
+fn cell_at_names_the_cell_under_a_position_and_clamps_to_the_grid() {
+    assert_eq!(cell_at(95.0, 50.0, &grid()), (9, 2));
+    assert_eq!(cell_at(10.0, 20.0, &grid()), (1, 1), "a boundary belongs to the next cell");
+    assert_eq!(cell_at(-30.0, -1.0, &grid()), (0, 0));
+    assert_eq!(cell_at(5000.0, 5000.0, &grid()), (79, 23));
+}
+
+#[test]
 fn a_cell_boundary_belongs_to_the_next_cell() {
     let m = modes(MouseMode::Normal, MouseEncoding::Sgr);
     let mut asm = MouseAssembler::default();

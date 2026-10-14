@@ -35,7 +35,7 @@ use crate::logic::{
     self, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts, TitleSource,
 };
 use crate::palette::TabRow;
-use crate::pane_view::{Look, PaneView};
+use crate::pane_view::{Look, PaneRequest, PaneView};
 use crate::tab::Tab;
 use crate::util::*;
 use crate::window;
@@ -148,6 +148,8 @@ pub struct Shell {
     rendering: RefCell<Option<EventRevoker>>,
     dialog: RefCell<Option<windows_future::IAsyncOperation<ContentDialogResult>>>,
     profile_menu: RefCell<Option<MenuFlyout>>,
+    /// The menu of the right button of a pane and its Copy item, which is enabled while a selection exists.
+    pane_menu: RefCell<Option<(MenuFlyout, MenuFlyoutItem)>>,
 }
 
 thread_local! {
@@ -329,6 +331,7 @@ pub fn launch() -> Result<()> {
         rendering: RefCell::new(None),
         dialog: RefCell::new(None),
         profile_menu: RefCell::new(None),
+        pane_menu: RefCell::new(None),
     });
     SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
@@ -1150,9 +1153,16 @@ impl Shell {
                 shell.on_pane_focus(pane, focused);
             }
         });
+        let weak = Rc::downgrade(self);
+        let on_request: Rc<dyn Fn(PaneId, PaneRequest)> = Rc::new(move |pane, request| {
+            if let Some(shell) = weak.upgrade() {
+                shell.on_pane_request(pane, request);
+            }
+        });
         let config = self.spawn_config(profile, cwd);
         let core = logic::core_config(&self.settings.borrow());
-        PaneView::new(id, config, core, profile.id.clone(), self.look.clone(), &self.window, &self.root, on_focus)
+        let look = self.look.clone();
+        PaneView::new(id, config, core, profile.id.clone(), look, &self.window, &self.root, on_focus, on_request)
     }
 
     fn on_pane_focus(&self, pane: PaneId, focused: bool) {
@@ -1460,6 +1470,94 @@ impl Shell {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Selection, clipboard and the pane menu
+    // ---------------------------------------------------------------------------------------------
+
+    /// What a pane asked of the shell (`PaneRequest`).
+    fn on_pane_request(self: &Rc<Self>, id: PaneId, request: PaneRequest) {
+        let Some(pane) = self.find_pane(id) else { return };
+        match request {
+            PaneRequest::Selected => {
+                if self.settings.borrow().copy_on_select {
+                    self.copy_selection(&pane, false);
+                }
+            }
+            PaneRequest::RightClick { x, y } => match self.settings.borrow().right_click {
+                // Copy what is selected, else paste: the selection is spent, like Copy.
+                settings::RightClick::Smart => {
+                    if pane.pane.selection_text().is_some() {
+                        self.copy_selection(&pane, true);
+                    } else {
+                        self.paste_into(&pane);
+                    }
+                }
+                settings::RightClick::Menu => {
+                    if let Err(e) = self.show_pane_menu(&pane, x, y) {
+                        log(&format!("pane menu: {e}"));
+                    }
+                }
+            },
+        }
+    }
+
+    fn focused_has_selection(&self) -> bool {
+        self.selected_tab().and_then(|tab| tab.focused_pane()).is_some_and(|pane| pane.pane.selection_text().is_some())
+    }
+
+    /// Puts the selection of the pane on the clipboard; `dismiss` then clears it (Copy does, copy on select does
+    /// not: the selection stays to be extended).
+    fn copy_selection(&self, pane: &Rc<PaneView>, dismiss: bool) {
+        let Some(text) = pane.pane.selection_text() else { return };
+        if clipboard::write_text(&text) {
+            log(&format!("pane {} copied {} characters of its selection", pane.id, text.chars().count()));
+            if dismiss {
+                pane.pane.clear_selection();
+            }
+        }
+    }
+
+    /// Pastes the clipboard into the pane, asking first when the settings say the text deserves it.
+    fn paste_into(self: &Rc<Self>, pane: &Rc<PaneView>) {
+        let Some(text) = clipboard::read_text() else { return };
+        let bracketed = pane.pane.input_modes().bracketed_paste;
+        let warning = logic::paste_warning(&text, bracketed, &self.settings.borrow().paste);
+        let title = match warning {
+            None => return pane.pane.paste(&text),
+            Some(logic::PasteWarning::Lines(lines)) => tf(Text::DialogPasteLines, &[&lines]),
+            Some(logic::PasteWarning::Bytes(bytes)) => tf(Text::DialogPasteSize, &[&logic::size_label(bytes)]),
+        };
+        let id = pane.id;
+        self.confirm(title, Text::EditPaste, move || with_pane(id, |pane| pane.pane.paste(&text)));
+    }
+
+    /// The menu of the right button (`rightClick: menu`) at a position in DIP from the top-left corner of the pane.
+    /// It is built when first needed and reused: its commands act on the focused pane, which the press that opened
+    /// it has just made the pane under the pointer.
+    fn show_pane_menu(self: &Rc<Self>, pane: &Rc<PaneView>, x: f64, y: f64) -> Result<()> {
+        if self.pane_menu.borrow().is_none() {
+            let menu = MenuFlyout::new()?;
+            let items = menu.Items()?;
+            let lang = self.lang();
+            let mut copy = None;
+            for command in [Command::EditCopy, Command::EditPaste, Command::EditSelectAll] {
+                let this = self.clone();
+                let item = self.menu_item(&self.keymap.borrow().tooltip(command, lang), move || this.run(command))?;
+                items.Append(&item)?;
+                if command == Command::EditCopy {
+                    copy = Some(item);
+                }
+            }
+            let this = self.clone();
+            let closed = menu.cast::<FlyoutBase>()?.Closed(cb!("pane menu closed", |_, _| this.focus_active_pane()))?;
+            self.revokers.borrow_mut().push(closed);
+            *self.pane_menu.borrow_mut() = copy.map(|copy| (menu, copy));
+        }
+        let menu = self.pane_menu.borrow();
+        let Some((menu, copy)) = menu.as_ref() else { return Ok(()) };
+        copy.cast::<Control>()?.SetIsEnabled(pane.pane.selection_text().is_some())?;
+        menu.ShowAt(&ui(&pane.host)?, Point { x: x as f32, y: y as f32 })
+    }
+    // ---------------------------------------------------------------------------------------------
     // Messages and dialogs
     // ---------------------------------------------------------------------------------------------
 
@@ -1472,14 +1570,20 @@ impl Shell {
 
     /// Asks before ending work; `title` names what closes, the buttons answer it.
     fn confirm_close(self: &Rc<Self>, title: String, on_confirm: impl Fn() + 'static) {
+        self.confirm(title, Text::CommonClose, on_confirm);
+    }
+
+    /// Asks before doing something. `title` is the question; the button that answers it is labelled `action`, the
+    /// same label the action has everywhere else, and Cancel is the other one.
+    fn confirm(self: &Rc<Self>, title: String, action: Text, on_confirm: impl Fn() + 'static) {
         let result = (|| -> Result<()> {
             let dialog = ContentDialog::new()?;
             dialog.SetTitle(&IReference::from(title.as_str()))?;
-            dialog.SetPrimaryButtonText(t(Text::CommonClose))?;
+            dialog.SetPrimaryButtonText(t(action))?;
             dialog.SetCloseButtonText(t(Text::CommonCancel))?;
             dialog.SetDefaultButton(ContentDialogButton::Close)?;
             ui(&dialog)?.SetXamlRoot(&self.root.xaml_root()?)?;
-            let revoker = dialog.PrimaryButtonClick(cb!("close confirmed", |_, _| on_confirm()))?;
+            let revoker = dialog.PrimaryButtonClick(cb!("dialog confirmed", |_, _| on_confirm()))?;
             self.revokers.borrow_mut().push(revoker);
             let this = self.clone();
             let revoker = dialog.Closed(cb!("dialog closed", |_, _| this.focus_active_pane()))?;
@@ -1670,10 +1774,19 @@ impl Shell {
                     }
                 }
                 Command::EditPaste => {
-                    if let (Some(text), Some(pane)) =
-                        (clipboard::read_text(), tab.as_ref().and_then(|t| t.focused_pane()))
-                    {
-                        pane.pane.paste(&text);
+                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
+                        self.paste_into(&pane);
+                    }
+                }
+                // Without a selection the key of smart copy never gets here: it reaches the program.
+                Command::EditCopy | Command::EditSmartCopy => {
+                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
+                        self.copy_selection(&pane, true);
+                    }
+                }
+                Command::EditSelectAll => {
+                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
+                        pane.pane.select_all();
                     }
                 }
                 Command::EditFind => self.toggle_overlay(Overlay::Find),
@@ -1708,12 +1821,9 @@ impl Shell {
                     let opacity = self.settings.borrow().appearance.opacity_after(steps);
                     self.set_opacity(opacity);
                 }
-                // Selection, scrollback navigation, prompt marks, restart and the settings file belong to
-                // the terminal features that are not wired yet.
-                Command::EditCopy
-                | Command::EditSmartCopy
-                | Command::EditSelectAll
-                | Command::EditClear
+                // Scrollback navigation, prompt marks, restart and the settings file belong to the terminal
+                // features that are not wired yet.
+                Command::EditClear
                 | Command::ScrollPageUp
                 | Command::ScrollPageDown
                 | Command::ScrollTop
@@ -1777,7 +1887,9 @@ impl Shell {
             // Commands that act on the focused terminal (paste, copy, scrolling) must not take the keys of
             // a text box in an overlay, and without a selection Ctrl+C is the program's interrupt.
             let in_terminal = this.terminal_focus.get() && this.overlay.get() == Overlay::None;
-            if command == Command::EditSmartCopy || (!in_terminal && !command.works_outside_terminal()) {
+            // Smart copy is Ctrl+C only while something is selected; otherwise the key is the program's interrupt.
+            let nothing_to_copy = command == Command::EditSmartCopy && !(in_terminal && this.focused_has_selection());
+            if nothing_to_copy || (!in_terminal && !command.works_outside_terminal()) {
                 return;
             }
             let _ = args.SetHandled(true);

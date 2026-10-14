@@ -7,6 +7,7 @@
 //! * the ack happens after `feed`, which is the back-pressure.
 
 use std::{
+    cell::RefCell,
     collections::BTreeMap,
     fmt,
     path::PathBuf,
@@ -18,11 +19,15 @@ use std::{
     thread,
 };
 
-use nekominal_input::{InputModes, KeyInput, encode_focus, encode_key, encode_text, prepare_paste};
+use nekominal_input::{
+    InputModes, KeyEvent, KeyInput, MouseEncoding, MouseMode, PointerEvent, PointerGrid, PointerKind, encode_focus,
+    encode_key, encode_text, prepare_paste,
+};
 use nekominal_pty::{
     conpty::{SpawnConfig, WidthModel},
     session::{Event, Session, Sessions, Sink},
 };
+use crate::pointer::{Pointer, PointerEffects};
 use nekominal_term::{
     ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, TerminalCore,
     agent_status::{AgentRecord, AgentState, Report},
@@ -149,6 +154,23 @@ fn ui_event(event: CoreEvent) -> UiEvent {
     }
 }
 
+/// The input modes the program set, as the key and mouse encoders want them. `alacritty_terminal` tracks neither
+/// DECSET 9 (X10 reports), 1015 (urxvt positions) nor 1016 (pixel positions): the emulator's sniffer does, and
+/// those win over what `TermMode` says, as `InputModes::from_term_mode` asks of its caller.
+pub fn input_modes_of(core: &TerminalCore) -> InputModes {
+    let mut modes = InputModes::from_term_mode(core.mode());
+    let extensions = core.mouse_extensions();
+    if extensions.x10 {
+        modes.mouse_mode = MouseMode::X10;
+    }
+    if extensions.sgr_pixels {
+        modes.mouse_encoding = MouseEncoding::SgrPixels;
+    } else if extensions.urxvt {
+        modes.mouse_encoding = MouseEncoding::Urxvt;
+    }
+    modes
+}
+
 pub struct Pane {
     pub term: Arc<FairMutex<TerminalCore>>,
     pub events: Receiver<UiEvent>,
@@ -157,6 +179,7 @@ pub struct Pane {
     id: u32,
     /// An [`Activity`] as its code: the reader thread writes it, the UI thread reads it.
     activity: Arc<AtomicU8>,
+    pointer: RefCell<Pointer>,
 }
 
 impl Pane {
@@ -239,7 +262,7 @@ impl Pane {
                 }
             }
         })?;
-        Ok(Pane { term, events: ui_rx, input: input_tx, sessions, id, activity })
+        Ok(Pane { term, events: ui_rx, input: input_tx, sessions, id, activity, pointer: RefCell::default() })
     }
 
     /// Keyboard, paste and IME bytes from the UI thread.
@@ -278,13 +301,29 @@ impl Pane {
 
     /// Input modes as the program set them, read under the terminal lock for every event.
     pub fn input_modes(&self) -> InputModes {
-        InputModes::from_term_mode(self.term.lock().mode())
+        input_modes_of(&self.term.lock())
+    }
+
+    /// The user typed, pasted or composed something for the program: a selection is dismissed and a view scrolled
+    /// back returns to the live screen, as in Windows Terminal. Output does neither: new lines do not move a view
+    /// the user scrolled back to read, and a selection follows its text into the scrollback.
+    fn typed(&self) {
+        let mut core = self.term.lock();
+        if core.selection_active() {
+            core.selection_clear();
+        }
+        if core.display_offset() > 0 {
+            core.scroll_display(Scroll::Bottom);
+        }
     }
 
     /// Encodes a key event for the program's current modes and queues it. False when nothing is sent.
     pub fn send_key(&self, input: &KeyInput) -> bool {
         match encode_key(input, &self.input_modes()) {
             Some(bytes) => {
+                if input.event != KeyEvent::Release {
+                    self.typed();
+                }
                 self.send(bytes);
                 true
             }
@@ -294,12 +333,54 @@ impl Pane {
 
     /// IME commits and other composed text (raw UTF-8 on the bundled ConPTY).
     pub fn send_text(&self, text: &str) {
+        self.typed();
         self.send(encode_text(text));
     }
 
     pub fn paste(&self, text: &str) {
         let bracketed = self.input_modes().bracketed_paste;
+        self.typed();
         self.send(prepare_paste(text, bracketed));
+    }
+
+    /// A pointer event over the grid of the pane: the selection and the view change here, mouse reports go to the
+    /// program, and what is left for the shell (copy on select, opening a link) is returned.
+    pub fn pointer(&self, event: &PointerEvent, grid: &PointerGrid) -> PointerEffects {
+        let mut effects = {
+            let mut core = self.term.lock();
+            let modes = input_modes_of(&core);
+            self.pointer.borrow_mut().handle(&mut core, event, grid, &modes)
+        };
+        for report in effects.reports.drain(..) {
+            let _ = self.input.send(report);
+        }
+        effects
+    }
+
+    /// The pointer is gone (capture lost, window deactivated): held buttons go up for the program and a drag ends.
+    pub fn pointer_cancel(&self, grid: &PointerGrid) -> PointerEffects {
+        self.pointer(&PointerEvent::new(PointerKind::Cancel, 0.0, 0.0), grid)
+    }
+
+    /// One step of the scrolling a drag held outside the grid asks for. True when the view moved.
+    pub fn drag_scroll(&self) -> bool {
+        self.pointer.borrow_mut().drag_scroll(&mut self.term.lock())
+    }
+
+    /// The selected text as the clipboard gets it.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.lock().selection_text()
+    }
+
+    pub fn select_all(&self) {
+        self.term.lock().select_all();
+    }
+
+    pub fn clear_selection(&self) {
+        let mut core = self.term.lock();
+        if core.selection_active() {
+            core.selection_clear();
+        }
     }
 
     /// What OSC 52 may do from now on (a settings change reaches panes that already run).
@@ -340,15 +421,21 @@ impl Pane {
     /// Scrolls the viewport through the scrollback (positive: toward older lines). Clamped to the history, so a
     /// program on the alternate screen, which has none, does not move.
     pub fn scroll_lines(&self, lines: i32) {
-        self.term.lock().scroll_display(Scroll::Delta(lines));
+        self.scroll(Scroll::Delta(lines));
     }
+
+    /// Scrolls the viewport by a page, to the oldest line or back to the live screen.
+    pub fn scroll(&self, scroll: Scroll) {
+        self.term.lock().scroll_display(scroll);
+    }
+
     /// Keyboard focus moved into or out of the pane: the cursor shape follows it and a program that asked
     /// for focus reports (DECSET 1004) is told.
     pub fn set_focused(&self, focused: bool) {
         let modes = {
             let mut core = self.term.lock();
             core.set_focused(focused);
-            InputModes::from_term_mode(core.mode())
+            input_modes_of(&core)
         };
         if let Some(report) = encode_focus(focused, &modes) {
             self.send(report.to_vec());

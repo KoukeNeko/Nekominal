@@ -1,5 +1,7 @@
 //! The terminal state that decides how input is encoded.
 
+use crate::key::Mods;
+
 /// The five kitty keyboard protocol enhancement flags, in protocol bit order.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, Debug)]
 pub struct KittyFlags(u8);
@@ -144,6 +146,12 @@ impl InputModes {
     /// (selection, scrolling) unless the user holds the bypass modifier.
     pub fn mouse_tracking(&self) -> bool {
         self.mouse_mode != MouseMode::None
+    }
+
+    /// The program gets the pointer (reports instead of selection, scrolling and the right-click action): it
+    /// tracks the mouse and Shift, the bypass, is not held.
+    pub fn program_gets_pointer(&self, mods: Mods) -> bool {
+        self.mouse_tracking() && !mods.contains(Mods::SHIFT)
     }
 
     /// Reads the modes `alacritty_terminal` tracks. It tracks neither DECSET 9 (X10), 1015

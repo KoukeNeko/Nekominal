@@ -570,7 +570,8 @@ fn main() {
         view.highlights = &hl;
         view.cursor =
             Some(CursorView { col: 22, row: 23, shape: CursorShape::Block, visible: true, focused: true, wide: false });
-        view.hover_link = Some(RowSpan { row: 22, start: 66, end: 80 });
+        let link = [RowSpan { row: 22, start: 66, end: 80 }];
+        view.hover_link = &link;
         let mut pane = PaneState::new();
         let (w, hh) = pane_size(&m, 80, 24);
         let target = h.target(w, hh);
@@ -983,7 +984,8 @@ fn main() {
             focused: true,
             wide: true,
         });
-        view.hover_link = Some(RowSpan { row: 0, start: 0, end: 60000 });
+        let link = [RowSpan { row: 0, start: 0, end: 60000 }];
+        view.hover_link = &link;
         view.scrollbar = Some(Scrollbar { top: 2.0, height: 5.0, hovered: false });
         let st = h.renderer.update_pane(&mut pane, &view);
         let (w, hh) = pane_size(&m, 10, 3);
