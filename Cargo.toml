@@ -10,6 +10,7 @@ members = [
     "crates/nekominal-render",
     "crates/nekominal-winui-sys",
     "crates/nekominal-pane",
+    "crates/nekominal-winui",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ nekominal-input = { path = "crates/nekominal-input" }
 nekominal-render = { path = "crates/nekominal-render" }
 nekominal-winui-sys = { path = "crates/nekominal-winui-sys" }
 nekominal-pane = { path = "crates/nekominal-pane" }
+nekominal-winui = { path = "crates/nekominal-winui" }
 
 # Terminal core (emulator + input encoding)
 alacritty_terminal = { version = "=0.26.0", default-features = false }
