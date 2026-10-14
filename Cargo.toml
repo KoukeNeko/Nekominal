@@ -7,6 +7,7 @@ members = [
     "crates/nekominal-model",
     "crates/nekominal-term",
     "crates/nekominal-input",
+    "crates/nekominal-render",
 ]
 
 [workspace.package]
@@ -20,6 +21,7 @@ nekominal-pty = { path = "crates/nekominal-pty" }
 nekominal-model = { path = "crates/nekominal-model" }
 nekominal-term = { path = "crates/nekominal-term" }
 nekominal-input = { path = "crates/nekominal-input" }
+nekominal-render = { path = "crates/nekominal-render" }
 
 # Terminal core (emulator + input encoding)
 alacritty_terminal = { version = "=0.26.0", default-features = false }
