@@ -6,6 +6,7 @@
 #   Scenario-TabsSplits       # tabs-splits.png plus tabs-focus-left, pane-zoom, tab-reorder, tab-middle-click-confirm, tab-middle-closed
 #   Scenario-Overlays         # palette, find bar, appearance flyout, tab menu, close dialog, settings pages
 #   Scenario-Inactive         # the window while another window is active`n#   Scenario-Ime              # Bopomofo composition in two panes (ime-preedit, ime-two-panes)
+#   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -182,4 +183,43 @@ function Scenario-Perf {
     Select-String -Path (Join-Path ([IO.Path]::GetTempPath()) 'nekominal-drive\perf.log') -Pattern 'PANIC|FATAL' | ForEach-Object { 'LOG: ' + $_.Line }
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf }
+# Silence: the witness (sound-witness.ps1) watches the default render endpoint while each trigger of the matrix runs;
+# a row passes when the peak stays below $global:WitnessThreshold. Then Alt+Space must still open the system menu and
+# holding Alt+Shift+D for two seconds must add exactly one pane. Audible only when a row fails.
+function Scenario-Silence {
+    . (Join-Path $PSScriptRoot 'sound-witness.ps1')
+    Run-App 'silence' @{} {
+        First-Prompt
+        Start-SoundWitness
+        $rows = [ordered]@{
+            'toolbar split right button' = { Click-Name '向右分割窗格 (Alt+Shift+D)' -Class 'Button' }
+            'palette: split down'        = { Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 500; Type-Unicode '向下分割' 40; Press 0x0D }
+            'Alt+Shift+D'                = { Chord @(0x12, 0x10) 0x44 }
+            'Alt+Shift+S'                = { Chord @(0x12, 0x10) 0x53 }
+            'Alt+Shift+='                = { Chord @(0x12, 0x10) 0xBB }
+            'Alt+Shift+-'                = { Chord @(0x12, 0x10) 0xBD }
+            'Alt+Left'                   = { Chord @(0x12) 0x25 }
+            'Alt+Shift+Left'             = { Chord @(0x12, 0x10) 0x25 }
+            'Alt tap, then x'            = { Press 0x12; Press 0x58; Press 0x1B }
+            'Alt+x'                      = { Chord @(0x12) 0x58 }
+            'Ctrl+Shift+Z'               = { Chord @(0x11, 0x10) 0x5A; Chord @(0x11, 0x10) 0x5A }
+            'Ctrl+Shift+T'               = { Chord @(0x11, 0x10) 0x54 }
+        }
+        foreach ($name in $rows.Keys) {
+            $peak = Measure-Peak $rows[$name]
+            $verdict = if ($null -eq $peak) { 'INCONCLUSIVE' } elseif ($peak -lt $global:WitnessThreshold) { 'quiet' } else { 'SOUND' }
+            '{0,-28} {1,-12} peak {2:E1}' -f $name, $verdict, $peak
+        }
+        $menuPeak = Measure-Peak { Chord @(0x12) 0x20; Start-Sleep -Milliseconds 500; $script:menu = [Menus]::MenuIsOpen(); Press 0x1B }
+        'Alt+Space: system menu open = {0}, peak {1:E1}' -f $script:menu, $menuPeak
+        Chord @(0x11, 0x10) 0x54; Wait-Prompt | Out-Null
+        $before = Count-Panes
+        Hold-Chord @(0x12, 0x10) 0x44 2000
+        Start-Sleep -Milliseconds 800
+        'hold Alt+Shift+D for 2 s: panes {0} -> {1}' -f $before, (Count-Panes)
+        $menuchar = @(Select-String -Path $script:LogFile -Pattern 'WM_MENUCHAR').Count
+        'WM_MENUCHAR lines in the log: {0}' -f $menuchar
+    } -NoShot
+}
+
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence }

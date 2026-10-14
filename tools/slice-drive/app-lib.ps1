@@ -149,6 +149,35 @@ function Wait-Prompt([int]$TimeoutMs = 20000, [int]$Index = -1) {
 
 function Chord([int[]]$Mods, [int]$Vk) { Press $Vk $Mods }
 
+# Holds a chord the way a keyboard does: modifiers down, then the key's down event repeated every $RepeatMs for
+# $HoldMs (the second and later events carry the auto-repeat flag), then everything released.
+function Hold-Chord([int[]]$Mods, [int]$Vk, [int]$HoldMs = 2000, [int]$RepeatMs = 33) {
+    Assert-Foreground
+    foreach ($m in $Mods) { [D]::Key([uint16]$m, $false); Start-Sleep -Milliseconds 15 }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($watch.ElapsedMilliseconds -lt $HoldMs) { [D]::Key([uint16]$Vk, $false); Start-Sleep -Milliseconds $RepeatMs }
+    [D]::Key([uint16]$Vk, $true)
+    $r = $Mods.Clone(); [array]::Reverse($r)
+    foreach ($m in $r) { Start-Sleep -Milliseconds 15; [D]::Key([uint16]$m, $true) }
+    Start-Sleep -Milliseconds 400
+}
+
+# Number of terminal panes of the visible tab (hidden tabs are not in the UI Automation tree).
+function Count-Panes {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NekominalTerminal')
+    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond).Count
+}
+
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class Menus {
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+  // The window class of every popup menu, including the system menu.
+  public static bool MenuIsOpen() { return FindWindow("#32768", null) != IntPtr.Zero; }
+}
+'@
+
 $script:PatternScript = @'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $f = New-Object System.Windows.Forms.Form

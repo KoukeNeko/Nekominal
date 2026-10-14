@@ -305,6 +305,26 @@ impl Command {
         )
     }
 
+    /// Opens, closes or toggles something, so a held key must act once: with keyboard auto-repeat a held
+    /// Alt+Shift+D would add a pane every 30 ms. Navigation, resizing and the zoom commands repeat.
+    pub fn once_per_press(self) -> bool {
+        matches!(
+            self,
+            Command::TabNew
+                | Command::TabClose
+                | Command::TabProfiles
+                | Command::PaneSplitRight
+                | Command::PaneSplitDown
+                | Command::PaneClose
+                | Command::PaneZoom
+                | Command::PaneRestart
+                | Command::EditFind
+                | Command::ViewFullscreen
+                | Command::AppPalette
+                | Command::AppSettings
+        )
+    }
+
     /// Acts on the window or the workspace, so it also runs while focus is on the tab strip or in an
     /// overlay. The others read or change the focused terminal itself (selection, clipboard, scrollback).
     pub fn works_outside_terminal(self) -> bool {
@@ -696,6 +716,46 @@ mod tests {
         let mut hidden = hidden;
         hidden.sort_unstable();
         assert_eq!(hidden, expected);
+    }
+
+    #[test]
+    fn commands_that_open_close_or_toggle_act_once_per_press() {
+        let once: BTreeSet<&str> = Command::ALL
+            .iter()
+            .filter(|c| c.once_per_press())
+            .map(|c| c.id())
+            .collect();
+        let expected: BTreeSet<&str> = [
+            "tab.new",
+            "tab.close",
+            "tab.profiles",
+            "pane.splitRight",
+            "pane.splitDown",
+            "pane.close",
+            "pane.zoom",
+            "pane.restart",
+            "edit.find",
+            "view.fullscreen",
+            "app.palette",
+            "app.settings",
+        ]
+        .into();
+        assert_eq!(once, expected);
+        // What a held key is meant to repeat.
+        for command in [
+            Command::TabNext,
+            Command::PaneFocus(Direction::Left),
+            Command::PaneResize(Direction::Right),
+            Command::ViewZoomIn,
+            Command::ScrollPageUp,
+            Command::EditPaste,
+        ] {
+            assert!(!command.once_per_press(), "{}", command.id());
+        }
+        // The default split shortcuts are the chords that reach Windows as Alt+character.
+        for command in [Command::PaneSplitRight, Command::PaneSplitDown] {
+            assert!(command.once_per_press());
+        }
     }
 
     #[test]

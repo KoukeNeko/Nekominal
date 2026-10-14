@@ -275,6 +275,9 @@ pub fn launch() -> Result<()> {
     SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
     window::extend_into_title_bar(&window, &ui(&shell.ui.drag)?)?;
+    if let Err(e) = window::silence_alt_chords(&window) {
+        log(&format!("silence_alt_chords: {e}"));
+    }
     shell.apply_glass()?;
     shell.set_tooltips();
     shell.attach_bar()?;
@@ -609,6 +612,9 @@ impl Shell {
     /// Every session ends here, while the process can still start the threads that close them (critique.md C14).
     fn on_closed(&self) {
         log("window closed: ending every session");
+        if let Err(e) = window::restore_alt_chords(&self.window) {
+            log(&format!("restore_alt_chords: {e}"));
+        }
         self.flush_settings();
         *self.rendering.borrow_mut() = None;
         for tab in self.tabs.borrow().iter() {
@@ -1326,6 +1332,10 @@ impl Shell {
                 return;
             }
             let _ = args.SetHandled(true);
+            // A held key repeats; creating, closing and toggling must act once per press.
+            if status.was_key_down && command.once_per_press() {
+                return;
+            }
             this.run(command);
         }))?;
         self.revokers.borrow_mut().push(revoker);
