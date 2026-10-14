@@ -7,6 +7,7 @@
 #   Scenario-Overlays         # palette, find bar, appearance flyout, tab menu, close dialog, settings pages
 #   Scenario-Inactive         # the window while another window is active`n#   Scenario-Ime              # Bopomofo composition in two panes (ime-preedit, ime-two-panes)
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
+#   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -222,4 +223,68 @@ function Scenario-Silence {
     } -NoShot
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence }
+function Log-Mark { @(Get-Content -LiteralPath $script:LogFile).Count }
+function Log-Since([int]$Mark) { $all = @(Get-Content -LiteralPath $script:LogFile); if ($all.Count -gt $Mark) { $all[$Mark..($all.Count - 1)] } else { @() } }
+function Log-Ms([string]$Line) { [double]$Line.Substring(0, 9).Trim() }
+function Count-Class([string]$Class) {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, $Class)
+    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond).Count
+}
+function Get-Slider([int]$Index = 0) {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Slider)
+    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)[$Index]
+}
+function Select-Radio([string]$Name) { (Get-Element $Name 'RadioButton').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
+
+# Background opacity: a live change on an idle terminal changes its background (pixels over the striped window), a
+# replay of 200 slider events makes no SetSystemBackdrop call, at most one apply per frame and one save and shows no
+# InfoBar or dialog, backdrop None turns the slider off without touching the saved value, and 20 backdrop
+# switches log no error. (A change made through UI Automation activates the window first, so a change while the
+# window is inactive cannot be driven from here.)
+function Scenario-Opacity {
+    Run-App 'opacity' @{ appearance = @{ opacity = 0.55 } } {
+        First-Prompt
+        Type-Line 'Clear-Host'; Wait-Prompt | Out-Null
+        $r0 = Win-Rect
+        Click-Name '外觀' -Class 'Button'; Start-Sleep -Milliseconds 1200
+        # 1. idle terminal: no key, no output between the two pictures
+        $shot = { param($name) Shot-WithPattern (Shot-Path $name) | Out-Null; Region-Average (Shot-Path $name) 190 600 300 150 }
+        $a = & $shot 'opacity-live-55'
+        Set-Slider 25 0; Start-Sleep -Milliseconds 1500
+        $b = & $shot 'opacity-live-25'
+        Set-Slider 100 0; Start-Sleep -Milliseconds 1500
+        $c = & $shot 'opacity-live-100'
+        'idle terminal, mean RGB of its background: 55% {0} | 25% {1} | 100% {2}' -f $a, $b, $c
+        Set-Slider 55 0; Start-Sleep -Milliseconds 1500
+        # 2. replay of 200 slider events
+        $mark = Log-Mark
+        $range = (Get-Slider 0).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        for ($i = 0; $i -lt 200; $i++) { $range.SetValue(20 + [Math]::Abs((($i * 4) % 160) - 80)) }
+        $replayMs = $watch.ElapsedMilliseconds
+        Start-Sleep -Milliseconds 1500
+        $lines = @(Log-Since $mark)
+        $applies = @($lines | Where-Object { $_ -match 'opacity applied' })
+        $gaps = for ($i = 1; $i -lt $applies.Count; $i++) { (Log-Ms $applies[$i]) - (Log-Ms $applies[$i - 1]) }
+        'replay: 200 value changes in {0} ms -> {1} applies (shortest gap {2:N1} ms), {3} SetSystemBackdrop, {4} saves, {5} apply errors, InfoBar {6}, dialog {7}' -f $replayMs, $applies.Count, ($gaps | Measure-Object -Minimum).Minimum, @($lines | Where-Object { $_ -match 'system backdrop set' }).Count, @($lines | Where-Object { $_ -match 'settings saved' }).Count, @($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:' }).Count, (Count-Class 'InfoBar'), (Count-Class 'ContentDialog')
+        # 3. twenty backdrop switches
+        $mark = Log-Mark
+        $names = '壓克力', 'Mica', 'Mica Alt', '無'
+        foreach ($i in 0..19) { Select-Radio $names[$i % 4]; Start-Sleep -Milliseconds 150 }
+        Start-Sleep -Milliseconds 800
+        $lines = @(Log-Since $mark)
+        '20 backdrop switches: {0} SetSystemBackdrop, {1} full applies, {2} errors' -f @($lines | Where-Object { $_ -match 'system backdrop set' }).Count, @($lines | Where-Object { $_ -match 'glass: scheme' }).Count, @($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:|rror' }).Count
+        # 4. backdrop None: the slider is off and reads 100%, the saved value (the last one of the replay) stays
+        Select-Radio '無'; Start-Sleep -Milliseconds 1500
+        $s = Get-Slider 0
+        $file = Join-Path (Join-Path (Join-Path (Split-Path $script:LogFile) 'opacity-appdata') 'Nekominal') 'settings.json'
+        'backdrop None: slider enabled={0} value={1}, saved settings: {2}' -f $s.Current.IsEnabled, $s.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value, ((Get-Content $file -Raw) -replace '\s+', ' ')
+        Select-Radio '壓克力'; Start-Sleep -Milliseconds 800
+        'back to Acrylic: slider enabled={0} value={1}' -f (Get-Slider 0).Current.IsEnabled, (Get-Slider 0).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value
+        Press 0x1B; Start-Sleep -Milliseconds 500
+    } -Pattern -NoShot
+}
+
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity }

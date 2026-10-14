@@ -98,6 +98,12 @@ pub struct Shell {
     terminal_focus: Cell<bool>,
     zoom_steps: Cell<i32>,
     save_due: Cell<Option<Instant>>,
+    /// The backdrop the window has now: it is replaced only when the kind changes.
+    backdrop_applied: Cell<Option<Backdrop>>,
+    /// The opacity the controls asked for, applied by the next frame.
+    pending_opacity: RefCell<logic::PendingOpacity>,
+    /// The quick flyout is being brought in line with the settings: its events are not user input.
+    syncing_controls: Cell<bool>,
     window_active: Cell<bool>,
     palette: RefCell<Option<Rc<palette::Palette>>>,
     find: RefCell<Option<Rc<findbar::FindBar>>>,
@@ -262,6 +268,9 @@ pub fn launch() -> Result<()> {
         terminal_focus: Cell::new(false),
         zoom_steps: Cell::new(0),
         save_due: Cell::new(None),
+        backdrop_applied: Cell::new(None),
+        pending_opacity: RefCell::new(logic::PendingOpacity::default()),
+        syncing_controls: Cell::new(false),
         window_active: Cell::new(true),
         palette: RefCell::new(None),
         find: RefCell::new(None),
@@ -405,26 +414,39 @@ impl Shell {
         ] {
             self.palette_brush(key)?.SetColor(xaml_color(color))?;
         }
-        let opacity = glass::terminal_opacity(backdrop, setting_opacity);
-        let bar_alpha = glass::bar_tint_alpha(opacity);
-        let tint = themes::Color { a: (bar_alpha * 255.0).round() as u8, ..glass.background };
-        self.ui.bar_tint.SetBackground(&solid_brush(tint)?)?;
-        window::apply_backdrop(&self.window, &self.root, backdrop, &glass)?;
+        if self.backdrop_applied.get() != Some(backdrop) {
+            window::set_system_backdrop(&self.window, backdrop)?;
+            self.backdrop_applied.set(Some(backdrop));
+        }
+        window::apply_root_background(&self.root, backdrop, &glass)?;
         window::apply_theme(&self.window, &self.root, &glass)?;
-        *self.look.theme.borrow_mut() = glass::render_theme(scheme, opacity);
+        let opacity = glass::terminal_opacity(backdrop, setting_opacity);
+        self.apply_opacity(scheme, &glass, opacity)?;
         for tab in self.tabs.borrow().iter() {
             tab.set_glass(glass);
-            for pane in tab.panes.borrow().iter() {
-                pane.apply_look(false);
-            }
         }
         if let Some(page) = self.settings_page.borrow().as_ref() {
             page.restyle(&glass);
         }
         log(&format!(
-            "glass: scheme '{}' light={} backdrop={backdrop:?} opacity={opacity:.2} bar tint alpha {bar_alpha:.2}",
-            scheme.name, glass.light
+            "glass: scheme '{}' light={} backdrop={backdrop:?} opacity={opacity:.2} bar tint alpha {:.2}",
+            scheme.name,
+            glass.light,
+            glass::bar_tint_alpha(opacity)
         ));
+        Ok(())
+    }
+
+    /// What follows the opacity alone: the tint of the bar and the background of the terminals.
+    fn apply_opacity(&self, scheme: &themes::Scheme, glass: &Glass, opacity: f32) -> Result<()> {
+        let tint = themes::Color { a: (glass::bar_tint_alpha(opacity) * 255.0).round() as u8, ..glass.background };
+        self.ui.bar_tint.SetBackground(&solid_brush(tint)?)?;
+        *self.look.theme.borrow_mut() = glass::render_theme(scheme, opacity);
+        for tab in self.tabs.borrow().iter() {
+            for pane in tab.panes.borrow().iter() {
+                pane.apply_theme();
+            }
+        }
         Ok(())
     }
 
@@ -442,9 +464,36 @@ impl Shell {
         self.settings_changed();
     }
 
-    pub fn set_opacity(self: &Rc<Self>, opacity: f64) {
-        self.settings.borrow_mut().appearance.opacity = (opacity * 100.0).round() / 100.0;
-        self.settings_changed();
+    /// Asks for a background opacity; the next frame applies it, however many requests a drag makes before that.
+    pub fn set_opacity(&self, opacity: f64) {
+        // Without a backdrop nothing shows through: the slider is off and the saved value stays.
+        if self.settings.borrow().appearance.backdrop != Backdrop::None {
+            self.pending_opacity.borrow_mut().request(opacity);
+        }
+    }
+
+    /// The opacity the controls show: the latest request, or the one in effect.
+    pub fn opacity_latest(&self) -> f64 {
+        self.pending_opacity.borrow().latest(self.settings.borrow().appearance.opacity)
+    }
+
+    /// Applies the opacity asked for since the last frame, once. A failure while dragging is only logged; the
+    /// next change applies again.
+    fn apply_pending_opacity(self: &Rc<Self>) {
+        let applied = self.settings.borrow().appearance.opacity;
+        let Some(opacity) = self.pending_opacity.borrow_mut().take(applied) else { return };
+        let (scheme_name, backdrop) = {
+            let mut s = self.settings.borrow_mut();
+            s.appearance.opacity = opacity;
+            (s.theme.clone(), s.appearance.backdrop)
+        };
+        let effective = glass::terminal_opacity(backdrop, opacity);
+        if let Err(e) = self.apply_opacity(themes::scheme(&scheme_name), &self.glass.get(), effective) {
+            log(&format!("apply_opacity: {e}"));
+        }
+        self.sync_appearance_controls();
+        self.save_due.set(Some(Instant::now() + SAVE_DELAY));
+        log(&format!("opacity applied {opacity:.2}"));
     }
 
     pub fn set_theme(self: &Rc<Self>, name: &str) {
@@ -474,26 +523,20 @@ impl Shell {
 
     /// Brings the quick appearance flyout in line with the settings (without feeding the change back).
     pub fn sync_appearance_controls(&self) {
-        let (backdrop, opacity) = {
-            let s = self.settings.borrow();
-            (s.appearance.backdrop, s.appearance.opacity)
-        };
-        let index = match backdrop {
-            Backdrop::Acrylic => 0,
-            Backdrop::Mica => 1,
-            Backdrop::MicaAlt => 2,
-            Backdrop::None => 3,
-        };
-        let percent = (opacity * 100.0).round();
-        if self.ui.backdrop_choice.SelectedIndex().ok() != Some(index) {
-            let _ = self.ui.backdrop_choice.SetSelectedIndex(index);
+        let backdrop = self.settings.borrow().appearance.backdrop;
+        let (percent, enabled) = glass::opacity_control(backdrop, self.opacity_latest());
+        self.syncing_controls.set(true);
+        if self.ui.backdrop_choice.SelectedIndex().ok() != Some(backdrop.index()) {
+            let _ = self.ui.backdrop_choice.SetSelectedIndex(backdrop.index());
         }
         if let Ok(range) = self.ui.opacity_slider.cast::<RangeBase>()
             && (range.Value().unwrap_or(0.0) - percent).abs() > 0.4
         {
             let _ = range.SetValue(percent);
         }
+        let _ = self.ui.opacity_slider.cast::<Control>().and_then(|slider| slider.SetIsEnabled(enabled));
         let _ = self.ui.opacity_value.SetText(&format!("{percent:.0}%"));
+        self.syncing_controls.set(false);
         if let Some(page) = self.settings_page.borrow().as_ref() {
             page.sync();
         }
@@ -540,11 +583,10 @@ impl Shell {
         // Quick appearance flyout: changes apply while the control moves.
         let this = self.clone();
         revokers.push(self.ui.backdrop_choice.SelectionChanged(cb!("backdrop choice", |_, _| {
-            let index = this.ui.backdrop_choice.SelectedIndex().unwrap_or(0);
-            let backdrop = [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]
-                .get(usize::try_from(index).unwrap_or(0))
-                .copied();
-            if let Some(backdrop) = backdrop
+            // While the selection moves from one choice to the next the list reports no selection: not a choice.
+            let chosen = Backdrop::from_index(this.ui.backdrop_choice.SelectedIndex().unwrap_or(-1));
+            if let Some(backdrop) = chosen
+                && !this.syncing_controls.get()
                 && backdrop != this.settings.borrow().appearance.backdrop
             {
                 this.set_backdrop(backdrop);
@@ -553,7 +595,7 @@ impl Shell {
         let this = self.clone();
         revokers.push(self.ui.opacity_slider.cast::<RangeBase>()?.ValueChanged(cb!("opacity slider", |_, args| {
             let Some(value) = args.as_ref().and_then(|a| a.NewValue().ok()) else { return };
-            if (value / 100.0 - this.settings.borrow().appearance.opacity).abs() > 0.004 {
+            if !this.syncing_controls.get() {
                 this.set_opacity(value / 100.0);
             }
         }))?);
@@ -604,17 +646,23 @@ impl Shell {
                 args.as_ref().and_then(|a| a.WindowActivationState().ok()) != Some(WindowActivationState::Deactivated);
             this.window_active.set(active);
             log(&format!("window active = {active}"));
+            if !active {
+                // Losing the focus ends a drag: apply the last opacity and write the settings now.
+                this.apply_pending_opacity();
+                this.flush_settings();
+            }
         }))?);
         self.revokers.borrow_mut().extend(revokers);
         Ok(())
     }
 
     /// Every session ends here, while the process can still start the threads that close them (critique.md C14).
-    fn on_closed(&self) {
+    fn on_closed(self: &Rc<Self>) {
         log("window closed: ending every session");
         if let Err(e) = window::restore_alt_chords(&self.window) {
             log(&format!("restore_alt_chords: {e}"));
         }
+        self.apply_pending_opacity();
         self.flush_settings();
         *self.rendering.borrow_mut() = None;
         for tab in self.tabs.borrow().iter() {
@@ -629,8 +677,9 @@ impl Shell {
             return;
         }
         let Some(path) = store::settings_path() else { return };
-        if let Err(e) = store::save(&path, &settings::serialize(&self.settings.borrow())) {
-            log(&format!("settings save failed: {e}"));
+        match store::save(&path, &settings::serialize(&self.settings.borrow())) {
+            Ok(()) => log("settings saved"),
+            Err(e) => log(&format!("settings save failed: {e}")),
         }
     }
 
@@ -639,6 +688,7 @@ impl Shell {
     // ---------------------------------------------------------------------------------------------
 
     fn tick(self: &Rc<Self>) {
+        self.apply_pending_opacity();
         if self.save_due.get().is_some_and(|due| Instant::now() >= due) {
             self.flush_settings();
         }
@@ -1261,6 +1311,8 @@ impl Shell {
                 }
                 Command::AppearanceOpacityUp | Command::AppearanceOpacityDown => {
                     let steps = if command == Command::AppearanceOpacityUp { 1 } else { -1 };
+                    // A step starts from what is in effect, not from a request that is still waiting.
+                    self.apply_pending_opacity();
                     let opacity = self.settings.borrow().appearance.opacity_after(steps);
                     self.set_opacity(opacity);
                 }

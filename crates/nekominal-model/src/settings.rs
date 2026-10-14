@@ -155,6 +155,19 @@ pub enum Backdrop {
 }
 
 impl Backdrop {
+    /// The choices in the order every list of them shows (the quick flyout, the settings page).
+    pub const ALL: [Backdrop; 4] = [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None];
+
+    /// Position in [`Backdrop::ALL`], the selected index of a list of the choices.
+    pub fn index(self) -> i32 {
+        Backdrop::ALL.iter().position(|choice| *choice == self).map_or(-1, |at| at as i32)
+    }
+
+    /// The choice at a selected index; `None` for -1, which a list reports while it moves its selection.
+    pub fn from_index(index: i32) -> Option<Backdrop> {
+        usize::try_from(index).ok().and_then(|at| Backdrop::ALL.get(at).copied())
+    }
+
     /// The order the "switch backdrop" command cycles through.
     pub fn next(self) -> Backdrop {
         match self {
@@ -890,6 +903,17 @@ mod tests {
         }
         assert_eq!(current.next(), Backdrop::Acrylic);
         assert_eq!(seen, vec![Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]);
+    }
+
+    #[test]
+    fn a_backdrop_list_maps_selected_indexes_both_ways_and_ignores_no_selection() {
+        for (at, backdrop) in Backdrop::ALL.into_iter().enumerate() {
+            assert_eq!(backdrop.index(), at as i32);
+            assert_eq!(Backdrop::from_index(at as i32), Some(backdrop));
+        }
+        // A list reports -1 while its selection moves from one choice to the next: that is not a choice.
+        assert_eq!(Backdrop::from_index(-1), None);
+        assert_eq!(Backdrop::from_index(Backdrop::ALL.len() as i32), None);
     }
 
     #[test]

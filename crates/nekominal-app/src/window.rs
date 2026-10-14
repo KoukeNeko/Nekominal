@@ -62,8 +62,8 @@ fn from_win32(error: windows::core::Error) -> windows_core::Error {
 }
 
 /// Sets what shows behind (and through) the glass: a real blur of the desktop, Mica, Mica Alt, or nothing.
-/// Without a backdrop the root gets an opaque scheme-coloured background instead.
-pub fn apply_backdrop(window: &Window, root: &FrameworkElement, backdrop: Backdrop, glass: &Glass) -> Result<()> {
+/// Every call builds a new backdrop and replaces the window's one, so it is made only when the kind changes.
+pub fn set_system_backdrop(window: &Window, backdrop: Backdrop) -> Result<()> {
     let window2: IWindow2 = window.cast()?;
     match backdrop {
         Backdrop::Acrylic => window2.SetSystemBackdrop(&DesktopAcrylicBackdrop::new()?.cast::<SystemBackdrop>()?)?,
@@ -74,6 +74,12 @@ pub fn apply_backdrop(window: &Window, root: &FrameworkElement, backdrop: Backdr
         }
         Backdrop::None => window2.SetSystemBackdrop(None::<&SystemBackdrop>)?,
     }
+    log(&format!("system backdrop set: {backdrop:?}"));
+    Ok(())
+}
+
+/// Without a backdrop the root gets an opaque scheme-coloured background; with one it stays clear.
+pub fn apply_root_background(root: &FrameworkElement, backdrop: Backdrop, glass: &Glass) -> Result<()> {
     let panel: Panel = root.cast()?;
     if backdrop == Backdrop::None {
         panel.SetBackground(&solid_brush(glass.background)?)?;

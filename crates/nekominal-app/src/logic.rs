@@ -2,6 +2,7 @@
 //! Kept apart from the WinUI code so they can be tested without a window.
 
 use nekominal_model::layout::{Axis, Rect, Splitter};
+use nekominal_model::settings::OPACITY_RANGE;
 
 /// A pixel rectangle on the physical pixel grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +88,28 @@ pub fn reorder_target(widths: &[f64], gap: f64, from: usize, center: f64) -> usi
     target
 }
 
+/// The background opacity the sliders and commands asked for, kept until the next frame: a drag raises many value
+/// changes per frame and only the last of them is worth applying.
+#[derive(Debug, Default)]
+pub struct PendingOpacity(Option<f64>);
+
+impl PendingOpacity {
+    /// Records a request, rounded to a whole percent and kept inside the valid range.
+    pub fn request(&mut self, opacity: f64) {
+        self.0 = Some(((opacity * 100.0).round() / 100.0).clamp(OPACITY_RANGE.0, OPACITY_RANGE.1));
+    }
+
+    /// What the controls show: the latest request, or `applied` when nothing waits.
+    pub fn latest(&self, applied: f64) -> f64 {
+        self.0.unwrap_or(applied)
+    }
+
+    /// The opacity to apply in this frame: the request, unless it is what `applied` already is.
+    pub fn take(&mut self, applied: f64) -> Option<f64> {
+        self.0.take().filter(|opacity| (opacity - applied).abs() > 0.001)
+    }
+}
+
 /// The text a tab shows for the title a program set. Shells report the path of their own executable until
 /// the first prompt (`C:\Program Files\PowerShell\7\pwsh.exe`): that becomes the program name. An empty
 /// title falls back to `fallback`.
@@ -146,6 +169,39 @@ mod tests {
         assert_eq!(reorder_target(&widths, 4.0, 2, 100.0), 1);
         assert_eq!(reorder_target(&widths, 4.0, 2, -40.0), 0);
         assert_eq!(reorder_target(&widths, 4.0, 1, 154.0), 1);
+    }
+
+    #[test]
+    fn many_opacity_requests_in_a_frame_become_one_apply_of_the_last() {
+        let mut pending = PendingOpacity::default();
+        assert_eq!(pending.take(0.72), None, "nothing was asked for");
+        for percent in 20..=100 {
+            pending.request(f64::from(percent) / 100.0);
+        }
+        pending.request(0.5);
+        assert_eq!(pending.latest(0.72), 0.5);
+        assert_eq!(pending.take(0.72), Some(0.5));
+        assert_eq!(pending.take(0.72), None, "a request is applied once");
+        assert_eq!(pending.latest(0.72), 0.72);
+    }
+
+    #[test]
+    fn an_opacity_request_equal_to_the_applied_one_applies_nothing() {
+        let mut pending = PendingOpacity::default();
+        pending.request(0.72);
+        assert_eq!(pending.take(0.72), None);
+        // The slider's own echo of a value it was given arrives as the same request.
+        pending.request(72.0 / 100.0);
+        assert_eq!(pending.take(0.72), None);
+    }
+
+    #[test]
+    fn opacity_requests_are_whole_percent_inside_the_valid_range() {
+        let mut pending = PendingOpacity::default();
+        for (asked, applied) in [(0.724, 0.72), (0.726, 0.73), (7.0, 1.0), (0.0, 0.2), (-3.0, 0.2)] {
+            pending.request(asked);
+            assert_eq!(pending.take(0.9), Some(applied), "asked for {asked}");
+        }
     }
 
     #[test]

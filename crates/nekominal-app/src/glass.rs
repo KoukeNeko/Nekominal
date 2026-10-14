@@ -122,6 +122,13 @@ pub fn terminal_opacity(backdrop: Backdrop, setting: f64) -> f32 {
     }
 }
 
+/// What an opacity slider shows (percent) and whether it can be moved. Without a backdrop nothing shows through,
+/// so the slider reads 100% and is off, while the saved setting stays as it is for the next backdrop.
+pub fn opacity_control(backdrop: Backdrop, setting: f64) -> (f64, bool) {
+    let shown = (f64::from(terminal_opacity(backdrop, setting)) * 100.0).round();
+    (shown, backdrop != Backdrop::None)
+}
+
 /// Lowest contrast ratio between text and its background that the terminals keep (WCAG large-text AA). Text of a
 /// program below it, such as PSReadLine's bright white on a light scheme, is moved toward black or white.
 pub const MIN_TEXT_CONTRAST: f32 = 3.0;
@@ -197,6 +204,14 @@ mod tests {
         assert_eq!(terminal_opacity(Backdrop::None, 0.5), 1.0);
         assert_eq!(terminal_opacity(Backdrop::Acrylic, 0.72), 0.72);
         assert_eq!(terminal_opacity(Backdrop::Mica, 7.0), 1.0);
+    }
+
+    #[test]
+    fn without_a_backdrop_the_slider_reads_one_hundred_and_is_off_but_the_setting_is_kept() {
+        assert_eq!(opacity_control(Backdrop::None, 0.72), (100.0, false));
+        assert_eq!(opacity_control(Backdrop::Acrylic, 0.72), (72.0, true));
+        assert_eq!(opacity_control(Backdrop::Mica, 0.2), (20.0, true));
+        assert_eq!(opacity_control(Backdrop::MicaAlt, 1.0), (100.0, true));
     }
 
     #[test]

@@ -397,6 +397,15 @@ impl PaneView {
         }
     }
 
+    /// Only the theme changed (colour scheme, background opacity): the renderer redraws with it, and the
+    /// glyph atlases, the font and the swap chain are left alone.
+    pub fn apply_theme(&self) {
+        let Ok(mut render) = self.render.try_borrow_mut() else { return };
+        if let Some(renderer) = render.renderer.as_mut() {
+            renderer.set_theme(self.look.theme.borrow().clone());
+        }
+    }
+
     /// The theme, font size or line height changed (settings, zoom). A new font family needs a new renderer,
     /// which `on_size` builds when the old one is dropped here.
     pub fn apply_look(&self, new_font_family: bool) {

@@ -15,7 +15,7 @@ use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, HSTRING, Interface, Result};
 use windows_reference::IReference;
 
-use crate::glass::Glass;
+use crate::glass::{self, Glass};
 use crate::i18n::{localize, t, tf};
 use crate::shell::Shell;
 use crate::util::*;
@@ -209,15 +209,10 @@ impl SettingsPage {
         let _ = c
             .theme
             .set_selected_index(themes::theme_names().position(|name| name == settings.theme).map_or(-1, |i| i as i32));
-        let backdrop = match settings.appearance.backdrop {
-            Backdrop::Acrylic => 0,
-            Backdrop::Mica => 1,
-            Backdrop::MicaAlt => 2,
-            Backdrop::None => 3,
-        };
-        let _ = c.backdrop.set_selected_index(backdrop);
-        let percent = (settings.appearance.opacity * 100.0).round();
+        let _ = c.backdrop.set_selected_index(settings.appearance.backdrop.index());
+        let (percent, enabled) = glass::opacity_control(settings.appearance.backdrop, shell.opacity_latest());
         let _ = c.opacity.cast::<RangeBase>().and_then(|range| range.SetValue(percent));
+        let _ = c.opacity.cast::<Control>().and_then(|slider| slider.SetIsEnabled(enabled));
         let _ = c.opacity_text.SetText(&format!("{percent:.0}%"));
         let _ = c.font_size.SetValue(settings.font.size);
         let profile = shell.profiles.borrow().iter().position(|p| p.id == settings.default_profile).unwrap_or(0);
@@ -283,20 +278,13 @@ impl SettingsPage {
         }))?);
         self.push("appearance", t(Text::SettingsTheme), &theme)?;
 
-        let backdrop = combo(&[
-            t(Backdrop::Acrylic.text()),
-            t(Backdrop::Mica.text()),
-            t(Backdrop::MicaAlt.text()),
-            t(Backdrop::None.text()),
-        ])?;
+        let backdrop = combo(&Backdrop::ALL.map(|choice| t(choice.text())))?;
         let this = self.clone();
         revokers.push(backdrop.cast::<Selector>()?.SelectionChanged(cb!("backdrop", |sender, _| {
             let (Some(shell), false) = (this.shell.upgrade(), this.syncing.get()) else { return };
-            let index = sender.as_ref().and_then(|c| c.selected_index().ok()).unwrap_or(0);
-            if let Some(choice) = [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]
-                .get(usize::try_from(index).unwrap_or(0))
-            {
-                shell.set_backdrop(*choice);
+            let index = sender.as_ref().and_then(|c| c.selected_index().ok()).unwrap_or(-1);
+            if let Some(choice) = Backdrop::from_index(index) {
+                shell.set_backdrop(choice);
             }
         }))?);
         self.push("appearance", t(Text::SettingsBackdrop), &backdrop)?;
@@ -316,9 +304,7 @@ impl SettingsPage {
         revokers.push(range.ValueChanged(cb!("opacity", |_, args| {
             let (Some(shell), false) = (this.shell.upgrade(), this.syncing.get()) else { return };
             let Some(value) = args.as_ref().and_then(|a| a.NewValue().ok()) else { return };
-            if (value / 100.0 - shell.settings.borrow().appearance.opacity).abs() > 0.004 {
-                shell.set_opacity(value / 100.0);
-            }
+            shell.set_opacity(value / 100.0);
         }))?);
         self.push("appearance", t(Text::SettingsOpacity), &row)?;
 
