@@ -49,8 +49,10 @@ function Name-Tab([string]$Title) {
     Type-Line "`$Host.UI.RawUI.WindowTitle = `"$Title`""; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 300
 }
 
+# Every run is started with NEKOMINAL_NO_LAUNCH: a link or the settings file is logged where it would be opened, and no
+# browser or editor starts.
 function Run-App([string]$Name, [hashtable]$Settings = @{}, [scriptblock]$Script, [switch]$Pattern, [switch]$NoShot) {
-    $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500 }
+    $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500; Env = @{ NEKOMINAL_NO_LAUNCH = '1' } }
     if ($Pattern) { $params['Pattern'] = $true }
     if ($NoShot) { $params['NoShot'] = $true }
     if ($global:NkExe) { $params['Exe'] = $global:NkExe }
@@ -910,6 +912,76 @@ function Scenario-Links {
         $p = Cell-Pt $g ($bad.Col + 3) $bad.Row
         With-Keys @(0x11) { Click-At $p.X $p.Y 'left' 600 }
         Check 'Ctrl+click on a script address is only a click: nothing is logged' 0 @(Log-Since $mark | Where-Object { $_ -match 'link|opening' }).Count
+    }
+}
+# Restart, reload and the settings file. A shell that exits with an error leaves its last screen and the pane can be
+# started again without a question; one that still runs asks first. Reload reads settings.json again (a new colour
+# scheme and font size show at once, a wrong value is reported like at start-up, a file that is fine takes the report
+# away). Opening the settings file is logged where the shell would be asked: the run sets NEKOMINAL_NO_LAUNCH.
+function Scenario-Restart {
+    $file = Join-Path ([IO.Path]::GetTempPath()) 'nekominal-drive\restart-appdata\Nekominal\settings.json'
+    Run-App 'restart' @{ confirmClose = $true; appearance = @{ backdrop = 'none' }; theme = 'Tokyo Night' } {
+        First-Prompt
+        Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+        $palette = { param($name) Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 600; Type-Unicode $name 40; Start-Sleep -Milliseconds 500; Press 0x0D; Start-Sleep -Milliseconds 800 }
+
+        # an ended session: restarting needs no question
+        Type-Line 'exit 3'; Start-Sleep -Milliseconds 1500
+        Check 'a shell that exits with code 3 leaves its last screen' $true ((Get-TerminalText) -match '\[已結束，代碼 3\]')
+        & $palette '重新啟動工作階段'
+        Check 'restarting an ended session asks nothing and starts on a clear screen with a new prompt' $true (Wait-Text '^PS [^\r\n]*>\s*$' 15000)
+        Chord @(0x11, 0x10) 0x24; Start-Sleep -Milliseconds 500
+        Check 'and the old screen is in the scrollback' $true ((Get-TerminalText) -match '\[已結束，代碼 3\]')
+        Chord @(0x11, 0x10) 0x23; Start-Sleep -Milliseconds 300
+        Type-Line 'echo again'
+        Check 'and the pane works again' $true (Wait-Text 'again\s+PS ' 8000)
+
+        # a session that still works: it asks, Cancel keeps it
+        Type-Line 'Start-Sleep 40'; Start-Sleep -Milliseconds 800
+        & $palette '重新啟動工作階段'
+        Check 'restarting a running command asks, naming the tab' $true ([bool](Get-Element -Name '重新啟動工作階段' -Class 'Button'))
+        Shot-Safe (Shot-Path 'restart-confirm') | Out-Null
+        Click-Name '取消' 'left' 700 -Class 'Button'
+        Start-Sleep -Milliseconds 800
+        Check 'Cancel leaves the command running' $false ((Get-TerminalText) -match 'PS [^\r\n]*>\s*$')
+        & $palette '重新啟動工作階段'
+        Click-Name '重新啟動工作階段' 'left' 700 -Class 'Button'
+        Check 'confirming starts the shell again' $true (Wait-Text 'PS [^\r\n]*>\s*$' 15000)
+
+        # reload: another scheme and a bigger font, then a wrong value, then a fixed file
+        $g = Get-Grid
+        Shot-Safe (Shot-Path 'restart-before') | Out-Null
+        $colourBefore = Region-Average (Shot-Path 'restart-before') 600 500 40 40
+        Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "theme": "Dracula", "font": { "size": 22 }, "appearance": { "backdrop": "none" } }'
+        & $palette '重新載入設定'
+        Start-Sleep -Milliseconds 1500
+        Shot-Safe (Shot-Path 'restart-reloaded') | Out-Null
+        $colourAfter = Region-Average (Shot-Path 'restart-reloaded') 600 500 40 40
+        Check 'reload applies the colour scheme' $true ($colourBefore -ne $colourAfter)
+        $grid = Select-String -Path $script:LogFile -Pattern 'pane \d+ grid (\d+)x(\d+) cells of (\d+)x(\d+) px' | Select-Object -Last 1
+        Check 'reload applies the font size (a new cell size)' $true ($grid.Matches[0].Groups[3].Value -ne [string]$g.CW)
+        Check 'a file without problems reports none' $false ([bool](Get-Element '設定 JSON 有 1 個問題'))
+        Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "font": { "size": 999 }, "theme": "Dracula" }'
+        & $palette '重新載入設定'
+        Start-Sleep -Milliseconds 800
+        Check 'a wrong value is reported like at start-up' $true ([bool](Get-Element '設定 JSON 有 1 個問題'))
+        Shot-Safe (Shot-Path 'restart-problem') | Out-Null
+        Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "theme": "Dracula" }'
+        & $palette '重新載入設定'
+        Start-Sleep -Milliseconds 800
+        Check 'a fixed file takes the report away' $false ([bool](Get-Element '設定 JSON 有 1 個問題'))
+        Set-Content -LiteralPath $file -Encoding UTF8 -Value '{ "theme": "Dracula", "keybindings": { "tab.new": "Ctrl+Shift+Y" } }'
+        & $palette '重新載入設定'
+        Start-Sleep -Milliseconds 600
+        Check 'a shortcut from the file shows in the tooltip of the button' $true ([bool](Get-Element '新增分頁 (Ctrl+Shift+Y)'))
+
+        # the settings file: logged, not opened
+        $mark = Log-Mark
+        & $palette '開啟設定 JSON'
+        Start-Sleep -Milliseconds 800
+        $lines = @(Log-Since $mark | Where-Object { $_ -match 'settings file|not opened' })
+        $lines | ForEach-Object { 'log: ' + $_.Trim() }
+        Check 'opening the settings file names the file and starts nothing' $true ([bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*restart-appdata\\Nekominal\\settings\.json'))
     }
 }
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }
