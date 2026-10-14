@@ -1,0 +1,12 @@
+target/
+*.log
+
+# The ConPTY pair is fetched by scripts/fetch-conpty.ps1
+/crates/nekominal-pty/resources/conpty.dll
+/crates/nekominal-pty/resources/OpenConsole.exe
+/crates/nekominal-pty/resources/VERSION
+
+# Previous Tauri + TypeScript prototype: kept on disk for reference, not part of the history
+/legacy/
+
+.claude/

@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+# Generator for the WinUI bindings: its own lockfile, not part of the product build.
+exclude = ["tools/winui-gen"]
+members = [
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# windows-core/windows-bindgen 0.100 declare rust-version 1.95, wgpu 30.0.1 declares 1.87.
+rust-version = "1.95"
+
+[workspace.dependencies]
+
+# Terminal core (emulator + input encoding)
+alacritty_terminal = { version = "=0.26.0", default-features = false }
+base64 = "0.22.1"
+memchr = "2.8"
+unicode-width = "=0.2.2"
+
+# Renderer
+wgpu = { version = "=30.0.1", default-features = false, features = ["dx12", "wgsl", "std", "parking_lot"] }
+swash = "=0.2.10"
+harfrust = "=0.14.0"
+etagere = "=0.3.0"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+pollster = "=1.0.1"
+png = "=0.18.1"
+memmap2 = "=0.9.10"
+rustc-hash = "=2.1.3"
+unicode-segmentation = "=1.13.3"
+
+# Win32 bindings. `windows` stays on 0.62.x because wgpu-hal 30 depends on ^0.62.
+# The 0.100 `windows-*` generation is used only by nekominal-winui-sys and nekominal-winui (declared per crate,
+# never here, because two generations of the same package name cannot share a workspace key).
+windows = { version = "=0.62.2" }
+windows-sys = "0.61"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = true
+
+# Smaller debug builds: the full debuginfo of wgpu and the WinUI bindings is several GB.
+[profile.dev]
+debug = "line-tables-only"
