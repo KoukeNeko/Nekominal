@@ -116,9 +116,10 @@ impl Tab {
         self.panes.borrow().len()
     }
 
-    /// Panes whose program is still running.
-    pub fn running_sessions(&self) -> u32 {
-        self.panes.borrow().iter().filter(|pane| pane.exited.get().is_none()).count() as u32
+    /// Panes whose closing would end work: a command or an agent runs in them (`Pane::is_busy`). A shell waiting
+    /// at its prompt does not count.
+    pub fn busy_sessions(&self) -> u32 {
+        self.panes.borrow().iter().filter(|pane| pane.is_busy()).count() as u32
     }
 
     /// Whether this tab is the one on screen. A hidden tab gives its swap chains back.

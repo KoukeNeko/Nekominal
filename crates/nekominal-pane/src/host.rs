@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread,
@@ -24,7 +24,7 @@ use nekominal_pty::{
 };
 use nekominal_term::{
     CoreConfig, CoreEvent, TerminalCore,
-    agent_status::{AgentRecord, Report},
+    agent_status::{AgentRecord, AgentState, Report},
     alacritty_terminal::{grid::Scroll, sync::FairMutex},
     osc::{Notification, Progress, PromptMark},
 };
@@ -51,6 +51,50 @@ pub enum UiEvent {
     Other(String),
 }
 
+/// Whether a command runs in the pane, as far as the prompt marks of the shell (OSC 133) and the input sent to it
+/// tell. The integration of PowerShell marks the prompt and the end of a command but not its start, so a command
+/// starts when a line is submitted at the prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    /// No mark has come yet: a shell without integration, or one that has not shown its first prompt.
+    Unknown,
+    /// The shell waits at its prompt.
+    AtPrompt,
+    /// A line was submitted and no prompt has come back since.
+    Running,
+}
+
+impl Activity {
+    fn code(self) -> u8 {
+        self as u8
+    }
+
+    fn from_code(code: u8) -> Activity {
+        match code {
+            1 => Activity::AtPrompt,
+            2 => Activity::Running,
+            _ => Activity::Unknown,
+        }
+    }
+
+    /// A prompt mark came: the shell is at its prompt, or runs the command whose output has just begun.
+    pub fn after_mark(mark: PromptMark) -> Activity {
+        match mark {
+            PromptMark::PromptStart | PromptMark::CommandStart | PromptMark::CommandEnd { .. } => Activity::AtPrompt,
+            PromptMark::OutputStart => Activity::Running,
+        }
+    }
+
+    /// A line went to the program: a shell at its prompt starts a command. A program that gave no marks stays
+    /// unknown, and a running one keeps running.
+    pub fn after_submit(self) -> Activity {
+        match self {
+            Activity::AtPrompt => Activity::Running,
+            other => other,
+        }
+    }
+}
+
 /// The event the shell gets for what the emulator reported. `PtyWrite` is not one: it goes to the program.
 fn ui_event(event: CoreEvent) -> UiEvent {
     match event {
@@ -72,6 +116,8 @@ pub struct Pane {
     input: Sender<Vec<u8>>,
     sessions: Sessions,
     id: u32,
+    /// An [`Activity`] as its code: the reader thread writes it, the UI thread reads it.
+    activity: Arc<AtomicU8>,
 }
 
 impl Pane {
@@ -92,10 +138,11 @@ impl Pane {
         let (ui_tx, ui_rx) = channel::<UiEvent>();
         let session_cell: Arc<OnceLock<Arc<Session>>> = Arc::new(OnceLock::new());
         let pending_ack = Arc::new(AtomicUsize::new(0));
+        let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
 
         let sink: Sink = {
-            let (term, input_tx, session_cell, pending_ack) =
-                (term.clone(), input_tx.clone(), session_cell.clone(), pending_ack.clone());
+            let (term, input_tx, session_cell, pending_ack, activity) =
+                (term.clone(), input_tx.clone(), session_cell.clone(), pending_ack.clone(), activity.clone());
             Box::new(move |event| match event {
                 Event::Data(bytes) => {
                     let events = {
@@ -111,6 +158,9 @@ impl Pane {
                                 }
                             }
                             other => {
+                                if let CoreEvent::PromptMark { mark, .. } = &other {
+                                    activity.store(Activity::after_mark(*mark).code(), Ordering::Relaxed);
+                                }
                                 let _ = ui_tx.send(ui_event(other));
                             }
                         }
@@ -148,12 +198,30 @@ impl Pane {
                 }
             }
         })?;
-        Ok(Pane { term, events: ui_rx, input: input_tx, sessions, id })
+        Ok(Pane { term, events: ui_rx, input: input_tx, sessions, id, activity })
     }
 
     /// Keyboard, paste and IME bytes from the UI thread.
     pub fn send(&self, bytes: Vec<u8>) {
+        if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            let _ = self.activity.try_update(Ordering::Relaxed, Ordering::Relaxed, |code| {
+                Some(Activity::from_code(code).after_submit().code())
+            });
+        }
         let _ = self.input.send(bytes);
+    }
+
+    pub fn activity(&self) -> Activity {
+        Activity::from_code(self.activity.load(Ordering::Relaxed))
+    }
+
+    /// Closing the pane would end work: a command runs, an agent works or waits for an answer, or nothing tells
+    /// (a shell that gives no prompt marks counts as busy).
+    pub fn is_busy(&self) -> bool {
+        self.activity() != Activity::AtPrompt
+            || self
+                .agent_summary()
+                .is_some_and(|record| matches!(record.state, AgentState::Working | AgentState::Blocked))
     }
 
     /// The most urgent agent record of the pane right now (OSC 7501), if any. Live: it follows the records the
@@ -250,6 +318,33 @@ mod tests {
         let mut core = TerminalCore::new(80, 24, CoreConfig::default());
         core.feed(bytes);
         core.take_events().into_iter().filter(|e| !matches!(e, CoreEvent::PtyWrite(_))).map(ui_event).collect()
+    }
+
+    #[test]
+    fn a_shell_is_busy_from_a_submitted_line_until_the_next_prompt() {
+        use Activity::*;
+        assert_eq!(Unknown.after_submit(), Unknown, "no marks, no claim");
+        assert_eq!(AtPrompt.after_submit(), Running);
+        assert_eq!(Running.after_submit(), Running);
+        for mark in [PromptMark::PromptStart, PromptMark::CommandStart, PromptMark::CommandEnd { exit_code: Some(0) }] {
+            assert_eq!(Activity::after_mark(mark), AtPrompt, "{mark:?}");
+        }
+        assert_eq!(Activity::after_mark(PromptMark::OutputStart), Running);
+        // A command with the prompt marks of PowerShell: end of the last one, prompt, input; Enter; end, prompt again.
+        let mut state = Unknown;
+        for step in [
+            Some(PromptMark::CommandEnd { exit_code: Some(0) }),
+            Some(PromptMark::PromptStart),
+            Some(PromptMark::CommandStart),
+            None,
+        ] {
+            state = match step {
+                Some(mark) => Activity::after_mark(mark),
+                None => state.after_submit(),
+            };
+        }
+        assert_eq!(state, Running);
+        assert_eq!(Activity::after_mark(PromptMark::CommandEnd { exit_code: Some(0) }), AtPrompt);
     }
 
     #[test]

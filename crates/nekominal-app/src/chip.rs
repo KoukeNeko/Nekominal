@@ -112,6 +112,8 @@ pub struct Chip {
     hovered: Cell<bool>,
     close_hot: Cell<bool>,
     close_pressed: Cell<bool>,
+    /// The middle button went down on the chip and has not come up.
+    middle_down: Cell<bool>,
     status: RefCell<TabStatus>,
     /// The chip is in the visible part of the strip: only then does a working chip spin.
     in_view: Cell<bool>,
@@ -191,6 +193,7 @@ impl Chip {
             hovered: Cell::new(false),
             close_hot: Cell::new(false),
             close_pressed: Cell::new(false),
+            middle_down: Cell::new(false),
             status: RefCell::new(TabStatus::default()),
             in_view: Cell::new(true),
             glass: Cell::new(glass),
@@ -433,7 +436,11 @@ impl Chip {
             return;
         };
         if properties.IsMiddleButtonPressed().unwrap_or(false) {
-            (self.on_event)(TabEvent::Close(self.id));
+            // Closing waits for the button to come up over the chip, so a press that slides away cancels it.
+            self.middle_down.set(true);
+            if let Ok(pointer) = args.Pointer() {
+                let _ = ui(&self.root).and_then(|root| root.CapturePointer(&pointer));
+            }
             let _ = args.SetHandled(true);
             return;
         }
@@ -525,6 +532,29 @@ impl Chip {
 
     fn on_released(&self, args: &PointerRoutedEventArgs) {
         let local = self.position_in(args, &self.root);
+        if self.middle_down.get() {
+            let still_down = args
+                .GetCurrentPoint(&self.root)
+                .and_then(|point| point.Properties())
+                .and_then(|properties| properties.IsMiddleButtonPressed())
+                .unwrap_or(false);
+            if !still_down {
+                self.middle_down.set(false);
+                if let Ok(pointer) = args.Pointer() {
+                    let _ = ui(&self.root).and_then(|root| root.ReleasePointerCapture(&pointer));
+                }
+                let over_chip = local.is_some_and(|point| {
+                    let (width, height) = fe(&self.root)
+                        .map(|root| (root.ActualWidth().unwrap_or(0.0), root.ActualHeight().unwrap_or(0.0)))
+                        .unwrap_or_default();
+                    (0.0..=width).contains(&f64::from(point.x)) && (0.0..=height).contains(&f64::from(point.y))
+                });
+                if over_chip {
+                    (self.on_event)(TabEvent::Close(self.id));
+                }
+            }
+            return;
+        }
         let on_close = self.close_pressed.replace(false) && local.is_some_and(|p| self.over_close(f64::from(p.x)));
         let moved = self.drag.borrow().as_ref().filter(|drag| drag.started).map(|drag| (drag.index, drag.target));
         self.end_drag();
@@ -544,6 +574,7 @@ impl Chip {
     fn end_drag(&self) {
         let was_dragging = self.drag.borrow_mut().take().is_some_and(|drag| drag.started);
         self.close_pressed.set(false);
+        self.middle_down.set(false);
         if !was_dragging {
             return;
         }

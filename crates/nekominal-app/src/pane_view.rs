@@ -444,6 +444,11 @@ impl PaneView {
         self.on_size(w, h);
     }
 
+    /// Closing the pane would end work: its program runs a command or an agent and has not ended.
+    pub fn is_busy(&self) -> bool {
+        self.exited.get().is_none() && self.pane.is_busy()
+    }
+
     /// Events from the program (title, exit, working directory), oldest first.
     pub fn poll_events(&self) -> Vec<UiEvent> {
         let mut events = Vec::new();

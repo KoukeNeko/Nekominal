@@ -497,10 +497,45 @@ function Scenario-Titles {
     }
 }
 
+# Closing: a tab at its prompt closes without asking, a running command asks and the dialog names the tab, the
+# middle button closes when it comes up (not when it goes down), a shell that exits cleanly closes its pane and a
+# program profile that exits cleanly keeps its last screen.
+function Scenario-Close {
+    $agent = @{ id = 'agent'; name = 'agent'; program = 'cmd.exe'; args = @('/c', 'echo final-screen-text') }
+    Run-App 'close' @{ defaultProfile = 'agent'; profiles = @($agent) } {
+        Start-Sleep -Milliseconds 3000
+        'program profile exited with 0: window still open = {0}, tabs {1}, text has output = {2}, text has status = {3}' -f (-not $script:App.HasExited), @(Get-Chips).Count, ((Get-TerminalText) -match 'final-screen-text'), ((Get-TerminalText) -match '已結束，代碼 0')
+    } -NoShot
+    Run-App 'close-shell' @{} {
+        First-Prompt
+        New-Tab
+        Type-Line 'exit'; Start-Sleep -Milliseconds 1500
+        'typed exit in a shell tab: tabs {0} (want 1)' -f @(Get-Chips).Count
+        New-Tab
+        $dialogs = { Count-Class 'ContentDialog' }
+        Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200
+        'closed a tab at its prompt: dialog {0}, tabs {1} (want 0 and 1)' -f (& $dialogs), @(Get-Chips).Count
+        New-Tab
+        Type-Line '$Host.UI.RawUI.WindowTitle = "deploy"; Start-Sleep 60'; Start-Sleep -Milliseconds 1200
+        Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200
+        'closed a tab with a running command: dialog {0}, title found = {1} (want 1 and True), tabs {2}' -f (& $dialogs), [bool](Get-Element '關閉「deploy」？'), @(Get-Chips).Count
+        Press 0x1B; Start-Sleep -Milliseconds 600
+        'cancelled: tabs {0} (want 2)' -f @(Get-Chips).Count
+        # the middle button: down does nothing, up over the chip closes
+        New-Tab
+        $chips = @(Get-Chips); $r = Get-ElementRect $chips[-1].Name
+        Move-To ($r.X + 30) ($r.Y + 16); Start-Sleep -Milliseconds 300
+        [D]::Mouse(0x0020, 0); Start-Sleep -Milliseconds 800
+        $afterDown = @(Get-Chips).Count
+        [D]::Mouse(0x0040, 0); Start-Sleep -Milliseconds 1200
+        'middle button: tabs after down {0}, after up {1} (want 3 then 2)' -f $afterDown, @(Get-Chips).Count
+    } -NoShot
+}
+
 function Get-Items {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close }

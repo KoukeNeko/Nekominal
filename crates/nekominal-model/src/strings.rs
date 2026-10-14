@@ -151,6 +151,7 @@ texts! {
     DialogPasteLines "dialog.pasteLines" "貼上 {0} 行？" "Paste {0} lines?";
     DialogPasteSize "dialog.pasteSize" "貼上 {0}？" "Paste {0}?";
     DialogCloseSessions "dialog.closeSessions" "關閉 {0} 個執行中的工作階段？" "Close running sessions ({0})?";
+    DialogCloseTab "dialog.closeTab" "關閉「{0}」？" "Close \"{0}\"?";
 
     // Messages: what happened, and the recovery when there is one.
     StatusExited "status.exited" "[已結束，代碼 {0}]" "[Exited with code {0}]";

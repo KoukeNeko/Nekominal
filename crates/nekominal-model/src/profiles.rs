@@ -28,6 +28,13 @@ impl ProfileKind {
             _ => ProfileKind::Other,
         }
     }
+
+    /// An interactive shell: its pane closes when the shell exits cleanly (`exit`). A profile of any other program,
+    /// a coding agent for one, keeps its last screen when the program ends, because that output is what the
+    /// session was for.
+    pub fn closes_pane_on_clean_exit(self) -> bool {
+        !matches!(self, ProfileKind::Other)
+    }
 }
 
 /// A shell found by `nekominal_pty::profiles::discover`, as plain data so this crate does not depend on
@@ -267,6 +274,26 @@ mod tests {
         ] {
             assert_eq!(ProfileKind::from_name(name), kind, "{name}");
         }
+    }
+
+    #[test]
+    fn a_shell_closes_its_pane_on_a_clean_exit_and_any_other_program_keeps_its_last_screen() {
+        for kind in [
+            ProfileKind::PowerShell,
+            ProfileKind::Cmd,
+            ProfileKind::Bash,
+            ProfileKind::Wsl,
+            ProfileKind::Ssh,
+        ] {
+            assert!(kind.closes_pane_on_clean_exit(), "{kind:?}");
+        }
+        assert!(!ProfileKind::Other.closes_pane_on_clean_exit());
+        // A custom profile is Other, whatever program it names.
+        assert!(
+            !merge(&[], &[custom("agent", "claude.exe")])[0]
+                .kind
+                .closes_pane_on_clean_exit()
+        );
     }
 
     #[test]

@@ -888,8 +888,14 @@ impl Shell {
             UiEvent::Bell => self.on_bell(tab, pane),
             UiEvent::Exit(code) => {
                 pane.exited.set(Some(code));
-                if code == 0 {
+                let closes =
+                    self.profile_by_id(&pane.profile_id).is_none_or(|profile| profile.kind.closes_pane_on_clean_exit());
+                if code == 0 && closes {
                     closed.push((tab.id, pane.id));
+                } else if code == 0 {
+                    // A program profile (an agent): its last screen is what the session was for.
+                    let line = format!("\r\n{}\r\n", tf(Text::StatusExited, &[&code]));
+                    pane.pane.term.lock().feed(line.as_bytes());
                 } else {
                     pane.attention.set(Some(Attention::Exit));
                     let line = format!("\r\n{}\r\n", tf(Text::StatusExited, &[&code]));
@@ -1254,10 +1260,10 @@ impl Shell {
     /// Closes after asking when running sessions would end.
     pub fn request_close_tab(self: &Rc<Self>, id: TabId) {
         let Some(tab) = self.tabs.borrow().iter().find(|tab| tab.id == id).cloned() else { return };
-        let running = tab.running_sessions();
+        let running = tab.busy_sessions();
         if self.settings.borrow().should_confirm_close(running) {
             let this = self.clone();
-            self.confirm_close(running, move || this.close_tab(id));
+            self.confirm_close(tf(Text::DialogCloseTab, &[&tab.title.borrow()]), move || this.close_tab(id));
         } else {
             self.close_tab(id);
         }
@@ -1312,11 +1318,11 @@ impl Shell {
             self.request_close_tab(tab.id);
             return;
         }
-        let running = tab.pane(pane_id).map_or(0, |pane| u32::from(pane.exited.get().is_none()));
+        let running = tab.pane(pane_id).map_or(0, |pane| u32::from(pane.is_busy()));
         if self.settings.borrow().should_confirm_close(running) {
             let this = self.clone();
             let tab_id = tab.id;
-            self.confirm_close(running, move || this.close_pane_in(tab_id, pane_id));
+            self.confirm_close(tf(Text::DialogCloseSessions, &[&running]), move || this.close_pane_in(tab_id, pane_id));
         } else {
             self.close_pane_in(tab.id, pane_id);
         }
@@ -1437,10 +1443,11 @@ impl Shell {
         let _ = bar.SetIsOpen(true);
     }
 
-    fn confirm_close(self: &Rc<Self>, running: u32, on_confirm: impl Fn() + 'static) {
+    /// Asks before ending work; `title` names what closes, the buttons answer it.
+    fn confirm_close(self: &Rc<Self>, title: String, on_confirm: impl Fn() + 'static) {
         let result = (|| -> Result<()> {
             let dialog = ContentDialog::new()?;
-            dialog.SetTitle(&IReference::from(tf(Text::DialogCloseSessions, &[&running]).as_str()))?;
+            dialog.SetTitle(&IReference::from(title.as_str()))?;
             dialog.SetPrimaryButtonText(t(Text::CommonClose))?;
             dialog.SetCloseButtonText(t(Text::CommonCancel))?;
             dialog.SetDefaultButton(ContentDialogButton::Close)?;
