@@ -19,7 +19,7 @@ use nekominal_model::{
     strings::{Lang, Text},
     themes::{self},
 };
-use nekominal_pane::UiEvent;
+use nekominal_pane::{MAX_CLIPBOARD_TEXT, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_term::osc::Progress;
 use nekominal_winui_sys::*;
@@ -928,6 +928,19 @@ impl Shell {
                 }));
                 self.refresh_status(tab);
             }
+            UiEvent::ClipboardStore(text) => {
+                let written = clipboard::write_text(&text);
+                log(&format!("pane {} copied {} bytes to the clipboard (osc 52): {written}", pane.id, text.len()));
+            }
+            UiEvent::ClipboardLoad(request) => {
+                // Only a policy that allows reads lets the request get here. No text on the clipboard is an empty answer.
+                let text = clipboard::read_text().unwrap_or_default();
+                let answered = pane.pane.answer_clipboard(&request, &text);
+                log(&format!("pane {} read {} bytes of the clipboard (osc 52): answered {answered}", pane.id, text.len()));
+            }
+            UiEvent::ClipboardRefused { bytes } => {
+                log(&format!("pane {} osc 52 write of {bytes} bytes refused: over {} bytes", pane.id, MAX_CLIPBOARD_TEXT));
+            }
             UiEvent::PromptMark(_) | UiEvent::Other(_) => {}
         }
     }
@@ -1138,7 +1151,8 @@ impl Shell {
             }
         });
         let config = self.spawn_config(profile, cwd);
-        PaneView::new(id, config, profile.id.clone(), self.look.clone(), &self.window, &self.root, on_focus)
+        let core = logic::core_config(&self.settings.borrow());
+        PaneView::new(id, config, core, profile.id.clone(), self.look.clone(), &self.window, &self.root, on_focus)
     }
 
     fn on_pane_focus(&self, pane: PaneId, focused: bool) {

@@ -11,4 +11,4 @@ pub mod host;
 pub mod view;
 
 pub use draw::PaneRenderer;
-pub use host::{Pane, UiEvent};
+pub use host::{ClipboardRequest, MAX_CLIPBOARD_TEXT, Pane, UiEvent};

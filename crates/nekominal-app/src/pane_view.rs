@@ -15,6 +15,7 @@ use nekominal_model::{layout::PaneId, strings::Text};
 use nekominal_pane::{Pane, PaneRenderer, UiEvent};
 use nekominal_pty::conpty::SpawnConfig;
 use nekominal_render as r;
+use nekominal_term::CoreConfig;
 use nekominal_winui::{
     ime::{self, ImeHost},
     surface::{FORMAT, MatrixMode, PanelSurface, Presented, SurfaceOptions},
@@ -115,6 +116,7 @@ impl PaneView {
     pub fn new(
         id: PaneId,
         config: SpawnConfig,
+        core: CoreConfig,
         profile_id: String,
         look: Rc<Look>,
         window: &Window,
@@ -140,7 +142,7 @@ impl PaneView {
         host_ui.SetUseSystemFocusVisuals(false)?;
 
         let shell_name = config.program.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-        let pane = Pane::spawn_with(config)
+        let pane = Pane::spawn_with(config, core)
             .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), format!("pty: {e}")))?;
         let surface = PanelSurface::new(
             panel.clone(),

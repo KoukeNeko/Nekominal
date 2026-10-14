@@ -171,7 +171,8 @@ impl fmt::Debug for CoreEvent {
             Self::Title(t) => write!(f, "Title({t:?})"),
             Self::ResetTitle => write!(f, "ResetTitle"),
             Self::Bell => write!(f, "Bell"),
-            Self::ClipboardStore { clipboard, text } => write!(f, "ClipboardStore({clipboard:?}, {text:?})"),
+            // The text is what the user copied: it stays out of every log.
+            Self::ClipboardStore { clipboard, text } => write!(f, "ClipboardStore({clipboard:?}, {} bytes)", text.len()),
             Self::ClipboardLoad { clipboard, .. } => write!(f, "ClipboardLoad({clipboard:?})"),
             Self::CursorBlinkingChange => write!(f, "CursorBlinkingChange"),
             Self::MouseCursorDirty => write!(f, "MouseCursorDirty"),
@@ -493,17 +494,22 @@ const SOFT_RESET: &[u8] = b"\x1b[?25h\x1b[4l\x1b[?6l\x1b[?7h\x1b[?1l\x1b>\x1b[r\
     \x1b(B\x1b)B\x1b*B\x1b+B\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l";
 
 impl TerminalCore {
-    pub fn new(columns: usize, rows: usize, config: CoreConfig) -> Self {
-        let proxy = EventProxy::default();
-        let history_cap = Self::scrollback_limit_for(&config, TermDims::new(columns, rows).columns);
-        let term_config = Config {
-            scrolling_history: history_cap + HISTORY_SLACK,
+    /// The options of alacritty's `Term` for `config`, with `history` lines of scrollback allowed.
+    fn term_config(config: &CoreConfig, history: usize) -> Config {
+        Config {
+            scrolling_history: history,
             default_cursor_style: config.cursor_style,
             semantic_escape_chars: config.semantic_escape_chars.clone(),
             kitty_keyboard: config.kitty_keyboard,
             osc52: config.osc52,
             ..Config::default()
-        };
+        }
+    }
+
+    pub fn new(columns: usize, rows: usize, config: CoreConfig) -> Self {
+        let proxy = EventProxy::default();
+        let history_cap = Self::scrollback_limit_for(&config, TermDims::new(columns, rows).columns);
+        let term_config = Self::term_config(&config, history_cap + HISTORY_SLACK);
         let mut term = Term::new(term_config, &TermDims::new(columns, rows), proxy.clone());
         term.is_focused = true;
         Self {
@@ -874,6 +880,13 @@ impl TerminalCore {
 
     pub fn set_palette(&mut self, palette: Palette) {
         self.config.palette = palette;
+        self.dirty = true;
+    }
+
+    /// Changes what OSC 52 may do in a terminal that already runs (the setting changed).
+    pub fn set_osc52(&mut self, osc52: Osc52) {
+        self.config.osc52 = osc52;
+        self.term.set_options(Self::term_config(&self.config, self.history_limit));
         self.dirty = true;
     }
 

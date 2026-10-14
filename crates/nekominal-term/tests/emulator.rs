@@ -670,6 +670,24 @@ fn osc52_follows_the_configured_policy() {
 }
 
 #[test]
+fn osc52_policy_changes_apply_to_a_running_terminal_and_the_text_stays_out_of_debug_output() {
+    let mut core = core(20, 3);
+    feed(&mut core, "\x1b]0;kept\x07");
+    core.take_events();
+    core.set_osc52(Osc52::Disabled);
+    feed(&mut core, "\x1b]52;c;aGVsbG8=\x07");
+    assert!(!core.take_events().iter().any(|e| matches!(e, CoreEvent::ClipboardStore { .. })), "disabled: no write");
+
+    core.set_osc52(Osc52::CopyPaste);
+    feed(&mut core, "\x1b]52;c;c2VjcmV0\x07\x1b]52;c;?\x07");
+    let events = core.take_events();
+    let store = events.iter().find(|e| matches!(e, CoreEvent::ClipboardStore { .. })).expect("copy is allowed again");
+    assert!(events.iter().any(|e| matches!(e, CoreEvent::ClipboardLoad { .. })), "paste is allowed now");
+    assert!(!format!("{store:?}").contains("secret"), "{store:?}");
+    assert_eq!(snap(&mut core).history_size, 0, "changing the options leaves the buffer alone");
+}
+
+#[test]
 fn title_bell_and_cursor_events() {
     let mut core = core(20, 3);
     feed(&mut core, "\x1b]0;hello\x07\x1b]2;a;b\x1b\\\x1b]1;icon only\x07\x07");

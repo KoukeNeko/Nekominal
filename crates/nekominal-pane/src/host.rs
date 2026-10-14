@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt,
     path::PathBuf,
     sync::{
         Arc, OnceLock,
@@ -23,11 +24,29 @@ use nekominal_pty::{
     session::{Event, Session, Sessions, Sink},
 };
 use nekominal_term::{
-    CoreConfig, CoreEvent, TerminalCore,
+    ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, TerminalCore,
     agent_status::{AgentRecord, AgentState, Report},
-    alacritty_terminal::{grid::Scroll, sync::FairMutex},
+    alacritty_terminal::{grid::Scroll, sync::FairMutex, term::Osc52},
     osc::{Notification, Progress, PromptMark},
 };
+
+/// The most text a program may put on the clipboard (OSC 52), and the most the clipboard may hand to one: 1 MiB.
+/// That is a screenful of output ten thousand lines long, far more than anyone copies out of a terminal, and
+/// little enough that a program cannot make every clipboard listener hold tens of megabytes. The emulator cuts
+/// an OSC payload at 4 MiB (`guard::MAX_OSC_PAYLOAD`) and delivers what is left, about 3 MiB of text, so a copy
+/// that was cut is always over this limit and is refused instead of stored half.
+pub const MAX_CLIPBOARD_TEXT: usize = 1024 * 1024;
+
+/// An OSC 52 read: the program asked for the clipboard and is waiting for the answer.
+pub struct ClipboardRequest {
+    reply: ClipboardFormatter,
+}
+
+impl fmt::Debug for ClipboardRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClipboardRequest")
+    }
+}
 
 #[derive(Debug)]
 pub enum UiEvent {
@@ -47,6 +66,12 @@ pub enum UiEvent {
     Progress(Option<Progress>),
     /// OSC 133: the shell marked a prompt, a command or its end.
     PromptMark(PromptMark),
+    /// OSC 52: the program copies this text to the clipboard (the emulator already applied the policy).
+    ClipboardStore(String),
+    /// OSC 52: the program reads the clipboard; answer with [`Pane::answer_clipboard`].
+    ClipboardLoad(ClipboardRequest),
+    /// An OSC 52 write was dropped for its size (over [`MAX_CLIPBOARD_TEXT`]). The text is not kept.
+    ClipboardRefused { bytes: usize },
     /// Anything else the emulator reported, as debug text.
     Other(String),
 }
@@ -106,6 +131,20 @@ fn ui_event(event: CoreEvent) -> UiEvent {
         CoreEvent::Notification(notification) => UiEvent::Notification(notification),
         CoreEvent::Progress(progress) => UiEvent::Progress(progress),
         CoreEvent::PromptMark { mark, .. } => UiEvent::PromptMark(mark),
+        // Windows has one clipboard and no primary selection: a program that writes to or reads the selection
+        // would otherwise overwrite or read what the user copied.
+        CoreEvent::ClipboardStore { clipboard: ClipboardKind::Clipboard, text } if text.len() <= MAX_CLIPBOARD_TEXT => {
+            UiEvent::ClipboardStore(text)
+        }
+        CoreEvent::ClipboardStore { clipboard: ClipboardKind::Clipboard, text } => {
+            UiEvent::ClipboardRefused { bytes: text.len() }
+        }
+        CoreEvent::ClipboardLoad { clipboard: ClipboardKind::Clipboard, reply } => {
+            UiEvent::ClipboardLoad(ClipboardRequest { reply })
+        }
+        CoreEvent::ClipboardStore { .. } | CoreEvent::ClipboardLoad { .. } => {
+            UiEvent::Other("clipboard: the primary selection is not supported".to_owned())
+        }
         other => UiEvent::Other(format!("{other:?}")),
     }
 }
@@ -127,13 +166,15 @@ impl Pane {
         env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
         // Wcswidth (0x10) is the mode that agrees with alacritty_terminal's per-code-point width model
         // (emulator blueprint, section 11.5).
-        Pane::spawn_with(SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Wcswidth })
+        let config = SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Wcswidth };
+        Pane::spawn_with(config, CoreConfig::default())
     }
 
-    /// Starts the session described by `config` (a profile's program, arguments, directory and environment).
-    pub fn spawn_with(config: SpawnConfig) -> std::io::Result<Pane> {
+    /// Starts the session described by `config` (a profile's program, arguments, directory and environment) with
+    /// an emulator set up by `core`.
+    pub fn spawn_with(config: SpawnConfig, core: CoreConfig) -> std::io::Result<Pane> {
         let (cols, rows) = (config.cols, config.rows);
-        let term = Arc::new(FairMutex::new(TerminalCore::new(cols as usize, rows as usize, CoreConfig::default())));
+        let term = Arc::new(FairMutex::new(TerminalCore::new(cols as usize, rows as usize, core)));
         let (input_tx, input_rx) = channel::<Vec<u8>>();
         let (ui_tx, ui_rx) = channel::<UiEvent>();
         let session_cell: Arc<OnceLock<Arc<Session>>> = Arc::new(OnceLock::new());
@@ -259,6 +300,20 @@ impl Pane {
     pub fn paste(&self, text: &str) {
         let bracketed = self.input_modes().bracketed_paste;
         self.send(prepare_paste(text, bracketed));
+    }
+
+    /// What OSC 52 may do from now on (a settings change reaches panes that already run).
+    pub fn set_osc52(&self, osc52: Osc52) {
+        self.term.lock().set_osc52(osc52);
+    }
+
+    /// Answers an OSC 52 read with the clipboard text. A clipboard over [`MAX_CLIPBOARD_TEXT`] is not sent: the
+    /// program gets no answer, as for a read the policy denies. False when nothing was sent.
+    pub fn answer_clipboard(&self, request: &ClipboardRequest, text: &str) -> bool {
+        if text.len() > MAX_CLIPBOARD_TEXT {
+            return false;
+        }
+        self.input.send((request.reply)(text).into_bytes()).is_ok()
     }
 
     /// Closes the session (kills the process tree) while the process can still create threads. Drop only does it as a fallback:
@@ -387,6 +442,44 @@ mod tests {
         assert_eq!((first.title.as_str(), first.body.as_str()), ("Claude", "needs input"), "the bidi override is gone");
         assert_eq!((second.title.as_str(), second.body.as_str()), ("", "Build finished"));
         assert_eq!(*value, 40.0);
+    }
+
+    /// `n` copies of "QUFB", the base64 of "AAA": a payload of exactly `3 * n` bytes.
+    fn osc52_write(clipboard: char, n: usize) -> Vec<u8> {
+        format!("\x1b]52;{clipboard};{}\x07", "QUFB".repeat(n)).into_bytes()
+    }
+
+    #[test]
+    fn an_osc52_write_reaches_the_shell_as_text_and_the_selection_target_does_not() {
+        let events = events_for(&osc52_write('c', 1));
+        let [UiEvent::ClipboardStore(text)] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!(text, "AAA");
+        assert!(matches!(events_for(&osc52_write('p', 1)).as_slice(), [UiEvent::Other(_)]));
+    }
+
+    #[test]
+    fn an_osc52_write_over_the_limit_is_refused_whole_and_the_event_does_not_carry_the_text() {
+        let at_limit = MAX_CLIPBOARD_TEXT / 3;
+        assert_eq!(MAX_CLIPBOARD_TEXT % 3, 1, "the two payloads below are just under and just over the limit");
+        let events = events_for(&osc52_write('c', at_limit));
+        assert!(matches!(events.as_slice(), [UiEvent::ClipboardStore(text)] if text.len() == MAX_CLIPBOARD_TEXT - 1));
+        let events = events_for(&osc52_write('c', at_limit + 1));
+        assert!(
+            matches!(events.as_slice(), [UiEvent::ClipboardRefused { bytes }] if *bytes == MAX_CLIPBOARD_TEXT + 2),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn an_osc52_read_needs_the_policy_and_is_answered_in_the_osc52_form() {
+        let query = b"\x1b]52;c;?\x07";
+        assert!(events_for(query).is_empty(), "the default policy denies reads");
+        let mut core = TerminalCore::new(80, 24, CoreConfig { osc52: Osc52::CopyPaste, ..CoreConfig::default() });
+        core.feed(query);
+        let events: Vec<UiEvent> = core.take_events().into_iter().map(ui_event).collect();
+        let [UiEvent::ClipboardLoad(request)] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!((request.reply)("hi"), "\x1b]52;c;aGk=\x07");
+        assert_eq!(format!("{request:?}"), "ClipboardRequest", "no clipboard text can leak through Debug");
     }
 
     #[test]

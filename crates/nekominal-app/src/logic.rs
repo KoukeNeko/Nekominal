@@ -2,8 +2,10 @@
 //! Kept apart from the WinUI code so they can be tested without a window.
 
 use nekominal_model::layout::{Axis, Rect, Splitter};
-use nekominal_model::settings::OPACITY_RANGE;
+use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, Settings};
+use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
+use nekominal_term::alacritty_terminal::term::Osc52;
 use nekominal_term::osc::strip_control;
 
 /// A pixel rectangle on the physical pixel grid.
@@ -553,11 +555,36 @@ pub fn tab_title(raw: &str, fallback: &str) -> String {
     if name.is_empty() { fallback.to_owned() } else { name.to_owned() }
 }
 
+/// What the emulator lets OSC 52 do under a policy of the settings.
+pub fn osc52_for(policy: Osc52Policy) -> Osc52 {
+    match policy {
+        Osc52Policy::Off => Osc52::Disabled,
+        Osc52Policy::Write => Osc52::OnlyCopy,
+        Osc52Policy::ReadWrite => Osc52::CopyPaste,
+    }
+}
+
+/// The emulator setup of a new pane.
+pub fn core_config(settings: &Settings) -> CoreConfig {
+    CoreConfig { osc52: osc52_for(settings.osc52), ..CoreConfig::default() }
+}
+
 #[cfg(test)]
 mod tests {
     use nekominal_model::layout::{Axis, Node, UNIT};
 
     use super::*;
+
+    #[test]
+    fn the_osc52_policy_decides_what_the_emulator_lets_a_program_do() {
+        assert_eq!(osc52_for(Osc52Policy::Off), Osc52::Disabled);
+        assert_eq!(osc52_for(Osc52Policy::Write), Osc52::OnlyCopy);
+        assert_eq!(osc52_for(Osc52Policy::ReadWrite), Osc52::CopyPaste);
+        let defaults = core_config(&Settings::default());
+        assert_eq!(defaults.osc52, Osc52::OnlyCopy, "a new pane may copy and may not read");
+        let reading = core_config(&Settings { osc52: Osc52Policy::ReadWrite, ..Settings::default() });
+        assert_eq!(reading.osc52, Osc52::CopyPaste);
+    }
 
     #[test]
     fn executable_paths_become_program_names() {

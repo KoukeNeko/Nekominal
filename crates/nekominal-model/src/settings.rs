@@ -48,6 +48,18 @@ impl RightClick {
     }
 }
 
+/// What a program in a pane may do with the clipboard through OSC 52.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Osc52Policy {
+    Off,
+    /// A program may copy text to the clipboard, which is how a full-screen program that has its own selection
+    /// (Claude Code, tmux, vim) copies. The default.
+    Write,
+    /// A program may also read the clipboard. Whatever is on it reaches that program, so it is opt-in.
+    ReadWrite,
+}
+
 /// Language of the interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Language {
@@ -248,6 +260,7 @@ pub struct Settings {
     pub copy_on_select: bool,
     pub right_click: RightClick,
     pub paste: PasteSettings,
+    pub osc52: Osc52Policy,
     pub bell: Bell,
     pub keyboard: Keyboard,
     /// Sets environment variables that make coding-agent CLIs use their full terminal features.
@@ -292,6 +305,7 @@ impl Default for Settings {
             copy_on_select: false,
             right_click: RightClick::Smart,
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
+            osc52: Osc52Policy::Write,
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
             keyboard: Keyboard { kitty_protocol: true },
             agent_environment: true,
@@ -597,6 +611,14 @@ pub fn parse(source: Option<&str>) -> Parsed {
             warn_multiline: boolean(&paste, "warnMultiline", d.paste.warn_multiline, "paste", &mut problems),
             warn_large_bytes: number(&paste, "warnLargeBytes", d.paste.warn_large_bytes as f64, (0.0, 100_000_000.0), "paste", &mut problems) as u64,
         },
+        osc52: one_of(
+            &root,
+            "osc52",
+            &[("off", Osc52Policy::Off), ("write", Osc52Policy::Write), ("read-write", Osc52Policy::ReadWrite)],
+            d.osc52,
+            "",
+            &mut problems,
+        ),
         bell: Bell {
             visual: boolean(&bell, "visual", d.bell.visual, "bell", &mut problems),
             taskbar: boolean(&bell, "taskbar", d.bell.taskbar, "bell", &mut problems),
@@ -925,6 +947,22 @@ mod tests {
         }
         assert_eq!(current.next(), Backdrop::Acrylic);
         assert_eq!(seen, vec![Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]);
+    }
+
+    #[test]
+    fn osc52_lets_programs_copy_but_never_read_unless_the_file_says_so() {
+        assert_eq!(Settings::default().osc52, Osc52Policy::Write);
+        for (name, expected) in [("off", Osc52Policy::Off), ("write", Osc52Policy::Write), ("read-write", Osc52Policy::ReadWrite)] {
+            assert_eq!(parsed_ok(&format!(r#""osc52": "{name}""#)).osc52, expected, "{name}");
+        }
+        for bad in [r#""read""#, r#""readwrite""#, r#""yes""#, "true", "1", "null"] {
+            rejected(&format!(r#""osc52": {bad}"#));
+        }
+        assert_eq!(serialize(&Settings::default()), "{}\n", "the default is not written");
+        for (policy, name) in [(Osc52Policy::Off, "off"), (Osc52Policy::ReadWrite, "read-write")] {
+            let written = round_trips(Settings { osc52: policy, ..Settings::default() });
+            assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "osc52": name }));
+        }
     }
 
     #[test]
