@@ -6,6 +6,7 @@ members = [
     "crates/nekominal-pty",
     "crates/nekominal-model",
     "crates/nekominal-term",
+    "crates/nekominal-input",
 ]
 
 [workspace.package]
@@ -18,6 +19,7 @@ rust-version = "1.95"
 nekominal-pty = { path = "crates/nekominal-pty" }
 nekominal-model = { path = "crates/nekominal-model" }
 nekominal-term = { path = "crates/nekominal-term" }
+nekominal-input = { path = "crates/nekominal-input" }
 
 # Terminal core (emulator + input encoding)
 alacritty_terminal = { version = "=0.26.0", default-features = false }

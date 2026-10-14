@@ -1,0 +1,17 @@
+[package]
+name = "nekominal-input"
+description = "Toolkit-independent translation of key, mouse, focus and paste events into terminal input bytes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["alacritty"]
+# `InputModes::from_term_mode` for alacritty_terminal::term::TermMode.
+alacritty = ["dep:alacritty_terminal"]
+
+[dependencies]
+alacritty_terminal = { workspace = true, optional = true }
+
+[dev-dependencies]
+nekominal-pty = { workspace = true }
