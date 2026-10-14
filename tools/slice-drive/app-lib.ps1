@@ -277,3 +277,73 @@ public static class P {
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 '@
+
+# --- terminal pointer helpers ---------------------------------------------------------------------------------------------
+
+# One line per check: ok, or FAIL with what was expected and what came.
+function Check([string]$Name, $Expected, $Actual) {
+    $ok = ($Expected -ceq $Actual)
+    '{0} {1}{2}' -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $Name, $(if ($ok) { '' } else { " | expected [$Expected] got [$Actual]" })
+}
+
+# The grid of the focused terminal in screen pixels: the pane writes "pane N grid CxR cells of WxH px" to the log, and the
+# UI Automation rectangle of its control is where the cells start.
+function Get-Grid {
+    $line = Select-String -Path $script:LogFile -Pattern 'pane \d+ grid (\d+)x(\d+) cells of (\d+)x(\d+) px' | Select-Object -Last 1
+    if (-not $line) { throw 'the pane wrote no grid line' }
+    $g = $line.Matches[0].Groups
+    $el = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($el.Current.ClassName -ne 'NekominalTerminal') { throw "the focus is on '$($el.Current.ClassName)', not on a terminal" }
+    $r = $el.Current.BoundingRectangle
+    @{ X = $r.X; Y = $r.Y; W = $r.Width; H = $r.Height; Cols = [int]$g[1].Value; Rows = [int]$g[2].Value; CW = [int]$g[3].Value; CH = [int]$g[4].Value }
+}
+
+# The screen point of a position on the grid. Fractions pick a part of the cell: column + 0.25 is its left half and
+# column + 0.75 its right half; the row is the middle of the cell's row.
+function Cell-Pt($Grid, [double]$Col, [double]$Row) { @{ X = [int]($Grid.X + $Col * $Grid.CW); Y = [int]($Grid.Y + ($Row + 0.5) * $Grid.CH) } }
+
+# Row and column of the last place a text is on the visible screen, which is its output when the command that printed it
+# is on screen too (the lines of the UI Automation text are the rows of the grid).
+function Find-Cell([string]$Text) {
+    $lines = (Get-TerminalText) -split "`n"
+    for ($row = $lines.Count - 1; $row -ge 0; $row--) {
+        $col = $lines[$row].IndexOf($Text, [StringComparison]::Ordinal)
+        if ($col -ge 0) { return @{ Row = $row; Col = $col } }
+    }
+    throw "'$Text' is not on the screen"
+}
+
+# Holds keys (virtual-key codes) down around a block, the way Shift+drag and Alt+drag are made.
+function With-Keys([int[]]$Vk, [scriptblock]$Do) {
+    Assert-Foreground
+    foreach ($k in $Vk) { [D]::Key([uint16]$k, $false); Start-Sleep -Milliseconds 40 }
+    try { & $Do } finally { foreach ($k in $Vk) { [D]::Key([uint16]$k, $true); Start-Sleep -Milliseconds 40 } }
+}
+
+# Drags between two grid positions (see Cell-Pt).
+function Drag-Cells($Grid, [double]$FromCol, [double]$FromRow, [double]$ToCol, [double]$ToRow) {
+    $a = Cell-Pt $Grid $FromCol $FromRow; $b = Cell-Pt $Grid $ToCol $ToRow
+    Drag-To $a.X $a.Y $b.X $b.Y 12 20
+}
+
+# Clicks a grid position $Times times, quickly enough to be a double or triple click.
+function Click-Cell($Grid, [double]$Col, [double]$Row, [int]$Times = 1, [string]$Button = 'left') {
+    $p = Cell-Pt $Grid $Col $Row
+    for ($i = 1; $i -le $Times; $i++) { Click-At $p.X $p.Y $Button $(if ($i -lt $Times) { 0 } else { 400 }) }
+}
+
+# Wheel notches at the pointer (positive: away from the user, which scrolls the history up).
+function Mouse-Wheel([int]$Notches) {
+    Assert-Foreground
+    $delta = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]($Notches * 120)), 0)
+    [D]::Mouse(0x0800, $delta)
+    Start-Sleep -Milliseconds 300
+}
+
+# Ctrl+Shift+C, then what the clipboard holds. A sentinel first, so a copy that did nothing cannot pass.
+function Copy-Selection {
+    Set-Clipboard -Value 'SENTINEL'
+    Chord @(0x11, 0x10) 0x43
+    Start-Sleep -Milliseconds 500
+    (Get-Clipboard -Raw) -replace "`r`n", "`n"
+}

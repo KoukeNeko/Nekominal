@@ -53,6 +53,7 @@ function Run-App([string]$Name, [hashtable]$Settings = @{}, [scriptblock]$Script
     $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500 }
     if ($Pattern) { $params['Pattern'] = $true }
     if ($NoShot) { $params['NoShot'] = $true }
+    if ($global:NkExe) { $params['Exe'] = $global:NkExe }
     & $global:NkRun @params
 }
 
@@ -586,4 +587,216 @@ function Get-Items {
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
+# Selection and copy: a drag, a double click, a triple click and a click on a wrapped line, a wide-character line, Alt+drag
+# block, Shift+click extend, smart copy (Ctrl+C copies with a selection and interrupts without one), typing dismisses
+# the selection, the right button (copy, else paste; the pasted text is not run) and the paste confirmation. Each
+# check copies with Ctrl+Shift+C and reads the clipboard of this session; the clipboard of the user is put back at the
+# end (text only).
+function Scenario-Selection {
+    $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+    try {
+        Run-App 'selection' @{} {
+            First-Prompt
+            Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+            Type-Line '"alpha beta gamma delta"; "second line here"; ("0123456789" * 20); "你好世界😀 ok"'; Wait-Prompt | Out-Null
+            Start-Sleep -Milliseconds 600
+            $g = Get-Grid
+            'grid {0}x{1}, cells {2}x{3} px, origin {4},{5}' -f $g.Cols, $g.Rows, $g.CW, $g.CH, $g.X, $g.Y
+            $alpha = Find-Cell 'alpha beta gamma delta'
+            $second = Find-Cell 'second line here'
+            $wrapped = Find-Cell '0123456789012345'
+            $wide = Find-Cell '你好世界'
+            $beta = $alpha.Col + 6; $gamma = $alpha.Col + 11
+            $below = $g.Rows - 3
+
+            Drag-Cells $g ($beta + 0.25) $alpha.Row ($beta + 3.75) $alpha.Row
+            Shot-Safe (Shot-Path 'selection-drag') | Out-Null
+            Check 'drag over "beta" copies beta' 'beta' (Copy-Selection)
+            Check 'copying dismissed the selection (a second copy finds none)' 'SENTINEL' (Copy-Selection)
+
+            Click-Cell $g ($gamma + 1) $alpha.Row 2
+            Check 'double click copies the word' 'gamma' (Copy-Selection)
+            Click-Cell $g 3 $second.Row 3
+            Check 'triple click copies the line without a line break' 'second line here' (Copy-Selection)
+            Click-Cell $g 3 $wrapped.Row 3
+            Check 'triple click on a wrapped row copies the whole line, joined' ('0123456789' * 20) (Copy-Selection)
+            Drag-Cells $g ($wrapped.Col + 0.25) $wrapped.Row ($g.Cols - 0.25) ($wrapped.Row + 1)
+            Check 'a drag across the wrap has no line break inside' $false ((Copy-Selection) -match "`n")
+            Drag-Cells $g ($wide.Col + 0.25) $wide.Row ($wide.Col + 9.75) $wide.Row
+            Check 'wide characters and the emoji are copied once' '你好世界😀' (Copy-Selection)
+
+            With-Keys @(0x12) { Drag-Cells $g ($alpha.Col + 0.25) $alpha.Row ($alpha.Col + 2.75) $second.Row }
+            Check 'Alt+drag selects a block' "alp`nsec" (Copy-Selection)
+
+            Drag-Cells $g ($alpha.Col + 0.25) $alpha.Row ($alpha.Col + 4.75) $alpha.Row
+            $p = Cell-Pt $g ($beta + 3.75) $alpha.Row
+            With-Keys @(0x10) { Click-At $p.X $p.Y 'left' 400 }
+            Check 'Shift+click extends the selection' 'alpha beta' (Copy-Selection)
+
+            Click-Cell $g ($gamma + 1) $alpha.Row 2
+            Set-Clipboard -Value 'SENTINEL'
+            Chord @(0x11) 0x43; Start-Sleep -Milliseconds 500
+            Check 'Ctrl+C with a selection copies' 'gamma' ((Get-Clipboard -Raw) -replace "`r`n", "`n")
+            Check 'and sends no interrupt to the shell' $true ((Get-TerminalText) -notmatch 'KeyboardInterrupt|\^C')
+            Type-Line 'Start-Sleep 25'; Start-Sleep -Milliseconds 1200
+            Chord @(0x11) 0x43
+            Check 'Ctrl+C without a selection interrupts the program' $true (Wait-Text 'PS [^\r\n]*>\s*$' 6000)
+
+            Click-Cell $g ($gamma + 1) $alpha.Row 2
+            Type-Unicode 'x' 30; Start-Sleep -Milliseconds 300
+            Check 'typing dismisses the selection' 'SENTINEL' (Copy-Selection)
+            Press 0x08
+
+            # The right button: with a selection it copies and spends it, without one it pastes.
+            Click-Cell $g ($gamma + 1) $alpha.Row 2
+            Set-Clipboard -Value 'SENTINEL'
+            Click-Cell $g 10 $below 1 'right'
+            Check 'right click with a selection copies it' 'gamma' ((Get-Clipboard -Raw) -replace "`r`n", "`n")
+            Check 'and spends it' 'SENTINEL' (Copy-Selection)
+            Set-Clipboard -Value 'pasted-by-right-click'
+            Click-Cell $g 10 $below 1 'right'; Start-Sleep -Milliseconds 600
+            Check 'right click without a selection pastes' $true ((Get-TerminalText) -match 'PS [^\r\n]*> pasted-by-right-click\s*$')
+            Press 0x1B
+
+            # A big paste asks first, and Cancel pastes nothing.
+            Set-Clipboard -Value ('x' * 6000)
+            Chord @(0x11, 0x10) 0x56; Start-Sleep -Milliseconds 900
+            Check 'a 6000-byte paste asks first (the dialog names the size)' $true ([bool](Get-Element '貼上 5.9 KiB？'))
+            Shot-Safe (Shot-Path 'paste-confirm') | Out-Null
+            Click-Name '取消' 'left' 700 -Class 'Button'
+            Check 'Cancel pasted nothing' $false ((Get-TerminalText) -match 'xxxxxxxx')
+            Chord @(0x11, 0x10) 0x56; Start-Sleep -Milliseconds 900
+            Click-Name '貼上' 'left' 700 -Class 'Button'
+            Check 'the paste button pastes it' $true ((Get-TerminalText) -match 'xxxxxxxx')
+            Press 0x1B
+
+            # Several lines ask unless the program asked for bracketed paste: cmd.exe does not.
+            Type-Line 'cmd'; Wait-Text '\w:\\[^\r\n]*>\s*$' 8000 | Out-Null
+            Set-Clipboard -Value "echo one`r`necho two"
+            Chord @(0x11, 0x10) 0x56; Start-Sleep -Milliseconds 900
+            Check 'two lines ask first under cmd' $true ([bool](Get-Element '貼上 2 行？'))
+            Click-Name '取消' 'left' 700 -Class 'Button'
+            Type-Line 'exit'
+        }
+    } finally {
+        if ($null -ne $saved) { Set-Clipboard -Value $saved }
+    }
+}
+# What the pointer does around a program: copy on select, what a program may do with the clipboard through OSC 52 (write
+# by default, read only when the setting allows it), a program that tracks the mouse (it gets a plain drag, Shift+drag
+# selects natively), the wheel and the history, typing returning to the live screen and a selection drag held above the
+# pane (it scrolls and keeps selecting). input-probe.js (node, raw stdin) plays the full-screen program.
+function Scenario-Pointer {
+    $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+    $probe = Join-Path $PSScriptRoot 'input-probe.js'
+    $first = { param($text) ($text -split "`n")[0] -replace '\D', '' }
+    try {
+        Run-App 'pointer' @{ copyOnSelect = $true; osc52 = 'read-write' } {
+            First-Prompt
+            Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+            Type-Line '"alpha beta gamma delta"'; Wait-Prompt | Out-Null
+            Start-Sleep -Milliseconds 600
+            $g = Get-Grid
+            $alpha = Find-Cell 'alpha beta gamma delta'
+            $beta = $alpha.Col + 6; $gamma = $alpha.Col + 11
+
+            Set-Clipboard -Value 'SENTINEL'
+            Drag-Cells $g ($beta + 0.25) $alpha.Row ($beta + 3.75) $alpha.Row; Start-Sleep -Milliseconds 500
+            Check 'copy on select: a drag copies without a key' 'beta' ((Get-Clipboard -Raw) -replace "`r`n", "`n")
+            Click-Cell $g ($gamma + 1) $alpha.Row 2; Start-Sleep -Milliseconds 500
+            Check 'copy on select: a double click copies the word' 'gamma' ((Get-Clipboard -Raw) -replace "`r`n", "`n")
+            Click-Cell $g 3 ($g.Rows - 3)
+
+            # OSC 52: the program copies, and (read-write) reads.
+            $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('from-osc52 你好'))
+            Set-Clipboard -Value 'SENTINEL'
+            Type-Line ('$e=[char]27;$b=[char]7;Write-Host -NoNewline "$e]52;c;' + $b64 + '$b"'); Wait-Prompt | Out-Null
+            Check 'OSC 52 write reaches the clipboard' 'from-osc52 你好' ((Get-Clipboard -Raw) -replace "`r`n", "`n")
+            Set-Clipboard -Value 'read-me-123'
+            Type-Line "node `"$probe`" `"`" osc52 2500"
+            Check 'OSC 52 read (read-write) answers the program' $true (Wait-Text '<ESC>\]52;c;cmVhZC1tZS0xMjM=<BEL>' 9000)
+            Wait-Prompt | Out-Null
+
+            # A program that tracks the mouse gets a plain drag; Shift takes it back.
+            if (Get-Command node -ErrorAction SilentlyContinue) {
+                Type-Line 'Clear-Host; "alpha beta gamma delta"'; Wait-Prompt | Out-Null
+                $alpha = Find-Cell 'alpha beta gamma delta'
+                Type-Line "node `"$probe`" 1000,1002,1006 `"`" 9000"
+                Start-Sleep -Milliseconds 1500
+                $row = $alpha.Row
+                Drag-Cells $g 2.25 $row 7.75 $row
+                Check 'a plain drag is the program''s: nothing selected' 'SENTINEL' (Copy-Selection)
+                With-Keys @(0x10) { Drag-Cells $g ($alpha.Col + 0.25) $row ($alpha.Col + 9.75) $row }
+                Check 'Shift+drag selects natively' 'alpha beta' (Copy-Selection)
+                Wait-Text 'got:\[.*\]' 14000 | Out-Null
+                $seen = ((Get-TerminalText) -split "`n") -join ''
+                $report = [regex]::Match($seen, 'got:\[.*?\]')
+                'the probe received: ' + $report.Value
+                Check 'the probe saw the plain drag (press, motion, release) and not the Shift one' $true ($seen -match 'got:\[<ESC>\[<0;3;\d+M(<ESC>\[<32;\d+;\d+M)+<ESC>\[<0;8;\d+m\]')
+            } else { 'skipped: node is not installed' }
+
+            # The wheel moves the history, a key brings the live screen back.
+            Type-Line 'Clear-Host; 1..150 | ForEach-Object { "wheel line $_" }'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            $live = & $first (Get-TerminalText)
+            Move-To ([int]($g.X + $g.W / 2)) ([int]($g.Y + $g.H / 2))
+            Mouse-Wheel 3; Start-Sleep -Milliseconds 400
+            $up = & $first (Get-TerminalText)
+            Check 'three notches of the wheel scroll nine lines up' 9 ([int]$live - [int]$up)
+            Mouse-Wheel -3; Start-Sleep -Milliseconds 400
+            Check 'and three back come down again' $live (& $first (Get-TerminalText))
+            Mouse-Wheel 5; Start-Sleep -Milliseconds 300
+            Type-Unicode 'x' 30; Start-Sleep -Milliseconds 500
+            Check 'a key returns to the live screen' $live (& $first (Get-TerminalText))
+            Press 0x08
+
+            # A drag held above the pane scrolls and keeps selecting.
+            $start = Cell-Pt $g 4 ($g.Rows - 2)
+            Assert-Foreground
+            Move-To $start.X $start.Y; Start-Sleep -Milliseconds 200
+            [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
+            for ($i = 1; $i -le 8; $i++) { Move-To $start.X ([int]($start.Y - ($start.Y - $g.Y + 40) * $i / 8)); Start-Sleep -Milliseconds 30 }
+            Start-Sleep -Milliseconds 1500
+            [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 400
+            $lines = @((Copy-Selection) -split "`n").Count
+            "a drag held 40 px above the pane for 1.5 s selected $lines lines (the pane shows $($g.Rows))"
+            Check 'the selection grew well past one screen' $true ($lines -gt $g.Rows + 15)
+        }
+    } finally {
+        if ($null -ne $saved) { Set-Clipboard -Value $saved }
+    }
+}
+
+# The defaults for a program: it may copy and may not read the clipboard (OSC 52), and the right button (rightClick:
+# menu) opens the menu whose Copy is off without a selection.
+function Scenario-Menu {
+    $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+    $probe = Join-Path $PSScriptRoot 'input-probe.js'
+    try {
+        Run-App 'menu' @{ rightClick = 'menu' } {
+            First-Prompt
+            Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+            Type-Line '"alpha beta gamma delta"'; Wait-Prompt | Out-Null
+            Start-Sleep -Milliseconds 600
+            $g = Get-Grid
+            $alpha = Find-Cell 'alpha beta gamma delta'
+            Set-Clipboard -Value 'read-me-123'
+            Type-Line "node `"$probe`" `"`" osc52 2500"
+            Start-Sleep -Milliseconds 4500; Wait-Prompt | Out-Null
+            Check 'OSC 52 read is denied by default: the program got nothing' $true ((Get-TerminalText) -match 'got:\[\]')
+
+            Click-Cell $g 10 ($g.Rows - 3) 1 'right'; Start-Sleep -Milliseconds 700
+            Check 'the right button opens a menu with Copy, Paste and Select all' $true ((Get-Element '貼上 (Ctrl+V)') -and (Get-Element '全選 (Ctrl+Shift+A)'))
+            Check 'Copy is off without a selection' $false ((Get-Element '複製 (Ctrl+Shift+C)').Current.IsEnabled)
+            Shot-Safe (Shot-Path 'pane-menu') | Out-Null
+            Click-Name '全選 (Ctrl+Shift+A)' 'left' 700
+            Check 'Select all from the menu selects the text' $true ((Copy-Selection) -match 'alpha beta gamma delta')
+            Click-Cell $g ($alpha.Col + 12) $alpha.Row 2
+            Click-Cell $g 10 ($g.Rows - 3) 1 'right'; Start-Sleep -Milliseconds 700
+            Check 'Copy is on with a selection' $true ((Get-Element '複製 (Ctrl+Shift+C)').Current.IsEnabled)
+            Press 0x1B
+        }
+    } finally {
+        if ($null -ne $saved) { Set-Clipboard -Value $saved }
+    }
+}
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }
