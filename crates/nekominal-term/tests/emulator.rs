@@ -315,23 +315,194 @@ fn scrollback_is_capped_by_the_config() {
 
 #[test]
 fn resize_reflows_wrapped_lines_on_the_primary_screen() {
+    // A full screen: nothing under the cursor is blank, so the rows that wrapping adds have no place to go.
     let mut core = core(10, 5);
-    feed(&mut core, "0123456789abcde");
-    assert_eq!(snap(&mut core).text(), "0123456789\nabcde");
+    feed(&mut core, "0123456789abcde\r\nline3\r\nline4\r\nline5");
+    assert_eq!(snap(&mut core).text(), "0123456789\nabcde\nline3\nline4\nline5");
     core.resize(5, 5);
-    // Three wrapped rows plus three blank ones do not fit in 5 lines: the top row moves into history.
-    assert_eq!((core.history_size(), snap(&mut core).text()), (1, "56789\nabcde".to_owned()));
+    // Six rows do not fit in five lines: the top row moves into history.
+    assert_eq!((core.history_size(), snap(&mut core).text()), (1, "56789\nabcde\nline3\nline4\nline5".to_owned()));
     core.scroll_display(Scroll::Top);
     assert_eq!(snap(&mut core).row_text(0), "01234");
     core.scroll_display(Scroll::Bottom);
     core.resize(20, 5);
-    assert_eq!((core.history_size(), snap(&mut core).text()), (0, "0123456789abcde".to_owned()));
+    assert_eq!((core.history_size(), snap(&mut core).text()), (0, "0123456789abcde\nline3\nline4\nline5".to_owned()));
     // the alternate screen does not reflow
     feed(&mut core, "\x1b[?1049h\x1b[H0123456789abcdefghij");
     core.resize(10, 5);
     assert_eq!(snap(&mut core).text(), "0123456789", "alt screen content is cut, not reflowed");
 }
 
+/// A screen with `rows` rows holding three full-width rows (A, B, C) and a prompt, so the lines wrap when it narrows.
+fn banner_and_prompt(columns: usize, rows: usize) -> TerminalCore {
+    let mut core = core(columns, rows);
+    let row = |ch: char| ch.to_string().repeat(columns);
+    feed(&mut core, &format!("{}\r\n{}\r\n{}\r\n$ ", row('A'), row('B'), row('C')));
+    core
+}
+
+#[test]
+fn narrowing_gives_the_rows_that_wrapping_adds_to_the_blank_rows_under_the_cursor() {
+    let mut core = banner_and_prompt(20, 10);
+    assert_eq!(core.history_size(), 0);
+    core.resize(10, 10);
+    assert_eq!(core.history_size(), 0, "six blank rows took the three rows that wrapping added");
+    assert_eq!(
+        snap(&mut core).text(),
+        "AAAAAAAAAA\nAAAAAAAAAA\nBBBBBBBBBB\nBBBBBBBBBB\nCCCCCCCCCC\nCCCCCCCCCC\n$"
+    );
+    assert_eq!(core.cursor_cell(), (6, 2), "the cursor is still after the prompt");
+    // Wider again: the wrapped lines join and nothing is left in the scrollback.
+    core.resize(20, 10);
+    assert_eq!(core.history_size(), 0);
+    assert_eq!(snap(&mut core).text(), format!("{}\n{}\n{}\n$", "A".repeat(20), "B".repeat(20), "C".repeat(20)));
+}
+
+#[test]
+fn blank_rows_that_are_too_few_take_what_they_can_and_the_rest_goes_into_the_scrollback() {
+    let mut core = banner_and_prompt(20, 6);
+    core.resize(10, 6);
+    // Seven rows of content in six lines: one row has to go, and no blank row is left.
+    assert_eq!(core.history_size(), 1);
+    assert_eq!(snap(&mut core).text(), "AAAAAAAAAA\nBBBBBBBBBB\nBBBBBBBBBB\nCCCCCCCCCC\nCCCCCCCCCC\n$");
+    assert_eq!(core.cursor_cell(), (5, 2));
+    core.scroll_display(Scroll::Top);
+    assert_eq!(snap(&mut core).row_text(0), "AAAAAAAAAA", "the first row of A is what went");
+}
+
+#[test]
+fn a_full_screen_has_no_blank_row_to_take_anything_so_the_top_goes_into_the_scrollback() {
+    let mut core = core(20, 5);
+    for ch in ['A', 'B', 'C', 'D'] {
+        feed(&mut core, &format!("{}\r\n", ch.to_string().repeat(20)));
+    }
+    feed(&mut core, "$ ");
+    core.resize(10, 5);
+    assert_eq!(core.history_size(), 4, "nine rows of content in five lines");
+    assert_eq!(snap(&mut core).text(), "CCCCCCCCCC\nCCCCCCCCCC\nDDDDDDDDDD\nDDDDDDDDDD\n$");
+}
+
+#[test]
+fn a_row_with_a_colour_is_not_blank_and_stays_where_it_is() {
+    // A painted bar on the last row: it cannot be dropped, so no blank row is under the cursor to take anything.
+    let mut core = banner_and_prompt(20, 8);
+    feed(&mut core, "\x1b[8;1H\x1b[44m   \x1b[0m\x1b[4;3H");
+    core.resize(10, 8);
+    assert_eq!(core.history_size(), 3, "the usual three rows went into the scrollback");
+    assert_ne!(snap(&mut core).cell(7, 0).bg_raw, CellColor::Default, "and the bar is still on the last row");
+
+    // The same bar three rows up: the blank rows under it are dropped, the bar ends on the last row.
+    let mut core = banner_and_prompt(20, 8);
+    feed(&mut core, "\x1b[5;1H\x1b[44m   \x1b[0m\x1b[4;3H");
+    core.resize(10, 8);
+    assert_eq!(core.history_size(), 0);
+    assert_ne!(snap(&mut core).cell(7, 0).bg_raw, CellColor::Default);
+    assert_eq!(snap(&mut core).row_text(0), "AAAAAAAAAA");
+}
+#[test]
+fn changing_only_the_rows_is_what_it_was() {
+    // Blank rows under the cursor are dropped and added back without touching the scrollback.
+    let mut core = banner_and_prompt(20, 10);
+    core.resize(20, 6);
+    assert_eq!((core.history_size(), core.cursor_cell()), (0, (3, 2)));
+    core.resize(20, 10);
+    assert_eq!((core.history_size(), core.cursor_cell()), (0, (3, 2)));
+    // With the cursor on the last row, fewer rows push lines up and more rows pull them back.
+    let mut core = core_with_five_rows();
+    core.resize(20, 3);
+    assert_eq!(core.history_size(), 2);
+    assert_eq!(snap(&mut core).text(), "CCCCCCCCCCCCCCCCCCCC\nDDDDDDDDDDDDDDDDDDDD\n$");
+    core.resize(20, 5);
+    assert_eq!(core.history_size(), 0);
+    assert_eq!(snap(&mut core).row_text(0), "A".repeat(20));
+}
+
+fn core_with_five_rows() -> TerminalCore {
+    let mut core = core(20, 5);
+    for ch in ['A', 'B', 'C', 'D'] {
+        feed(&mut core, &format!("{}\r\n", ch.to_string().repeat(20)));
+    }
+    feed(&mut core, "$ ");
+    core
+}
+
+#[test]
+fn the_alternate_screen_is_not_reflowed_and_the_hidden_primary_screen_is_reflowed_like_a_shown_one() {
+    let mut core = banner_and_prompt(20, 8);
+    feed(&mut core, "\x1b[?1049h\x1b[HABCDEFGHIJKLMNOPQRST\x1b[3;4HX");
+    assert_eq!(core.cursor_cell(), (2, 4));
+    core.resize(10, 8);
+    assert!(core.mode().contains(TermMode::ALT_SCREEN), "still on the alternate screen");
+    assert_eq!(core.history_size(), 0, "the alternate screen has no scrollback");
+    let alternate = snap(&mut core);
+    assert_eq!(alternate.row_text(0), "ABCDEFGHIJ", "cut, not wrapped");
+    assert_eq!(alternate.row_text(2), "   X", "what the program drew where it drew it");
+    assert_eq!(core.cursor_cell(), (2, 4), "and its cursor");
+    // The primary screen under it was reflowed with the blank rows taking the new rows, as if it were shown.
+    feed(&mut core, "\x1b[?1049l");
+    assert_eq!(core.history_size(), 0);
+    assert_eq!(
+        snap(&mut core).text(),
+        "AAAAAAAAAA\nAAAAAAAAAA\nBBBBBBBBBB\nBBBBBBBBBB\nCCCCCCCCCC\nCCCCCCCCCC\n$"
+    );
+    assert_eq!(core.cursor_cell(), (6, 2), "the cursor is back after the prompt, which moved with the reflow");
+}
+
+#[test]
+fn growing_wider_or_resizing_to_the_same_size_leaves_the_screen_and_the_scrollback_alone() {
+    let mut core = banner_and_prompt(20, 10);
+    core.resize(20, 10);
+    assert_eq!(snap(&mut core).text(), format!("{}\n{}\n{}\n$", "A".repeat(20), "B".repeat(20), "C".repeat(20)));
+    core.resize(30, 10);
+    assert_eq!(core.history_size(), 0);
+    let mut core = core_with_five_rows();
+    core.resize(10, 5);
+    let history = core.history_size();
+    assert!(history > 0);
+    core.resize(10, 5);
+    assert_eq!(core.history_size(), history, "the same size changes nothing");
+}
+
+/// What a program that redraws its whole screen from the top left draws at `width`: a banner, a blank row, an input
+/// box between two rules as wide as the screen, a status line, and the cursor in the box.
+fn classic_screen(width: usize) -> String {
+    let rule = "─".repeat(width);
+    format!(
+        "\x1b[H\x1b[J ✻ Welcome to the agent\r\n   /help for help, /status for your current setup\r\n   cwd: C:\\work\r\n\r\n\
+         {rule}\r\n> \r\n{rule}\r\n  ? for shortcuts\x1b[6;3H"
+    )
+}
+
+#[test]
+fn a_program_that_redraws_after_every_resize_leaves_no_old_screen_in_the_scrollback() {
+    let mut core = core(100, 30);
+    feed(&mut core, &classic_screen(100));
+    for (columns, rows) in [(80, 24), (60, 20), (40, 30), (100, 30), (50, 15), (100, 30)] {
+        core.resize(columns, rows);
+        feed(&mut core, &classic_screen(columns));
+        let mut fresh = self::core(columns, rows);
+        feed(&mut fresh, &classic_screen(columns));
+        assert_eq!(core.history_size(), fresh.history_size(), "{columns}x{rows}: the scrollback of a fresh process");
+        assert_eq!(snap(&mut core).text(), snap(&mut fresh).text(), "{columns}x{rows}: the same screen");
+        assert_eq!(core.cursor_cell(), fresh.cursor_cell(), "{columns}x{rows}: the cursor");
+    }
+    assert_eq!(core.history_size(), 0);
+}
+
+#[test]
+fn resizing_while_scrolled_back_keeps_the_view_valid() {
+    let mut core = core(40, 6);
+    for i in 0..60 {
+        feed(&mut core, &format!("line {i} {}\r\n", "x".repeat(30)));
+    }
+    core.scroll_display(Scroll::Delta(20));
+    for (columns, rows) in [(20, 6), (20, 3), (60, 8), (10, 10), (40, 6)] {
+        core.resize(columns, rows);
+        assert!(core.display_offset() <= core.history_size(), "{columns}x{rows}");
+        let s = snap(&mut core);
+        assert_eq!((s.columns, s.rows, s.cells.len()), (columns, rows, columns * rows));
+    }
+}
 // --- selection and search ---------------------------------------------------------------------
 
 #[test]

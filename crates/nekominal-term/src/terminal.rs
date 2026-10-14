@@ -2,14 +2,14 @@
 //! `EventLoop`, no `tty` module), with a chunk-safe sniffer on the same byte stream.
 
 use std::{
-    fmt,
+    fmt, mem,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
 use alacritty_terminal::{
     event::{Event as AlacEvent, EventListener, WindowSize},
-    grid::{Dimensions, Row, Scroll},
+    grid::{Dimensions, Grid, Row, Scroll},
     index::{Boundary, Column, Direction, Line, Point, Side},
     selection::{Selection, SelectionRange, SelectionType},
     term::{
@@ -909,9 +909,24 @@ impl TerminalCore {
     // --- size, scroll, state ------------------------------------------------------------------
 
     /// Resizes the grid (reflowing the primary screen). The caller must resize the PTY as well.
+    ///
+    /// A narrower screen wraps its lines into more rows, and alacritty keeps the bottom of the screen: the top rows
+    /// go into the scrollback even when blank rows under the cursor could have taken the new ones. A program that
+    /// redraws from the top left (Claude Code in classic mode, anything that clears and redraws) then finds its old
+    /// screen above the new one. `reflow_into_blank_rows` gives those rows back to the screen. The alternate screen
+    /// is never reflowed; the primary screen hidden under it is, in the same way as when it is shown.
     pub fn resize(&mut self, columns: usize, rows: usize) {
         let old_columns = self.term.columns();
-        self.term.resize(TermDims::new(columns, rows));
+        let target = TermDims::new(columns, rows);
+        let narrower = target.columns < old_columns;
+        if narrower && self.term.mode().contains(TermMode::ALT_SCREEN) {
+            self.resize_hidden_primary(target);
+        } else {
+            if narrower {
+                self.reflow_into_blank_rows(target.columns);
+            }
+            self.term.resize(target);
+        }
         if self.term.columns() != old_columns {
             // Reflow re-wraps the buffer, so rows no longer mean what they did; the budget buys a different
             // number of lines at the new width.
@@ -921,6 +936,42 @@ impl TerminalCore {
         // Fewer rows push lines into the scrollback, and a new cap needs a new grid limit.
         self.enforce_scrollback();
         self.dirty = true;
+    }
+
+    /// Narrows the active (primary) screen to `columns` at its current height. The reflow pushes the rows that no
+    /// longer fit into the scrollback; of those, as many as there are blank rows at the bottom of the screen, below
+    /// the cursor, are pulled back: the screen shrinks by that many rows, which drops the blank ones without
+    /// pushing anything, and grows again, which takes the same number of lines from the scrollback. The content
+    /// ends where it would have if the program had drawn it at the new width, with no more scrollback than that.
+    fn reflow_into_blank_rows(&mut self, columns: usize) {
+        let rows = self.term.screen_lines();
+        let history = self.term.history_size();
+        self.term.resize(TermDims::new(columns, rows));
+        let pushed = self.term.history_size().saturating_sub(history);
+        let grid = self.term.grid();
+        let cursor_row = usize::try_from(grid.cursor.point.line.0).unwrap_or(0);
+        let blank = (cursor_row + 1..rows).rev().take_while(|row| grid[Line(*row as i32)].is_clear()).count();
+        let given_back = pushed.min(blank);
+        if given_back > 0 {
+            self.term.resize(TermDims::new(columns, rows - given_back));
+            self.term.resize(TermDims::new(columns, rows));
+        }
+    }
+
+    /// `resize` to a narrower `target` while the alternate screen is shown: the primary screen under it is reflowed
+    /// like a shown one. `swap_alt` clears nothing while the alternate screen is shown, so the alternate grid is taken
+    /// out (a blank one holds its place) and the primary grid becomes the active one for the work. Swapping back
+    /// clears the blank grid that goes inactive; the alternate grid then returns, cut or padded to the new size and
+    /// not reflowed, with its content and cursor as the program left them.
+    fn resize_hidden_primary(&mut self, target: TermDims) {
+        let blank = Grid::new(self.term.screen_lines(), self.term.columns(), 0);
+        let mut alternate = mem::replace(self.term.grid_mut(), blank);
+        self.term.swap_alt();
+        self.reflow_into_blank_rows(target.columns);
+        self.term.resize(target);
+        self.term.swap_alt();
+        alternate.resize(false, target.screen_lines, target.columns);
+        *self.term.grid_mut() = alternate;
     }
 
     pub fn scroll_display(&mut self, scroll: Scroll) {
