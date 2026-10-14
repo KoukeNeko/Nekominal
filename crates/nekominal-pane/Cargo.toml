@@ -1,0 +1,16 @@
+[package]
+name = "nekominal-pane"
+description = "Toolkit-free pane host: ConPTY session + TerminalCore + input encoding + snapshot-to-renderer glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nekominal-pty = { workspace = true }
+nekominal-term = { workspace = true }
+nekominal-input = { workspace = true }
+nekominal-render = { workspace = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+nekominal-render = { workspace = true, features = ["offscreen"] }
