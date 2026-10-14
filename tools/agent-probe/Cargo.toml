@@ -1,0 +1,23 @@
+[package]
+name = "agent-probe"
+description = "Headless harness that drives coding-agent CLIs (Claude Code, ...) through ConPTY and the emulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+nekominal-pty = { workspace = true }
+nekominal-term = { workspace = true }
+nekominal-input = { workspace = true }
+regex = "1.13"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_Foundation",
+    "Win32_System_Environment",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+]
