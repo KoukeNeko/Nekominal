@@ -347,3 +347,16 @@ function Copy-Selection {
     Start-Sleep -Milliseconds 500
     (Get-Clipboard -Raw) -replace "`r`n", "`n"
 }
+
+# Number of pixels that differ between two screenshots of the same size inside a rectangle (screenshot coordinates).
+function Region-Diff([string]$PathA, [string]$PathB, [int]$X, [int]$Y, [int]$W, [int]$H) {
+    $one = [System.Drawing.Bitmap]::FromFile($PathA); $two = [System.Drawing.Bitmap]::FromFile($PathB)
+    try {
+        $n = 0
+        for ($yy = $Y; $yy -lt [Math]::Min($Y + $H, $one.Height); $yy++) { for ($xx = $X; $xx -lt [Math]::Min($X + $W, $one.Width); $xx++) { if ($one.GetPixel($xx, $yy).ToArgb() -ne $two.GetPixel($xx, $yy).ToArgb()) { $n++ } } }
+        $n
+    } finally { $one.Dispose(); $two.Dispose() }
+}
+
+# True while the mouse cursor over the app is the hand (the arrow otherwise).
+function Cursor-IsHand { [D]::CursorHandle() -eq [D]::LoadCursor([IntPtr]::Zero, [IntPtr]32649) }

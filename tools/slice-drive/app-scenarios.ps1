@@ -847,4 +847,69 @@ function Scenario-Scroll {
         Shot-Safe (Shot-Path 'scroll-cleared') | Out-Null
     }
 }
+# Links: an OSC 8 hyperlink, a URL in the text (also one that wraps) and a link that may not be opened. Hovering one
+# that may be opened underlines it on every row it covers, shows the hand cursor and a tooltip with where it goes;
+# text that is not a link changes nothing. Ctrl+click goes through the same gate as everything else and the target is
+# logged before the shell is asked: nothing here opens a browser, so the click is on a link to a file that does not
+# exist (refused, and the log says so) and on one with a scheme that is not allowed (not a link at all).
+function Scenario-Links {
+    Run-App 'links' @{ appearance = @{ backdrop = 'none' } } {
+        First-Prompt
+        Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+        $esc = '$e=[char]27;$b=[char]7;'
+        Type-Line ($esc + '"plain https://example.com/plain/path and more"; "${e}]8;;https://example.org/osc8${b}hyperlink text${e}]8;;${b} after"; "bad ${e}]8;;javascript:alert(1)${b}script-link${e}]8;;${b}"; "gone ${e}]8;;file:///C:/nekominal-no-such-folder/nothing.txt${b}missing-file${e}]8;;${b}"; ("x" * 120) + " https://example.net/" + ("long" * 30)')
+        Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 700
+        $g = Get-Grid
+        $plain = Find-Cell 'example.com/plain/path'
+        $osc = Find-Cell 'hyperlink text'
+        $bad = Find-Cell 'script-link'
+        $gone = Find-Cell 'missing-file'
+        $wrapped = Find-Cell 'longlonglong'
+        $win = Win-Rect
+        $cellArea = { param($cell, $cols) @(([int]($g.X - $win.Left + $cell.Col * $g.CW)), ([int]($g.Y - $win.Top + $cell.Row * $g.CH)), ($cols * $g.CW), $g.CH) }
+        $diff = { param($a, $b, $cell, $cols) $r = & $cellArea $cell $cols; Region-Diff $a $b $r[0] $r[1] $r[2] $r[3] }
+
+        # A hover is more than one move: the pointer arrives, is nudged and rests (the arrow comes back on every move).
+        $hoverAt = { param($pt) Move-To $pt.X $pt.Y; Start-Sleep -Milliseconds 150; Move-To ($pt.X + 2) $pt.Y; Start-Sleep -Milliseconds 600 }
+        # nothing hovered: the baseline
+        $away = Cell-Pt $g ($g.Cols - 2) ($g.Rows - 1); Move-To $away.X $away.Y; Start-Sleep -Milliseconds 600
+        $base = Shot-Path 'links-base'; Shot-Safe $base | Out-Null
+        $p = Cell-Pt $g ($plain.Col + 4) $plain.Row; & $hoverAt $p
+        Check 'the hand cursor shows over a URL in the text' $true (Cursor-IsHand)
+        $hover = Shot-Path 'links-hover-url'; Shot-Safe $hover | Out-Null
+        Check 'a URL in the text is underlined' $true ((& $diff $base $hover $plain 22) -gt 40)
+        $tipShot = Shot-Path 'links-tooltip'; Shot-Safe $tipShot | Out-Null
+        # The tooltip is a box of its own above the link: it changes a good many pixels over the row of text above.
+        $above = @{ Row = $plain.Row - 1; Col = $plain.Col }
+        Check 'a tooltip with the address hangs above the link' $true ((& $diff $base $tipShot $above 40) -gt 1500)
+
+        $p = Cell-Pt $g ($osc.Col + 3) $osc.Row; & $hoverAt $p
+        $hover = Shot-Path 'links-hover-osc8'; Shot-Safe $hover | Out-Null
+        Check 'an OSC 8 hyperlink is underlined and shows the hand' $true ((& $diff $base $hover $osc 14) -gt 40 -and (Cursor-IsHand))
+
+        $p = Cell-Pt $g ($bad.Col + 3) $bad.Row; & $hoverAt $p
+        $hover = Shot-Path 'links-hover-refused'; Shot-Safe $hover | Out-Null
+        Check 'a script address is not a link: no underline, no hand' $true ((& $diff $base $hover $bad 11) -eq 0 -and -not (Cursor-IsHand))
+
+        $p = Cell-Pt $g ($wrapped.Col + 2) $wrapped.Row; & $hoverAt $p
+        $hover = Shot-Path 'links-hover-wrapped'; Shot-Safe $hover | Out-Null
+        $rowsMarked = @(($wrapped.Row - 1)..($wrapped.Row + 1) | Where-Object { (& $diff $base $hover @{ Row = $_; Col = 0 } $g.Cols) -gt 40 }).Count
+        Check 'a URL that wraps is underlined on every row it covers (2 or more rows)' $true ($rowsMarked -ge 2)
+
+        $p = Cell-Pt $g 2 $plain.Row; & $hoverAt $p
+        Check 'plain text beside a link shows no hand' $false (Cursor-IsHand)
+
+        # Ctrl+click
+        $mark = Log-Mark
+        $p = Cell-Pt $g ($gone.Col + 3) $gone.Row
+        With-Keys @(0x11) { Click-At $p.X $p.Y 'left' 600 }
+        $lines = Log-Since $mark | Where-Object { $_ -match 'link refused|opening' }
+        $lines | ForEach-Object { 'log: ' + $_.Trim() }
+        Check 'Ctrl+click on a link to a file that does not exist is refused, naming the path' $true ([bool]($lines -match 'link refused \(no such file\): C:\\nekominal-no-such-folder\\nothing\.txt'))
+        $mark = Log-Mark
+        $p = Cell-Pt $g ($bad.Col + 3) $bad.Row
+        With-Keys @(0x11) { Click-At $p.X $p.Y 'left' 600 }
+        Check 'Ctrl+click on a script address is only a click: nothing is logged' 0 @(Log-Since $mark | Where-Object { $_ -match 'link|opening' }).Count
+    }
+}
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }
