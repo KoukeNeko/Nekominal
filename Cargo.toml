@@ -3,6 +3,7 @@ resolver = "2"
 # Generator for the WinUI bindings: its own lockfile, not part of the product build.
 exclude = ["tools/winui-gen"]
 members = [
+    "crates/nekominal-pty",
 ]
 
 [workspace.package]
@@ -12,6 +13,7 @@ edition = "2024"
 rust-version = "1.95"
 
 [workspace.dependencies]
+nekominal-pty = { path = "crates/nekominal-pty" }
 
 # Terminal core (emulator + input encoding)
 alacritty_terminal = { version = "=0.26.0", default-features = false }

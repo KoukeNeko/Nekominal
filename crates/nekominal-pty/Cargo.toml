@@ -1,0 +1,27 @@
+[package]
+name = "nekominal-pty"
+description = "ConPTY host, PTY sessions and shell discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+# Re-runs itself as a child to exercise a real process exit (see the file header).
+[[test]]
+name = "close_at_exit"
+harness = false
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
