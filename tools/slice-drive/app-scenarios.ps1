@@ -799,4 +799,52 @@ function Scenario-Menu {
         if ($null -ne $saved) { Set-Clipboard -Value $saved }
     }
 }
+# Scrolling, prompts and Clear buffer: a page up and down, the top and the bottom of the history, the previous and next
+# prompt (the PowerShell integration marks every prompt with OSC 133), and Clear buffer from the palette (screen and
+# scrollback go, the shell draws its prompt again).
+function Scenario-Scroll {
+    Run-App 'scroll' @{} {
+        First-Prompt
+        Type-Line 'Set-PSReadLineOption -PredictionSource None; Clear-Host'; Wait-Prompt | Out-Null
+        $first = { param($text) $m = [regex]::Match((($text -split "`n")[0]), 'line-(\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } else { -1 } }
+        Type-Line '1..200 | ForEach-Object { "line-$_" }'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 600
+        $g = Get-Grid
+        $live = & $first (Get-TerminalText)
+        Chord @(0x11, 0x10) 0x21; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Shift+PageUp scrolls up one page' $g.Rows ($live - (& $first (Get-TerminalText)))
+        Chord @(0x11, 0x10) 0x22; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Shift+PageDown scrolls back down' $live (& $first (Get-TerminalText))
+        Chord @(0x11, 0x10) 0x24; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Shift+Home shows the oldest line: the prompt that started the output' $true ((((Get-TerminalText) -split "`n")[0]) -match '^PS [^\r\n]*> 1\.\.200')
+        Chord @(0x11, 0x10) 0x23; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Shift+End returns to the live screen' $live (& $first (Get-TerminalText))
+
+        # prompts: eight commands with thirty lines of output each
+        Type-Line 'Clear-Host'; Wait-Prompt | Out-Null
+        foreach ($n in 1..8) { Type-Line ('"cmd-{0}"; 1..30 | ForEach-Object {{ "pad-$_" }}' -f $n); Wait-Prompt | Out-Null }
+        Start-Sleep -Milliseconds 500
+        $isPrompt = { ((Get-TerminalText) -split "`n")[0] -match '^PS [^\r\n]*> "cmd-(\d)"' }
+        $number = { if (((Get-TerminalText) -split "`n")[0] -match '"cmd-(\d)"') { [int]$Matches[1] } else { -1 } }
+        Chord @(0x11, 0x12) 0x26; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Alt+Up puts a prompt on the top row' $true (& $isPrompt)
+        $a = & $number
+        Chord @(0x11, 0x12) 0x26; Start-Sleep -Milliseconds 500
+        Check 'and again the one before it' ($a - 1) (& $number)
+        Shot-Safe (Shot-Path 'scroll-prompt') | Out-Null
+        Chord @(0x11, 0x12) 0x28; Start-Sleep -Milliseconds 500
+        Check 'Ctrl+Alt+Down comes back to it' $a (& $number)
+        foreach ($i in 1..12) { Chord @(0x11, 0x12) 0x28; Start-Sleep -Milliseconds 200 }
+        Check 'past the last prompt it lands on the live screen' $true ((Get-TerminalText) -match 'PS [^\r\n]*>\s*$')
+
+        # Clear buffer from the palette
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 600; Type-Unicode '清除緩衝區' 40; Start-Sleep -Milliseconds 400; Press 0x0D
+        Start-Sleep -Milliseconds 1200
+        $after = Get-TerminalText
+        Check 'Clear buffer leaves only the prompt the shell drew again' $true ($after -match '^PS [^\r\n]*>\s*$')
+        Chord @(0x11, 0x10) 0x24; Start-Sleep -Milliseconds 400
+        # The shell's own redraw (Ctrl+L) clears its screen once more and leaves one blank line behind.
+        Check 'and the history is gone (Ctrl+Shift+Home shows at most one blank line more)' $after ((Get-TerminalText) -replace '^\s*\n', '')
+        Shot-Safe (Shot-Path 'scroll-cleared') | Out-Null
+    }
+}
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }
