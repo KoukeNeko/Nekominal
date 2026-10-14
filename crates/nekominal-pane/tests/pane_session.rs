@@ -151,6 +151,49 @@ fn typing_pasting_and_composing_dismiss_the_selection_and_return_to_the_live_scr
     pane.shutdown();
 }
 
+/// The visible text of the pane, polled until `wanted` holds of it or 20 seconds pass.
+fn wait_for_text(pane: &Pane, wanted: impl Fn(&str) -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        let mut snapshot = nekominal_term::Snapshot::default();
+        pane.term.lock().snapshot(&mut snapshot);
+        if wanted(&snapshot.text()) {
+            return true;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+fn clearing_the_buffer_asks_a_shell_at_its_prompt_to_redraw_it_and_leaves_other_programs_alone() {
+    // A shell at its prompt: it marks the prompt (OSC 133 A) and waits for a key, and says which key came.
+    let at_prompt = r#"[Console]::Out.Write("$([char]27)]133;A$([char]7)prompt> "); $k = [Console]::ReadKey($true); "key:" + [int]$k.KeyChar"#;
+    let pane = powershell_session(at_prompt, Osc52::OnlyCopy);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while pane.activity() != nekominal_pane::host::Activity::AtPrompt && Instant::now() < deadline {
+        sleep(Duration::from_millis(50));
+    }
+    assert_eq!(pane.activity(), nekominal_pane::host::Activity::AtPrompt, "the prompt mark arrived");
+    pane.clear_buffer();
+    assert!(wait_for_text(&pane, |text| text.contains("key:12")), "the shell was sent Ctrl+L (form feed)");
+    pane.shutdown();
+
+    // A program that gives no prompt marks: the buffer is cleared and nothing is sent to it.
+    let silent = r#"$k = [Console]::ReadKey($true); "key:" + [int]$k.KeyChar"#;
+    let pane = powershell_session(silent, Osc52::OnlyCopy);
+    sleep(Duration::from_millis(1500));
+    pane.term.lock().feed(b"some output\r\n");
+    pane.clear_buffer();
+    let mut snapshot = nekominal_term::Snapshot::default();
+    pane.term.lock().snapshot(&mut snapshot);
+    assert_eq!(snapshot.text(), "", "the screen is clear");
+    sleep(Duration::from_millis(800));
+    pane.term.lock().snapshot(&mut snapshot);
+    assert!(!snapshot.text().contains("key:"), "nothing was typed into the program");
+    pane.shutdown();
+}
+
 #[test]
 fn focus_changes_reach_the_emulator_and_survive_a_closed_session() {
     let pane = Pane::spawn(cmd(), Vec::new(), 80, 24).expect("cmd.exe starts under ConPTY");

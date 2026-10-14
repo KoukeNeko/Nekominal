@@ -332,6 +332,152 @@ fn scroll_to_line_and_top_line_map_between_ids_and_viewport_rows() {
     assert_eq!(core.display_offset(), 0);
 }
 
+// --- prompt navigation and clearing --------------------------------------------------------------
+
+/// A shell session: `count` prompts, each followed by one line of output, so prompt `i` is on line `2 * i`.
+fn session(columns: usize, rows: usize, config: CoreConfig, count: usize) -> TerminalCore {
+    let mut core = core_with(columns, rows, config);
+    for i in 0..count {
+        feed(&mut core, &format!("\x1b]133;A\x07p{i}> cmd\r\nout {i}\r\n"));
+    }
+    core
+}
+
+fn top_row(core: &mut TerminalCore) -> String {
+    snap(core).row_text(0)
+}
+
+#[test]
+fn the_core_keeps_the_prompts_the_shell_marked_on_their_lines() {
+    let mut core = session(30, 5, CoreConfig::default(), 30);
+    let lines = core.prompt_lines();
+    assert_eq!(lines.len(), 30);
+    assert!(lines.windows(2).all(|pair| pair[1] - pair[0] == 2), "one prompt every second line: {lines:?}");
+    assert_eq!(lines[0], -56, "60 lines and the cursor row in a 5-row screen: 56 are in the scrollback");
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(line_text(&mut core, *line), format!("p{i}> cmd"), "prompt {i}");
+    }
+    // Only the start of a prompt is kept, not the other marks, and the same line twice is one prompt.
+    feed(&mut core, "\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07");
+    assert_eq!(core.prompt_lines(), lines);
+    feed(&mut core, "\x1b]133;A\x07\x1b]133;A\x07");
+    assert_eq!(core.prompt_lines().len(), 31);
+}
+
+#[test]
+fn previous_and_next_prompt_put_the_prompt_on_the_top_row() {
+    let mut core = session(30, 5, CoreConfig::default(), 30);
+    // The live screen holds p28, its output, p29, its output and the cursor row.
+    assert_eq!(core.display_offset(), 0);
+    assert!(core.scroll_to_prompt(false), "from the live screen to the prompt above its top row");
+    assert_eq!(top_row(&mut core), "p27> cmd");
+    assert!(core.scroll_to_prompt(false));
+    assert_eq!(top_row(&mut core), "p26> cmd");
+    assert!(core.scroll_to_prompt(true));
+    assert_eq!(top_row(&mut core), "p27> cmd");
+    assert!(core.scroll_to_prompt(true), "p28 is the top row of the live screen");
+    assert_eq!((core.display_offset(), top_row(&mut core)), (0, "p28> cmd".to_owned()));
+    assert!(!core.scroll_to_prompt(true), "p29 is on the live screen already: nothing to scroll");
+    assert_eq!(core.display_offset(), 0);
+
+    core.scroll_display(Scroll::Top);
+    assert_eq!(top_row(&mut core), "p0> cmd");
+    assert!(!core.scroll_to_prompt(false), "nothing above the oldest prompt");
+    assert!(core.scroll_to_prompt(true));
+    assert_eq!(top_row(&mut core), "p1> cmd");
+}
+
+#[test]
+fn next_prompt_with_none_below_returns_to_the_live_screen_and_a_view_between_prompts_finds_its_neighbours() {
+    let mut core = session(30, 5, CoreConfig::default(), 30);
+    core.scroll_display(Scroll::Delta(5));
+    assert_eq!(top_row(&mut core), "out 25", "between p25 and p26");
+    assert!(core.scroll_to_prompt(false));
+    assert_eq!(top_row(&mut core), "p25> cmd", "the nearest prompt above the top row");
+    core.scroll_display(Scroll::Delta(-1));
+    assert_eq!(top_row(&mut core), "out 25");
+    assert!(core.scroll_to_prompt(true));
+    assert_eq!(top_row(&mut core), "p26> cmd", "the nearest prompt below the top row");
+    // No prompt after the last one on the screen: the end of the buffer is the live screen.
+    let mut core = core_with(30, 5, CoreConfig::default());
+    for i in 0..10 {
+        feed(&mut core, &format!("\x1b]133;A\x07p{i}\r\n"));
+    }
+    for i in 0..10 {
+        feed(&mut core, &format!("plain {i}\r\n"));
+    }
+    core.scroll_display(Scroll::Delta(3));
+    assert!(core.scroll_to_prompt(true), "no prompt below: the live screen");
+    assert_eq!(core.display_offset(), 0);
+    assert!(!core.scroll_to_prompt(true), "and then it stays");
+}
+
+#[test]
+fn prompts_leave_with_their_lines_when_the_scrollback_trims_them_or_the_buffer_is_rewritten() {
+    let mut core = session(30, 5, CoreConfig { scrollback_lines: 20, ..CoreConfig::default() }, 30);
+    let lines = core.prompt_lines();
+    assert!(!lines.is_empty() && lines.len() < 30, "the trimmed prompts are gone: {lines:?}");
+    assert!(lines.iter().all(|line| (-20..5).contains(line)), "{lines:?}");
+    let oldest = lines[0];
+    assert!(line_text(&mut core, oldest).starts_with('p'), "the oldest survivor is still a prompt line");
+
+    // A taller screen keeps them (the ids do), more columns reflow the buffer and lose them.
+    let mut core = session(30, 5, CoreConfig::default(), 10);
+    let before = core.prompt_lines().len();
+    core.resize(30, 9);
+    assert_eq!(core.prompt_lines().len(), before);
+    core.resize(24, 9);
+    assert!(core.prompt_lines().is_empty(), "reflow rewrote the rows");
+    assert!(!core.scroll_to_prompt(false));
+
+    let mut core = session(30, 5, CoreConfig::default(), 10);
+    feed(&mut core, "\x1b[3J");
+    assert!(core.prompt_lines().is_empty(), "ED 3");
+    let mut core = session(30, 5, CoreConfig::default(), 10);
+    feed(&mut core, "\x1bc");
+    assert!(core.prompt_lines().is_empty(), "RIS");
+}
+
+#[test]
+fn the_alternate_screen_has_no_prompts_and_a_mark_during_a_synchronized_update_has_no_line() {
+    let mut core = session(30, 5, CoreConfig::default(), 5);
+    let kept = core.prompt_lines();
+    feed(&mut core, "\x1b[?1049h\x1b]133;A\x07");
+    assert!(core.prompt_lines().is_empty(), "no line is resolved while the alternate screen is shown");
+    assert!(!core.scroll_to_prompt(false) && !core.scroll_to_prompt(true));
+    feed(&mut core, "\x1b[?1049l");
+    assert_eq!(core.prompt_lines(), kept, "the main screen's prompts are back, and the one from the alternate screen is not");
+    feed(&mut core, "\x1b[?2026h\x1b]133;A\x07\x1b[?2026l");
+    assert_eq!(core.prompt_lines(), kept, "the emulator has not applied the bytes of an open update: its cursor says nothing");
+}
+
+#[test]
+fn clearing_the_buffer_empties_the_screen_the_scrollback_and_the_prompts() {
+    let mut core = session(30, 5, CoreConfig::default(), 30);
+    core.scroll_display(Scroll::Delta(10));
+    assert!(core.history_size() > 0);
+    assert!(core.clear_buffer());
+    assert_eq!((core.history_size(), core.display_offset()), (0, 0));
+    assert_eq!(snap(&mut core).text(), "");
+    assert_eq!(core.cursor_cell(), (0, 0));
+    assert!(core.prompt_lines().is_empty());
+    assert!(core.take_events().iter().any(|e| matches!(e, CoreEvent::LineIdsReset)));
+    // Output goes on from the top; new prompts are kept again.
+    feed(&mut core, "\x1b]133;A\x07fresh> \r\n");
+    assert_eq!(snap(&mut core).text(), "fresh>");
+    assert_eq!(core.prompt_lines(), [0]);
+}
+
+#[test]
+fn the_alternate_screen_is_not_cleared_because_a_full_screen_program_owns_it() {
+    let mut core = session(30, 5, CoreConfig::default(), 5);
+    feed(&mut core, "\x1b[?1049h\x1b[HFULL SCREEN");
+    assert!(!core.clear_buffer());
+    assert_eq!(snap(&mut core).row_text(0), "FULL SCREEN");
+    feed(&mut core, "\x1b[?1049l");
+    assert!(snap(&mut core).text().contains("p4> cmd"), "and the main screen was not touched either");
+}
+
 // --- resizing during heavy output --------------------------------------------------------------
 
 struct Rng(u64);
@@ -422,6 +568,11 @@ fn resizing_under_load_keeps_the_cursor_the_damage_and_the_ids_consistent() {
                     assert_eq!(core.line_id(line), Some(*id), "seed {seed} step {step}");
                 }
             }
+            // The core's own list of prompts is the marks it announced that still resolve.
+            let mut expected: Vec<i32> = marks.iter().filter_map(|id| core.line_of(*id)).collect();
+            expected.sort_unstable();
+            expected.dedup();
+            assert_eq!(core.prompt_lines(), expected, "seed {seed} step {step}");
             // The alternate screen is exited every so often so that main-screen ids are testable.
             if step % 97 == 0 {
                 core.feed(b"\x1b[?1049l");

@@ -429,6 +429,21 @@ impl Pane {
         self.term.lock().scroll_display(scroll);
     }
 
+    /// Scrolls to the previous or next prompt the shell marked (OSC 133). True when the view moved.
+    pub fn scroll_to_prompt(&self, forward: bool) -> bool {
+        self.term.lock().scroll_to_prompt(forward)
+    }
+
+    /// "Clear buffer": the screen and the scrollback go. A shell that waits at its prompt (its prompt marks say
+    /// so) is asked to draw it again with Ctrl+L; a program that gives no marks is left to draw when it likes, and
+    /// the screen stays blank until then.
+    pub fn clear_buffer(&self) {
+        let cleared = self.term.lock().clear_buffer();
+        if cleared && self.activity() == Activity::AtPrompt {
+            self.send(vec![0x0c]);
+        }
+    }
+
     /// Keyboard focus moved into or out of the pane: the cursor shape follows it and a program that asked
     /// for focus reports (DECSET 1004) is told.
     pub fn set_focused(&self, focused: bool) {

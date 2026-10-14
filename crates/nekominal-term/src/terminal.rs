@@ -471,6 +471,10 @@ pub struct TerminalCore {
     /// `line_base + history_size + grid line`, which does not change when a line scrolls.
     line_base: u64,
     line_epoch: u32,
+    /// The lines the shell marked as the start of a prompt (OSC 133 `A`) that are still in the buffer, oldest
+    /// first. Held by `LineId`, so they stay on their text while it scrolls into the scrollback, go when the
+    /// scrollback trims them, and all go with the ids when the buffer is rewritten.
+    prompts: Vec<LineId>,
 }
 
 /// How far the scrollback may overshoot its cap between two `enforce_scrollback` calls. One feed chunk adds
@@ -528,6 +532,7 @@ impl TerminalCore {
             history_limit: history_cap + HISTORY_SLACK,
             line_base: 0,
             line_epoch: 0,
+            prompts: Vec::new(),
         }
     }
 
@@ -612,6 +617,9 @@ impl TerminalCore {
             self.line_base += (history - self.history_cap) as u64;
             self.term.grid_mut().update_history(self.history_cap);
             self.history_limit = self.history_cap;
+            // Ids grow downward, so the prompts that were trimmed are the oldest ones.
+            let trimmed = self.prompts.partition_point(|id| id.index < self.line_base);
+            self.prompts.drain(..trimmed);
         }
         if self.history_limit != limit {
             self.term.grid_mut().update_history(limit);
@@ -622,6 +630,7 @@ impl TerminalCore {
     fn reset_line_ids(&mut self) {
         self.line_epoch = self.line_epoch.wrapping_add(1);
         self.line_base = 0;
+        self.prompts.clear();
         self.events.push(CoreEvent::LineIdsReset);
     }
 
@@ -658,6 +667,42 @@ impl TerminalCore {
         let target = i64::from(-line).clamp(0, self.term.history_size() as i64);
         let delta = target - self.display_offset() as i64;
         self.scroll_display(Scroll::Delta(delta as i32));
+    }
+
+    /// Scrolls the view to the nearest prompt the shell marked above the top row of the view (`forward` false) or
+    /// below it, so the prompt becomes the top row, as far as the buffer allows (a prompt on the live screen can only
+    /// bring the view back to the bottom). With no prompt below, `forward` goes to the live screen. True when the
+    /// view moved. The alternate screen has no marks: nothing moves there.
+    pub fn scroll_to_prompt(&mut self, forward: bool) -> bool {
+        let top = -(self.display_offset() as i32);
+        let lines = self.prompts.iter().filter_map(|id| self.line_of(*id));
+        let target =
+            if forward { lines.filter(|line| *line > top).min() } else { lines.filter(|line| *line < top).max() };
+        let before = self.display_offset();
+        match target {
+            Some(line) => self.scroll_to_line(line),
+            None if forward && !self.term.mode().contains(TermMode::ALT_SCREEN) => self.scroll_display(Scroll::Bottom),
+            None => {}
+        }
+        self.display_offset() != before
+    }
+
+    /// The lines of the prompts the shell marked that are still in the buffer, oldest first (grid lines: negative
+    /// ones are in the scrollback).
+    pub fn prompt_lines(&self) -> Vec<i32> {
+        self.prompts.iter().filter_map(|id| self.line_of(*id)).collect()
+    }
+
+    /// Clears the screen and the scrollback ("Clear buffer"). The alternate screen is left alone: a full-screen
+    /// program owns it, has no scrollback and is the one to redraw. False when nothing was cleared.
+    pub fn clear_buffer(&mut self) -> bool {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        // Home, erase the display (alacritty keeps it as history), erase the history: through `feed`, so the
+        // sniffer sees the last one and the line ids and prompt marks go with the lines.
+        self.feed(b"\x1b[H\x1b[2J\x1b[3J");
+        true
     }
 
     /// Mouse modes beyond `mode()`; see `MouseExtensions`.
@@ -774,6 +819,12 @@ impl TerminalCore {
                         line_id: self.line_id(point.line.0),
                     }
                 });
+                if mark == PromptMark::PromptStart
+                    && let Some(id) = cursor.and_then(|cursor| cursor.line_id)
+                    && let Err(at) = self.prompts.binary_search(&id)
+                {
+                    self.prompts.insert(at, id);
+                }
                 self.events.push(CoreEvent::PromptMark { mark, cursor });
             }
             Sniffed::Agent(report) => {

@@ -21,6 +21,7 @@ use nekominal_model::{
 };
 use nekominal_pane::{MAX_CLIPBOARD_TEXT, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
+use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_term::osc::Progress;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
@@ -1717,6 +1718,7 @@ impl Shell {
     pub fn run(self: &Rc<Self>, command: Command) {
         log(&format!("command {}", command.id()));
         let tab = self.selected_tab();
+        let focused = tab.as_ref().and_then(|tab| tab.focused_pane());
         let result: Result<()> = (|| {
             match command {
                 Command::TabNew => {
@@ -1774,19 +1776,39 @@ impl Shell {
                     }
                 }
                 Command::EditPaste => {
-                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
-                        self.paste_into(&pane);
+                    if let Some(pane) = &focused {
+                        self.paste_into(pane);
                     }
                 }
                 // Without a selection the key of smart copy never gets here: it reaches the program.
                 Command::EditCopy | Command::EditSmartCopy => {
-                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
-                        self.copy_selection(&pane, true);
+                    if let Some(pane) = &focused {
+                        self.copy_selection(pane, true);
                     }
                 }
                 Command::EditSelectAll => {
-                    if let Some(pane) = tab.as_ref().and_then(|t| t.focused_pane()) {
+                    if let Some(pane) = &focused {
                         pane.pane.select_all();
+                    }
+                }
+                Command::EditClear => {
+                    if let Some(pane) = &focused {
+                        pane.pane.clear_buffer();
+                    }
+                }
+                Command::ScrollPageUp | Command::ScrollPageDown | Command::ScrollTop | Command::ScrollBottom => {
+                    if let Some(pane) = &focused {
+                        pane.pane.scroll(match command {
+                            Command::ScrollPageUp => Scroll::PageUp,
+                            Command::ScrollPageDown => Scroll::PageDown,
+                            Command::ScrollTop => Scroll::Top,
+                            _ => Scroll::Bottom,
+                        });
+                    }
+                }
+                Command::PromptPrevious | Command::PromptNext => {
+                    if let Some(pane) = &focused {
+                        pane.pane.scroll_to_prompt(command == Command::PromptNext);
                     }
                 }
                 Command::EditFind => self.toggle_overlay(Overlay::Find),
@@ -1821,16 +1843,8 @@ impl Shell {
                     let opacity = self.settings.borrow().appearance.opacity_after(steps);
                     self.set_opacity(opacity);
                 }
-                // Scrollback navigation, prompt marks, restart and the settings file belong to the terminal
-                // features that are not wired yet.
-                Command::EditClear
-                | Command::ScrollPageUp
-                | Command::ScrollPageDown
-                | Command::ScrollTop
-                | Command::ScrollBottom
-                | Command::PromptPrevious
-                | Command::PromptNext
-                | Command::PaneRestart
+                // Restart and the settings file belong to the terminal features that are not wired yet.
+                Command::PaneRestart
                 | Command::AppOpenSettingsFile
                 | Command::AppReloadSettings => log(&format!("command {} is not wired yet", command.id())),
             }
