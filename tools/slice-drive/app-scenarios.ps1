@@ -852,8 +852,9 @@ function Scenario-Scroll {
 # Links: an OSC 8 hyperlink, a URL in the text (also one that wraps) and a link that may not be opened. Hovering one
 # that may be opened underlines it on every row it covers, shows the hand cursor and a tooltip with where it goes;
 # text that is not a link changes nothing. Ctrl+click goes through the same gate as everything else and the target is
-# logged before the shell is asked: nothing here opens a browser, so the click is on a link to a file that does not
-# exist (refused, and the log says so) and on one with a scheme that is not allowed (not a link at all).
+# logged before the shell is asked: nothing here starts a browser (NEKOMINAL_NO_LAUNCH), so a web link only reaches the
+# log line where the shell would be asked; a link to a file that does not exist is refused, and one with a scheme that
+# is not allowed is not a link at all.
 function Scenario-Links {
     Run-App 'links' @{ appearance = @{ backdrop = 'none' } } {
         First-Prompt
@@ -912,6 +913,15 @@ function Scenario-Links {
         $p = Cell-Pt $g ($bad.Col + 3) $bad.Row
         With-Keys @(0x11) { Click-At $p.X $p.Y 'left' 600 }
         Check 'Ctrl+click on a script address is only a click: nothing is logged' 0 @(Log-Since $mark | Where-Object { $_ -match 'link|opening' }).Count
+        # A web link: a click alone opens nothing, Ctrl+click names the target and hands it to the shell (not started here).
+        $mark = Log-Mark
+        $p = Cell-Pt $g ($plain.Col + 4) $plain.Row
+        Click-At $p.X $p.Y 'left' 600
+        Check 'a click on a web link without Ctrl opens nothing' 0 @(Log-Since $mark | Where-Object { $_ -match 'link|opening' }).Count
+        With-Keys @(0x11) { Click-At $p.X $p.Y 'left' 600 }
+        $lines = @(Log-Since $mark | Where-Object { $_ -match 'link refused|opening|not opened' })
+        $lines | ForEach-Object { 'log: ' + $_.Trim() }
+        Check 'Ctrl+click on a web link names it, then the shell is asked' $true ([bool]($lines -match 'opening Web link: https://example\.com/plain/path$') -and [bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): https://example\.com/plain/path$'))
     }
 }
 # Restart, reload and the settings file. A shell that exits with an error leaves its last screen and the pane can be
