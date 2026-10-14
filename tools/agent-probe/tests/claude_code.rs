@@ -639,6 +639,7 @@ fn keys_text_paste_and_cell_widths_in_the_input_box() {
     // local command, so a bare Enter that submitted would run /help, not a prompt).
     for (id, chord, bytes) in [("shift-enter", "shift+enter", "ESC[13;2u"), ("alt-enter", "alt+enter", "ESC[13;3u")] {
         claude::type_command(probe, "/help").unwrap();
+        let bottom_before = box_bottom(&probe.screen());
         let sent = probe.key(chord).map(|b| agent_probe::probe::escape_bytes(&b)).unwrap();
         pause(500);
         let after = claude::input_box(&probe.screen()).map(|b| b.text);
@@ -647,6 +648,13 @@ fn keys_text_paste_and_cell_widths_in_the_input_box() {
             &format!("input.{id}"),
             sent == bytes && after.as_deref() == Some("/help\n") && !dialog,
             format!("{chord} sent {sent}; the box reads {after:?}; help dialog opened: {dialog}"),
+        );
+        // The box is pinned at the bottom: a second line makes it grow upward.
+        let bottom_after = box_bottom(&probe.screen());
+        checks.check(
+            &format!("input.box-grows-upward.{id}"),
+            bottom_before.is_some() && bottom_before == bottom_after,
+            format!("closing rule on row {bottom_before:?} before and {bottom_after:?} after the second line"),
         );
         clear_box(probe);
     }
