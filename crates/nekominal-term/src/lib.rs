@@ -3,6 +3,7 @@
 
 pub mod agent_status;
 pub mod guard;
+pub mod links;
 pub mod terminal;
 pub mod osc;
 pub mod sniffer;
@@ -14,5 +15,6 @@ pub use crate::terminal::{
     MarkCursor, MouseExtensions, SearchMatch, SearchSession, SelectionKind, SnapCell, SnapCursor, Snapshot,
     TermDims, TerminalCore, DEFAULT_SCROLLBACK_BYTES, SEMANTIC_ESCAPE_CHARS_CJK,
 };
+pub use links::{Link, LinkKind, OpenTarget, Refusal};
 pub use sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported};
 pub use theme::Palette;

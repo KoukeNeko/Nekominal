@@ -29,7 +29,7 @@ use nekominal_pty::{
 };
 use crate::pointer::{Pointer, PointerEffects};
 use nekominal_term::{
-    ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, TerminalCore,
+    ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, Link, TerminalCore,
     agent_status::{AgentRecord, AgentState, Report},
     alacritty_terminal::{grid::Scroll, sync::FairMutex, term::Osc52},
     osc::{Notification, Progress, PromptMark},
@@ -365,6 +365,11 @@ impl Pane {
     /// One step of the scrolling a drag held outside the grid asks for. True when the view moved.
     pub fn drag_scroll(&self) -> bool {
         self.pointer.borrow_mut().drag_scroll(&mut self.term.lock())
+    }
+
+    /// The link under a cell of the viewport that may be opened, and the cells it covers.
+    pub fn link_at(&self, row: usize, column: usize) -> Option<Link> {
+        self.term.lock().link_at(row, column)
     }
 
     /// The selected text as the clipboard gets it.

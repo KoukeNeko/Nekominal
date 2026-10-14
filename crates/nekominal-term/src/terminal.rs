@@ -25,6 +25,7 @@ use alacritty_terminal::{
 use crate::{
     agent_status::{AgentRecord, AgentStatus, Report},
     guard::StringGuard,
+    links::{self, Link},
     osc::{is_control_or_bidi, strip_control, Notification, Progress, PromptMark},
     sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported},
     theme::Palette,
@@ -480,6 +481,10 @@ pub struct TerminalCore {
 /// How far the scrollback may overshoot its cap between two `enforce_scrollback` calls. One feed chunk adds
 /// at most one line per byte, so it is larger than `FEED_CHUNK`.
 const HISTORY_SLACK: usize = 2048;
+
+/// Most rows above and below a row that `link_at` joins into one line to look for a URL: a line of this many rows
+/// is thousands of characters, and the search runs for every pointer move.
+const MAX_LINK_ROWS: i32 = 50;
 
 /// `feed` hands the parsers at most this many bytes at a time, so the scrollback can be trimmed (and the
 /// trimmed lines counted) before it outgrows `HISTORY_SLACK`.
@@ -1180,6 +1185,77 @@ impl TerminalCore {
         }
         let point = self.grid_point(row, column);
         self.term.grid()[point].hyperlink()
+    }
+
+    /// The link under a cell of the viewport, when it is one that may be opened (`links::open_target`): a
+    /// hyperlink a program set (OSC 8), with every cell of the viewport that holds it, or else a URL in the text,
+    /// which covers several rows when its line wraps.
+    pub fn link_at(&self, row: usize, column: usize) -> Option<Link> {
+        let (rows, columns) = (self.rows(), self.columns());
+        if row >= rows || column >= columns {
+            return None;
+        }
+        let offset = self.display_offset() as i32;
+        let grid = self.term.grid();
+        let line_of = |row: usize| Line(row as i32 - offset);
+
+        if let Some(hyperlink) = grid[line_of(row)][Column(column)].hyperlink() {
+            links::open_target(hyperlink.uri()).ok()?;
+            let mut spans = Vec::new();
+            for r in 0..rows {
+                let cells = &grid[line_of(r)];
+                let mut start = None;
+                for c in 0..=columns {
+                    let linked = c < columns && cells[Column(c)].hyperlink().as_ref() == Some(&hyperlink);
+                    match (linked, start) {
+                        (true, None) => start = Some(c),
+                        (false, Some(first)) => {
+                            spans.push((r, first, c));
+                            start = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            return Some(Link { uri: hyperlink.uri().to_owned(), spans });
+        }
+
+        // A row whose last cell wraps continues on the next row: they are one line of text.
+        let wraps = |line: i32| grid[Line(line)][Column(columns - 1)].flags.contains(Flags::WRAPLINE);
+        let here = line_of(row).0;
+        let (mut first, mut last) = (here, here);
+        while here - first < MAX_LINK_ROWS && first > self.term.topmost_line().0 && wraps(first - 1) {
+            first -= 1;
+        }
+        while last - here < MAX_LINK_ROWS && last < self.term.bottommost_line().0 && wraps(last) {
+            last += 1;
+        }
+        let text: Vec<char> = (first..=last)
+            .flat_map(|line| {
+                let cells = &grid[Line(line)];
+                (0..columns).map(move |c| {
+                    let cell = &cells[Column(c)];
+                    if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                        '\0'
+                    } else {
+                        cell.c
+                    }
+                })
+            })
+            .collect();
+        let at = (here - first) as usize * columns + column;
+        let found = links::find_urls(&text).into_iter().find(|range| range.contains(&at))?;
+        let uri: String = text[found.clone()].iter().collect();
+        links::open_target(&uri).ok()?;
+        let spans = (0..rows)
+            .filter_map(|r| {
+                let line = line_of(r).0;
+                let base = usize::try_from(line - first).ok()? * columns;
+                let (start, end) = (found.start.max(base), found.end.min(base + columns));
+                (line <= last && start < end).then(|| (r, start - base, end - base))
+            })
+            .collect();
+        Some(Link { uri, spans })
     }
 }
 

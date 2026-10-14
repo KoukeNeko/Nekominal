@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use nekominal_input::Utf16Assembler;
 use nekominal_input::{KeyEvent, KeyInput, MouseButton, PointerEvent, PointerGrid, PointerKind, vk};
+use windows_reference::IReference;
 use nekominal_model::{layout::PaneId, strings::Text};
 use nekominal_pane::{Pane, PaneRenderer, UiEvent};
 use nekominal_pty::conpty::SpawnConfig;
@@ -28,7 +29,7 @@ use crate::i18n::t;
 use crate::keyboard;
 use crate::logic::{Attention, Reported};
 use crate::terminal_control::{self, TextModel};
-use crate::util::{log, ui};
+use crate::util::{fe, log, ui};
 
 /// How the terminals look right now: shared by every pane, changed by the settings and the zoom commands.
 pub struct Look {
@@ -57,14 +58,19 @@ impl Look {
 }
 
 /// What a pane asks of the shell when the pointer does something the pane cannot finish alone.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PaneRequest {
     /// A gesture ended with text selected (copy on select).
     Selected,
+    /// Ctrl+click on a link that may be opened: where it goes.
+    OpenLink(String),
     /// The right button went down where the terminal owns the pointer; the position is in DIP from the pane's
     /// top-left corner.
     RightClick { x: f64, y: f64 },
 }
+
+/// How far above the line of a link its tooltip hangs, in DIP.
+const LINK_TIP_GAP: f32 = 10.0;
 
 /// Time between two steps of the scrolling a selection drag held outside the pane asks for.
 const DRAG_SCROLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -127,6 +133,11 @@ pub struct PaneView {
     /// Which of the left, middle and right buttons are down, as the last pointer event saw them.
     buttons: Cell<[bool; 3]>,
     last_drag_scroll: Cell<Instant>,
+    /// The cell the pointer rests on, `None` while it is outside the grid, and the link it shows a tooltip for.
+    hover_cell: Cell<Option<(u16, u16)>>,
+    hover_uri: RefCell<Option<String>>,
+    link_tip: RefCell<Option<ToolTip>>,
+    link_anchor: Border,
     ime: Option<ImeHost>,
     text_model: Rc<TextModel>,
     window: Window,
@@ -160,7 +171,15 @@ impl PaneView {
 
         let text_model = Rc::new(TextModel::default());
         let host = terminal_control::create(t(Text::TabUntitled), text_model.clone())?;
-        host.SetContent(&panel)?;
+        // The panel and, over it, a box the tooltip of a link hangs on: it has no content and takes no pointer.
+        let link_anchor = Border::new()?;
+        ui(&link_anchor)?.SetIsHitTestVisible(false)?;
+        fe(&link_anchor)?.SetHorizontalAlignment(HorizontalAlignment::Left)?;
+        fe(&link_anchor)?.SetVerticalAlignment(VerticalAlignment::Top)?;
+        let content = Grid::new()?;
+        content.cast::<Panel>()?.Children()?.Append(&panel)?;
+        content.cast::<Panel>()?.Children()?.Append(&link_anchor)?;
+        host.SetContent(&content)?;
         let host_control: Control = host.cast()?;
         host_control.SetHorizontalContentAlignment(HorizontalAlignment::Stretch)?;
         host_control.SetVerticalContentAlignment(VerticalAlignment::Stretch)?;
@@ -225,6 +244,10 @@ impl PaneView {
                 on_request,
                 buttons: Cell::new([false; 3]),
                 last_drag_scroll: Cell::new(Instant::now()),
+                hover_cell: Cell::new(None),
+                hover_uri: RefCell::new(None),
+                link_tip: RefCell::new(None),
+                link_anchor,
                 ime,
                 text_model,
                 window: window.clone(),
@@ -304,6 +327,14 @@ impl PaneView {
             cb!("pane pointer moved", |_, args| {
                 let (Some(view), Some(args)) = (weak.upgrade(), args.as_ref()) else { return };
                 view.on_pointer(args, Phase::Move);
+            })
+        })?);
+        revokers.push(host.PointerExited({
+            let weak = weak.clone();
+            cb!("pane pointer exited", |_, _| {
+                if let Some(view) = weak.upgrade() {
+                    view.on_pointer_exit();
+                }
             })
         })?);
         // The pointer capture ended (the window lost it, a menu opened): a held button is no longer held.
@@ -452,11 +483,6 @@ impl PaneView {
             Phase::Move => kinds.push(PointerKind::Move),
             Phase::Release => {
                 kinds.extend((0..3).filter(|i| before[*i] && !down[*i]).map(|i| PointerKind::Release(BUTTONS[i])));
-                if !down.contains(&true)
-                    && let Ok(pointer) = args.Pointer()
-                {
-                    let _ = ui(&self.host).and_then(|host| host.ReleasePointerCapture(&pointer));
-                }
             }
         }
         for kind in kinds {
@@ -470,10 +496,111 @@ impl PaneView {
             if effects.selected {
                 (self.on_request)(self.id, PaneRequest::Selected);
             }
+            if let Some(uri) = effects.open_link {
+                (self.on_request)(self.id, PaneRequest::OpenLink(uri));
+            }
         }
-        if phase != Phase::Move {
+        // Letting go of the capture ends the gesture (`PointerCaptureLost`), so it comes after the release was applied.
+        if phase == Phase::Release
+            && !down.contains(&true)
+            && let Ok(pointer) = args.Pointer()
+        {
+            let _ = ui(&self.host).and_then(|host| host.ReleasePointerCapture(&pointer));
+        }
+        if phase == Phase::Move {
+            // The cell under the pointer decides which link is hovered; XAML puts the arrow back on every move,
+            // so the hand is set on every move too.
+            self.hover_cell.set(self.cell_under(position.x * scale, position.y * scale, &grid));
+            self.refresh_hover();
+        } else {
             let _ = args.SetHandled(true);
         }
+    }
+
+    /// The cell at a position in physical pixels from the corner of the grid, `None` outside it.
+    fn cell_under(&self, x: f32, y: f32, grid: &PointerGrid) -> Option<(u16, u16)> {
+        let inside = x >= 0.0
+            && y >= 0.0
+            && x < grid.cell_width * f32::from(grid.columns)
+            && y < grid.cell_height * f32::from(grid.rows);
+        inside.then(|| nekominal_input::cell_at(x, y, grid))
+    }
+
+    /// Underlines the link under the pointer, shows where it goes in a tooltip and removes both when there is
+    /// none. The pointer rests on a cell while the program keeps printing, so this runs every frame too.
+    fn refresh_hover(&self) {
+        let link = self.hover_cell.get().and_then(|(col, row)| self.pane.link_at(usize::from(row), usize::from(col)));
+        let spans: Vec<r::RowSpan> = link
+            .iter()
+            .flat_map(|link| link.spans.iter())
+            .map(|&(row, start, end)| r::RowSpan { row: row as u16, start: start as u16, end: end as u16 })
+            .collect();
+        if let Ok(mut render) = self.render.try_borrow_mut()
+            && let Some(renderer) = render.renderer.as_mut()
+        {
+            renderer.set_hover_link(spans);
+        }
+        // The hand goes with the pointer: the toolkit puts the arrow back on every move and when a tooltip opens.
+        if link.is_some()
+            && let Err(e) = ui(&self.host).and_then(|host| crate::cursor::set_cursor(&host, InputSystemCursorShape::Hand))
+        {
+            log(&format!("pane {} hand cursor: {e}", self.id));
+        }
+        let uri = link.as_ref().map(|link| link.uri.clone());
+        if *self.hover_uri.borrow() == uri {
+            return;
+        }
+        // The tip hangs under the line the pointer is on, over the cells of the link.
+        let anchor = link.as_ref().zip(self.hover_cell.get()).and_then(|(link, (_, row))| {
+            let &(_, start, end) = link.spans.iter().find(|span| span.0 == usize::from(row))?;
+            let (grid, scale) = self.pointer_grid()?;
+            let (width, height) = (grid.cell_width / scale, grid.cell_height / scale);
+            // Lifted a little: a tip touching the line would sit under the pointer, which then leaves the pane.
+            let y = f32::from(row) * height - LINK_TIP_GAP;
+            Some(Rect { x: start as f32 * width, y, width: (end - start) as f32 * width, height })
+        });
+        if let Err(e) = self.show_link_tooltip(uri.as_deref(), anchor) {
+            log(&format!("pane {} link tooltip: {e}", self.id));
+        }
+        *self.hover_uri.borrow_mut() = uri;
+    }
+
+    /// Shows where the link goes next to the pointer, or removes the tooltip. It is opened by hand: a tooltip the
+    /// toolkit opens waits for the pointer to move after the tip was set, and the pointer has stopped by then.
+    fn show_link_tooltip(&self, uri: Option<&str>, anchor: Option<Rect>) -> Result<()> {
+        let mut slot = self.link_tip.borrow_mut();
+        if slot.is_none() {
+            let tip = ToolTip::new()?;
+            tip.SetPlacement(PlacementMode::Top)?;
+            tip.SetPlacementTarget(&ui(&self.link_anchor)?)?;
+            ToolTipService::SetPlacement(&self.host, PlacementMode::Top)?;
+            ToolTipService::SetPlacementTarget(&self.host, &ui(&self.link_anchor)?)?;
+            *slot = Some(tip);
+        }
+        let Some(tip) = slot.as_ref() else { return Ok(()) };
+        // Closed first, so a tip that moves from one link to the next is placed at the pointer again.
+        tip.SetIsOpen(false)?;
+        match uri {
+            Some(uri) => {
+                // Above the middle of the link: the tip is centred on the pane by default, and the offsets move it.
+                if let Some(anchor) = anchor {
+                    let target = fe(&self.link_anchor)?;
+                    target.SetMargin(Thickness { left: f64::from(anchor.x), top: f64::from(anchor.y), right: 0.0, bottom: 0.0 })?;
+                    target.SetWidth(f64::from(anchor.width))?;
+                    target.SetHeight(f64::from(anchor.height))?;
+                }
+                tip.cast::<ContentControl>()?.SetContent(&IReference::from(uri))?;
+                ToolTipService::SetToolTip(&self.host, tip)?;
+                tip.SetIsOpen(true)
+            }
+            None => ToolTipService::SetToolTip(&self.host, None::<&windows_core::IInspectable>),
+        }
+    }
+
+    /// The pointer left the pane: nothing is hovered.
+    fn on_pointer_exit(&self) {
+        self.hover_cell.set(None);
+        self.refresh_hover();
     }
 
     /// The pointer capture ended: held buttons go up for the program and a selection drag ends where it was.
@@ -617,6 +744,9 @@ impl PaneView {
 
     /// One vsync-paced step: snapshot, update the instance buffers, draw and present when something changed.
     pub fn tick(&self) {
+        if self.hover_cell.get().is_some() {
+            self.refresh_hover();
+        }
         // A selection drag held above or below the pane keeps scrolling while the pointer rests there.
         if self.buttons.get()[0] && self.last_drag_scroll.get().elapsed() >= DRAG_SCROLL_INTERVAL {
             self.last_drag_scroll.set(Instant::now());

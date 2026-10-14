@@ -21,6 +21,7 @@ use nekominal_model::{
 };
 use nekominal_pane::{MAX_CLIPBOARD_TEXT, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
+use nekominal_term::LinkKind;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_term::osc::Progress;
 use nekominal_winui_sys::*;
@@ -1483,6 +1484,7 @@ impl Shell {
                     self.copy_selection(&pane, false);
                 }
             }
+            PaneRequest::OpenLink(uri) => self.open_link(&uri),
             PaneRequest::RightClick { x, y } => match self.settings.borrow().right_click {
                 // Copy what is selected, else paste: the selection is spent, like Copy.
                 settings::RightClick::Smart => {
@@ -1498,6 +1500,22 @@ impl Shell {
                     }
                 }
             },
+        }
+    }
+
+    /// Opens a link the user Ctrl+clicked. `open_target` is the gate: nothing it refuses is opened, and the target is
+    /// logged before the shell is asked.
+    fn open_link(&self, uri: &str) {
+        let target = match nekominal_term::links::open_target(uri) {
+            Ok(target) => target,
+            Err(why) => return log(&format!("link refused ({why:?}): {uri}")),
+        };
+        if target.kind == LinkKind::File && !std::path::Path::new(&target.target).exists() {
+            return log(&format!("link refused (no such file): {}", target.target));
+        }
+        log(&format!("opening {:?} link: {}", target.kind, target.target));
+        if let Err(e) = crate::open::shell_open(&target.target) {
+            log(&format!("opening {} failed: {e}", target.target));
         }
     }
 

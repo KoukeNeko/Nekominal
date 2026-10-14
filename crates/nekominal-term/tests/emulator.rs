@@ -586,6 +586,101 @@ fn osc8_hyperlinks_are_stored_on_cells() {
 
 // --- modes ------------------------------------------------------------------------------------
 
+// --- links --------------------------------------------------------------------------------------------
+
+#[test]
+fn an_osc8_hyperlink_is_a_link_over_exactly_its_cells() {
+    let mut core = core(30, 3);
+    feed(&mut core, "go \x1b]8;;https://example.com/a\x07click here\x1b]8;;\x07 and more");
+    let link = core.link_at(0, 5).expect("over the link text");
+    assert_eq!((link.uri.as_str(), link.spans.as_slice()), ("https://example.com/a", [(0, 3, 13)].as_slice()));
+    assert_eq!(core.link_at(0, 3).map(|l| l.uri), Some("https://example.com/a".to_owned()), "its first cell");
+    assert_eq!(core.link_at(0, 12).map(|l| l.uri), Some("https://example.com/a".to_owned()), "its last cell");
+    assert_eq!(core.link_at(0, 2), None, "the space before it");
+    assert_eq!(core.link_at(0, 13), None, "the space after it");
+    assert_eq!(core.link_at(1, 0), None);
+    assert_eq!(core.link_at(0, 99), None, "outside the grid");
+    assert_eq!(core.link_at(99, 0), None);
+}
+
+#[test]
+fn an_osc8_link_that_wraps_is_one_link_on_every_row_and_one_id_joins_separate_runs() {
+    let mut core = core(10, 4);
+    feed(&mut core, "\x1b]8;;https://a.b/c\x07fifteen chars!!\x1b]8;;\x07");
+    let link = core.link_at(1, 2).expect("on the second row");
+    assert_eq!(link.spans, [(0, 0, 10), (1, 0, 5)]);
+    let mut core = self::core(40, 3);
+    feed(&mut core, "\x1b]8;id=x;https://a.b/\x07one\x1b]8;;\x07 and \x1b]8;id=x;https://a.b/\x07two\x1b]8;;\x07 and \x1b]8;;https://a.b/\x07three\x1b]8;;\x07");
+    assert_eq!(core.link_at(0, 1).map(|l| l.spans), Some(vec![(0, 0, 3), (0, 8, 11)]), "the same id and address are one link");
+    assert_eq!(core.link_at(0, 17).map(|l| l.spans), Some(vec![(0, 16, 21)]), "no id: its own link");
+}
+
+#[test]
+fn only_a_link_that_may_be_opened_is_a_link() {
+    let mut core = core(60, 3);
+    feed(&mut core, "\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///C:/Windows/System32/calc.exe\x07program\x1b]8;;\x07 \x1b]8;;file:///C:/Users/me/a.txt\x07file\x1b]8;;\x07");
+    assert_eq!(core.link_at(0, 2), None, "a script address is text");
+    assert_eq!(core.link_at(0, 10), None, "so is a program");
+    assert_eq!(core.link_at(0, 18).map(|l| l.uri), Some("file:///C:/Users/me/a.txt".to_owned()));
+    feed(&mut core, "\r\njavascript:alert(1) calc.exe file:///C:/Windows/System32/calc.exe http://");
+    for column in [0, 10, 25, 40, 59] {
+        assert_eq!(core.link_at(1, column), None, "column {column}");
+    }
+}
+
+#[test]
+fn a_url_in_the_text_is_a_link_without_the_punctuation_after_it() {
+    let mut core = core(60, 3);
+    feed(&mut core, "see https://example.com/path?q=1, and (http://a.b/c). end");
+    let link = core.link_at(0, 10).expect("on the first URL");
+    assert_eq!((link.uri.as_str(), link.spans.as_slice()), ("https://example.com/path?q=1", [(0, 4, 32)].as_slice()));
+    assert_eq!(core.link_at(0, 32), None, "the comma is not part of it");
+    assert_eq!(core.link_at(0, 0), None);
+    assert_eq!(core.link_at(0, 40).map(|l| l.uri), Some("http://a.b/c".to_owned()), "inside the brackets");
+    assert_eq!(core.link_at(0, 52), None, "the closing bracket and the full stop are not");
+}
+
+#[test]
+fn a_url_that_wraps_is_found_from_any_of_its_rows_and_its_cells_are_all_marked() {
+    let mut core = core(12, 5);
+    feed(&mut core, "x https://example.com/very/long/path y");
+    assert_eq!(snap(&mut core).text(), "x https://ex\nample.com/ve\nry/long/path\n y");
+    let first = core.link_at(0, 5).expect("first row");
+    assert_eq!(first.uri, "https://example.com/very/long/path");
+    assert_eq!(first.spans, [(0, 2, 12), (1, 0, 12), (2, 0, 12)]);
+    assert_eq!(core.link_at(1, 6), Some(first.clone()), "second row");
+    assert_eq!(core.link_at(2, 11), Some(first), "the last cell of the last row");
+    assert_eq!(core.link_at(3, 0), None, "the space that wrapped after it");
+    assert_eq!(core.link_at(3, 1), None);
+    assert_eq!(core.link_at(0, 0), None);
+}
+
+#[test]
+fn a_url_after_wide_characters_is_found_at_its_cells_and_a_wide_character_ends_it() {
+    let mut core = core(40, 3);
+    feed(&mut core, "你好 https://a.b/x你好 end");
+    assert_eq!(core.link_at(0, 0), None);
+    let link = core.link_at(0, 8).expect("the URL starts after four cells and a space");
+    assert_eq!((link.uri.as_str(), link.spans.as_slice()), ("https://a.b/x", [(0, 5, 18)].as_slice()));
+    assert_eq!(core.link_at(0, 18), None, "the wide character after it is text");
+}
+
+#[test]
+fn links_follow_the_view_into_the_scrollback() {
+    let mut core = core(12, 3);
+    feed(&mut core, "https://example.com/a/b/c/d\r\n1\r\n2\r\n3\r\n4\r\n");
+    assert_eq!(core.link_at(0, 0), None, "the live screen shows the lines after it");
+    core.scroll_display(Scroll::Top);
+    assert_eq!(snap(&mut core).row_text(0), "https://exam");
+    let link = core.link_at(1, 3).expect("the second row of the URL in view");
+    assert_eq!(link.spans, [(0, 0, 12), (1, 0, 12), (2, 0, 3)]);
+    core.scroll_display(Scroll::Delta(-1));
+    assert_eq!(snap(&mut core).row_text(0), "ple.com/a/b/", "one row of the URL scrolled out above the view");
+    let link = core.link_at(0, 3).expect("the URL continues above the view");
+    assert_eq!(link.uri, "https://example.com/a/b/c/d");
+    assert_eq!(link.spans, [(0, 0, 12), (1, 0, 3)], "only the rows in view");
+}
+
 #[test]
 fn bracketed_paste_focus_cursor_keys_and_keypad_flags() {
     let mut core = core(20, 3);

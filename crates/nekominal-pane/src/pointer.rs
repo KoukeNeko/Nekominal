@@ -11,8 +11,8 @@
 //! * a drag held above or below the grid scrolls the view one step per [`Pointer::drag_scroll`].
 
 use nekominal_input::{
-    CellPoint, InputModes, MouseAssembler, PointerEvent, PointerGrid, PointerKind, PointerOutcome, SelectionKind as Gesture,
-    Side,
+    CellPoint, InputModes, Mods, MouseAssembler, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
+    SelectionKind as Gesture, Side, cell_at,
 };
 use nekominal_term::{CellSide, SelectionKind, TerminalCore, alacritty_terminal::grid::Scroll};
 
@@ -26,8 +26,8 @@ pub struct PointerEffects {
     pub reports: Vec<Vec<u8>>,
     /// A selection gesture ended with text selected: copy on select copies it now.
     pub selected: bool,
-    /// Ctrl+click on a hyperlink, released in the cell it was pressed in: the cell as (column, row) of the viewport.
-    pub open_link: Option<(u16, u16)>,
+    /// Ctrl+click on a link that may be opened, released in the cell it was pressed in: where the link goes.
+    pub open_link: Option<String>,
 }
 
 fn kind_of(gesture: Gesture) -> SelectionKind {
@@ -73,11 +73,21 @@ impl Pointer {
         modes: &InputModes,
     ) -> PointerEffects {
         let mut effects = PointerEffects::default();
-        for outcome in self.assembler.handle(event, grid, modes) {
+        // Only a press with Ctrl can be the start of a click on a link: the assembler asks nothing else.
+        let event = match event.kind {
+            PointerKind::Press(_) if event.mods.contains(Mods::CTRL) => {
+                let (col, row) = cell_at(event.x, event.y, grid);
+                PointerEvent { over_link: core.link_at(usize::from(row), usize::from(col)).is_some(), ..*event }
+            }
+            _ => *event,
+        };
+        for outcome in self.assembler.handle(&event, grid, modes) {
             match outcome {
                 PointerOutcome::Report(bytes) => effects.reports.push(bytes),
                 PointerOutcome::Scroll(lines) => core.scroll_display(Scroll::Delta(lines)),
-                PointerOutcome::OpenLink { col, row } => effects.open_link = Some((col, row)),
+                PointerOutcome::OpenLink { col, row } => {
+                    effects.open_link = core.link_at(usize::from(row), usize::from(col)).map(|link| link.uri);
+                }
                 PointerOutcome::SelectionStart { point, kind, extend } => {
                     let extended = extend && core.selection_active();
                     if extended {
@@ -357,6 +367,44 @@ mod tests {
         assert!(rig.pointer.drag_scroll(&mut rig.core));
         assert_eq!(rig.core.display_offset(), 8, "overshoot of two rows moves two lines");
         assert!(rig.text().is_some());
+    }
+
+    #[test]
+    fn ctrl_click_on_a_link_opens_it_and_every_other_gesture_selects() {
+        let mut rig = Rig::new("go https://a.b/x ok\r\n\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07");
+        let ctrl = |rig: &mut Rig, kind, at| rig.send(kind, at, Mods::CTRL);
+        let down = PointerKind::Press(MouseButton::Left);
+        let up = PointerKind::Release(MouseButton::Left);
+
+        ctrl(&mut rig, down, left(8, 0));
+        let effects = ctrl(&mut rig, up, left(8, 0));
+        assert_eq!(effects.open_link.as_deref(), Some("https://a.b/x"));
+        assert!(!effects.selected && rig.text().is_none(), "opening a link selects nothing");
+
+        rig.clock += 2000;
+        assert_eq!(rig.click(left(8, 0)).open_link, None, "without Ctrl a click on a link is a plain click");
+        rig.clock += 2000;
+        ctrl(&mut rig, down, left(0, 0));
+        assert_eq!(ctrl(&mut rig, up, left(0, 0)).open_link, None, "Ctrl+click off a link opens nothing");
+        rig.clock += 2000;
+        ctrl(&mut rig, down, left(2, 1));
+        assert_eq!(ctrl(&mut rig, up, left(2, 1)).open_link, None, "a link that may not be opened is text");
+
+        // A real mouse adds a move to the same place around a click: that is still a click.
+        rig.clock += 2000;
+        ctrl(&mut rig, PointerKind::Move, left(8, 0));
+        ctrl(&mut rig, down, left(8, 0));
+        ctrl(&mut rig, PointerKind::Move, left(8, 0));
+        let effects = ctrl(&mut rig, up, left(8, 0));
+        assert_eq!(effects.open_link.as_deref(), Some("https://a.b/x"));
+
+        // Starting a drag on a link selects instead.
+        rig.clock += 2000;
+        ctrl(&mut rig, down, left(8, 0));
+        ctrl(&mut rig, PointerKind::Move, right(12, 0));
+        let effects = ctrl(&mut rig, up, right(12, 0));
+        assert_eq!((effects.open_link, effects.selected), (None, true));
+        assert_eq!(rig.text().as_deref(), Some("://a."));
     }
 
     #[test]

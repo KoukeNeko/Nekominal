@@ -19,6 +19,7 @@ mod glass;
 mod i18n;
 mod keyboard;
 mod logic;
+mod open;
 mod palette;
 mod pane_view;
 mod settings_page;
