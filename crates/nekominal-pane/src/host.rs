@@ -13,7 +13,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread,
@@ -171,43 +171,56 @@ pub fn input_modes_of(core: &TerminalCore) -> InputModes {
     modes
 }
 
-pub struct Pane {
-    pub term: Arc<FairMutex<TerminalCore>>,
-    pub events: Receiver<UiEvent>,
+/// One running session of a pane: the channel to its writer thread and the session itself. A pane gets a new one
+/// when it restarts.
+struct Live {
     input: Sender<Vec<u8>>,
     sessions: Sessions,
     id: u32,
+}
+
+pub struct Pane {
+    pub term: Arc<FairMutex<TerminalCore>>,
+    pub events: Receiver<UiEvent>,
+    live: RefCell<Live>,
+    ui: Sender<UiEvent>,
+    /// Which session the pane listens to: a session that was replaced by a restart still ends, and what it says
+    /// then is not the new session's.
+    generation: Arc<AtomicU32>,
     /// An [`Activity`] as its code: the reader thread writes it, the UI thread reads it.
     activity: Arc<AtomicU8>,
     pointer: RefCell<Pointer>,
 }
 
-impl Pane {
-    pub fn spawn(program: PathBuf, args: Vec<String>, cols: u16, rows: u16) -> std::io::Result<Pane> {
-        let mut env = BTreeMap::new();
-        env.insert("TERM_PROGRAM".to_owned(), "Nekominal".to_owned());
-        env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
-        // Wcswidth (0x10) is the mode that agrees with alacritty_terminal's per-code-point width model
-        // (emulator blueprint, section 11.5).
-        let config = SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Wcswidth };
-        Pane::spawn_with(config, CoreConfig::default())
-    }
+/// Starts `config` as the session of generation `mine`: its output feeds `term`, what the emulator reports goes to
+/// `ui` and its replies to the program. Output of a session whose generation is no longer the pane's is dropped.
+fn start_session(
+    config: &SpawnConfig,
+    term: &Arc<FairMutex<TerminalCore>>,
+    ui: &Sender<UiEvent>,
+    activity: &Arc<AtomicU8>,
+    generation: &Arc<AtomicU32>,
+    mine: u32,
+) -> std::io::Result<Live> {
+    let (input_tx, input_rx) = channel::<Vec<u8>>();
+    let session_cell: Arc<OnceLock<Arc<Session>>> = Arc::new(OnceLock::new());
+    let pending_ack = Arc::new(AtomicUsize::new(0));
 
-    /// Starts the session described by `config` (a profile's program, arguments, directory and environment) with
-    /// an emulator set up by `core`.
-    pub fn spawn_with(config: SpawnConfig, core: CoreConfig) -> std::io::Result<Pane> {
-        let (cols, rows) = (config.cols, config.rows);
-        let term = Arc::new(FairMutex::new(TerminalCore::new(cols as usize, rows as usize, core)));
-        let (input_tx, input_rx) = channel::<Vec<u8>>();
-        let (ui_tx, ui_rx) = channel::<UiEvent>();
-        let session_cell: Arc<OnceLock<Arc<Session>>> = Arc::new(OnceLock::new());
-        let pending_ack = Arc::new(AtomicUsize::new(0));
-        let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
-
-        let sink: Sink = {
-            let (term, input_tx, session_cell, pending_ack, activity) =
-                (term.clone(), input_tx.clone(), session_cell.clone(), pending_ack.clone(), activity.clone());
-            Box::new(move |event| match event {
+    let sink: Sink = {
+        let (term, ui_tx, input_tx, session_cell, pending_ack, activity, generation) = (
+            term.clone(),
+            ui.clone(),
+            input_tx.clone(),
+            session_cell.clone(),
+            pending_ack.clone(),
+            activity.clone(),
+            generation.clone(),
+        );
+        Box::new(move |event| {
+            if generation.load(Ordering::Relaxed) != mine {
+                return false;
+            }
+            match event {
                 Event::Data(bytes) => {
                     let events = {
                         let mut core = term.lock();
@@ -243,28 +256,80 @@ impl Pane {
                     let _ = ui_tx.send(UiEvent::Exit(code));
                     true
                 }
-            })
-        };
-
-        let sessions = Sessions::default();
-        let (id, _pid) = sessions.spawn(&config, sink)?;
-        let session = sessions.get(id)?;
-        let _ = session_cell.set(session.clone());
-        let early = pending_ack.swap(0, Ordering::Relaxed);
-        if early > 0 {
-            session.ack(early);
-        }
-
-        thread::Builder::new().name("pty-writer".into()).spawn(move || {
-            for bytes in input_rx {
-                if session.write(&bytes).is_err() {
-                    break;
-                }
             }
-        })?;
-        Ok(Pane { term, events: ui_rx, input: input_tx, sessions, id, activity, pointer: RefCell::default() })
+        })
+    };
+
+    let sessions = Sessions::default();
+    let (id, _pid) = sessions.spawn(config, sink)?;
+    let session = sessions.get(id)?;
+    let _ = session_cell.set(session.clone());
+    let early = pending_ack.swap(0, Ordering::Relaxed);
+    if early > 0 {
+        session.ack(early);
     }
 
+    thread::Builder::new().name("pty-writer".into()).spawn(move || {
+        for bytes in input_rx {
+            if session.write(&bytes).is_err() {
+                break;
+            }
+        }
+    })?;
+    Ok(Live { input: input_tx, sessions, id })
+}
+
+impl Pane {
+    pub fn spawn(program: PathBuf, args: Vec<String>, cols: u16, rows: u16) -> std::io::Result<Pane> {
+        let mut env = BTreeMap::new();
+        env.insert("TERM_PROGRAM".to_owned(), "Nekominal".to_owned());
+        env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
+        // Wcswidth (0x10) is the mode that agrees with alacritty_terminal's per-code-point width model
+        // (emulator blueprint, section 11.5).
+        let config = SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Wcswidth };
+        Pane::spawn_with(config, CoreConfig::default())
+    }
+
+    /// Starts the session described by `config` (a profile's program, arguments, directory and environment) with
+    /// an emulator set up by `core`.
+    pub fn spawn_with(config: SpawnConfig, core: CoreConfig) -> std::io::Result<Pane> {
+        let (cols, rows) = (usize::from(config.cols), usize::from(config.rows));
+        let term = Arc::new(FairMutex::new(TerminalCore::new(cols, rows, core)));
+        let (ui_tx, ui_rx) = channel::<UiEvent>();
+        let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
+        let generation = Arc::new(AtomicU32::new(0));
+        let live = start_session(&config, &term, &ui_tx, &activity, &generation, 0)?;
+        Ok(Pane {
+            term,
+            events: ui_rx,
+            live: RefCell::new(live),
+            ui: ui_tx,
+            generation,
+            activity,
+            pointer: RefCell::default(),
+        })
+    }
+
+    /// Ends the session and starts `config` in the same pane, at the size the pane has now. What the old program left
+    /// in the emulator (the alternate screen, the modes it set, the reports of an agent) goes; the screen it drew and
+    /// the scrollback stay, and the new session draws below them. An error leaves the pane with no session.
+    pub fn restart(&self, mut config: SpawnConfig) -> std::io::Result<()> {
+        let mine = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        {
+            let live = self.live.borrow();
+            live.sessions.close(live.id);
+        }
+        {
+            let mut core = self.term.lock();
+            core.reset_for_new_session();
+            config.cols = u16::try_from(core.columns()).unwrap_or(config.cols);
+            config.rows = u16::try_from(core.rows()).unwrap_or(config.rows);
+        }
+        self.activity.store(Activity::Unknown.code(), Ordering::Relaxed);
+        let live = start_session(&config, &self.term, &self.ui, &self.activity, &self.generation, mine)?;
+        *self.live.borrow_mut() = live;
+        Ok(())
+    }
     /// Keyboard, paste and IME bytes from the UI thread.
     pub fn send(&self, bytes: Vec<u8>) {
         if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
@@ -272,7 +337,7 @@ impl Pane {
                 Some(Activity::from_code(code).after_submit().code())
             });
         }
-        let _ = self.input.send(bytes);
+        let _ = self.live.borrow().input.send(bytes);
     }
 
     pub fn activity(&self) -> Activity {
@@ -352,7 +417,7 @@ impl Pane {
             self.pointer.borrow_mut().handle(&mut core, event, grid, &modes)
         };
         for report in effects.reports.drain(..) {
-            let _ = self.input.send(report);
+            let _ = self.live.borrow().input.send(report);
         }
         effects
     }
@@ -399,26 +464,28 @@ impl Pane {
         if text.len() > MAX_CLIPBOARD_TEXT {
             return false;
         }
-        self.input.send((request.reply)(text).into_bytes()).is_ok()
+        self.live.borrow().input.send((request.reply)(text).into_bytes()).is_ok()
     }
 
     /// Closes the session (kills the process tree) while the process can still create threads. Drop only does it as a fallback:
     /// at process exit the main thread's TLS destructors run after thread creation is already denied, and
     /// Sessions::close spawns a thread (found by the vertical slice: panic ailed to spawn thread: Access is denied).
     pub fn shutdown(&self) {
-        self.sessions.close(self.id);
+        let live = self.live.borrow();
+        live.sessions.close(live.id);
     }
 
     /// A handle other threads can use to feed the writer thread (probe scripts).
     pub fn sender(&self) -> Sender<Vec<u8>> {
-        self.input.clone()
+        self.live.borrow().input.clone()
     }
 
     /// Term and PTY are resized together under the terminal lock so a snapshot never sees half a resize.
     pub fn resize(&self, cols: u16, rows: u16) {
         let mut core = self.term.lock();
         core.resize(cols as usize, rows as usize);
-        if let Ok(session) = self.sessions.get(self.id) {
+        let live = self.live.borrow();
+        if let Ok(session) = live.sessions.get(live.id) {
             let _ = session.resize(cols, rows);
         }
     }
@@ -465,7 +532,8 @@ impl Pane {
 
 impl Drop for Pane {
     fn drop(&mut self) {
-        self.sessions.close(self.id);
+        let live = self.live.borrow();
+        live.sessions.close(live.id);
     }
 }
 

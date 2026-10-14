@@ -22,10 +22,10 @@ fn cmd() -> std::path::PathBuf {
 
 /// Windows PowerShell 5.1, which every supported Windows has, running `script` and then waiting two seconds so
 /// the session outlives the output.
-fn powershell_session(script: &str, osc52: Osc52) -> Pane {
+fn powershell_config(script: &str) -> SpawnConfig {
     let mut args: Vec<String> = ["-NoProfile", "-NonInteractive", "-Command"].map(String::from).into();
     args.push(format!("{script}; Start-Sleep 2"));
-    let config = SpawnConfig {
+    SpawnConfig {
         program: system32("WindowsPowerShell\\v1.0\\powershell.exe"),
         args,
         cwd: None,
@@ -33,8 +33,12 @@ fn powershell_session(script: &str, osc52: Osc52) -> Pane {
         cols: 80,
         rows: 24,
         width_model: WidthModel::Wcswidth,
-    };
-    Pane::spawn_with(config, CoreConfig { osc52, ..CoreConfig::default() }).expect("powershell starts under ConPTY")
+    }
+}
+
+fn powershell_session(script: &str, osc52: Osc52) -> Pane {
+    Pane::spawn_with(powershell_config(script), CoreConfig { osc52, ..CoreConfig::default() })
+        .expect("powershell starts under ConPTY")
 }
 
 /// The first event `pick` accepts, within 20 seconds.
@@ -191,6 +195,36 @@ fn clearing_the_buffer_asks_a_shell_at_its_prompt_to_redraw_it_and_leaves_other_
     sleep(Duration::from_millis(800));
     pane.term.lock().snapshot(&mut snapshot);
     assert!(!snapshot.text().contains("key:"), "nothing was typed into the program");
+    pane.shutdown();
+}
+
+#[test]
+fn restarting_runs_a_new_session_in_the_same_pane_and_the_old_one_is_not_heard_from_again() {
+    let pane = powershell_session("Write-Host first-session", Osc52::OnlyCopy);
+    assert!(wait_for_text(&pane, |text| text.contains("first-session")));
+    pane.resize(100, 30);
+    pane.restart(powershell_config("Write-Host second-session")).expect("the new session starts");
+    assert!(wait_for_text(&pane, |text| text.contains("second-session")));
+    let mut snapshot = nekominal_term::Snapshot::default();
+    pane.term.lock().snapshot(&mut snapshot);
+    assert!(!snapshot.text().contains("first-session"), "the new session starts on a clear screen");
+    let found = pane.term.lock().search_all("first-session", 10).expect("a valid pattern");
+    assert!(!found.is_empty(), "what the old session drew is in the scrollback");
+    assert_eq!((snapshot.columns, snapshot.rows), (100, 30), "the new session has the size the pane has");
+
+    // The old session was told to end and the new one ends two seconds after its output: one end is reported, the
+    // new one, with its own code.
+    let mut exits = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        while let Ok(event) = pane.events.try_recv() {
+            if let UiEvent::Exit(code) = event {
+                exits.push(code);
+            }
+        }
+        sleep(Duration::from_millis(100));
+    }
+    assert_eq!(exits, [0]);
     pane.shutdown();
 }
 

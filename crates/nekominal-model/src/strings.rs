@@ -153,6 +153,7 @@ texts! {
     DialogPasteSize "dialog.pasteSize" "貼上 {0}？" "Paste {0}?";
     DialogCloseSessions "dialog.closeSessions" "關閉 {0} 個執行中的工作階段？" "Close running sessions ({0})?";
     DialogCloseTab "dialog.closeTab" "關閉「{0}」？" "Close \"{0}\"?";
+    DialogRestartSession "dialog.restartSession" "重新啟動「{0}」？" "Restart \"{0}\"?";
 
     // Messages: what happened, and the recovery when there is one.
     StatusExited "status.exited" "[已結束，代碼 {0}]" "[Exited with code {0}]";
@@ -160,6 +161,8 @@ texts! {
     StatusNoProfile "status.noProfile" "找不到可用的設定檔" "No usable profile found";
     StatusSettingsProblems "status.settingsProblems" "設定 JSON 有 {0} 個問題" "Settings file has {0} problems";
     StatusSettingsSaveFailed "status.settingsSaveFailed" "無法儲存設定：{0}" "Cannot save settings: {0}";
+    StatusSettingsLoadFailed "status.settingsLoadFailed" "無法讀取設定：{0}" "Cannot read settings: {0}";
+    StatusOpenFailed "status.openFailed" "無法開啟 {0}：{1}" "Cannot open {0}: {1}";
     StatusRestoreFailed "status.restoreFailed" "無法還原工作階段：{0}" "Cannot restore sessions: {0}";
     InfobarWidthModel "infobar.widthModel" "未使用隨附的 ConPTY，字元寬度可能不一致" "Bundled ConPTY is not in use, so character widths may not match";
     InfobarNoColor "infobar.noColor" "已設定 NO_COLOR，PowerShell 輸出不含色彩" "NO_COLOR is set, so PowerShell output has no color";

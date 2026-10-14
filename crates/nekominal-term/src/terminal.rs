@@ -1002,6 +1002,19 @@ impl TerminalCore {
         self.term.history_size()
     }
 
+    /// Another program takes the place of the one that ran. What the old one left in the emulator goes: the alternate
+    /// screen, the modes it set (mouse reports, bracketed paste, a changed scroll region), a keyboard protocol it
+    /// pushed and the reports of an agent. The screen it drew moves into the scrollback, so it stays to be read, and
+    /// the new program starts on a clear screen: it draws only the cells it means to, and anything left there would
+    /// stay.
+    pub fn reset_for_new_session(&mut self) {
+        self.feed(b"\x1b[?1049l\x1b[!p\x1b[?25h\x1b[0m\x1b[H\x1b[2J");
+        self.reset_keyboard_modes();
+        if self.agent.clear() {
+            self.events.push(CoreEvent::AgentRecordsDropped);
+        }
+    }
+
     /// The child exited: `working` / `blocked` records and a stale keyboard mode do not survive it.
     pub fn on_child_exit(&mut self) {
         if self.agent.drop_active() {

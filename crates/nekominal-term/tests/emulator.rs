@@ -900,6 +900,46 @@ fn osc52_policy_changes_apply_to_a_running_terminal_and_the_text_stays_out_of_de
 }
 
 #[test]
+fn a_new_session_starts_clean_and_what_the_old_one_drew_moves_into_the_scrollback() {
+    let mut core = core(30, 4);
+    for i in 0..6 {
+        feed(&mut core, &format!("old {i}\r\n"));
+    }
+    let history = core.history_size();
+    feed(&mut core, "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[?25l\x1b[2;3r\x1b[31m\x1b]7501;state=working:id=a\x07x");
+    core.take_events();
+    assert!(core.mode().contains(TermMode::ALT_SCREEN | TermMode::SGR_MOUSE | TermMode::BRACKETED_PASTE));
+    assert!(core.agent_summary().is_some());
+
+    core.reset_for_new_session();
+    let mode = core.mode();
+    for flag in [TermMode::ALT_SCREEN, TermMode::MOUSE_REPORT_CLICK, TermMode::SGR_MOUSE, TermMode::BRACKETED_PASTE] {
+        assert!(!mode.contains(flag), "{flag:?} is still set");
+    }
+    assert!(mode.contains(TermMode::SHOW_CURSOR), "the cursor is back");
+    assert!(core.agent_summary().is_none());
+    assert!(core.take_events().iter().any(|e| matches!(e, CoreEvent::AgentRecordsDropped)));
+    assert_eq!(snap(&mut core).text(), "", "the screen is clear for the new program");
+    assert_eq!(core.cursor_cell(), (0, 0));
+    assert!(core.history_size() > history, "the screen the old program drew went into the scrollback");
+    let found = core.search_all("old 5", 10).expect("a valid pattern");
+    assert_eq!(found.len(), 1, "and the old output can still be read there");
+    // The scroll region and the colours went too: a line break at the bottom scrolls the whole screen.
+    feed(&mut core, "\r\n\r\n\r\n\r\n");
+    assert_eq!(snap(&mut core).cursor.position.map(|(row, _)| row), Some(3));
+}
+
+#[test]
+fn a_new_session_on_the_main_screen_does_not_restore_a_saved_cursor() {
+    let mut core = core(30, 4);
+    feed(&mut core, "\x1b7top\r\nbottom");
+    core.reset_for_new_session();
+    assert_eq!((snap(&mut core).text(), core.cursor_cell()), (String::new(), (0, 0)));
+    feed(&mut core, "new");
+    assert_eq!(snap(&mut core).text(), "new");
+    assert_eq!(core.search_all("bottom", 10).expect("pattern").len(), 1, "what was on the screen is in the scrollback");
+}
+#[test]
 fn title_bell_and_cursor_events() {
     let mut core = core(20, 3);
     feed(&mut core, "\x1b]0;hello\x07\x1b]2;a;b\x1b\\\x1b]1;icon only\x07\x07");

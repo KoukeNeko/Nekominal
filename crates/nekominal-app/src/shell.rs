@@ -114,6 +114,8 @@ pub struct Shell {
     pub settings: RefCell<Settings>,
     pub keymap: RefCell<Keymap>,
     pub profiles: RefCell<Vec<Profile>>,
+    /// The shells found on this machine, which the profiles of the settings are merged with.
+    discovered: RefCell<Vec<DiscoveredProfile>>,
     pub glass: Cell<Glass>,
     look: Rc<Look>,
     tabs: RefCell<Vec<Rc<Tab>>>,
@@ -306,6 +308,7 @@ pub fn launch() -> Result<()> {
         settings: RefCell::new(settings),
         keymap: RefCell::new(built.keymap),
         profiles: RefCell::new(Vec::new()),
+        discovered: RefCell::new(Vec::new()),
         glass: Cell::new(glass),
         look,
         tabs: RefCell::new(Vec::new()),
@@ -422,8 +425,13 @@ impl Shell {
     }
 
     fn set_profiles(self: &Rc<Self>, found: &[nekominal_pty::profiles::Profile]) {
-        let discovered: Vec<DiscoveredProfile> = found.iter().map(discovered).collect();
-        *self.profiles.borrow_mut() = profiles::merge(&discovered, &self.settings.borrow().profiles);
+        *self.discovered.borrow_mut() = found.iter().map(discovered).collect();
+        self.merge_profiles();
+    }
+
+    /// The profiles are what was discovered plus what the settings add; the menu of new tabs follows them.
+    fn merge_profiles(self: &Rc<Self>) {
+        *self.profiles.borrow_mut() = profiles::merge(&self.discovered.borrow(), &self.settings.borrow().profiles);
         if let Err(e) = self.build_profile_menu() {
             log(&format!("profile menu: {e}"));
         }
@@ -1577,6 +1585,115 @@ impl Shell {
         menu.ShowAt(&ui(&pane.host)?, Point { x: x as f32, y: y as f32 })
     }
     // ---------------------------------------------------------------------------------------------
+    // Restarting a session, the settings file
+    // ---------------------------------------------------------------------------------------------
+
+    /// Restarts the program of a pane. A program that already ended is started again without asking; one that still
+    /// does work asks, as closing it would.
+    fn request_restart(self: &Rc<Self>, pane: &Rc<PaneView>) {
+        let id = pane.id;
+        if self.settings.borrow().should_confirm_close(u32::from(pane.is_busy())) {
+            let title = self.selected_tab().map(|tab| tab.title.borrow().clone()).unwrap_or_default();
+            let this = self.clone();
+            self.confirm(tf(Text::DialogRestartSession, &[&title]), Text::PaneRestart, move || this.restart_pane(id));
+        } else {
+            self.restart_pane(id);
+        }
+    }
+
+    /// Starts the profile of the pane again in the same pane, in the directory it last reported.
+    fn restart_pane(self: &Rc<Self>, id: PaneId) {
+        let Some((tab, pane)) = self.tabs.borrow().iter().find_map(|tab| tab.pane(id).map(|pane| (tab.clone(), pane)))
+        else {
+            return;
+        };
+        let Some(profile) = self.profile_by_id(&pane.profile_id).or_else(|| self.default_profile()) else { return };
+        let cwd = pane.cwd.borrow().clone();
+        match pane.pane.restart(self.spawn_config(&profile, cwd.as_deref())) {
+            Ok(()) => {
+                pane.exited.set(None);
+                pane.attention.set(None);
+                pane.progress.set(None);
+                *pane.note.borrow_mut() = None;
+                *pane.title.borrow_mut() = String::new();
+                log(&format!("pane {id} restarted as '{}'", profile.name));
+                self.refresh_status(&tab);
+                self.refresh_titles();
+            }
+            Err(e) => self.show_message(&tf(Text::StatusSpawnFailed, &[&profile.name, &e]), InfoBarSeverity::Error),
+        }
+    }
+
+    /// Opens `settings.json` with the program Windows has for it. A file that does not exist yet is written first, from
+    /// the settings in effect, so there is something to edit.
+    fn open_settings_file(self: &Rc<Self>) {
+        let Some(path) = store::settings_path() else { return };
+        self.flush_settings();
+        if !path.exists()
+            && let Err(e) = store::save(&path, &settings::serialize(&self.settings.borrow()))
+        {
+            return self.show_message(&tf(Text::StatusSettingsSaveFailed, &[&e]), InfoBarSeverity::Warning);
+        }
+        log(&format!("opening the settings file {}", path.display()));
+        if let Err(e) = crate::open::shell_open(&path.to_string_lossy()) {
+            self.show_message(&tf(Text::StatusOpenFailed, &[&path.display(), &e]), InfoBarSeverity::Warning);
+        }
+    }
+
+    /// Reads `settings.json` again and applies it to the running window. What the file gets wrong is reported the way
+    /// it is at start-up, and a file that is fine takes the report away. The language is read at start-up only.
+    fn reload_settings(self: &Rc<Self>) {
+        let Some(path) = store::settings_path() else { return };
+        // A change made in the window a moment ago is still waiting to be written: it must not be read as old text.
+        self.flush_settings();
+        let text = match store::load(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                return self.show_message(&tf(Text::StatusSettingsLoadFailed, &[&e]), InfoBarSeverity::Warning);
+            }
+        };
+        let parsed = settings::parse(text.as_deref());
+        let built = keymap::build_keymap(commands::default_bindings(), &parsed.settings.keybindings);
+        let problems = parsed.problems.len() + built.problems.len();
+        let before = self.settings.replace(parsed.settings);
+        *self.keymap.borrow_mut() = built.keymap;
+        self.apply_loaded_settings(&before);
+        if problems > 0 {
+            self.show_message(&tf(Text::StatusSettingsProblems, &[&problems]), InfoBarSeverity::Warning);
+        } else {
+            let _ = self.ui.message_bar.SetIsOpen(false);
+        }
+        log(&format!("settings reloaded from {}: {problems} problems", path.display()));
+    }
+
+    /// Brings what is on screen in line with `self.settings`, which were `before`.
+    fn apply_loaded_settings(self: &Rc<Self>, before: &Settings) {
+        let now = self.settings.borrow().clone();
+        // The colours, the backdrop and the opacity: what a slider asked for and was not applied yet is dropped.
+        *self.pending_opacity.borrow_mut() = logic::PendingOpacity::default();
+        if let Err(e) = self.apply_glass() {
+            log(&format!("apply_glass: {e}"));
+        }
+        self.sync_appearance_controls();
+        // The font: the renderer takes a new size at once, a new family or line height needs a new renderer.
+        self.zoom_steps.set(0);
+        self.look.font_pt.set(now.font.size as f32);
+        self.look.line_height.set(now.font.line_height as f32);
+        *self.look.families.borrow_mut() = now.font.family.clone();
+        let new_renderer = now.font.family != before.font.family || now.font.line_height != before.font.line_height;
+        for tab in self.tabs.borrow().iter() {
+            for pane in tab.panes.borrow().iter() {
+                pane.apply_look(new_renderer);
+                pane.pane.set_osc52(logic::osc52_for(now.osc52));
+            }
+        }
+        // The shortcuts show in tooltips and menus, and the profiles of the file may differ.
+        self.set_tooltips();
+        *self.pane_menu.borrow_mut() = None;
+        self.merge_profiles();
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Messages and dialogs
     // ---------------------------------------------------------------------------------------------
 
@@ -1861,10 +1978,13 @@ impl Shell {
                     let opacity = self.settings.borrow().appearance.opacity_after(steps);
                     self.set_opacity(opacity);
                 }
-                // Restart and the settings file belong to the terminal features that are not wired yet.
-                Command::PaneRestart
-                | Command::AppOpenSettingsFile
-                | Command::AppReloadSettings => log(&format!("command {} is not wired yet", command.id())),
+                Command::PaneRestart => {
+                    if let Some(pane) = &focused {
+                        self.request_restart(pane);
+                    }
+                }
+                Command::AppOpenSettingsFile => self.open_settings_file(),
+                Command::AppReloadSettings => self.reload_settings(),
             }
             Ok(())
         })();
