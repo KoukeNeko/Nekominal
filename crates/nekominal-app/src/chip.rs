@@ -14,7 +14,7 @@ use windows_reference::IReference;
 use nekominal_model::strings::Text;
 
 use crate::glass::Glass;
-use crate::i18n::{lang, t};
+use crate::i18n::{lang, t, tf};
 use crate::logic::{Attention, CHIP_MAX_WIDTH, TabState, TabStatus, reorder_target, shows_ordinal};
 use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
@@ -56,7 +56,19 @@ const CHIP_XAML: &str = r#"
                FontSize="12.5" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Text="{title}"/>
     <TextBlock x:Name="Ordinal" Grid.Column="1" VerticalAlignment="Center" FontFamily="Segoe UI Variable Text"
                FontSize="12.5" Visibility="Collapsed" IsHitTestVisible="False"/>
-    <Border x:Name="Close" Grid.Column="2" Width="24" Height="24" CornerRadius="{StaticResource NkCornerRadius}" Background="Transparent"
+    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+    <!-- Only a tab with several panes has this: the split icon (filled while a pane is zoomed) and how many. -->
+    <StackPanel x:Name="PaneMark" Orientation="Horizontal" Spacing="3" Margin="0,0,4,0" VerticalAlignment="Center"
+                Visibility="Collapsed" IsHitTestVisible="False">
+      <Viewbox Width="11" Height="11">
+        <Canvas Width="16" Height="16">
+          <Path x:Name="PaneIcon" StrokeThickness="1.6" StrokeLineJoin="Round"
+                Data="M3,2.75 H13 A1.25,1.25 0 0 1 14.25,4 V12 A1.25,1.25 0 0 1 13,13.25 H3 A1.25,1.25 0 0 1 1.75,12 V4 A1.25,1.25 0 0 1 3,2.75 Z M8.5,2.75 V13.25"/>
+        </Canvas>
+      </Viewbox>
+      <TextBlock x:Name="PaneCount" FontFamily="Segoe UI Variable Text" FontSize="11.5" VerticalAlignment="Center"/>
+    </StackPanel>
+    <Border x:Name="Close" Width="24" Height="24" CornerRadius="{StaticResource NkCornerRadius}" Background="Transparent"
             VerticalAlignment="Center" Opacity="0">
       <Border.OpacityTransition>
         <ScalarTransition Duration="0:0:0.14"/>
@@ -67,6 +79,7 @@ const CHIP_XAML: &str = r#"
       <TextBlock x:Name="CloseGlyph" Text="&#xE711;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
                  HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>
     </Border>
+    </StackPanel>
   </Grid>
 </Border>"#;
 
@@ -103,6 +116,9 @@ pub struct Chip {
     /// The title as a program or the user set it; tooltip and accessible name add the status to it.
     title_text: RefCell<String>,
     ordinal: TextBlock,
+    pane_mark: StackPanel,
+    pane_icon: Shape,
+    pane_count: TextBlock,
     content: Grid,
     close: Border,
     close_glyph: TextBlock,
@@ -114,6 +130,9 @@ pub struct Chip {
     close_pressed: Cell<bool>,
     /// The middle button went down on the chip and has not come up.
     middle_down: Cell<bool>,
+    /// How many panes the tab has and whether one of them is zoomed.
+    panes: Cell<usize>,
+    zoomed: Cell<bool>,
     status: RefCell<TabStatus>,
     /// The chip is in the visible part of the strip: only then does a working chip spin.
     in_view: Cell<bool>,
@@ -185,6 +204,9 @@ impl Chip {
             title: find(&element, "Title")?,
             title_text: RefCell::new(title.to_owned()),
             ordinal: find(&element, "Ordinal")?,
+            pane_mark: find(&element, "PaneMark")?,
+            pane_icon: find(&element, "PaneIcon")?,
+            pane_count: find(&element, "PaneCount")?,
             content: find(&element, "Content")?,
             close: find(&element, "Close")?,
             close_glyph: find(&element, "CloseGlyph")?,
@@ -194,6 +216,8 @@ impl Chip {
             close_hot: Cell::new(false),
             close_pressed: Cell::new(false),
             middle_down: Cell::new(false),
+            panes: Cell::new(1),
+            zoomed: Cell::new(false),
             status: RefCell::new(TabStatus::default()),
             in_view: Cell::new(true),
             glass: Cell::new(glass),
@@ -222,9 +246,12 @@ impl Chip {
         let separator = if lang() == nekominal_model::strings::Lang::ZhTw { "，" } else { ", " };
         let name = word.map_or_else(|| title.clone(), |word| format!("{title}{separator}{word}"));
         let mut tip = title.clone();
-        for line in word.into_iter().chain(status.message.as_deref()) {
+        let panes = (self.panes.get() >= 2).then(|| tf(Text::TabPaneCount, &[&self.panes.get()]));
+        let zoomed = self.zoomed.get().then(|| t(Text::TabZoomed).to_owned());
+        let lines = word.map(str::to_owned).into_iter().chain(status.message.clone()).chain(panes).chain(zoomed);
+        for line in lines {
             tip.push('\n');
-            tip.push_str(line);
+            tip.push_str(&line);
         }
         let _ = AutomationProperties::SetName(&self.root, &name);
         let _ = AutomationProperties::SetItemStatus(&self.root, word.unwrap_or_default());
@@ -235,7 +262,13 @@ impl Chip {
     pub fn natural_width(&self) -> f64 {
         let unbounded = Size { width: f32::INFINITY, height: f32::INFINITY };
         let title = ui(&self.title).and_then(|title| title.Measure(unbounded).and_then(|()| title.DesiredSize()));
-        (CHROME_WIDTH + title.map_or(0.0, |size| f64::from(size.width))).min(CHIP_MAX_WIDTH)
+        let mark = if self.panes.get() >= 2 {
+            ui(&self.pane_mark).and_then(|mark| mark.Measure(unbounded).and_then(|()| mark.DesiredSize())).ok()
+        } else {
+            None
+        };
+        let chrome = CHROME_WIDTH + mark.map_or(0.0, |size| f64::from(size.width));
+        (chrome + title.map_or(0.0, |size| f64::from(size.width))).min(CHIP_MAX_WIDTH)
     }
 
     /// Gives the chip its width in the strip; a chip too narrow for a title shows its number instead.
@@ -253,8 +286,28 @@ impl Chip {
             let _ = ui(&self.title).and_then(|title| title.SetOpacity(if narrow { 0.0 } else { 1.0 }));
             let _ = ui(&self.ordinal).and_then(|ordinal| ordinal.SetVisibility(visibility(narrow)));
             let _ = ui(&self.close).and_then(|close| close.SetVisibility(visibility(!narrow)));
+            self.show_pane_mark();
             self.refresh();
         }
+    }
+
+    /// How many panes the tab has and whether one is zoomed. A single pane shows nothing; with several the chip
+    /// shows the split icon (filled while a pane is zoomed) and the count, and says so in its tooltip.
+    pub fn set_panes(&self, count: usize, zoomed: bool) {
+        if self.panes.replace(count) == count && self.zoomed.replace(zoomed) == zoomed {
+            return;
+        }
+        self.zoomed.set(zoomed);
+        let _ = self.pane_count.SetText(&count.to_string());
+        self.show_pane_mark();
+        self.update_labels();
+        self.refresh();
+    }
+
+    /// The mark is there for a tab with several panes, when the chip is wide enough for a title.
+    fn show_pane_mark(&self) {
+        let shown = self.panes.get() >= 2 && !self.narrow.get();
+        let _ = ui(&self.pane_mark).and_then(|mark| mark.SetVisibility(visibility(shown)));
     }
 
     /// Tells assistive technology and the chip itself where it is in the strip (zero-based `index` of `count`).
@@ -319,6 +372,11 @@ impl Chip {
             self.ordinal.SetFontWeight(FontWeight { weight: if selected { 600 } else { 400 } })?;
             self.ordinal.SetForeground(&solid_brush(if selected { glass.text() } else { glass.text_secondary() })?)?;
             self.paint_status(glass, selected)?;
+            let ink = if selected { glass.text() } else { glass.text_secondary() };
+            self.pane_icon.SetStroke(&solid_brush(ink)?)?;
+            // Filled while a pane is zoomed.
+            self.pane_icon.SetFill(&solid_brush(if self.zoomed.get() { ink } else { fade(ink) })?)?;
+            self.pane_count.SetForeground(&solid_brush(ink)?)?;
             ui(&self.close)?.SetOpacity(if selected || hovered { 1.0 } else { 0.0 })?;
             let close_fill = if self.close_hot.get() { glass.pressed() } else { fade(glass.pressed()) };
             self.close.SetBackground(&solid_brush(close_fill)?)?;

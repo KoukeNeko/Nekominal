@@ -8,11 +8,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use nekominal_model::layout::{Axis, Direction, Node, PaneId, Splitter, UNIT};
+use nekominal_model::strings::Text;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 
 use crate::chip::{Chip, TabId};
 use crate::glass::Glass;
+use crate::i18n::{t, tf};
 use crate::logic::{PxRect, divider_px, pane_px_rect, ratio_at, splitter_px_rect};
 use crate::pane_view::PaneView;
 use crate::util::{Ext as _, find, load_xaml, solid_brush, ui, visibility};
@@ -23,6 +25,16 @@ const DIVIDER_HIT: f64 = 8.0;
 const FOCUS_LINE: f64 = 2.0;
 /// One step of the resize-pane command, as a fraction of the tab area.
 pub const RESIZE_STEP: f64 = 0.05;
+
+/// The label in the corner of a zoomed pane: which pane of how many, a press brings the others back.
+const BADGE_XAML: &str = r#"
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" CornerRadius="{StaticResource NkCornerRadius}"
+        BorderThickness="1" Padding="8,3" Visibility="Collapsed">
+  <TextBlock x:Name="BadgeText" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" FontFamily="Segoe UI Variable Text" FontSize="12"/>
+</Border>"#;
+
+/// Margin between the corner label and the edges of the tab area, in DIP.
+const BADGE_MARGIN: f64 = 8.0;
 
 const DIVIDER_XAML: &str = r##"
 <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -57,6 +69,14 @@ pub struct Tab {
     glass: Cell<Glass>,
     dividers: RefCell<Vec<Rc<Divider>>>,
     focus_line: Border,
+    /// The corner label of a zoomed pane.
+    badge: Border,
+    badge_text: TextBlock,
+    /// A warning line over the top of each unfocused pane that waits for the user; reused between layouts.
+    attention_lines: RefCell<Vec<Border>>,
+    /// Where the last layout put every shown pane, and at what scale.
+    pane_rects: RefCell<Vec<(PaneId, PxRect)>>,
+    scale: Cell<f64>,
     revokers: RefCell<Vec<EventRevoker>>,
 }
 
@@ -65,7 +85,15 @@ fn rasterization_scale(element: &impl Interface) -> f64 {
 }
 
 impl Tab {
-    pub fn new(id: TabId, chip: Rc<Chip>, first: Rc<PaneView>, title: String, glass: Glass) -> Result<Rc<Tab>> {
+    /// `on_unzoom` runs when the corner label of a zoomed pane is pressed.
+    pub fn new(
+        id: TabId,
+        chip: Rc<Chip>,
+        first: Rc<PaneView>,
+        title: String,
+        glass: Glass,
+        on_unzoom: Rc<dyn Fn()>,
+    ) -> Result<Rc<Tab>> {
         let area = Canvas::new()?;
         let fe: FrameworkElement = area.cast()?;
         fe.SetHorizontalAlignment(HorizontalAlignment::Stretch)?;
@@ -74,6 +102,7 @@ impl Tab {
         focus_line.cast::<FrameworkElement>()?.SetHeight(FOCUS_LINE)?;
         ui(&focus_line)?.SetIsHitTestVisible(false)?;
         ui(&focus_line)?.SetVisibility(Visibility::Collapsed)?;
+        let badge_element = load_xaml(BADGE_XAML)?;
         let first_id = first.id;
         let tab = Rc::new(Tab {
             id,
@@ -89,11 +118,25 @@ impl Tab {
             glass: Cell::new(glass),
             dividers: RefCell::new(Vec::new()),
             focus_line,
+            badge: badge_element.cast()?,
+            badge_text: find(&badge_element, "BadgeText")?,
+            attention_lines: RefCell::new(Vec::new()),
+            pane_rects: RefCell::new(Vec::new()),
+            scale: Cell::new(1.0),
             revokers: RefCell::new(Vec::new()),
         });
+        tab.restyle_badge(glass);
         let children = tab.area.cast::<Panel>()?.Children()?;
         children.Append(&first.host)?;
         children.Append(&tab.focus_line)?;
+        children.Append(&tab.badge)?;
+        let pressed = ui(&tab.badge)?.PointerPressed(cb!("zoom label", |_, args| {
+            if let Some(args) = args.as_ref() {
+                let _ = args.SetHandled(true);
+            }
+            on_unzoom();
+        }))?;
+        tab.revokers.borrow_mut().push(pressed);
         let weak = Rc::downgrade(&tab);
         let size_changed = fe.SizeChanged(cb!("tab size", |_, _| {
             if let Some(tab) = weak.upgrade() {
@@ -149,7 +192,23 @@ impl Tab {
     pub fn set_glass(self: &Rc<Self>, glass: Glass) {
         self.glass.set(glass);
         self.chip.set_glass(glass);
+        self.restyle_badge(glass);
         self.relayout();
+    }
+
+    fn restyle_badge(&self, glass: Glass) {
+        if let (Ok(fill), Ok(border), Ok(ink)) =
+            (solid_brush(glass.panel()), solid_brush(glass.panel_border()), solid_brush(glass.text()))
+        {
+            let _ = self.badge.SetBackground(&fill);
+            let _ = self.badge.SetBorderBrush(&border);
+            let _ = self.badge_text.SetForeground(&ink);
+        }
+    }
+
+    /// Tells the chip how many panes the tab has and whether one is zoomed.
+    fn sync_chip(&self) {
+        self.chip.set_panes(self.pane_count(), self.zoomed.get().is_some());
     }
 
     /// Dim every pane but the focused one while the tab has several.
@@ -171,6 +230,7 @@ impl Tab {
         self.area.cast::<Panel>()?.Children()?.InsertAt(0, &pane.host)?;
         self.panes.borrow_mut().push(pane);
         self.focused.set(id);
+        self.sync_chip();
         self.relayout();
         self.update_focus_look();
         Ok(())
@@ -206,6 +266,7 @@ impl Tab {
         {
             self.focused.set(next);
         }
+        self.sync_chip();
         self.relayout();
         self.update_focus_look();
         true
@@ -217,6 +278,7 @@ impl Tab {
         } else if self.pane_count() > 1 {
             self.zoomed.set(Some(self.focused.get()));
         }
+        self.sync_chip();
         self.relayout();
     }
 
@@ -250,6 +312,7 @@ impl Tab {
         let layout = self.layout.borrow().clone();
         let zoomed = self.zoomed.get();
         let mut focused_rect = None;
+        let mut rects = Vec::new();
         for (id, rect) in layout.layout_rects(UNIT) {
             let Some(pane) = self.pane(id) else { continue };
             let shown = zoomed.is_none_or(|z| z == id);
@@ -260,13 +323,74 @@ impl Tab {
             }
             let px = pane_px_rect(if zoomed.is_some() { UNIT } else { rect }, area_px, divider);
             place(&pane.host, px, scale);
+            rects.push((id, px));
             if id == self.focused.get() {
                 focused_rect = Some(px);
             }
         }
+        *self.pane_rects.borrow_mut() = rects;
+        self.scale.set(scale);
         let splitters = if zoomed.is_some() { Vec::new() } else { layout.splitters(UNIT) };
         self.sync_dividers(&splitters, area_px, divider, scale);
         self.place_focus_line(focused_rect, scale);
+        self.place_badge(width);
+        self.update_attention_lines();
+    }
+
+    /// The corner label of the zoomed pane: its place among the panes, top right.
+    fn place_badge(&self, area_width: f64) {
+        let zoomed = self.zoomed.get();
+        let _ = ui(&self.badge).and_then(|badge| badge.SetVisibility(visibility(zoomed.is_some())));
+        let Some(id) = zoomed else { return };
+        let order = self.layout.borrow().pane_ids();
+        let position = order.iter().position(|pane| *pane == id).map_or(1, |index| index + 1);
+        let _ = self.badge_text.SetText(&tf(Text::FindCount, &[&position, &order.len()]));
+        let name = t(Text::TabZoomed);
+        let _ = AutomationProperties::SetName(&self.badge, name);
+        let _ = ToolTipService::SetToolTip(&self.badge, &windows_reference::IReference::from(name));
+        let size = ui(&self.badge).and_then(|badge| {
+            badge.Measure(Size { width: f32::INFINITY, height: f32::INFINITY })?;
+            badge.DesiredSize()
+        });
+        let width = size.map_or(0.0, |size| f64::from(size.width));
+        let _ = Canvas::SetLeft(&self.badge, (area_width - width - BADGE_MARGIN).max(0.0));
+        let _ = Canvas::SetTop(&self.badge, BADGE_MARGIN);
+        let _ = Canvas::SetZIndex(&self.badge, 30);
+    }
+
+    /// A warning line over the top of every pane that waits for the user and is not the focused one, in the colour of
+    /// the scheme's warning. The focus line and a warning line are never on the same pane.
+    pub fn update_attention_lines(&self) {
+        let (scale, focused) = (self.scale.get(), self.focused.get());
+        let wanted: Vec<PxRect> = self
+            .pane_rects
+            .borrow()
+            .iter()
+            .filter(|(id, _)| *id != focused && self.pane(*id).is_some_and(|pane| pane.needs_response.get()))
+            .map(|(_, rect)| *rect)
+            .collect();
+        let mut lines = self.attention_lines.borrow_mut();
+        let Ok(children) = self.area.cast::<Panel>().and_then(|panel| panel.Children()) else { return };
+        while lines.len() < wanted.len() {
+            let Ok(line) = Border::new() else { return };
+            let _ = line.cast::<FrameworkElement>().and_then(|line| line.SetHeight(FOCUS_LINE));
+            let _ = ui(&line).and_then(|line| line.SetIsHitTestVisible(false));
+            let _ = Canvas::SetZIndex(&line, 20);
+            let _ = children.Append(&line);
+            lines.push(line);
+        }
+        let warning = self.glass.get().mark(self.glass.get().warning);
+        for (index, line) in lines.iter().enumerate() {
+            let shown = wanted.get(index);
+            let _ = ui(line).and_then(|line| line.SetVisibility(visibility(shown.is_some())));
+            let Some(px) = shown else { continue };
+            if let Ok(brush) = solid_brush(warning) {
+                let _ = line.SetBackground(&brush);
+            }
+            let _ = Canvas::SetLeft(line, f64::from(px.x) / scale);
+            let _ = Canvas::SetTop(line, f64::from(px.y) / scale);
+            let _ = line.cast::<FrameworkElement>().and_then(|line| line.SetWidth(f64::from(px.w) / scale));
+        }
     }
 
     fn place_focus_line(&self, rect: Option<PxRect>, scale: f64) {

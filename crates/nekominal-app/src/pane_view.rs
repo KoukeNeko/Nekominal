@@ -90,6 +90,9 @@ pub struct PaneView {
     pub attention: Cell<Option<Attention>>,
     /// What the notification said.
     pub note: RefCell<Option<String>>,
+    /// The pane waits for the user (`logic::needs_response`): while it is not the focused one of its tab it has a
+    /// warning line.
+    pub needs_response: Cell<bool>,
     /// Progress the program reports with OSC 9;4.
     pub progress: Cell<Option<Reported>>,
     look: Rc<Look>,
@@ -173,6 +176,7 @@ impl PaneView {
                 exited: Cell::new(None),
                 attention: Cell::new(None),
                 note: RefCell::new(None),
+                needs_response: Cell::new(false),
                 progress: Cell::new(None),
                 look,
                 render: RefCell::new(Render {

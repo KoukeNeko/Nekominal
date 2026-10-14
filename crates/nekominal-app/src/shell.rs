@@ -1019,9 +1019,8 @@ impl Shell {
 
     /// What the tab shows: that of its most urgent pane, read from the live state of every pane.
     fn refresh_status(&self, tab: &Rc<Tab>) {
-        let signals: Vec<PaneSignal> = tab
-            .panes
-            .borrow()
+        let panes = tab.panes.borrow().clone();
+        let signals: Vec<PaneSignal> = panes
             .iter()
             .map(|pane| PaneSignal {
                 agent: pane.pane.agent_summary(),
@@ -1030,6 +1029,10 @@ impl Shell {
                 note: pane.note.borrow().clone(),
             })
             .collect();
+        for (pane, signal) in panes.iter().zip(&signals) {
+            pane.needs_response.set(logic::needs_response(signal));
+        }
+        tab.update_attention_lines();
         let status = logic::tab_status(&signals);
         if tab.chip.state() != status.state {
             log(&format!("tab {} status {:?}", tab.id, status.state));
@@ -1037,10 +1040,11 @@ impl Shell {
         tab.chip.set_status(status);
     }
 
-    /// The user has seen the tab: bells, notifications and what a finished or failed agent reported are
-    /// acknowledged. What still waits (a blocked or working agent) stays.
+    /// The user has seen the focused pane of the tab: its bells, notifications and what a finished or failed agent
+    /// reported are acknowledged. What still waits (a blocked or working agent) stays, and so does what another
+    /// pane of the tab reported: that one has its warning line until it is focused.
     fn mark_seen(&self, tab: &Rc<Tab>) {
-        for pane in tab.panes.borrow().iter() {
+        if let Some(pane) = tab.focused_pane() {
             pane.attention.set(None);
             *pane.note.borrow_mut() = None;
             pane.pane.dismiss_finished();
@@ -1168,7 +1172,15 @@ impl Shell {
             }
         });
         let chip = Chip::new(id, &title, self.glass.get(), &self.ui.tab_strip, on_event)?;
-        let tab = Tab::new(id, chip.clone(), pane, title, self.glass.get())?;
+        let on_unzoom: Rc<dyn Fn()> = {
+            let weak = Rc::downgrade(self);
+            Rc::new(move || {
+                if let Some(shell) = weak.upgrade() {
+                    shell.run(Command::PaneZoom);
+                }
+            })
+        };
+        let tab = Tab::new(id, chip.clone(), pane, title, self.glass.get(), on_unzoom)?;
         self.ui.tab_strip.cast::<Panel>()?.Children()?.Append(&chip.root)?;
         self.ui.terminal_area.cast::<Panel>()?.Children()?.Append(&tab.area)?;
         ui(&tab.area)?.SetVisibility(Visibility::Collapsed)?;
@@ -1340,6 +1352,7 @@ impl Shell {
         if let Some(new) = tab.pane(id) {
             new.focus();
         }
+        self.layout_tabs();
         Ok(())
     }
 
@@ -1624,6 +1637,7 @@ impl Shell {
                 Command::PaneZoom => {
                     if let Some(tab) = &tab {
                         tab.toggle_zoom();
+                        self.layout_tabs();
                         self.focus_active_pane();
                     }
                 }

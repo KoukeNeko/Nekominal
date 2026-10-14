@@ -146,6 +146,13 @@ pub struct TabStatus {
     pub message: Option<String>,
 }
 
+/// The pane wants an answer or a look: a bell, a notification or a failed exit that nobody has seen, or an agent
+/// that waits for an answer or failed. A pane in the tab that is not the focused one then gets a warning line.
+pub fn needs_response(pane: &PaneSignal) -> bool {
+    pane.attention.is_some()
+        || pane.agent.as_ref().is_some_and(|r| matches!(r.state, AgentState::Blocked | AgentState::Error))
+}
+
 /// A bell or a notification ranks above nothing and below every agent state.
 const ATTENTION_RANK: u8 = 1;
 
@@ -744,6 +751,20 @@ mod tests {
         assert_eq!(tab_status(&[progress, agent(AgentState::Blocked)]).state, TabState::Blocked);
         let busy = PaneSignal { progress: Some(Reported::Indeterminate), ..PaneSignal::default() };
         assert_eq!(tab_status(&[busy]), TabStatus { state: TabState::Working, ..TabStatus::default() });
+    }
+
+    #[test]
+    fn a_pane_needs_a_response_for_a_bell_a_notification_an_exit_or_an_agent_that_waits_or_failed() {
+        assert!(!needs_response(&PaneSignal::default()));
+        for kind in [Attention::Bell, Attention::Notification, Attention::Exit] {
+            assert!(needs_response(&PaneSignal { attention: Some(kind), ..PaneSignal::default() }), "{kind:?}");
+        }
+        assert!(needs_response(&agent(AgentState::Blocked)));
+        assert!(needs_response(&agent(AgentState::Error)));
+        for state in [AgentState::Working, AgentState::Done, AgentState::Idle] {
+            assert!(!needs_response(&agent(state)), "{state:?}");
+        }
+        assert!(!needs_response(&PaneSignal { progress: Some(Reported::Percent(10)), ..PaneSignal::default() }));
     }
 
     #[test]

@@ -10,6 +10,7 @@
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
+#   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-All
 #
@@ -532,10 +533,57 @@ function Scenario-Close {
     } -NoShot
 }
 
+# Pane markers: a tab with one pane shows no count, three panes show the count (and "Zoomed" in a corner label while one
+# is zoomed, a press on it brings the others back), and an unfocused pane that rang has a warning line over its top
+# edge until it is focused (the focus line and the warning line are never on the same pane).
+function Scenario-Panes {
+    Run-App 'panes' @{} {
+        First-Prompt
+        $texts = {
+            $chip = Get-Chips | Select-Object -First 1
+            $e = Get-Element $chip.Name
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+            ($e.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join '|'
+        }
+        '1 pane: chip texts "{0}", panes {1}' -f (& $texts), (Count-Panes)
+        Split-Right; Split-Down
+        '3 panes: chip texts "{0}", panes {1}' -f (& $texts), (Count-Panes)
+        Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 900
+        $badge = Get-Element '已縮放'
+        $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+        'zoomed: corner label present = {0}, text "{1}", chip texts "{2}"' -f [bool]$badge, (($badge.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join ''), (& $texts)
+        Shot-Safe (Shot-Path 'panes-zoomed') | Out-Null
+        $b = $badge.Current.BoundingRectangle
+        Click-At ([int]($b.X + $b.Width / 2)) ([int]($b.Y + $b.Height / 2)) 'left' 900
+        'pressed the label: corner label present = {0}, panes shown {1}' -f [bool](Get-Element '已縮放'), (Count-Panes)
+        # a bell in the pane that is not focused
+        $esc = '$e=[char]27;$a=[char]7;'
+        Type-Line ($esc + 'Start-Sleep 3; Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 300
+        Chord @(0x12) 0x25; Start-Sleep -Milliseconds 5000
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $termCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NekominalTerminal')
+        $rects = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond) | ForEach-Object { $_.Current.BoundingRectangle })
+        $ringing = $rects | Sort-Object { $_.Y * 10000 + $_.X } | Select-Object -Last 1
+        $win = Win-Rect
+        $sample = {
+            param($rect, $path)
+            Shot-Safe $path | Out-Null
+            $bmp = [System.Drawing.Bitmap]::FromFile($path)
+            try {
+                $x = [int]($rect.X - $win.Left + 40); $y0 = [int]($rect.Y - $win.Top)
+                (0..4 | ForEach-Object { $c = $bmp.GetPixel($x, $y0 + $_); '({0},{1},{2})' -f $c.R, $c.G, $c.B }) -join ' '
+            } finally { $bmp.Dispose() }
+        }
+        'top rows of the pane that rang (unfocused): ' + (& $sample $ringing (Shot-Path 'panes-warning'))
+        Click-At ([int]($ringing.X + $ringing.Width / 2)) ([int]($ringing.Y + $ringing.Height / 2)) 'left' 900
+        'top rows of it once focused: ' + (& $sample $ringing (Shot-Path 'panes-focused'))
+    } -NoShot
+}
+
 function Get-Items {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }

@@ -116,6 +116,7 @@ texts! {
     TabListPlaceholder "tabs.placeholder" "輸入分頁名稱" "Type a tab name";
     TabListEmpty "tabs.empty" "沒有符合的分頁" "No matching tabs";
     TabPaneCount "tab.paneCount" "{0} 個窗格" "{0} panes";
+    TabZoomed "tab.zoomed" "已縮放" "Zoomed";
 
     // Tab and pane indicators.
     AgentWorking "agent.working" "執行中" "Running";
