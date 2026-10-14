@@ -8,8 +8,10 @@ members = [
     "crates/nekominal-term",
     "crates/nekominal-input",
     "crates/nekominal-render",
+    "tools/winprobe",
     "crates/nekominal-winui-sys",
     "crates/nekominal-app",
+    "crates/nekominal-slice",
     "crates/nekominal-pane",
     "crates/nekominal-winui",
 ]

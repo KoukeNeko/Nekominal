@@ -1,0 +1,10 @@
+[package]
+name = "winprobe"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Win32 console input probe: logs the INPUT_RECORDs a console program receives"
+publish = false
+
+[dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Console"] }
