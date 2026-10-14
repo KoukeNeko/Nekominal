@@ -24,7 +24,9 @@ use nekominal_pty::{
 };
 use nekominal_term::{
     CoreConfig, CoreEvent, TerminalCore,
+    agent_status::{AgentRecord, Report},
     alacritty_terminal::{grid::Scroll, sync::FairMutex},
+    osc::{Notification, Progress, PromptMark},
 };
 
 #[derive(Debug)]
@@ -34,7 +36,34 @@ pub enum UiEvent {
     Cwd(String),
     Bell,
     Exit(u32),
+    /// An OSC 7501 report changed the agent records of the pane. The state to show is the live one,
+    /// [`Pane::agent_summary`], not what this report says.
+    Agent(Report),
+    /// The agent records changed for another reason: the next prompt, a terminal reset, the program ended.
+    AgentRecordsDropped,
+    /// OSC 9 or OSC 777: a one-shot message. Control and bidirectional characters are already removed.
+    Notification(Notification),
+    /// OSC 9;4 progress; `None` clears it.
+    Progress(Option<Progress>),
+    /// OSC 133: the shell marked a prompt, a command or its end.
+    PromptMark(PromptMark),
+    /// Anything else the emulator reported, as debug text.
     Other(String),
+}
+
+/// The event the shell gets for what the emulator reported. `PtyWrite` is not one: it goes to the program.
+fn ui_event(event: CoreEvent) -> UiEvent {
+    match event {
+        CoreEvent::Title(title) => UiEvent::Title(title),
+        CoreEvent::Cwd(path) => UiEvent::Cwd(path),
+        CoreEvent::Bell => UiEvent::Bell,
+        CoreEvent::Agent(report) => UiEvent::Agent(report),
+        CoreEvent::AgentRecordsDropped => UiEvent::AgentRecordsDropped,
+        CoreEvent::Notification(notification) => UiEvent::Notification(notification),
+        CoreEvent::Progress(progress) => UiEvent::Progress(progress),
+        CoreEvent::PromptMark { mark, .. } => UiEvent::PromptMark(mark),
+        other => UiEvent::Other(format!("{other:?}")),
+    }
 }
 
 pub struct Pane {
@@ -81,17 +110,8 @@ impl Pane {
                                     return false;
                                 }
                             }
-                            CoreEvent::Title(title) => {
-                                let _ = ui_tx.send(UiEvent::Title(title));
-                            }
-                            CoreEvent::Cwd(path) => {
-                                let _ = ui_tx.send(UiEvent::Cwd(path));
-                            }
-                            CoreEvent::Bell => {
-                                let _ = ui_tx.send(UiEvent::Bell);
-                            }
                             other => {
-                                let _ = ui_tx.send(UiEvent::Other(format!("{other:?}")));
+                                let _ = ui_tx.send(ui_event(other));
                             }
                         }
                     }
@@ -134,6 +154,17 @@ impl Pane {
     /// Keyboard, paste and IME bytes from the UI thread.
     pub fn send(&self, bytes: Vec<u8>) {
         let _ = self.input.send(bytes);
+    }
+
+    /// The most urgent agent record of the pane right now (OSC 7501), if any. Live: it follows the records the
+    /// emulator keeps, so there is nothing to latch on the UI side.
+    pub fn agent_summary(&self) -> Option<AgentRecord> {
+        self.term.lock().agent_summary().cloned()
+    }
+
+    /// The user has seen what a finished or failed agent reported: those records go away.
+    pub fn dismiss_finished(&self) -> bool {
+        self.term.lock().agent_mut().dismiss_finished()
     }
 
     /// Input modes as the program set them, read under the terminal lock for every event.
@@ -205,5 +236,70 @@ impl Pane {
 impl Drop for Pane {
     fn drop(&mut self) {
         self.sessions.close(self.id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nekominal_term::{agent_status::AgentState, osc::ProgressState};
+
+    use super::*;
+
+    /// What the shell is told when `bytes` arrive from the program.
+    fn events_for(bytes: &[u8]) -> Vec<UiEvent> {
+        let mut core = TerminalCore::new(80, 24, CoreConfig::default());
+        core.feed(bytes);
+        core.take_events().into_iter().filter(|e| !matches!(e, CoreEvent::PtyWrite(_))).map(ui_event).collect()
+    }
+
+    #[test]
+    fn an_agent_report_reaches_the_shell_as_a_typed_event() {
+        let events = events_for(b"\x1b]7501;state=blocked:kind=permission:id=a:app=claude\x07");
+        let [UiEvent::Agent(Report::Set(record))] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!(
+            (record.state, record.id.as_str(), record.app.as_deref()),
+            (AgentState::Blocked, "a", Some("claude"))
+        );
+    }
+
+    #[test]
+    fn working_ends_at_the_next_prompt_and_the_shell_hears_both() {
+        let mut core = TerminalCore::new(80, 24, CoreConfig::default());
+        core.feed(b"\x1b]7501;state=working:id=a\x07");
+        assert_eq!(core.agent_summary().map(|r| r.state), Some(AgentState::Working));
+        core.take_events();
+        core.feed(b"\x1b]133;A\x07");
+        let events: Vec<UiEvent> = core.take_events().into_iter().map(ui_event).collect();
+        assert!(
+            matches!(events.as_slice(), [UiEvent::AgentRecordsDropped, UiEvent::PromptMark(PromptMark::PromptStart)]),
+            "{events:?}"
+        );
+        assert!(core.agent_summary().is_none());
+    }
+
+    #[test]
+    fn notifications_and_progress_are_typed_and_cleaned() {
+        let events = events_for(b"\x1b]777;notify;Claude;needs\xE2\x80\xAE input\x07\x1b]9;Build finished\x07\x1b]9;4;1;40\x07\x1b]9;4;0\x07");
+        let [
+            UiEvent::Notification(first),
+            UiEvent::Notification(second),
+            UiEvent::Progress(Some(Progress::Value { state: ProgressState::Normal, value })),
+            UiEvent::Progress(None),
+        ] = events.as_slice()
+        else {
+            panic!("{events:?}")
+        };
+        assert_eq!((first.title.as_str(), first.body.as_str()), ("Claude", "needs input"), "the bidi override is gone");
+        assert_eq!((second.title.as_str(), second.body.as_str()), ("", "Build finished"));
+        assert_eq!(*value, 40.0);
+    }
+
+    #[test]
+    fn title_directory_and_bell_keep_their_events() {
+        let events = events_for(b"\x1b]0;build\x07\x1b]7;file://pc/C:/work\x07\x07");
+        assert!(events.iter().any(|e| matches!(e, UiEvent::Title(title) if title == "build")), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, UiEvent::Cwd(path) if path == "C:\\work")), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, UiEvent::Bell)), "{events:?}");
+        assert!(events.iter().all(|e| !matches!(e, UiEvent::Other(_))), "{events:?}");
     }
 }

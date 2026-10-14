@@ -16,9 +16,10 @@ use windows_core::{EventRevoker, Interface, Result};
 
 use nekominal_winui_sys::*;
 
-use crate::chip::{TabId, TabState};
+use crate::chip::{TabId, status_color, status_glyph};
 use crate::i18n::{localize, t, tf};
 use crate::keyboard::{VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
+use crate::logic::TabState;
 use crate::shell::{Overlay, Shell};
 use crate::util::*;
 
@@ -245,10 +246,14 @@ impl Palette {
                 r#"<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                          HorizontalAlignment="Stretch" ColumnSpacing="12">
                      <Grid.ColumnDefinitions>
-                       <ColumnDefinition Width="8"/><ColumnDefinition Width="Auto" MinWidth="20"/><ColumnDefinition Width="*"/>
+                       <ColumnDefinition Width="12"/><ColumnDefinition Width="Auto" MinWidth="20"/><ColumnDefinition Width="*"/>
                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
                      </Grid.ColumnDefinitions>
-                     <Ellipse x:Name="Dot" Width="8" Height="8" VerticalAlignment="Center"/>
+                     <Grid VerticalAlignment="Center">
+                       <Ellipse x:Name="Dot" Width="8" Height="8" HorizontalAlignment="Center"/>
+                       <TextBlock x:Name="Glyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                                  HorizontalAlignment="Center"/>
+                     </Grid>
                      <TextBlock Grid.Column="1" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
                      <TextBlock Grid.Column="2" Text="{}" TextTrimming="CharacterEllipsis"/>
                      <TextBlock Grid.Column="3" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
@@ -262,10 +267,24 @@ impl Palette {
                 xml_escape(&entry.shortcut)
             );
             let (Ok(content), Ok(item)) = (load_xaml(&row), ListViewItem::new()) else { continue };
-            if let (Some(glass), Ok(dot)) = (glass, find::<Shape>(&content, "Dot"))
-                && let Ok(brush) = solid_brush(crate::chip::dot_color(glass, entry.state, false))
+            // The state of the tab: a glyph that differs from the others without its colour, or the dot.
+            if let Some(glass) = glass
+                && let Ok(brush) = solid_brush(status_color(glass, entry.state, false))
             {
-                let _ = dot.SetFill(&brush);
+                match (status_glyph(entry.state), find::<TextBlock>(&content, "Glyph"), find::<Shape>(&content, "Dot"))
+                {
+                    (Some(glyph), Ok(mark), Ok(dot)) => {
+                        let _ = (mark.SetText(glyph), mark.SetForeground(&brush));
+                        let _ = (
+                            ui(&mark).and_then(|m| m.SetVisibility(Visibility::Visible)),
+                            ui(&dot).and_then(|d| d.SetVisibility(Visibility::Collapsed)),
+                        );
+                    }
+                    (_, _, Ok(dot)) => {
+                        let _ = dot.SetFill(&brush);
+                    }
+                    _ => {}
+                }
             }
             let _ = item.cast::<ContentControl>().and_then(|c| c.SetContent(&content));
             let _ = item.cast::<Control>().and_then(|c| c.SetHorizontalContentAlignment(HorizontalAlignment::Stretch));

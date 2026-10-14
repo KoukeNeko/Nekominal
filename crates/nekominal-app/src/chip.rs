@@ -1,4 +1,4 @@
-//! The tab chip: a rounded rectangle with a status dot, the title and a close glyph, in a horizontal strip.
+//! The tab chip: a rounded rectangle with a status mark, the title and a close glyph, in a horizontal strip.
 //!
 //! It is drawn and driven here (hover, selection, middle-click, drag to reorder) instead of using `TabView`,
 //! which would bring Windows Terminal's look and its focus-stealing pointer handling. The shell owns the tabs;
@@ -11,8 +11,11 @@ use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
+use nekominal_model::strings::Text;
+
 use crate::glass::Glass;
-use crate::logic::{CHIP_MAX_WIDTH, reorder_target, shows_ordinal};
+use crate::i18n::{lang, t};
+use crate::logic::{Attention, CHIP_MAX_WIDTH, TabState, TabStatus, reorder_target, shows_ordinal};
 use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
 pub type TabId = u32;
@@ -20,9 +23,9 @@ pub type TabId = u32;
 /// Space between two chips (`StackPanel.Spacing` of the strip in `shell.xaml`).
 pub const CHIP_GAP: f64 = 4.0;
 
-/// Width of a chip around its title: the padding, the border, the dot, the two column gaps and the close slot
-/// (`CHIP_XAML`; a test keeps the two in step).
-const CHROME_WIDTH: f64 = 12.0 + 3.0 + 2.0 + 8.0 + 8.0 + 8.0 + 24.0;
+/// Width of a chip around its title: the padding, the border, the status slot, the two column gaps and the close
+/// slot (`CHIP_XAML`; a test keeps the two in step).
+const CHROME_WIDTH: f64 = 12.0 + 3.0 + 2.0 + 12.0 + 8.0 + 8.0 + 24.0;
 
 /// Pointer travel before a press on a chip becomes a drag.
 const DRAG_THRESHOLD: f64 = 5.0;
@@ -41,7 +44,14 @@ const CHIP_XAML: &str = r#"
       <ColumnDefinition Width="*"/>
       <ColumnDefinition Width="Auto"/>
     </Grid.ColumnDefinitions>
-    <Ellipse x:Name="Dot" Width="8" Height="8" VerticalAlignment="Center"/>
+    <!-- The status mark: a dot at rest, a ring while something works, a glyph for the other states. -->
+    <Grid x:Name="Slot" Width="12" Height="12" VerticalAlignment="Center">
+      <Ellipse x:Name="Dot" Width="8" Height="8" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      <TextBlock x:Name="Glyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+                 HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>
+      <ProgressRing x:Name="Ring" Visibility="Collapsed" Width="12" Height="12" MinWidth="12" MinHeight="12"
+                    IsActive="False" IsHitTestVisible="False"/>
+    </Grid>
     <TextBlock x:Name="Title" Grid.Column="1" VerticalAlignment="Center" FontFamily="Segoe UI Variable Text"
                FontSize="12.5" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Text="{title}"/>
     <TextBlock x:Name="Ordinal" Grid.Column="1" VerticalAlignment="Center" FontFamily="Segoe UI Variable Text"
@@ -59,16 +69,6 @@ const CHIP_XAML: &str = r#"
     </Border>
   </Grid>
 </Border>"#;
-
-/// What a tab reports. The dot takes the scheme colours: accent while selected, warning for attention and
-/// danger for a program that ended with an error. States an agent reports (working, blocked, done) join once the
-/// pane forwards those events.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TabState {
-    Idle,
-    Attention,
-    Error,
-}
 
 /// What the user did with a chip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +97,11 @@ pub struct Chip {
     pub root: Border,
     strip: Panel,
     dot: Ellipse,
+    glyph: TextBlock,
+    ring: ProgressRing,
     title: TextBlock,
+    /// The title as a program or the user set it; tooltip and accessible name add the status to it.
+    title_text: RefCell<String>,
     ordinal: TextBlock,
     content: Grid,
     close: Border,
@@ -108,7 +112,9 @@ pub struct Chip {
     hovered: Cell<bool>,
     close_hot: Cell<bool>,
     close_pressed: Cell<bool>,
-    state: Cell<TabState>,
+    status: RefCell<TabStatus>,
+    /// The chip is in the visible part of the strip: only then does a working chip spin.
+    in_view: Cell<bool>,
     glass: Cell<Glass>,
     drag: RefCell<Option<Drag>>,
     on_event: Rc<dyn Fn(TabEvent)>,
@@ -119,15 +125,42 @@ fn fade(color: nekominal_model::themes::Color) -> nekominal_model::themes::Color
     nekominal_model::themes::Color { a: 0, ..color }
 }
 
-/// The colour of a tab's status dot: the accent while the tab is selected and quiet, the scheme's warning and
-/// danger colours when it has something to report.
-pub fn dot_color(glass: Glass, state: TabState, selected: bool) -> nekominal_model::themes::Color {
+/// The glyph (Segoe Fluent Icons) that tells a state apart without its colour. A quiet tab has a dot and a working
+/// one a ring instead.
+pub fn status_glyph(state: TabState) -> Option<&'static str> {
+    match state {
+        TabState::Idle | TabState::Working => None,
+        TabState::Blocked => Some("\u{E897}"),
+        TabState::Done => Some("\u{E73E}"),
+        TabState::Error => Some("\u{E7BA}"),
+        TabState::Attention => Some("\u{EA8F}"),
+    }
+}
+
+/// The colour of a tab's status mark: the accent while the tab is selected and quiet or works, amber for what
+/// waits for the user, green for done and red for an error, all kept legible against the scheme.
+pub fn status_color(glass: Glass, state: TabState, selected: bool) -> nekominal_model::themes::Color {
     match state {
         TabState::Idle if selected => glass.accent,
         TabState::Idle => glass.dot_idle(),
-        TabState::Attention => glass.warning,
-        TabState::Error => glass.danger,
+        TabState::Working => glass.mark(glass.accent),
+        TabState::Blocked | TabState::Attention => glass.mark(glass.warning),
+        TabState::Done => glass.mark(glass.success),
+        TabState::Error => glass.mark(glass.danger),
     }
+}
+
+/// The word of a state, the string the interface already has for it.
+pub fn status_text(status: &TabStatus) -> Option<&'static str> {
+    Some(t(match status.state {
+        TabState::Idle => return None,
+        TabState::Working => Text::AgentWorking,
+        TabState::Blocked => Text::AgentBlocked,
+        TabState::Done => Text::AgentDone,
+        TabState::Error => Text::AgentError,
+        TabState::Attention if status.attention == Some(Attention::Notification) => Text::AgentNotification,
+        TabState::Attention => Text::AgentBell,
+    }))
 }
 
 impl Chip {
@@ -145,7 +178,10 @@ impl Chip {
             root: element.cast()?,
             strip: strip.cast()?,
             dot: find(&element, "Dot")?,
+            glyph: find(&element, "Glyph")?,
+            ring: find(&element, "Ring")?,
             title: find(&element, "Title")?,
+            title_text: RefCell::new(title.to_owned()),
             ordinal: find(&element, "Ordinal")?,
             content: find(&element, "Content")?,
             close: find(&element, "Close")?,
@@ -155,14 +191,14 @@ impl Chip {
             hovered: Cell::new(false),
             close_hot: Cell::new(false),
             close_pressed: Cell::new(false),
-            state: Cell::new(TabState::Idle),
+            status: RefCell::new(TabStatus::default()),
+            in_view: Cell::new(true),
             glass: Cell::new(glass),
             drag: RefCell::new(None),
             on_event,
             revokers: RefCell::new(Vec::new()),
         });
-        AutomationProperties::SetName(&chip.root, title)?;
-        ToolTipService::SetToolTip(&chip.root, &IReference::from(title))?;
+        chip.update_labels();
         chip.attach()?;
         chip.refresh();
         Ok(chip)
@@ -170,8 +206,26 @@ impl Chip {
 
     pub fn set_title(&self, title: &str) {
         let _ = self.title.SetText(title);
-        let _ = AutomationProperties::SetName(&self.root, title);
-        let _ = ToolTipService::SetToolTip(&self.root, &IReference::from(title));
+        *self.title_text.borrow_mut() = title.to_owned();
+        self.update_labels();
+    }
+
+    /// Accessible name, status and tooltip: the title, then the state in words and what the agent said. The state is
+    /// also words for assistive technology, so it never depends on colour.
+    fn update_labels(&self) {
+        let title = self.title_text.borrow();
+        let status = self.status.borrow();
+        let word = status_text(&status);
+        let separator = if lang() == nekominal_model::strings::Lang::ZhTw { "，" } else { ", " };
+        let name = word.map_or_else(|| title.clone(), |word| format!("{title}{separator}{word}"));
+        let mut tip = title.clone();
+        for line in word.into_iter().chain(status.message.as_deref()) {
+            tip.push('\n');
+            tip.push_str(line);
+        }
+        let _ = AutomationProperties::SetName(&self.root, &name);
+        let _ = AutomationProperties::SetItemStatus(&self.root, word.unwrap_or_default());
+        let _ = ToolTipService::SetToolTip(&self.root, &IReference::from(tip.as_str()));
     }
 
     /// The width the chip wants for its title and chrome, at most `CHIP_MAX_WIDTH`.
@@ -213,21 +267,29 @@ impl Chip {
     }
 
     pub fn state(&self) -> TabState {
-        self.state.get()
+        self.status.borrow().state
     }
 
-    pub fn set_state(&self, state: TabState) {
-        self.state.set(state);
+    /// What the tab shows about its panes; the shell derives it, the chip only draws it.
+    pub fn set_status(&self, status: TabStatus) {
+        if *self.status.borrow() == status {
+            return;
+        }
+        *self.status.borrow_mut() = status;
+        self.update_labels();
         self.refresh();
+    }
+
+    /// Whether the chip is in the visible part of the strip; a working ring spins only then.
+    pub fn set_in_view(&self, in_view: bool) {
+        if self.in_view.replace(in_view) != in_view {
+            self.refresh();
+        }
     }
 
     pub fn set_glass(&self, glass: Glass) {
         self.glass.set(glass);
         self.refresh();
-    }
-
-    fn dot_color(&self) -> nekominal_model::themes::Color {
-        dot_color(self.glass.get(), self.state.get(), self.selected.get())
     }
 
     /// Paints the chip for its current selection, hover and state.
@@ -253,7 +315,7 @@ impl Chip {
             self.title.SetFontWeight(FontWeight { weight: if selected { 600 } else { 400 } })?;
             self.ordinal.SetFontWeight(FontWeight { weight: if selected { 600 } else { 400 } })?;
             self.ordinal.SetForeground(&solid_brush(if selected { glass.text() } else { glass.text_secondary() })?)?;
-            self.dot.cast::<Shape>()?.SetFill(&solid_brush(self.dot_color())?)?;
+            self.paint_status(glass, selected)?;
             ui(&self.close)?.SetOpacity(if selected || hovered { 1.0 } else { 0.0 })?;
             let close_fill = if self.close_hot.get() { glass.pressed() } else { fade(glass.pressed()) };
             self.close.SetBackground(&solid_brush(close_fill)?)?;
@@ -263,6 +325,33 @@ impl Chip {
         if let Err(e) = paint() {
             crate::util::log(&format!("chip refresh: {e}"));
         }
+    }
+
+    /// The status mark: a dot, a ring or a glyph, and a semibold title for what waits for the user.
+    fn paint_status(&self, glass: Glass, selected: bool) -> Result<()> {
+        let status = self.status.borrow();
+        let color = solid_brush(status_color(glass, status.state, selected))?;
+        let glyph = status_glyph(status.state);
+        let working = status.state == TabState::Working;
+        ui(&self.dot)?.SetVisibility(visibility(!working && glyph.is_none()))?;
+        self.dot.cast::<Shape>()?.SetFill(&color)?;
+        ui(&self.glyph)?.SetVisibility(visibility(glyph.is_some()))?;
+        if let Some(glyph) = glyph {
+            self.glyph.SetText(glyph)?;
+            self.glyph.SetForeground(&color)?;
+        }
+        ui(&self.ring)?.SetVisibility(visibility(working))?;
+        let ring: IProgressRing = self.ring.cast()?;
+        ring.SetIsActive(working && self.in_view.get())?;
+        // A ring without a progress spins; with one, or when the system turns animations off, it is a static arc.
+        let spins = status.progress.is_none() && crate::window::animations_enabled();
+        ring.SetIsIndeterminate(spins)?;
+        ring.SetValue(f64::from(status.progress.unwrap_or(25)))?;
+        self.ring.cast::<Control>()?.SetForeground(&color)?;
+        if status.state == TabState::Blocked {
+            self.title.SetFontWeight(FontWeight { weight: 600 })?;
+        }
+        Ok(())
     }
 
     fn attach(self: &Rc<Self>) -> Result<()> {
@@ -352,6 +441,8 @@ impl Chip {
         if !properties.IsLeftButtonPressed().unwrap_or(false) {
             return;
         }
+        // Handled: XAML would otherwise move the keyboard focus off the pane that the selection just gave it to.
+        let _ = args.SetHandled(true);
         let Some(local) = self.position_in(args, &self.root) else { return };
         if let Ok(pointer) = args.Pointer() {
             let _ = ui(&self.root).and_then(|root| root.CapturePointer(&pointer));
@@ -477,12 +568,12 @@ mod tests {
             "BorderThickness=\"1\"",
             "Padding=\"12,0,3,0\"",
             "ColumnSpacing=\"8\"",
-            "<Ellipse x:Name=\"Dot\" Width=\"8\"",
+            "<Grid x:Name=\"Slot\" Width=\"12\"",
             "Width=\"24\" Height=\"24\"",
         ] {
             assert!(CHIP_XAML.contains(needle), "the markup no longer has {needle}");
         }
-        // padding 12 + 3, border 2, dot 8, two gaps of 8, close slot 24
-        assert_eq!(CHROME_WIDTH, 65.0);
+        // padding 12 + 3, border 2, status slot 12, two gaps of 8, close slot 24
+        assert_eq!(CHROME_WIDTH, 69.0);
     }
 }

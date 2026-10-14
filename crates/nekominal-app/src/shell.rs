@@ -9,6 +9,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use nekominal_model::{
+    bell::{BellContext, bell_effects},
     commands::{self, Command},
     keymap::{self, Keymap},
     layout::{Axis, PaneId},
@@ -20,16 +21,17 @@ use nekominal_model::{
 };
 use nekominal_pane::UiEvent;
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
+use nekominal_term::osc::Progress;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
-use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId, TabState};
+use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId};
 use crate::design;
 use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
-use crate::logic::{self, COUNT_BLOCK_WIDTH, Plate, REVEAL_MARGIN};
+use crate::logic::{self, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported};
 use crate::palette::TabRow;
 use crate::pane_view::{Look, PaneView};
 use crate::tab::Tab;
@@ -134,6 +136,8 @@ pub struct Shell {
     /// The quick flyout is being brought in line with the settings: its events are not user input.
     syncing_controls: Cell<bool>,
     window_active: Cell<bool>,
+    /// When the window last flashed its taskbar button or played a sound: those happen at most once a second.
+    last_alert: Cell<Option<Instant>>,
     palette: RefCell<Option<Rc<palette::Palette>>>,
     find: RefCell<Option<Rc<findbar::FindBar>>>,
     settings_page: RefCell<Option<Rc<settings_page::SettingsPage>>>,
@@ -314,6 +318,7 @@ pub fn launch() -> Result<()> {
         pending_opacity: RefCell::new(logic::PendingOpacity::default()),
         syncing_controls: Cell::new(false),
         window_active: Cell::new(true),
+        last_alert: Cell::new(None),
         palette: RefCell::new(None),
         find: RefCell::new(None),
         settings_page: RefCell::new(None),
@@ -753,6 +758,11 @@ impl Shell {
         let widths = self.strip_widths.borrow();
         let offset = offset.unwrap_or_else(|| self.ui.tab_scroll.HorizontalOffset().unwrap_or(0.0));
         let (left, right) = logic::hidden_counts(&widths, CHIP_GAP, STRIP_PADDING, offset, self.strip_viewport.get());
+        // Only the chips in the visible part of the strip spin.
+        let tabs = self.tabs.borrow();
+        for (index, tab) in tabs.iter().enumerate() {
+            tab.chip.set_in_view(index >= left && index + right < tabs.len());
+        }
         for (count, glyph_first, block, text, fade) in [
             (left, true, &self.ui.more_left, &self.ui.more_left_text, &self.ui.fade_left),
             (right, false, &self.ui.more_right, &self.ui.more_right_text, &self.ui.fade_right),
@@ -790,7 +800,12 @@ impl Shell {
                 args.as_ref().and_then(|a| a.WindowActivationState().ok()) != Some(WindowActivationState::Deactivated);
             this.window_active.set(active);
             log(&format!("window active = {active}"));
-            if !active {
+            if active {
+                // Coming back, the user sees the tab that was selected.
+                if let Some(tab) = this.selected_tab() {
+                    this.mark_seen(&tab);
+                }
+            } else {
                 this.mru.borrow_mut().commit();
                 // Losing the focus ends a drag: apply the last opacity and write the settings now.
                 this.apply_pending_opacity();
@@ -871,23 +886,113 @@ impl Shell {
                 }
             }
             UiEvent::Cwd(path) => *pane.cwd.borrow_mut() = Some(path.into()),
-            UiEvent::Bell => {
-                if self.settings.borrow().bell.visual && !tab.is_visible() {
-                    tab.chip.set_state(TabState::Attention);
-                }
-            }
+            UiEvent::Bell => self.on_bell(tab, pane),
             UiEvent::Exit(code) => {
                 pane.exited.set(Some(code));
                 if code == 0 {
                     closed.push((tab.id, pane.id));
                 } else {
-                    tab.chip.set_state(TabState::Error);
+                    pane.attention.set(Some(Attention::Exit));
                     let line = format!("\r\n{}\r\n", tf(Text::StatusExited, &[&code]));
                     pane.pane.term.lock().feed(line.as_bytes());
                 }
+                self.refresh_status(tab);
             }
-            UiEvent::Other(_) => {}
+            UiEvent::Agent(_) | UiEvent::AgentRecordsDropped => {
+                // What a report says is not latched: the chip shows what the emulator holds now. A report in the
+                // pane the user is looking at is seen at once.
+                if self.in_view(tab, pane) {
+                    pane.pane.dismiss_finished();
+                }
+                self.refresh_status(tab);
+            }
+            UiEvent::Notification(notification) => {
+                if !self.in_view(tab, pane) {
+                    pane.attention.set(Some(Attention::Notification));
+                    let text = [notification.title.as_str(), notification.body.as_str()];
+                    *pane.note.borrow_mut() =
+                        Some(text.iter().filter(|part| !part.is_empty()).copied().collect::<Vec<_>>().join(": "));
+                    self.refresh_status(tab);
+                }
+            }
+            UiEvent::Progress(progress) => {
+                pane.progress.set(progress.map(|progress| match progress {
+                    Progress::Value { value, .. } => Reported::Percent(value.round().clamp(0.0, 100.0) as u8),
+                    Progress::Indeterminate => Reported::Indeterminate,
+                }));
+                self.refresh_status(tab);
+            }
+            UiEvent::PromptMark(_) | UiEvent::Other(_) => {}
         }
+    }
+
+    /// The pane is on screen, has the focus and the window is active: the user is looking at it.
+    fn in_view(&self, tab: &Rc<Tab>, pane: &Rc<PaneView>) -> bool {
+        self.window_active.get() && self.pane_shown(tab, pane)
+    }
+
+    /// The pane is on screen and has the focus (its tab is selected, no zoomed sibling hides it).
+    fn pane_shown(&self, tab: &Rc<Tab>, pane: &Rc<PaneView>) -> bool {
+        tab.is_visible() && tab.focused.get() == pane.id && tab.zoomed.get().is_none_or(|zoomed| zoomed == pane.id)
+    }
+
+    /// A bell: the settings and the place it rang decide what happens (`bell_effects`).
+    fn on_bell(&self, tab: &Rc<Tab>, pane: &Rc<PaneView>) {
+        let context = BellContext {
+            window_active: self.window_active.get(),
+            pane_in_view: self.pane_shown(tab, pane),
+            since_last_alert: self.last_alert.get().map(|at| at.elapsed()),
+            show_sounds: window::show_sounds(),
+        };
+        // No profile carries bell settings of its own yet.
+        let effects = bell_effects(&self.settings.borrow().bell, None, &context);
+        if effects.chip {
+            pane.attention.set(Some(Attention::Bell));
+            self.refresh_status(tab);
+        }
+        if effects.taskbar_flash
+            && let Err(e) = window::flash_taskbar(&self.window)
+        {
+            log(&format!("taskbar flash: {e}"));
+        }
+        if effects.sound {
+            crate::sound::bell();
+        }
+        if effects.taskbar_flash || effects.sound {
+            self.last_alert.set(Some(Instant::now()));
+        }
+        log(&format!("bell in pane {}: {effects:?}", pane.id));
+    }
+
+    /// What the tab shows: that of its most urgent pane, read from the live state of every pane.
+    fn refresh_status(&self, tab: &Rc<Tab>) {
+        let signals: Vec<PaneSignal> = tab
+            .panes
+            .borrow()
+            .iter()
+            .map(|pane| PaneSignal {
+                agent: pane.pane.agent_summary(),
+                progress: pane.progress.get(),
+                attention: pane.attention.get(),
+                note: pane.note.borrow().clone(),
+            })
+            .collect();
+        let status = logic::tab_status(&signals);
+        if tab.chip.state() != status.state {
+            log(&format!("tab {} status {:?}", tab.id, status.state));
+        }
+        tab.chip.set_status(status);
+    }
+
+    /// The user has seen the tab: bells, notifications and what a finished or failed agent reported are
+    /// acknowledged. What still waits (a blocked or working agent) stays.
+    fn mark_seen(&self, tab: &Rc<Tab>) {
+        for pane in tab.panes.borrow().iter() {
+            pane.attention.set(None);
+            *pane.note.borrow_mut() = None;
+            pane.pane.dismiss_finished();
+        }
+        self.refresh_status(tab);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -999,7 +1104,7 @@ impl Shell {
                 tab.chip.set_title(&title);
                 self.layout_tabs();
             }
-            tab.chip.set_state(TabState::Idle);
+            self.mark_seen(tab);
         }
     }
 
@@ -1056,7 +1161,9 @@ impl Shell {
             tab.chip.set_selected(is_selected);
             tab.set_visible(is_selected);
         }
-        selected.chip.set_state(TabState::Idle);
+        if self.window_active.get() {
+            self.mark_seen(selected);
+        }
         selected.update_focus_look();
         self.layout_tabs();
         selected.relayout();
@@ -1148,6 +1255,7 @@ impl Shell {
             self.close_tab(tab_id);
             return;
         }
+        self.refresh_status(&tab);
         if tab.is_visible() {
             self.focus_active_pane();
         }

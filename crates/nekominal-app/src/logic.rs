@@ -3,6 +3,7 @@
 
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::OPACITY_RANGE;
+use nekominal_term::agent_status::{AgentRecord, AgentState};
 
 /// A pixel rectangle on the physical pixel grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +87,116 @@ pub fn reorder_target(widths: &[f64], gap: f64, from: usize, center: f64) -> usi
         }
     }
     target
+}
+
+/// What a tab shows about its panes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabState {
+    #[default]
+    Idle,
+    /// An agent works (OSC 7501), or a program reports progress (OSC 9;4).
+    Working,
+    /// An agent waits for an answer.
+    Blocked,
+    Done,
+    Error,
+    /// A bell or a notification rang out of sight.
+    Attention,
+}
+
+/// A reason for a pane to want attention that no agent record gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attention {
+    Bell,
+    Notification,
+    /// The program ended with a non-zero exit code.
+    Exit,
+}
+
+/// Progress a program reports with OSC 9;4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reported {
+    /// Busy, no amount known.
+    Indeterminate,
+    Percent(u8),
+}
+
+/// Everything one pane tells its tab right now.
+#[derive(Clone, Debug, Default)]
+pub struct PaneSignal {
+    /// The most urgent OSC 7501 record, read live from the emulator.
+    pub agent: Option<AgentRecord>,
+    /// OSC 9;4 progress, for a program that reports only that.
+    pub progress: Option<Reported>,
+    pub attention: Option<Attention>,
+    /// What the notification said.
+    pub note: Option<String>,
+}
+
+/// What a tab shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TabStatus {
+    pub state: TabState,
+    /// Percent, for a working tab that reports it.
+    pub progress: Option<u8>,
+    /// Why the tab wants attention, for the words of its tooltip.
+    pub attention: Option<Attention>,
+    /// What the agent or the notification said, already cleaned of control characters.
+    pub message: Option<String>,
+}
+
+/// A bell or a notification ranks above nothing and below every agent state.
+const ATTENTION_RANK: u8 = 1;
+
+/// The status of a tab: that of its most urgent pane. Agent states rank by `AgentState::urgency`, the one order of
+/// the application, doubled so a bell fits between idle and done; a program that exited with an error ranks as
+/// an agent error, a progress report as working. The first of equally urgent panes wins.
+pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
+    let rank = |state: AgentState| state.urgency() * 2;
+    let mut best: Option<(u8, TabStatus)> = None;
+    for pane in panes {
+        let candidate = if let Some(record) = &pane.agent {
+            let state = match record.state {
+                AgentState::Blocked => TabState::Blocked,
+                AgentState::Error => TabState::Error,
+                AgentState::Working => TabState::Working,
+                AgentState::Done => TabState::Done,
+                AgentState::Idle => continue,
+            };
+            let message = record.message.clone().or_else(|| record.title.clone());
+            (rank(record.state), TabStatus { state, progress: record.progress, attention: None, message })
+        } else if let Some(reported) = pane.progress {
+            let progress = match reported {
+                Reported::Percent(percent) => Some(percent),
+                Reported::Indeterminate => None,
+            };
+            (
+                rank(AgentState::Working),
+                TabStatus { state: TabState::Working, progress, attention: None, message: None },
+            )
+        } else {
+            match pane.attention {
+                Some(Attention::Exit) => (
+                    rank(AgentState::Error),
+                    TabStatus { state: TabState::Error, progress: None, attention: pane.attention, message: None },
+                ),
+                Some(kind) => (
+                    ATTENTION_RANK,
+                    TabStatus {
+                        state: TabState::Attention,
+                        progress: None,
+                        attention: Some(kind),
+                        message: pane.note.clone(),
+                    },
+                ),
+                None => continue,
+            }
+        };
+        if best.as_ref().is_none_or(|(best_rank, _)| candidate.0 > *best_rank) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, status)| status).unwrap_or_default()
 }
 
 /// An unselected chip is never narrower than this, in DIP.
@@ -459,6 +570,80 @@ mod tests {
                 assert!(*after <= *before + 1e-9, "{before} became {after}");
             }
         }
+    }
+
+    fn agent(state: AgentState) -> PaneSignal {
+        let record =
+            AgentRecord { id: String::new(), state, kind: None, progress: None, app: None, title: None, message: None };
+        PaneSignal { agent: Some(record), ..PaneSignal::default() }
+    }
+
+    #[test]
+    fn a_tab_shows_its_most_urgent_pane_by_the_urgency_of_the_emulator() {
+        use AgentState::*;
+        let state_of = |states: &[AgentState]| tab_status(&states.iter().map(|s| agent(*s)).collect::<Vec<_>>()).state;
+        assert_eq!(state_of(&[]), TabState::Idle);
+        assert_eq!(state_of(&[Done, Working]), TabState::Working);
+        assert_eq!(state_of(&[Working, Blocked, Done]), TabState::Blocked);
+        assert_eq!(state_of(&[Working, Error]), TabState::Error);
+        assert_eq!(state_of(&[Done]), TabState::Done);
+        // The order is the emulator's, not a copy of it: whatever it ranks higher wins.
+        let all = [Idle, Working, Done, Blocked, Error];
+        for a in all {
+            for b in all {
+                let won = tab_status(&[agent(a), agent(b)]).state;
+                let expected = if b.urgency() > a.urgency() { b } else { a };
+                let expected = match expected {
+                    Idle => TabState::Idle,
+                    Working => TabState::Working,
+                    Done => TabState::Done,
+                    Blocked => TabState::Blocked,
+                    Error => TabState::Error,
+                };
+                assert_eq!(won, expected, "{a:?} against {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn equally_urgent_panes_resolve_to_the_first_and_the_status_carries_its_progress_and_message() {
+        let mut first = agent(AgentState::Working);
+        first.agent.as_mut().unwrap().progress = Some(40);
+        first.agent.as_mut().unwrap().message = Some("tests".into());
+        let mut second = agent(AgentState::Working);
+        second.agent.as_mut().unwrap().progress = Some(90);
+        let status = tab_status(&[first, second]);
+        assert_eq!(
+            (status.state, status.progress, status.message.as_deref()),
+            (TabState::Working, Some(40), Some("tests"))
+        );
+    }
+
+    #[test]
+    fn a_bell_a_notification_and_an_exit_are_the_fallbacks_below_what_an_agent_reports() {
+        let attention =
+            |kind| PaneSignal { attention: Some(kind), note: Some("built".into()), ..PaneSignal::default() };
+        assert_eq!(tab_status(&[attention(Attention::Bell)]).state, TabState::Attention);
+        let notified = tab_status(&[attention(Attention::Notification)]);
+        assert_eq!(
+            (notified.state, notified.attention, notified.message.as_deref()),
+            (TabState::Attention, Some(Attention::Notification), Some("built"))
+        );
+        assert_eq!(tab_status(&[attention(Attention::Exit)]).state, TabState::Error, "a failed exit is an error");
+        // Done outranks a bell, working outranks done, an exit error outranks working.
+        assert_eq!(tab_status(&[attention(Attention::Bell), agent(AgentState::Done)]).state, TabState::Done);
+        assert_eq!(tab_status(&[agent(AgentState::Done), attention(Attention::Exit)]).state, TabState::Error);
+        let progress = PaneSignal { progress: Some(Reported::Percent(30)), ..PaneSignal::default() };
+        let status = tab_status(&[attention(Attention::Bell), progress.clone()]);
+        assert_eq!((status.state, status.progress), (TabState::Working, Some(30)));
+        assert_eq!(tab_status(&[progress, agent(AgentState::Blocked)]).state, TabState::Blocked);
+        let busy = PaneSignal { progress: Some(Reported::Indeterminate), ..PaneSignal::default() };
+        assert_eq!(tab_status(&[busy]), TabStatus { state: TabState::Working, ..TabStatus::default() });
+    }
+
+    #[test]
+    fn an_agent_record_that_says_idle_shows_nothing() {
+        assert_eq!(tab_status(&[agent(AgentState::Idle)]), TabStatus::default());
     }
 
     #[test]

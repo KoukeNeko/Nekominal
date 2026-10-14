@@ -1,5 +1,6 @@
 //! Application logic that does not depend on any windowing or rendering toolkit.
 
+pub mod bell;
 pub mod commands;
 pub mod fuzzy;
 pub mod keymap;

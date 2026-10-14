@@ -136,10 +136,24 @@ pub struct PasteSettings {
     pub warn_large_bytes: u64,
 }
 
+/// When the bell of a program is also heard. Nothing else in the interface makes a sound, whatever this says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BellSound {
+    /// Never: the default.
+    None,
+    /// Only when the pane that rang is not the one being looked at (another tab, or the window is not active).
+    Background,
+    Always,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Bell {
+    /// A tab that rings out of sight gets an attention mark.
     pub visual: bool,
+    /// The taskbar button flashes when the window is not active.
     pub taskbar: bool,
+    pub sound: BellSound,
 }
 
 /// Window backdrop shown behind (and through) the translucent terminal.
@@ -278,7 +292,7 @@ impl Default for Settings {
             copy_on_select: false,
             right_click: RightClick::Smart,
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
-            bell: Bell { visual: true, taskbar: true },
+            bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
             keyboard: Keyboard { kitty_protocol: true },
             agent_environment: true,
             shell_integration: true,
@@ -586,6 +600,14 @@ pub fn parse(source: Option<&str>) -> Parsed {
         bell: Bell {
             visual: boolean(&bell, "visual", d.bell.visual, "bell", &mut problems),
             taskbar: boolean(&bell, "taskbar", d.bell.taskbar, "bell", &mut problems),
+            sound: one_of(
+                &bell,
+                "sound",
+                &[("none", BellSound::None), ("background", BellSound::Background), ("always", BellSound::Always)],
+                d.bell.sound,
+                "bell",
+                &mut problems,
+            ),
         },
         keyboard: Keyboard { kitty_protocol: boolean(&keyboard, "kittyProtocol", d.keyboard.kitty_protocol, "keyboard", &mut problems) },
         agent_environment: boolean(&root, "agentEnvironment", d.agent_environment, "", &mut problems),
@@ -903,6 +925,23 @@ mod tests {
         }
         assert_eq!(current.next(), Backdrop::Acrylic);
         assert_eq!(seen, vec![Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]);
+    }
+
+    #[test]
+    fn the_bell_is_silent_unless_the_file_asks_for_a_sound() {
+        let defaults = Settings::default().bell;
+        assert_eq!((defaults.visual, defaults.taskbar, defaults.sound), (true, true, BellSound::None));
+        for (name, expected) in [("none", BellSound::None), ("background", BellSound::Background), ("always", BellSound::Always)] {
+            let result = parsed(&format!(r#"{{ "bell": {{ "sound": "{name}" }} }}"#));
+            assert!(result.problems.is_empty(), "{name}: {:?}", result.problems);
+            assert_eq!(result.settings.bell.sound, expected);
+        }
+        // Anything else keeps the silent default and is reported.
+        let result = parsed(r#"{ "bell": { "sound": "loud" } }"#);
+        assert_eq!(result.settings.bell.sound, BellSound::None);
+        assert_eq!(result.problems.len(), 1);
+        let written = round_trips(Settings { bell: Bell { sound: BellSound::Background, ..defaults }, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "bell": { "sound": "background" } }));
     }
 
     #[test]

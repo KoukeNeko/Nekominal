@@ -35,7 +35,9 @@ impl AgentState {
         })
     }
 
-    fn urgency(self) -> u8 {
+    /// How much a state needs the user, higher first: blocked, error, working, done, idle. The one order every
+    /// surface (a tab, a sidebar row) ranks states by.
+    pub fn urgency(self) -> u8 {
         match self {
             Self::Blocked => 4,
             Self::Error => 3,

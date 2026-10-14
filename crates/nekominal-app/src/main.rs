@@ -23,6 +23,7 @@ mod palette;
 mod pane_view;
 mod settings_page;
 mod shell;
+mod sound;
 mod tab;
 mod terminal_control;
 mod window;

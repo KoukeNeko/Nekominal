@@ -25,6 +25,7 @@ use windows_core::{EventRevoker, Interface, Result};
 
 use crate::i18n::t;
 use crate::keyboard;
+use crate::logic::{Attention, Reported};
 use crate::terminal_control::{self, TextModel};
 use crate::util::{log, ui};
 
@@ -81,6 +82,13 @@ pub struct PaneView {
     pub cwd: RefCell<Option<PathBuf>>,
     /// The program behind the pane ended (its exit code), so the pane no longer counts as running.
     pub exited: Cell<Option<u32>>,
+    /// Why the pane wants attention without an agent saying so (a bell, a notification, a failed exit) until the
+    /// user has seen it.
+    pub attention: Cell<Option<Attention>>,
+    /// What the notification said.
+    pub note: RefCell<Option<String>>,
+    /// Progress the program reports with OSC 9;4.
+    pub progress: Cell<Option<Reported>>,
     look: Rc<Look>,
     render: RefCell<Render>,
     ime: Option<ImeHost>,
@@ -159,6 +167,9 @@ impl PaneView {
                 profile_id,
                 cwd: RefCell::new(None),
                 exited: Cell::new(None),
+                attention: Cell::new(None),
+                note: RefCell::new(None),
+                progress: Cell::new(None),
                 look,
                 render: RefCell::new(Render {
                     surface,

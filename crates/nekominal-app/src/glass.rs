@@ -51,6 +51,14 @@ impl Glass {
         if self.light { Color::rgb(0x000000) } else { Color::rgb(0xFFFFFF) }
     }
 
+    /// A scheme colour for a mark that must stay visible on the chrome (a status glyph, a ring): moved toward black
+    /// or white until it has [`MIN_MARK_CONTRAST`] against the scheme background, and left alone when it already has.
+    pub fn mark(&self, color: Color) -> Color {
+        let rgb = |c: Color| r::Rgb(c.r, c.g, c.b);
+        let seen = r::contrast::ensure_min_contrast(rgb(color), rgb(self.background), MIN_MARK_CONTRAST);
+        Color { r: seen.0, g: seen.1, b: seen.2, a: 255 }
+    }
+
     pub fn text(&self) -> Color {
         self.foreground
     }
@@ -128,6 +136,9 @@ pub fn opacity_control(backdrop: Backdrop, setting: f64) -> (f64, bool) {
     let shown = (f64::from(terminal_opacity(backdrop, setting)) * 100.0).round();
     (shown, backdrop != Backdrop::None)
 }
+
+/// Lowest contrast between a status mark and the background it sits on (WCAG non-text contrast).
+pub const MIN_MARK_CONTRAST: f32 = 3.0;
 
 /// Lowest contrast ratio between text and its background that the terminals keep (WCAG large-text AA). Text of a
 /// program below it, such as PSReadLine's bright white on a light scheme, is moved toward black or white.
@@ -212,6 +223,33 @@ mod tests {
         assert_eq!(opacity_control(Backdrop::Acrylic, 0.72), (72.0, true));
         assert_eq!(opacity_control(Backdrop::Mica, 0.2), (20.0, true));
         assert_eq!(opacity_control(Backdrop::MicaAlt, 1.0), (100.0, true));
+    }
+
+    #[test]
+    fn status_marks_keep_three_to_one_against_every_scheme_and_stay_in_their_hue_when_they_can() {
+        for scheme in &SCHEMES {
+            let glass = Glass::from_scheme(scheme);
+            let background = r::Rgb(scheme.background.r, scheme.background.g, scheme.background.b);
+            for (name, color) in [
+                ("accent", glass.accent),
+                ("warning", glass.warning),
+                ("success", glass.success),
+                ("danger", glass.danger),
+            ] {
+                let mark = glass.mark(color);
+                let ratio = r::contrast::contrast_ratio(r::Rgb(mark.r, mark.g, mark.b), background);
+                assert!(ratio >= MIN_MARK_CONTRAST - 0.01, "{} {name}: {ratio:.2}", scheme.name);
+                let was = r::contrast::contrast_ratio(r::Rgb(color.r, color.g, color.b), background);
+                if was >= MIN_MARK_CONTRAST {
+                    assert_eq!(
+                        mark,
+                        Color { a: 255, ..color },
+                        "{} {name} already passes and is left alone",
+                        scheme.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

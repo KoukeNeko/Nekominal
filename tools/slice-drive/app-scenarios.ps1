@@ -9,6 +9,7 @@
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
+#   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -302,7 +303,7 @@ function Get-Chips {
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NamedContainerAutomationPeer')
     foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
         $p = $e.GetCurrentPropertyValue($pos)
-        if ($p -is [int]) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
+        if ($p -is [int]) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Status = $e.Current.ItemStatus; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
     }
 }
 
@@ -403,10 +404,58 @@ function Scenario-Tabs {
     } -NoShot
 }
 
+# Status marks: what a tab shows for OSC 7501, OSC 9 / 777 and BEL, read from the chips' accessible status (the
+# state in words, so it is not colour alone), then the bell in three places: the pane in view (nothing), a hidden tab
+# (a mark), an inactive window (a mark and a taskbar flash, at most one a second). Nothing here is audible.
+function Scenario-Status {
+    Run-App 'status' @{ confirmClose = $false } {
+        First-Prompt
+        Name-Tab 'aaa'
+        Set-WindowWidth 1400
+        $esc = '$e=[char]27;$a=[char]7;'
+        $report = { param($fields) $esc + 'Write-Host -NoNewline "$e]7501;' + $fields + '$a";' }
+        $start = Get-Date
+        New-Tab; Name-Tab 'blocked-tab'; Type-Line ((& $report 'state=blocked:kind=permission:id=t:app=claude:msg=QWxsb3cgZWRpdD8=') + 'Start-Sleep 90'); Start-Sleep -Milliseconds 400
+        New-Tab; Name-Tab 'working-tab'; Type-Line ((& $report 'state=working:progress=40:id=t:app=claude') + 'Start-Sleep 90'); Start-Sleep -Milliseconds 400
+        New-Tab; Name-Tab 'done-tab'; Type-Line ($esc + 'Start-Sleep 5;' + (& $report 'state=done:id=t:app=claude')); Start-Sleep -Milliseconds 400
+        New-Tab; Name-Tab 'error-tab'; Type-Line ($esc + 'Start-Sleep 5;' + (& $report 'state=error:id=t:app=claude:msg=Qm9vbQ==')); Start-Sleep -Milliseconds 400
+        New-Tab; Name-Tab 'bell-tab'; Type-Line ($esc + 'Start-Sleep 4; Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 300
+        New-Tab; Name-Tab 'note-tab'; Type-Line ($esc + 'Start-Sleep 4; Write-Host -NoNewline "$e]777;notify;Claude;needs$([char]0x202E) input$a"'); Start-Sleep -Milliseconds 300
+        New-Tab; Name-Tab 'last'
+        Start-Sleep -Milliseconds 6000
+        $show = { param($label) foreach ($c in Get-Chips | Sort-Object Index) { '{0} {1,2} {2,-14} status "{3}"' -f $label, $c.Index, $c.Name.Split('，')[0], $c.Status } }
+        & $show 'hidden tabs:'
+        Shot-Safe (Shot-Path 'status-marks') | Out-Null
+        # a blocked agent is still blocked when the tab is looked at; a finished one is seen at once
+        Click-Name 'blocked-tab，等待輸入'; Start-Sleep -Milliseconds 500
+        Click-Name 'done-tab，已完成'; Start-Sleep -Milliseconds 500
+        Click-Name 'error-tab，錯誤'; Start-Sleep -Milliseconds 500
+        Click-Name 'note-tab，通知'; Start-Sleep -Milliseconds 500
+        & $show 'after looking at blocked, done, error, note:'
+        # working ends at the next prompt: the report is gone once the command returns
+        Click-Name 'last' | Out-Null; Start-Sleep -Milliseconds 500
+        Type-Line ($esc + (& $report 'state=working:id=x') + 'Start-Sleep 4'); Start-Sleep -Milliseconds 1500
+        $during = (Get-Chips | Where-Object { $_.Index -eq 8 }).Status
+        Start-Sleep -Milliseconds 5000
+        'working in the pane in view: while the command runs "{0}", after the next prompt "{1}"' -f $during, (Get-Chips | Where-Object { $_.Index -eq 8 }).Status
+        # the bell in the pane in view, then in an inactive window twice within a second
+        $mark = Log-Mark
+        Click-Name 'last' | Out-Null; Start-Sleep -Milliseconds 500
+        Type-Line ($esc + 'Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 1200
+        Type-Line ($esc + 'Start-Sleep 3; Write-Host -NoNewline $a; Start-Sleep -Milliseconds 300; Write-Host -NoNewline $a; Start-Sleep 3; Write-Host -NoNewline $a')
+        [void][P]::SetWindowPos($script:PatternHwnd, [IntPtr]::Zero, 40, 1300, 300, 200, 0x0040)
+        [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 9000
+        'bell decisions (watching, then inactive: first, second within a second, a later one):'
+        Log-Since $mark | Where-Object { $_ -match 'bell in pane|taskbar flash|window active' } | ForEach-Object { 'log: ' + $_.Trim() }
+        [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 600
+        'ended in {0:N0} s' -f ((Get-Date) - $start).TotalSeconds
+    } -Pattern -NoShot
+}
+
 function Get-Items {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status }

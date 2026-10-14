@@ -6,7 +6,10 @@ use nekominal_model::settings::Backdrop;
 use nekominal_winui_sys::*;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::{MNC_CLOSE, WM_MENUCHAR};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GetSystemMetrics, MNC_CLOSE, SM_SHOWSOUNDS,
+    SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_MENUCHAR,
+};
 use windows_core::{Interface, Result};
 
 use crate::glass::Glass;
@@ -54,6 +57,44 @@ pub fn restore_alt_chords(window: &Window) -> Result<()> {
     let hwnd = nekominal_winui::window::hwnd(window)?;
     // SAFETY: removes only the subclass installed above, from the thread that installed it.
     unsafe { RemoveWindowSubclass(hwnd, Some(silence_menu_char), ALT_CHORD_SUBCLASS) }.ok().map_err(from_win32)
+}
+
+/// Flashes the taskbar button until the window comes to the foreground. A window in the foreground does not
+/// flash, so this is for the bell of an inactive window.
+pub fn flash_taskbar(window: &Window) -> Result<()> {
+    let info = FLASHWINFO {
+        cbSize: size_of::<FLASHWINFO>() as u32,
+        hwnd: nekominal_winui::window::hwnd(window)?,
+        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+        uCount: 0,
+        dwTimeout: 0,
+    };
+    // SAFETY: `info` is a complete FLASHWINFO of this call and names a live window of this process. The result is
+    // whether the window was flashing before, not an error.
+    let _ = unsafe { FlashWindowEx(&info) };
+    Ok(())
+}
+
+/// The system asks for sounds to be shown as pictures (`SM_SHOWSOUNDS`).
+pub fn show_sounds() -> bool {
+    // SAFETY: a plain query of a system metric.
+    unsafe { GetSystemMetrics(SM_SHOWSOUNDS) != 0 }
+}
+
+/// Animations in the client area are on (the "Animation effects" setting of Windows). A spinner that would move
+/// stays still when this is off.
+pub fn animations_enabled() -> bool {
+    let mut enabled = windows::core::BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL through the pointer, which outlives the call.
+    let queried = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut windows::core::BOOL as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    queried.is_err() || enabled.as_bool()
 }
 
 /// An error of the `windows` crate as one of `windows_core` (the two crates are different generations).
