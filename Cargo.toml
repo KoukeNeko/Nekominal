@@ -9,6 +9,7 @@ members = [
     "crates/nekominal-input",
     "crates/nekominal-render",
     "crates/nekominal-winui-sys",
+    "crates/nekominal-app",
     "crates/nekominal-pane",
     "crates/nekominal-winui",
 ]

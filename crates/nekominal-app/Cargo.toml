@@ -1,0 +1,36 @@
+[package]
+name = "nekominal-app"
+description = "Nekominal application: the frosted-glass WinUI 3 shell around the terminal panes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nekominal"
+path = "src/main.rs"
+
+[dependencies]
+nekominal-model = { workspace = true }
+nekominal-pty = { workspace = true }
+nekominal-term = { workspace = true }
+nekominal-input = { workspace = true }
+nekominal-render = { workspace = true }
+nekominal-pane = { workspace = true }
+nekominal-winui = { workspace = true }
+nekominal-winui-sys = { workspace = true }
+wgpu = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+] }
+windows-collections = { version = "0.100", default-features = false, features = ["std"] }
+windows-core = { version = "0.100", default-features = false }
+windows-future = { version = "0.100", default-features = false }
+windows-numerics = { version = "0.100", default-features = false }
+windows-reference = { version = "0.100", default-features = false, features = ["std"] }
+windows-threading = { version = "0.100", default-features = false }
+windows-time = { version = "0.100", default-features = false }
