@@ -75,7 +75,10 @@ pub struct PaneView {
     pub host: UserControl,
     pub panel: SwapChainPanel,
     pub pane: Pane,
+    /// The title the program set (OSC 0 or 2), cleaned; empty until it sets one.
     pub title: RefCell<String>,
+    /// The file name of the program without `.exe` (`pwsh`): what a shell titles itself with before it settles.
+    pub shell_name: String,
     /// The profile the session was started from, so a split or a duplicate starts the same shell.
     pub profile_id: String,
     /// Working directory the shell last reported.
@@ -133,7 +136,7 @@ impl PaneView {
         host_ui.SetIsTabStop(true)?;
         host_ui.SetUseSystemFocusVisuals(false)?;
 
-        let title = config.program.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+        let shell_name = config.program.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
         let pane = Pane::spawn_with(config)
             .map_err(|e| windows_core::Error::new(windows_core::HRESULT(-1), format!("pty: {e}")))?;
         let surface = PanelSurface::new(
@@ -163,7 +166,8 @@ impl PaneView {
                 host,
                 panel,
                 pane,
-                title: RefCell::new(title),
+                title: RefCell::new(String::new()),
+                shell_name,
                 profile_id,
                 cwd: RefCell::new(None),
                 exited: Cell::new(None),

@@ -9,6 +9,7 @@
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
+#   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-All
 #
@@ -452,10 +453,54 @@ function Scenario-Status {
     } -Pattern -NoShot
 }
 
+# Default tab titles: five tabs in different folders get five names, two folders called src get their parents, a title
+# a program sets wins until it is generic again and a bidirectional override is cleaned out.
+function Scenario-Titles {
+    $global:NkCjk = Join-Path ([IO.Path]::GetTempPath()) 'nk-title-測試資料夾'
+    [void][IO.Directory]::CreateDirectory($global:NkCjk)
+    try {
+        Run-App 'titles' @{ confirmClose = $false } {
+            First-Prompt
+            $names = { (Get-Chips | Sort-Object Index | ForEach-Object { $_.Name }) -join ' | ' }
+            $go = { param($dir) New-Tab; Type-Line "Set-Location '$dir'"; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 400 }
+            'first tab, nothing typed yet: ' + (& $names)
+            foreach ($dir in 'C:\Windows', 'C:\Windows\System32', 'C:\', 'C:\Users\Public') { & $go $dir }
+            'five folders: ' + (& $names)
+            & $go (Join-Path $env:USERPROFILE 'Desktop\Nekominal\crates\nekominal-app\src')
+            & $go (Join-Path $env:USERPROFILE 'Desktop\Nekominal\crates\nekominal-model\src')
+            'two src folders: ' + (& $names)
+            & $go $global:NkCjk
+            'a folder with a CJK name: ' + (& $names)
+            # a title the program set wins over the folder, a generic one does not
+            Type-Line '$Host.UI.RawUI.WindowTitle = "build"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            'program title "build": ' + (& $names)
+            Type-Line '$Host.UI.RawUI.WindowTitle = "pwsh.exe"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            'program title "pwsh.exe" (generic): ' + (& $names)
+            Type-Line '$Host.UI.RawUI.WindowTitle = "pay$([char]0x202E)load"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            'program title with U+202E: ' + (& $names)
+            # a name the user gives is kept, an empty name hands the title back to the rules
+            $rename = { param($chipName, $text)
+                $r = Get-ElementRect $chipName; Click-At ($r.X + 30) ($r.Y + 16) 'right' 800
+                Click-Name '重新命名分頁' | Out-Null; Start-Sleep -Milliseconds 800
+                if ($text) { Type-Unicode $text 40 } else { Press 0x08 }
+                Press 0x0D; Start-Sleep -Milliseconds 800 }
+            & $rename 'Windows' 'fixed'
+            'renamed the tab of C:\Windows "fixed": ' + (& $names)
+            Click-Name 'fixed' | Out-Null; Start-Sleep -Milliseconds 400
+            Type-Line 'Set-Location C:\Users'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            'after cd C:\Users in it: ' + (& $names)
+            & $rename 'fixed' ''
+            'name cleared: ' + (& $names)
+        }
+    } finally {
+        [IO.Directory]::Delete($global:NkCjk, $true)
+    }
+}
+
 function Get-Items {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles }

@@ -31,7 +31,9 @@ use crate::design;
 use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
-use crate::logic::{self, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported};
+use crate::logic::{
+    self, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts, TitleSource,
+};
 use crate::palette::TabRow;
 use crate::pane_view::{Look, PaneView};
 use crate::tab::Tab;
@@ -876,16 +878,13 @@ impl Shell {
     fn on_pane_event(&self, tab: &Rc<Tab>, pane: &Rc<PaneView>, event: UiEvent, closed: &mut Vec<(TabId, PaneId)>) {
         match event {
             UiEvent::Title(title) => {
-                let fallback = pane.title.borrow().clone();
-                let title = logic::tab_title(&title, &fallback);
-                *pane.title.borrow_mut() = title.clone();
-                if tab.focused.get() == pane.id && !tab.renamed.get() {
-                    *tab.title.borrow_mut() = title.clone();
-                    tab.chip.set_title(&title);
-                    self.layout_tabs();
-                }
+                *pane.title.borrow_mut() = logic::clean_title(&title);
+                self.refresh_titles();
             }
-            UiEvent::Cwd(path) => *pane.cwd.borrow_mut() = Some(path.into()),
+            UiEvent::Cwd(path) => {
+                *pane.cwd.borrow_mut() = Some(path.into());
+                self.refresh_titles();
+            }
             UiEvent::Bell => self.on_bell(tab, pane),
             UiEvent::Exit(code) => {
                 pane.exited.set(Some(code));
@@ -905,6 +904,7 @@ impl Shell {
                     pane.pane.dismiss_finished();
                 }
                 self.refresh_status(tab);
+                self.refresh_titles();
             }
             UiEvent::Notification(notification) => {
                 if !self.in_view(tab, pane) {
@@ -924,6 +924,53 @@ impl Shell {
             }
             UiEvent::PromptMark(_) | UiEvent::Other(_) => {}
         }
+    }
+
+    /// Gives every tab the title its rules make (`logic::default_title`): what a program or an agent set in the
+    /// focused pane unless that is generic, else the working directory, else the profile; the parent folder is
+    /// added where two tabs would otherwise be named alike. A tab the user named keeps its name.
+    fn refresh_titles(&self) {
+        let tabs = self.tabs.borrow().clone();
+        let home = std::env::var("USERPROFILE").ok();
+        let parts: Vec<TitleParts> = tabs
+            .iter()
+            .map(|tab| {
+                let pane = tab.focused_pane();
+                let record = pane.as_ref().and_then(|pane| pane.pane.agent_summary());
+                TitleParts {
+                    user: tab.renamed.get().then(|| tab.title.borrow().clone()),
+                    program: pane.as_ref().map(|pane| pane.title.borrow().clone()).unwrap_or_default(),
+                    agent_title: record.as_ref().and_then(|record| record.title.clone()),
+                    agent_app: record.as_ref().and_then(|record| record.app.clone()),
+                    cwd: pane
+                        .as_ref()
+                        .and_then(|pane| pane.cwd.borrow().as_ref().map(|cwd| cwd.to_string_lossy().into_owned())),
+                    profile: pane
+                        .as_ref()
+                        .and_then(|pane| self.profile_by_id(&pane.profile_id))
+                        .map(|profile| profile.name)
+                        .unwrap_or_default(),
+                    shell: pane.as_ref().map(|pane| pane.shell_name.clone()).unwrap_or_default(),
+                    home: home.clone(),
+                    untitled: t(Text::TabUntitled).to_owned(),
+                }
+            })
+            .collect();
+        let first: Vec<(String, TitleSource)> = parts.iter().map(|parts| logic::default_title(parts, false)).collect();
+        let folders: Vec<Option<String>> =
+            first.iter().map(|(title, source)| (*source == TitleSource::Folder).then(|| title.clone())).collect();
+        let collide = logic::colliding_folders(&folders);
+        for (((tab, parts), (title, _)), with_parent) in tabs.iter().zip(&parts).zip(first).zip(collide) {
+            if tab.renamed.get() {
+                continue;
+            }
+            let title = if with_parent { logic::default_title(parts, true).0 } else { title };
+            if *tab.title.borrow() != title {
+                *tab.title.borrow_mut() = title.clone();
+                tab.chip.set_title(&title);
+            }
+        }
+        self.layout_tabs();
     }
 
     /// The pane is on screen, has the focus and the window is active: the user is looking at it.
@@ -1096,14 +1143,7 @@ impl Shell {
                 tab.update_focus_look();
                 tab.relayout();
             }
-            if !tab.renamed.get()
-                && let Some(view) = tab.pane(pane)
-            {
-                let title = view.title.borrow().clone();
-                *tab.title.borrow_mut() = title.clone();
-                tab.chip.set_title(&title);
-                self.layout_tabs();
-            }
+            self.refresh_titles();
             self.mark_seen(tab);
         }
     }
@@ -1113,7 +1153,8 @@ impl Shell {
         let pane = self.new_pane(profile, cwd.as_deref())?;
         let id = self.next_tab.get();
         self.next_tab.set(id + 1);
-        let title = pane.title.borrow().clone();
+        // The rules of `refresh_titles` give it its real title once it is in the strip.
+        let title = profile.name.clone();
         let weak = Rc::downgrade(self);
         let on_event: Rc<dyn Fn(TabEvent)> = Rc::new(move |event| {
             if let Some(shell) = weak.upgrade() {
@@ -1127,6 +1168,7 @@ impl Shell {
         ui(&tab.area)?.SetVisibility(Visibility::Collapsed)?;
         self.attach_chip_menu(&tab)?;
         self.tabs.borrow_mut().push(tab.clone());
+        self.refresh_titles();
         self.select_index(self.tabs.borrow().len() - 1);
         Ok(tab)
     }
@@ -1246,6 +1288,7 @@ impl Shell {
         }
         // The selected tab stays; closing it hands over to the tab used most recently before.
         let next = if current == Some(id) { self.mru.borrow().most_recent() } else { current };
+        self.refresh_titles();
         self.show_index(next.and_then(|next| self.tab_index(next)).unwrap_or(0));
     }
 
@@ -1256,6 +1299,7 @@ impl Shell {
             return;
         }
         self.refresh_status(&tab);
+        self.refresh_titles();
         if tab.is_visible() {
             self.focus_active_pane();
         }
@@ -1430,7 +1474,7 @@ impl Shell {
             let tab = tab.clone();
             let this_layout = self.clone();
             let revoker = dialog.PrimaryButtonClick(cb!("rename confirmed", |_, _| {
-                let name = input.Text().unwrap_or_default().trim().to_owned();
+                let name = logic::clean_title(&input.Text().unwrap_or_default());
                 if name.is_empty() {
                     tab.renamed.set(false);
                 } else {
@@ -1438,7 +1482,7 @@ impl Shell {
                     *tab.title.borrow_mut() = name.clone();
                     tab.chip.set_title(&name);
                 }
-                this_layout.layout_tabs();
+                this_layout.refresh_titles();
             }))?;
             self.revokers.borrow_mut().push(revoker);
             let this = self.clone();

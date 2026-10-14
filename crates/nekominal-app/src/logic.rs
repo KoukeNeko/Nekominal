@@ -4,6 +4,7 @@
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::OPACITY_RANGE;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
+use nekominal_term::osc::strip_control;
 
 /// A pixel rectangle on the physical pixel grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,6 +396,110 @@ pub fn folder_label(path: &str, home: Option<&str>) -> String {
         return if path.is_empty() { String::new() } else { "/".to_owned() };
     }
     trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).to_owned()
+}
+
+/// Text a program or the user chose for a title, without control and bidirectional characters (a title is never
+/// markup and never reorders what is around it), trimmed.
+pub fn clean_title(raw: &str) -> String {
+    strip_control(raw).trim().to_owned()
+}
+
+/// The last segment of a working directory and the one before it as `parent/last`, for the tabs whose last
+/// segments are the same. `None` where there is no parent worth naming: the home folder, a drive root, `/`.
+pub fn folder_label_with_parent(path: &str, home: Option<&str>) -> Option<String> {
+    let last = folder_label(path, home);
+    if last == "~" || last == "/" || last.ends_with(':') || last.is_empty() {
+        return None;
+    }
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    let parent_path = &trimmed[..trimmed.rfind(['\\', '/']).unwrap_or(0)];
+    let parent = folder_label(parent_path, home);
+    // A parent that is a root says nothing a folder name does not; a drive still tells where the folder is.
+    (!parent.is_empty() && parent != "/").then(|| format!("{parent}/{last}"))
+}
+
+/// Where the default title of a tab comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleSource {
+    User,
+    Program,
+    Folder,
+    Profile,
+    Untitled,
+}
+
+/// What the title of a tab is made from: the focused pane of the tab, its profile and the user.
+#[derive(Clone, Debug, Default)]
+pub struct TitleParts {
+    /// The name the user gave the tab; it wins over everything.
+    pub user: Option<String>,
+    /// The title the program set (OSC 0 or 2).
+    pub program: String,
+    /// What an agent reported (OSC 7501): its title and its app id.
+    pub agent_title: Option<String>,
+    pub agent_app: Option<String>,
+    pub cwd: Option<String>,
+    pub profile: String,
+    /// The file name of the pane's program without `.exe`: `pwsh`.
+    pub shell: String,
+    pub home: Option<String>,
+    /// The title of last resort.
+    pub untitled: String,
+}
+
+impl TitleParts {
+    /// A program title says nothing the tab does not know already when it is the name of the profile, the id of
+    /// the agent app or the name of the shell itself (a shell titles itself with its own path until its first
+    /// prompt, and PowerShell never retitles itself after it).
+    fn is_generic(&self, title: &str) -> bool {
+        let same = |other: &str| !other.is_empty() && title.eq_ignore_ascii_case(other);
+        title.is_empty() || same(&self.profile) || same(&self.shell) || self.agent_app.as_deref().is_some_and(same)
+    }
+}
+
+/// The title of a tab: the name the user gave it; else what a program set (an agent's title, then the terminal
+/// title) unless that is generic; else the working directory (`with_parent` adds the folder above it, for tabs
+/// whose last segments collide); else the name of the profile; else `untitled`.
+pub fn default_title(parts: &TitleParts, with_parent: bool) -> (String, TitleSource) {
+    if let Some(user) = parts.user.as_deref().map(clean_title).filter(|name| !name.is_empty()) {
+        return (user, TitleSource::User);
+    }
+    let program = parts
+        .agent_title
+        .iter()
+        .map(String::as_str)
+        .chain([parts.program.as_str()])
+        .map(|title| tab_title(&clean_title(title), ""))
+        .find(|title| !parts.is_generic(title));
+    if let Some(program) = program {
+        return (program, TitleSource::Program);
+    }
+    if let Some(cwd) = parts.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
+        let home = parts.home.as_deref();
+        let folder = if with_parent { folder_label_with_parent(cwd, home) } else { None };
+        let folder = folder.unwrap_or_else(|| folder_label(cwd, home));
+        if !folder.is_empty() {
+            return (folder, TitleSource::Folder);
+        }
+    }
+    let profile = clean_title(&parts.profile);
+    if !profile.is_empty() {
+        return (profile, TitleSource::Profile);
+    }
+    (parts.untitled.clone(), TitleSource::Untitled)
+}
+
+/// For every tab whose title is a folder name (`Some(label)`), whether another such tab has the same label, so it
+/// needs the parent folder to be told apart. Labels compare without case.
+pub fn colliding_folders(labels: &[Option<String>]) -> Vec<bool> {
+    labels
+        .iter()
+        .map(|label| {
+            label.as_deref().is_some_and(|label| {
+                labels.iter().flatten().filter(|other| other.eq_ignore_ascii_case(label)).count() > 1
+            })
+        })
+        .collect()
 }
 
 /// The background opacity the sliders and commands asked for, kept until the next frame: a drag raises many value
@@ -816,6 +921,113 @@ mod tests {
         assert_eq!(folder_label("", home), "");
         assert_eq!(folder_label(r"C:\Users\me", None), "me");
         assert_eq!(folder_label("", Some("")), "", "an unknown home is not every folder");
+    }
+
+    fn parts(program: &str, cwd: Option<&str>) -> TitleParts {
+        TitleParts {
+            program: program.into(),
+            cwd: cwd.map(Into::into),
+            profile: "PowerShell".into(),
+            shell: "pwsh".into(),
+            home: Some(r"C:\Users\me".into()),
+            untitled: "終端機".into(),
+            ..TitleParts::default()
+        }
+    }
+
+    #[test]
+    fn a_title_comes_from_the_user_then_the_program_then_the_folder_then_the_profile_then_nothing() {
+        let mut p = parts("build", Some(r"C:\src\nekominal"));
+        p.user = Some("  mine ".into());
+        assert_eq!(default_title(&p, false), ("mine".to_owned(), TitleSource::User));
+        p.user = None;
+        assert_eq!(default_title(&p, false), ("build".to_owned(), TitleSource::Program));
+        p.program.clear();
+        assert_eq!(default_title(&p, false), ("nekominal".to_owned(), TitleSource::Folder));
+        p.cwd = None;
+        assert_eq!(default_title(&p, false), ("PowerShell".to_owned(), TitleSource::Profile));
+        p.profile.clear();
+        assert_eq!(default_title(&p, false), ("終端機".to_owned(), TitleSource::Untitled));
+        // A name of only invisible characters is no name.
+        p.user = Some("\u{202e}\u{7}  ".into());
+        assert_eq!(default_title(&p, false).1, TitleSource::Untitled);
+    }
+
+    #[test]
+    fn titles_that_only_name_the_shell_the_profile_or_the_agent_app_are_generic() {
+        let folder = Some(r"C:\work\api");
+        for generic in [r"C:\Program Files\PowerShell\7\pwsh.exe", "pwsh.exe", "PWSH", "powershell", "", "  "] {
+            let mut p = parts(generic, folder);
+            p.profile = "PowerShell".into();
+            assert_eq!(default_title(&p, false), ("api".to_owned(), TitleSource::Folder), "{generic:?}");
+        }
+        let mut agent = parts("claude", folder);
+        agent.agent_app = Some("claude".into());
+        assert_eq!(default_title(&agent, false).0, "api", "the app id of the agent says nothing");
+        agent.agent_title = Some("Fix the build".into());
+        assert_eq!(default_title(&agent, false), ("Fix the build".to_owned(), TitleSource::Program));
+        // Titles a program chose are kept as they are, an executable's path or not.
+        for chosen in ["build", "vim main.rs", "claude - Nekominal", "✳ Claude Code"] {
+            assert_eq!(default_title(&parts(chosen, folder), false), (chosen.to_owned(), TitleSource::Program));
+        }
+    }
+
+    #[test]
+    fn a_profile_named_like_the_title_is_generic_even_when_it_is_not_the_shell() {
+        let mut p = parts("Windows PowerShell", Some(r"C:\work\api"));
+        p.profile = "Windows PowerShell".into();
+        p.shell = "powershell".into();
+        assert_eq!(default_title(&p, false).0, "api");
+    }
+
+    #[test]
+    fn titles_lose_control_and_bidirectional_characters() {
+        assert_eq!(clean_title("  build\u{202e}evil\u{7}\u{1b}[31m "), "buildevil[31m");
+        assert_eq!(clean_title("a\u{2066}b\u{2069}c"), "abc");
+        assert_eq!(clean_title("終端\u{200b}機"), "終端\u{200b}機", "zero-width joiners of real text stay");
+        assert_eq!(default_title(&parts("pay\u{202e}load", None), false).0, "payload");
+        assert_eq!(
+            default_title(&TitleParts { agent_title: Some("x\u{202e}y".into()), ..parts("", None) }, false).0,
+            "xy"
+        );
+    }
+
+    #[test]
+    fn the_folder_is_the_last_segment_and_gets_its_parent_only_when_asked() {
+        let at = |cwd| parts("", Some(cwd));
+        assert_eq!(default_title(&at(r"C:\Users\me"), false).0, "~");
+        assert_eq!(default_title(&at(r"C:\"), false).0, "C:");
+        assert_eq!(default_title(&at(r"C:\Users\me\nekominal\src"), false).0, "src");
+        assert_eq!(default_title(&at(r"C:\Users\me\nekominal\src"), true).0, "nekominal/src");
+        assert_eq!(default_title(&at(r"C:\work"), true).0, "C:/work");
+        assert_eq!(default_title(&at("/home/me/api"), true).0, "me/api");
+        // There is no parent to add to these.
+        assert_eq!(default_title(&at(r"C:\Users\me"), true).0, "~");
+        assert_eq!(default_title(&at(r"C:\"), true).0, "C:");
+        assert_eq!(default_title(&at("/"), true).0, "/");
+        assert_eq!(default_title(&at("/usr"), true).0, "usr");
+    }
+
+    #[test]
+    fn five_tabs_in_different_folders_have_five_names_and_the_same_name_gets_a_parent() {
+        let folders = [r"C:\Users\me", r"C:\work\api", r"C:\work\web", r"D:\other", r"C:\Users\me\src\api"];
+        let names: Vec<String> = folders.iter().map(|f| default_title(&parts("pwsh", Some(f)), false).0).collect();
+        assert_eq!(names, ["~", "api", "web", "other", "api"]);
+        let labels: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
+        let collide = colliding_folders(&labels);
+        assert_eq!(collide, [false, true, false, false, true]);
+        let told_apart: Vec<String> = folders
+            .iter()
+            .zip(&collide)
+            .map(|(f, with_parent)| default_title(&parts("pwsh", Some(f)), *with_parent).0)
+            .collect();
+        assert_eq!(told_apart, ["~", "work/api", "web", "other", "src/api"]);
+        // Tabs that are not named after a folder never collide, and the comparison ignores case.
+        assert_eq!(
+            colliding_folders(&[None, Some("Api".into()), None, Some("api".into())]),
+            [false, true, false, true]
+        );
+        assert_eq!(colliding_folders(&[]), Vec::<bool>::new());
     }
 
     #[test]
