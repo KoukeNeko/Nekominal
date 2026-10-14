@@ -10,6 +10,7 @@
     <SolidColorBrush x:Key="NkDivider" Color="#1FC0CAF5"/>
     <SolidColorBrush x:Key="NkAccent" Color="#FF7AA2F7"/>
     <SolidColorBrush x:Key="NkInk" Color="#FF1A1B26"/>
+    <SolidColorBrush x:Key="NkPanel" Color="#E01A1B26"/>
 
     <!-- The one corner radius (design.rs CORNER_RADIUS fills the placeholder). ControlCornerRadius and
          OverlayCornerRadius are the keys WinUI's own controls read: buttons, text boxes, combo boxes, the

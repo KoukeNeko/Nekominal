@@ -8,6 +8,7 @@
 #   Scenario-Inactive         # the window while another window is active`n#   Scenario-Ime              # Bopomofo composition in two panes (ime-preedit, ime-two-panes)
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
+#   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -287,4 +288,125 @@ function Scenario-Opacity {
     } -Pattern -NoShot
 }
 
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity }
+function Plate-Text {
+    $plate = Get-Element '所有分頁' 'Button'
+    if (-not $plate) { return $null }
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    ($plate.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join ''
+}
+
+# The chips of the strip as UI Automation shows them (one per tab: a named container with a position in its set).
+function Get-Chips {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $pos = [System.Windows.Automation.AutomationProperty]::LookupById(30152)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NamedContainerAutomationPeer')
+    foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+        $p = $e.GetCurrentPropertyValue($pos)
+        if ($p -is [int]) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
+    }
+}
+
+# The edge counts ("‹ 3", "5 ›") of the strip.
+function Get-EdgeCounts {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    $left = 0; $right = 0
+    foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+        $name = $e.Current.Name
+        if ($name -match '^‹ (\d+)$' -and -not $e.Current.IsOffscreen) { $left = [int]$Matches[1] }
+        elseif ($name -match '^(\d+) ›$' -and -not $e.Current.IsOffscreen) { $right = [int]$Matches[1] }
+    }
+    @($left, $right)
+}
+
+# Tab awareness: the position plate, the width algorithm, the edge counts, the selected chip in view, the list of every
+# tab, most-recently-used Ctrl+Tab and closing back to the tab used before. One run grows the tab count to 30 and
+# measures every window width at 1, 2, 5, 12 and 30 tabs.
+function Scenario-Tabs {
+    Run-App 'tabs' @{ confirmClose = $false } {
+        First-Prompt
+        Name-Tab 'aaa'
+        # the single tab has no plate
+        foreach ($w in 800, 988, 1920) { Set-WindowWidth $w; 'N= 1 W={0,4}: plate present = {1}, chips {2}' -f $w, ($null -ne (Get-Element '所有分頁' 'Button')), @(Get-Chips).Count }
+        Set-WindowWidth 988
+        New-Tab; Name-Tab 'bbb'; New-Tab; Name-Tab 'ccc'
+        # most recently used: select aaa, bbb, ccc in turn, then Ctrl+Tab once and with Ctrl held for two presses
+        foreach ($name in 'aaa', 'bbb', 'ccc') { Click-Name $name; Start-Sleep -Milliseconds 300 }
+        Chord @(0x11) 0x09; Start-Sleep -Milliseconds 500
+        $tap = Plate-Text
+        [D]::Key(0x11, $false); Start-Sleep -Milliseconds 100
+        Press 0x09; Press 0x09; Start-Sleep -Milliseconds 200
+        [D]::Key(0x11, $true); Start-Sleep -Milliseconds 500
+        'MRU after aaa, bbb, ccc: Ctrl+Tab tap -> {0} (want 2 / 3, bbb); Ctrl held, Tab twice -> {1} (want 1 / 3, aaa)' -f $tap, (Plate-Text)
+        # closing the selected tab goes back to the one used before it, not to a neighbour
+        Click-Name 'ccc'; Start-Sleep -Milliseconds 300; Click-Name 'aaa'; Start-Sleep -Milliseconds 300; Click-Name 'bbb'; Start-Sleep -Milliseconds 300
+        $b = Get-ElementRect 'bbb'; Click-At ($b.X + 40) ($b.Y + 16) 'middle' 1000
+        'closed bbb (selected, after aaa): plate {0} (want 1 / 2, aaa)' -f (Plate-Text)
+        Name-Tab 'claude one'
+        $measure = {
+            param($n, $w)
+            $chips = @(Get-Chips); $plate = Plate-Text; $edges = Get-EdgeCounts
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+            $scroll = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+            $v = $scroll.Current.BoundingRectangle
+            # a chip is visible when any part of it lies inside the strip's viewport; the UIA rectangle of a chip that is
+            # scrolled out is empty (infinite)
+            $shown = @($chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.X + $_.Rect.Width -gt $v.X + 0.5 -and $_.Rect.X -lt $v.X + $v.Width - 0.5 })
+            $sel = $chips | Where-Object { ($plate -match '^(\d+) / ' -and $_.Index -eq [int]$Matches[1]) -or ($plate -eq "$n" -and $_.Index -eq $n) -or ($null -eq $plate -and $_.Index -eq 1) } | Select-Object -First 1
+            $margin = if ($sel -and -not [double]::IsInfinity($sel.Rect.Width)) { '{0:N0}/{1:N0}' -f (($sel.Rect.X - $v.X) / 1.5), (($v.X + $v.Width - $sel.Rect.X - $sel.Rect.Width) / 1.5) } else { '?' }
+            $widthsDip = ($chips | Sort-Object Index | ForEach-Object { if ([double]::IsInfinity($_.Rect.Width)) { '-' } else { [int]($_.Rect.Width / 1.5) } }) -join ','
+            'N={0,2} W={1,4}: plate "{2}" | chips {3}, visible {4} + hidden {5}+{6} = {7} | selected margins {8} DIP | widths {9}' -f $n, $w, $plate, $chips.Count, $shown.Count, $edges[0], $edges[1], ($shown.Count + $edges[0] + $edges[1]), $margin, $widthsDip
+        }
+        $targets = 2, 5, 12, 30
+        $widths = 800, 988, 1200, 1920
+        $count = 2
+        foreach ($n in $targets) {
+            while ($count -lt $n) { New-Tab; $count++; if ($count -in 8, 20) { Name-Tab "claude $count" } }
+            foreach ($w in $widths) {
+                Set-WindowWidth $w
+                & $measure $n $w
+            }
+        }
+        # the selected chip scrolls into view: first tab, then the last, then a middle one
+        Set-WindowWidth 988
+        foreach ($target in 1, 30, 14) {
+            $mark = Log-Mark
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $plateButton = Get-Element '所有分頁' 'Button'
+            $pr = $plateButton.Current.BoundingRectangle
+            Click-At ([int]($pr.X + $pr.Width / 2)) ([int]($pr.Y + $pr.Height / 2)) 'left' 900
+            # Up and Down move the selection of the list (clamped at the ends): row 1, the last row, or row 14.
+            $ups = if ($target -eq 30) { 0 } else { 40 }
+            $downs = switch ($target) { 1 { 0 } 30 { 40 } default { $target - 1 } }
+            foreach ($i in 1..$ups) { if ($ups) { Press 0x26 @() 20 20 } }
+            foreach ($i in 1..$downs) { if ($downs) { Press 0x28 @() 20 20 } }
+            Start-Sleep -Milliseconds 300
+            Press 0x0D; Start-Sleep -Milliseconds 700
+            $log = (Log-Since $mark | Where-Object { $_ -match 'selected tab|strip scrolled|tab list' } | ForEach-Object { $_.Trim() -replace '\s+ms\s+', 'ms ' }) -join ' | '
+            'list -> tab {0}: {1} | {2}' -f $target, (& $measure 30 988), $log
+        }
+        # filtering the list of 30 tabs
+        $mark = Log-Mark
+        $plateButton = Get-Element '所有分頁' 'Button'; $pr = $plateButton.Current.BoundingRectangle
+        Click-At ([int]($pr.X + $pr.Width / 2)) ([int]($pr.Y + $pr.Height / 2)) 'left' 700
+        $all = @(Get-Items).Count
+        Type-Unicode 'cla' 60; Start-Sleep -Milliseconds 700
+        $rows = @(Get-Items)
+        'list of 30: {0} rows; after typing cla: {1} rows ({2}); {3}' -f $all, $rows.Count, (($rows | ForEach-Object { $_.Current.Name }) -join ' / '), ((Log-Since $mark | Where-Object { $_ -match 'tab list' }) -join ' | ')
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        # the palette gets one go-to entry per tab
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
+        Type-Unicode '切換到分頁：claude' 40; Start-Sleep -Milliseconds 600
+        'palette rows for "切換到分頁：claude": {0}' -f (@(Get-Items).Count)
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Shot-Safe (Shot-Path 'tabs-30') | Out-Null
+    } -NoShot
+}
+
+function Get-Items {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
+    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+}
+
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs }

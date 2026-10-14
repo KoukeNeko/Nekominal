@@ -111,6 +111,12 @@ texts! {
     MenuTerminal "menu.terminal" "終端機功能表" "Terminal menu";
     DropPastePath "drop.pastePath" "貼上路徑" "Paste path";
 
+    // The position plate of the tab strip and the list of every tab (the palette in its tab mode).
+    TabAll "tab.all" "所有分頁" "All tabs";
+    TabListPlaceholder "tabs.placeholder" "輸入分頁名稱" "Type a tab name";
+    TabListEmpty "tabs.empty" "沒有符合的分頁" "No matching tabs";
+    TabPaneCount "tab.paneCount" "{0} 個窗格" "{0} panes";
+
     // Tab and pane indicators.
     AgentWorking "agent.working" "執行中" "Running";
     AgentBlocked "agent.blocked" "等待輸入" "Waiting for input";
@@ -133,6 +139,7 @@ texts! {
     PaletteEmpty "palette.empty" "沒有符合的命令" "No matching commands";
     PaletteNewTabWith "palette.newTabWith" "新增分頁：{0}" "New tab: {0}";
     PaletteColorScheme "palette.colorScheme" "色彩配置：{0}" "Color scheme: {0}";
+    PaletteGotoTab "palette.gotoTab" "切換到分頁：{0}" "Go to tab: {0}";
 
     // Buttons shared by dialogs. A confirmation's button names the action; Paste uses `EditPaste`.
     CommonClose "common.close" "關閉" "Close";
@@ -430,6 +437,12 @@ mod tests {
                     .get(lang)
                     .starts_with(Text::EditPaste.get(lang)),
                 "{lang:?}: dropping a path pastes it"
+            );
+            // "Go to tab 3" and "Go to tab: build" are one action named by a number or by a title.
+            let stem = Text::TabGoto.get(lang).trim_end_matches("{0}").trim_end();
+            assert!(
+                Text::PaletteGotoTab.get(lang).starts_with(stem),
+                "{lang:?}: the entry of a tab must start with the Go to tab label"
             );
         }
     }

@@ -26,6 +26,11 @@ pub fn xaml_color(color: ModelColor) -> Color {
     Color { a: color.a, r: color.r, g: color.g, b: color.b }
 }
 
+/// `#AARRGGBB`, the form XAML markup reads a colour in.
+pub fn hex_color(color: ModelColor) -> String {
+    format!("#{:02X}{:02X}{:02X}{:02X}", color.a, color.r, color.g, color.b)
+}
+
 pub fn solid_brush(color: ModelColor) -> Result<SolidColorBrush> {
     let brush = SolidColorBrush::new()?;
     brush.SetColor(xaml_color(color))?;

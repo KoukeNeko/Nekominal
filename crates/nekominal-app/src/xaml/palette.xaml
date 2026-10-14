@@ -4,6 +4,7 @@
   <Border x:Name="PalettePanel" Width="580" MaxHeight="460" HorizontalAlignment="Center"
           VerticalAlignment="Top" Margin="0,40,0,0" Padding="10" CornerRadius="{StaticResource NkCornerRadius}" BorderThickness="1">
     <StackPanel Spacing="8">
+      <TextBlock x:Name="PaletteTitle" Text="{{tab.all}}" Visibility="Collapsed" FontSize="12" Opacity="0.7" Margin="10,2,10,0"/>
       <TextBox x:Name="PaletteInput" PlaceholderText="{{palette.placeholder}}" CornerRadius="{StaticResource NkCornerRadius}"/>
       <ListView x:Name="PaletteList" MaxHeight="352" SelectionMode="Single" IsItemClickEnabled="True"/>
       <TextBlock x:Name="PaletteEmpty" Text="{{palette.empty}}" Visibility="Collapsed" Opacity="0.7" Margin="10,6,10,8"/>

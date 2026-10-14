@@ -37,11 +37,29 @@
         </Canvas>
       </Viewbox>
 
-      <ScrollViewer x:Name="TabScroll" Grid.Column="2" VerticalAlignment="Center"
-                    HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
-                    HorizontalScrollMode="Auto" VerticalScrollMode="Disabled" IsTabStop="False">
-        <StackPanel x:Name="TabStrip" Orientation="Horizontal" Spacing="4" Padding="2,0"/>
-      </ScrollViewer>
+      <!-- The strip: chips get their widths from code (logic::tab_widths) and scroll when even the narrowest
+           do not fit. A cut edge shows a count of the hidden chips and a fade; both are ignored by the pointer. -->
+      <Grid x:Name="TabHost" Grid.Column="2" VerticalAlignment="Center">
+        <ScrollViewer x:Name="TabScroll"
+                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                      HorizontalScrollMode="Auto" VerticalScrollMode="Disabled" IsTabStop="False">
+          <StackPanel x:Name="TabStrip" Orientation="Horizontal" Spacing="4" Padding="2,0"/>
+        </ScrollViewer>
+        <Border x:Name="FadeLeft" Width="16" Height="32" Margin="32,0,0,0" HorizontalAlignment="Left"
+                IsHitTestVisible="False" Visibility="Collapsed"/>
+        <Border x:Name="MoreLeft" Width="32" Height="32" HorizontalAlignment="Left" CornerRadius="{StaticResource NkCornerRadius}"
+                Background="{StaticResource NkPanel}" IsHitTestVisible="False" Visibility="Collapsed">
+          <TextBlock x:Name="MoreLeftText" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"
+                     FontFamily="Segoe UI Variable Text" Foreground="{StaticResource NkText}"/>
+        </Border>
+        <Border x:Name="FadeRight" Width="16" Height="32" Margin="0,0,32,0" HorizontalAlignment="Right"
+                IsHitTestVisible="False" Visibility="Collapsed"/>
+        <Border x:Name="MoreRight" Width="32" Height="32" HorizontalAlignment="Right" CornerRadius="{StaticResource NkCornerRadius}"
+                Background="{StaticResource NkPanel}" IsHitTestVisible="False" Visibility="Collapsed">
+          <TextBlock x:Name="MoreRightText" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="12"
+                     FontFamily="Segoe UI Variable Text" Foreground="{StaticResource NkText}"/>
+        </Border>
+      </Grid>
 
       <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
         <Button x:Name="NewTabButton" Style="{StaticResource NkIconButton}">
@@ -50,6 +68,13 @@
         <Button x:Name="NewTabMenuButton" Style="{StaticResource NkIconButton}" Width="22">
           <FontIcon Glyph="&#xE70D;" FontSize="9"/>
         </Button>
+        <!-- Where the selected tab is among all of them; hidden for a single tab. Opens the list of every tab. -->
+        <Border x:Name="TabPlate" Margin="4,0,0,0" Height="32" CornerRadius="{StaticResource NkCornerRadius}"
+                Background="{StaticResource NkCluster}" Visibility="Collapsed">
+          <Button x:Name="TabPlateButton" Style="{StaticResource NkIconButton}" Width="NaN" MinWidth="32" Padding="10,0">
+            <TextBlock x:Name="TabPlateText" FontFamily="Segoe UI Variable Text" FontSize="12.5"/>
+          </Button>
+        </Border>
       </StackPanel>
 
       <!-- The window drag area: the only element handed to SetTitleBar, so every other part of the bar is

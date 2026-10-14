@@ -1,4 +1,4 @@
-//! The tab chip: a rounded pill with a status dot, the title and a close glyph, in a horizontal strip.
+//! The tab chip: a rounded rectangle with a status dot, the title and a close glyph, in a horizontal strip.
 //!
 //! It is drawn and driven here (hover, selection, middle-click, drag to reorder) instead of using `TabView`,
 //! which would bring Windows Terminal's look and its focus-stealing pointer handling. The shell owns the tabs;
@@ -12,13 +12,17 @@ use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
 use crate::glass::Glass;
-use crate::logic::reorder_target;
-use crate::util::{find, load_xaml, solid_brush, ui, xml_escape};
+use crate::logic::{CHIP_MAX_WIDTH, reorder_target, shows_ordinal};
+use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
 pub type TabId = u32;
 
 /// Space between two chips (`StackPanel.Spacing` of the strip in `shell.xaml`).
 pub const CHIP_GAP: f64 = 4.0;
+
+/// Width of a chip around its title: the padding, the border, the dot, the two column gaps and the close slot
+/// (`CHIP_XAML`; a test keeps the two in step).
+const CHROME_WIDTH: f64 = 12.0 + 3.0 + 2.0 + 8.0 + 8.0 + 8.0 + 24.0;
 
 /// Pointer travel before a press on a chip becomes a drag.
 const DRAG_THRESHOLD: f64 = 5.0;
@@ -26,12 +30,12 @@ const DRAG_THRESHOLD: f64 = 5.0;
 const CHIP_XAML: &str = r#"
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Name="Chip" Height="32" MinWidth="76" MaxWidth="216" CornerRadius="{StaticResource NkCornerRadius}"
+        x:Name="Chip" Height="32" MinWidth="48" MaxWidth="216" CornerRadius="{StaticResource NkCornerRadius}"
         BorderThickness="1" Background="Transparent" BorderBrush="Transparent" Padding="12,0,3,0">
   <Border.BackgroundTransition>
     <BrushTransition Duration="0:0:0.14"/>
   </Border.BackgroundTransition>
-  <Grid ColumnSpacing="8">
+  <Grid x:Name="Content" ColumnSpacing="8">
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="Auto"/>
       <ColumnDefinition Width="*"/>
@@ -40,6 +44,8 @@ const CHIP_XAML: &str = r#"
     <Ellipse x:Name="Dot" Width="8" Height="8" VerticalAlignment="Center"/>
     <TextBlock x:Name="Title" Grid.Column="1" VerticalAlignment="Center" FontFamily="Segoe UI Variable Text"
                FontSize="12.5" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Text="{title}"/>
+    <TextBlock x:Name="Ordinal" Grid.Column="1" VerticalAlignment="Center" FontFamily="Segoe UI Variable Text"
+               FontSize="12.5" Visibility="Collapsed" IsHitTestVisible="False"/>
     <Border x:Name="Close" Grid.Column="2" Width="24" Height="24" CornerRadius="{StaticResource NkCornerRadius}" Background="Transparent"
             VerticalAlignment="Center" Opacity="0">
       <Border.OpacityTransition>
@@ -92,9 +98,13 @@ pub struct Chip {
     strip: Panel,
     dot: Ellipse,
     title: TextBlock,
+    ordinal: TextBlock,
+    content: Grid,
     close: Border,
     close_glyph: TextBlock,
     selected: Cell<bool>,
+    /// The chip is narrower than a title needs and shows its number.
+    narrow: Cell<bool>,
     hovered: Cell<bool>,
     close_hot: Cell<bool>,
     close_pressed: Cell<bool>,
@@ -107,6 +117,17 @@ pub struct Chip {
 
 fn fade(color: nekominal_model::themes::Color) -> nekominal_model::themes::Color {
     nekominal_model::themes::Color { a: 0, ..color }
+}
+
+/// The colour of a tab's status dot: the accent while the tab is selected and quiet, the scheme's warning and
+/// danger colours when it has something to report.
+pub fn dot_color(glass: Glass, state: TabState, selected: bool) -> nekominal_model::themes::Color {
+    match state {
+        TabState::Idle if selected => glass.accent,
+        TabState::Idle => glass.dot_idle(),
+        TabState::Attention => glass.warning,
+        TabState::Error => glass.danger,
+    }
 }
 
 impl Chip {
@@ -125,9 +146,12 @@ impl Chip {
             strip: strip.cast()?,
             dot: find(&element, "Dot")?,
             title: find(&element, "Title")?,
+            ordinal: find(&element, "Ordinal")?,
+            content: find(&element, "Content")?,
             close: find(&element, "Close")?,
             close_glyph: find(&element, "CloseGlyph")?,
             selected: Cell::new(false),
+            narrow: Cell::new(false),
             hovered: Cell::new(false),
             close_hot: Cell::new(false),
             close_pressed: Cell::new(false),
@@ -150,9 +174,46 @@ impl Chip {
         let _ = ToolTipService::SetToolTip(&self.root, &IReference::from(title));
     }
 
+    /// The width the chip wants for its title and chrome, at most `CHIP_MAX_WIDTH`.
+    pub fn natural_width(&self) -> f64 {
+        let unbounded = Size { width: f32::INFINITY, height: f32::INFINITY };
+        let title = ui(&self.title).and_then(|title| title.Measure(unbounded).and_then(|()| title.DesiredSize()));
+        (CHROME_WIDTH + title.map_or(0.0, |size| f64::from(size.width))).min(CHIP_MAX_WIDTH)
+    }
+
+    /// Gives the chip its width in the strip; a chip too narrow for a title shows its number instead.
+    pub fn set_width(&self, width: f64) {
+        let _ = fe(&self.root).and_then(|root| root.SetWidth(width));
+        let narrow = shows_ordinal(width);
+        if narrow != self.narrow.replace(narrow) {
+            let (padding, spacing) = if narrow {
+                (Thickness { left: 6.0, top: 0.0, right: 4.0, bottom: 0.0 }, 4.0)
+            } else {
+                (Thickness { left: 12.0, top: 0.0, right: 3.0, bottom: 0.0 }, 8.0)
+            };
+            let _ = self.root.SetPadding(padding);
+            let _ = self.content.SetColumnSpacing(spacing);
+            let _ = ui(&self.title).and_then(|title| title.SetOpacity(if narrow { 0.0 } else { 1.0 }));
+            let _ = ui(&self.ordinal).and_then(|ordinal| ordinal.SetVisibility(visibility(narrow)));
+            let _ = ui(&self.close).and_then(|close| close.SetVisibility(visibility(!narrow)));
+            self.refresh();
+        }
+    }
+
+    /// Tells assistive technology and the chip itself where it is in the strip (zero-based `index` of `count`).
+    pub fn set_position(&self, index: usize, count: usize) {
+        let _ = AutomationProperties::SetPositionInSet(&self.root, i32::try_from(index + 1).unwrap_or(i32::MAX));
+        let _ = AutomationProperties::SetSizeOfSet(&self.root, i32::try_from(count).unwrap_or(i32::MAX));
+        let _ = self.ordinal.SetText(&(index + 1).to_string());
+    }
+
     pub fn set_selected(&self, selected: bool) {
         self.selected.set(selected);
         self.refresh();
+    }
+
+    pub fn state(&self) -> TabState {
+        self.state.get()
     }
 
     pub fn set_state(&self, state: TabState) {
@@ -166,13 +227,7 @@ impl Chip {
     }
 
     fn dot_color(&self) -> nekominal_model::themes::Color {
-        let glass = self.glass.get();
-        match self.state.get() {
-            TabState::Idle if self.selected.get() => glass.accent,
-            TabState::Idle => glass.dot_idle(),
-            TabState::Attention => glass.warning,
-            TabState::Error => glass.danger,
-        }
+        dot_color(self.glass.get(), self.state.get(), self.selected.get())
     }
 
     /// Paints the chip for its current selection, hover and state.
@@ -196,6 +251,8 @@ impl Chip {
                 glass.text_secondary()
             })?)?;
             self.title.SetFontWeight(FontWeight { weight: if selected { 600 } else { 400 } })?;
+            self.ordinal.SetFontWeight(FontWeight { weight: if selected { 600 } else { 400 } })?;
+            self.ordinal.SetForeground(&solid_brush(if selected { glass.text() } else { glass.text_secondary() })?)?;
             self.dot.cast::<Shape>()?.SetFill(&solid_brush(self.dot_color())?)?;
             ui(&self.close)?.SetOpacity(if selected || hovered { 1.0 } else { 0.0 })?;
             let close_fill = if self.close_hot.get() { glass.pressed() } else { fade(glass.pressed()) };
@@ -407,5 +464,25 @@ impl Chip {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_chrome_width_adds_up_the_numbers_of_the_markup() {
+        for needle in [
+            "BorderThickness=\"1\"",
+            "Padding=\"12,0,3,0\"",
+            "ColumnSpacing=\"8\"",
+            "<Ellipse x:Name=\"Dot\" Width=\"8\"",
+            "Width=\"24\" Height=\"24\"",
+        ] {
+            assert!(CHIP_XAML.contains(needle), "the markup no longer has {needle}");
+        }
+        // padding 12 + 3, border 2, dot 8, two gaps of 8, close slot 24
+        assert_eq!(CHROME_WIDTH, 65.0);
     }
 }

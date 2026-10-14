@@ -13,7 +13,8 @@ pub enum Command {
     TabClose,
     TabNext,
     TabPrevious,
-    /// One-based tab number, 1 to 9. Other numbers are not commands: they have no id of their own.
+    /// One-based tab number, 1 to 9; 9 is the last tab (see [`Command::tab_goto_index`]). Other numbers are not
+    /// commands: they have no id of their own.
     TabGoto(u8),
     TabMoveLeft,
     TabMoveRight,
@@ -303,6 +304,25 @@ impl Command {
             self,
             Command::EditSmartCopy | Command::TabGoto(_) | Command::TabProfiles
         )
+    }
+
+    /// The tab (zero-based) that `TabGoto(number)` selects among `count` tabs: 1 to 8 are the tabs of that
+    /// number, 9 is the last tab whatever their count. `None` when there is no such tab.
+    pub fn tab_goto_index(number: u8, count: usize) -> Option<usize> {
+        match number {
+            9 => count.checked_sub(1),
+            1..=8 => Some(usize::from(number) - 1).filter(|index| *index < count),
+            _ => None,
+        }
+    }
+
+    /// The `TabGoto` number whose shortcut selects tab `index` of `count`, for showing it next to the tab.
+    pub fn tab_goto_number(index: usize, count: usize) -> Option<u8> {
+        if index < 8 {
+            u8::try_from(index + 1).ok()
+        } else {
+            (index + 1 == count).then_some(9)
+        }
     }
 
     /// Opens, closes or toggles something, so a held key must act once: with keyboard auto-repeat a held
@@ -755,6 +775,43 @@ mod tests {
         // The default split shortcuts are the chords that reach Windows as Alt+character.
         for command in [Command::PaneSplitRight, Command::PaneSplitDown] {
             assert!(command.once_per_press());
+        }
+    }
+
+    #[test]
+    fn the_numbered_tab_commands_select_the_tab_of_that_number_and_nine_the_last() {
+        assert_eq!(Command::tab_goto_index(1, 3), Some(0));
+        assert_eq!(Command::tab_goto_index(3, 3), Some(2));
+        assert_eq!(Command::tab_goto_index(4, 3), None);
+        assert_eq!(Command::tab_goto_index(8, 12), Some(7));
+        assert_eq!(Command::tab_goto_index(9, 12), Some(11));
+        assert_eq!(Command::tab_goto_index(9, 2), Some(1));
+        assert_eq!(Command::tab_goto_index(9, 0), None);
+        assert_eq!(Command::tab_goto_index(0, 5), None);
+        assert_eq!(Command::tab_goto_index(10, 12), None);
+    }
+
+    #[test]
+    fn a_tab_shows_the_shortcut_that_selects_it() {
+        for count in 1..=14 {
+            for index in 0..count {
+                if let Some(number) = Command::tab_goto_number(index, count) {
+                    assert_eq!(
+                        Command::tab_goto_index(number, count),
+                        Some(index),
+                        "{index} of {count}"
+                    );
+                }
+            }
+            // The first eight tabs and the last one have a shortcut; the ones in between have none.
+            let with_shortcut = (0..count)
+                .filter(|i| Command::tab_goto_number(*i, count).is_some())
+                .count();
+            assert_eq!(
+                with_shortcut,
+                count.min(8) + usize::from(count > 8),
+                "{count} tabs"
+            );
         }
     }
 

@@ -169,6 +169,16 @@ function Count-Panes {
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond).Count
 }
 
+# Sets the width of the window in DIP (the app runs at 150%: DIP * 1.5 pixels), keeping its position and height. The
+# outer rectangle is wider than the visible one by the invisible frame, which is kept.
+function Set-WindowWidth([int]$Dip, [double]$Scale = 1.5) {
+    $visible = Win-Rect
+    $outer = New-Object D+RECT
+    [void][D]::GetWindowRect($script:Hwnd, [ref]$outer)
+    $frame = ($outer.Right - $outer.Left) - ($visible.Right - $visible.Left)
+    [void][P]::SetWindowPos($script:Hwnd, [IntPtr]::Zero, $outer.Left, $outer.Top, [int]($Dip * $Scale) + $frame, $outer.Bottom - $outer.Top, 0x0014)
+    Start-Sleep -Milliseconds 900
+}
 Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class Menus {

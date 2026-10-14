@@ -88,6 +88,204 @@ pub fn reorder_target(widths: &[f64], gap: f64, from: usize, center: f64) -> usi
     target
 }
 
+/// An unselected chip is never narrower than this, in DIP.
+pub const CHIP_MIN_WIDTH: f64 = 48.0;
+/// No chip is wider than this.
+pub const CHIP_MAX_WIDTH: f64 = 216.0;
+/// The selected chip keeps at least this much, so its title and close glyph stay usable.
+pub const SELECTED_MIN_WIDTH: f64 = 100.0;
+/// A chip narrower than this shows its number instead of its title.
+pub const ORDINAL_BELOW: f64 = 64.0;
+/// Below this strip width the position plate shows only the total.
+pub const PLATE_TOTAL_ONLY_BELOW: f64 = 300.0;
+/// Room kept around a chip that is scrolled into view.
+pub const REVEAL_MARGIN: f64 = 12.0;
+/// Width of what covers a cut edge of the strip: the block that counts the hidden chips (32) and its fade (16).
+pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
+
+/// The width of every chip of the strip. `preferred` is what each chip wants (its title and chrome), `selected`
+/// the index of the selected one, `available` the width of the strip and `gap` the space between chips.
+///
+/// The selected chip keeps its preferred width, clamped to [`SELECTED_MIN_WIDTH`]..[`CHIP_MAX_WIDTH`]. When
+/// everything fits, every chip keeps its preferred width. Otherwise the others share what is left by water-filling:
+/// a common level that short titles stay under (they are never enlarged) down to [`CHIP_MIN_WIDTH`]. Below that
+/// floor the sum exceeds `available` and the strip scrolls.
+pub fn tab_widths(preferred: &[f64], selected: usize, available: f64, gap: f64) -> Vec<f64> {
+    let wanted: Vec<f64> = preferred
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let floor = if index == selected { SELECTED_MIN_WIDTH } else { CHIP_MIN_WIDTH };
+            width.clamp(floor, CHIP_MAX_WIDTH)
+        })
+        .collect();
+    let usable = available - gap * preferred.len().saturating_sub(1) as f64;
+    if wanted.iter().sum::<f64>() <= usable {
+        return wanted;
+    }
+    let mut widths = wanted.clone();
+    let mut others: Vec<usize> = (0..wanted.len()).filter(|index| *index != selected).collect();
+    others.sort_by(|a, b| wanted[*a].total_cmp(&wanted[*b]));
+    let mut remaining = (usable - wanted.get(selected).copied().unwrap_or(0.0)).max(0.0);
+    for (position, index) in others.iter().enumerate() {
+        let level = remaining / (others.len() - position) as f64;
+        if wanted[*index] <= level {
+            remaining -= wanted[*index];
+        } else {
+            // This chip and every longer one get the level, but never less than the floor.
+            for rest in &others[position..] {
+                widths[*rest] = level.max(CHIP_MIN_WIDTH).min(wanted[*rest]);
+            }
+            break;
+        }
+    }
+    widths
+}
+
+/// Whether a chip of this width shows its number instead of its title.
+pub fn shows_ordinal(width: f64) -> bool {
+    width < ORDINAL_BELOW
+}
+
+/// Width of the whole strip: the chips, the gaps between them and `padding` on both sides.
+pub fn strip_extent(widths: &[f64], gap: f64, padding: f64) -> f64 {
+    widths.iter().sum::<f64>() + gap * widths.len().saturating_sub(1) as f64 + padding
+}
+
+/// How many chips lie completely outside the visible part of the strip, to the left and to the right. A chip that
+/// shows even partly counts as visible, so hidden plus visible chips are all of them.
+pub fn hidden_counts(widths: &[f64], gap: f64, padding: f64, offset: f64, viewport: f64) -> (usize, usize) {
+    let (mut left, mut right) = (0, 0);
+    let mut edge = padding / 2.0;
+    for width in widths {
+        if edge + width <= offset {
+            left += 1;
+        } else if edge >= offset + viewport {
+            right += 1;
+        }
+        edge += width + gap;
+    }
+    (left, right)
+}
+
+/// The scroll offset that shows the chip at `left` (strip coordinates) of `width`, with `margin` around it. An
+/// edge with chips behind it is covered by a count block of `block` DIP, so the margin starts behind the block. The
+/// offset stays as it is when the chip is already in view.
+pub fn reveal_offset(
+    (left, width): (f64, f64),
+    offset: f64,
+    viewport: f64,
+    extent: f64,
+    margin: f64,
+    block: f64,
+) -> f64 {
+    let max_offset = (extent - viewport).max(0.0);
+    let offset = offset.clamp(0.0, max_offset);
+    let inset_left = margin + if offset > 0.0 { block } else { 0.0 };
+    let inset_right = margin + if offset < max_offset { block } else { 0.0 };
+    if left < offset + inset_left {
+        let target = left - margin - block;
+        return if target <= 0.0 { 0.0 } else { target.min(max_offset) };
+    }
+    if left + width > offset + viewport - inset_right {
+        let target = left + width + margin + block - viewport;
+        return if target >= max_offset { max_offset } else { target.max(0.0) };
+    }
+    offset
+}
+
+/// What the position plate says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Plate {
+    /// `current / total`, both one-based.
+    Position { current: usize, total: usize },
+    /// A narrow strip keeps only the count.
+    Total(usize),
+}
+
+/// The plate for `total` tabs with the zero-based `selected` one: none for a single tab, the total alone when the
+/// strip is narrower than [`PLATE_TOTAL_ONLY_BELOW`].
+pub fn plate(selected: usize, total: usize, strip_width: f64) -> Option<Plate> {
+    if total < 2 {
+        None
+    } else if strip_width < PLATE_TOTAL_ONLY_BELOW {
+        Some(Plate::Total(total))
+    } else {
+        Some(Plate::Position { current: selected + 1, total })
+    }
+}
+
+/// Tabs in most-recently-used order, and the walk through that order while the keys of next/previous tab are
+/// held: every press steps through the order as it was before the first press, and the tab shown when the keys
+/// come up becomes the most recent.
+#[derive(Debug)]
+pub struct Mru<T> {
+    order: Vec<T>,
+    walk: Option<(Vec<T>, usize)>,
+}
+
+impl<T: Copy + PartialEq> Default for Mru<T> {
+    fn default() -> Self {
+        Mru { order: Vec::new(), walk: None }
+    }
+}
+
+impl<T: Copy + PartialEq> Mru<T> {
+    /// `tab` was selected some other way than by the keys: it becomes the most recent and any walk ends.
+    pub fn touch(&mut self, tab: T) {
+        self.order.retain(|other| *other != tab);
+        self.order.insert(0, tab);
+        self.walk = None;
+    }
+
+    /// A closed tab leaves the order; the walk ends.
+    pub fn remove(&mut self, tab: T) {
+        self.order.retain(|other| *other != tab);
+        self.walk = None;
+    }
+
+    pub fn most_recent(&self) -> Option<T> {
+        self.order.first().copied()
+    }
+
+    /// One press of next (`step` 1) or previous (`step` -1): the tab to show, or `None` with fewer than two tabs.
+    pub fn step(&mut self, step: isize) -> Option<T> {
+        if self.order.len() < 2 {
+            return None;
+        }
+        let (snapshot, position) = self.walk.get_or_insert_with(|| (self.order.clone(), 0));
+        let count = snapshot.len() as isize;
+        *position = (*position as isize + step).rem_euclid(count) as usize;
+        Some(snapshot[*position])
+    }
+
+    /// The keys came up: the tab shown last becomes the most recent.
+    pub fn commit(&mut self) {
+        if let Some((snapshot, position)) = self.walk.take() {
+            self.touch(snapshot[position]);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_walking(&self) -> bool {
+        self.walk.is_some()
+    }
+}
+
+/// The last segment of a working directory as a tab shows it: `~` for the home folder, the drive (`C:`) for the
+/// root of a drive, `/` for the root of a POSIX path (a WSL shell reports those), otherwise the folder name.
+pub fn folder_label(path: &str, home: Option<&str>) -> String {
+    let normal = |text: &str| text.trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase();
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    if home.is_some_and(|home| !normal(home).is_empty() && normal(home) == normal(trimmed)) {
+        return "~".to_owned();
+    }
+    if trimmed.is_empty() {
+        return if path.is_empty() { String::new() } else { "/".to_owned() };
+    }
+    trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).to_owned()
+}
+
 /// The background opacity the sliders and commands asked for, kept until the next frame: a drag raises many value
 /// changes per frame and only the last of them is worth applying.
 #[derive(Debug, Default)]
@@ -169,6 +367,270 @@ mod tests {
         assert_eq!(reorder_target(&widths, 4.0, 2, 100.0), 1);
         assert_eq!(reorder_target(&widths, 4.0, 2, -40.0), 0);
         assert_eq!(reorder_target(&widths, 4.0, 1, 154.0), 1);
+    }
+
+    /// A small deterministic generator, so the property tests need no dependency and fail the same way twice.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 >> 33
+        }
+
+        fn between(&mut self, low: f64, high: f64) -> f64 {
+            low + (self.next() % 10_000) as f64 / 10_000.0 * (high - low)
+        }
+
+        fn below(&mut self, count: usize) -> usize {
+            (self.next() % count as u64) as usize
+        }
+    }
+
+    const GAP: f64 = 4.0;
+
+    fn sum_with_gaps(widths: &[f64]) -> f64 {
+        widths.iter().sum::<f64>() + GAP * widths.len().saturating_sub(1) as f64
+    }
+
+    #[test]
+    fn five_long_titled_tabs_share_a_653_dip_strip_and_twelve_hit_the_floor() {
+        let five = tab_widths(&[216.0; 5], 1, 649.0, GAP);
+        assert_eq!(five[1], 216.0, "the selected chip keeps its width");
+        for index in [0, 2, 3, 4] {
+            assert!((five[index] - 104.25).abs() < 1e-9, "{five:?}");
+        }
+        assert!((sum_with_gaps(&five) - 649.0).abs() < 1e-9, "the strip is used exactly");
+
+        let twelve = tab_widths(&[216.0; 12], 0, 649.0, GAP);
+        assert_eq!(twelve[0], 216.0);
+        assert!(twelve[1..].iter().all(|width| *width == CHIP_MIN_WIDTH), "{twelve:?}");
+        assert!(sum_with_gaps(&twelve) > 649.0, "more than fits: the strip scrolls");
+    }
+
+    #[test]
+    fn short_titles_are_never_enlarged_and_what_they_leave_goes_to_the_long_ones() {
+        // Selected 216, one short (60) and two long (216): the short one keeps 60, the long ones split the rest.
+        let widths = tab_widths(&[216.0, 60.0, 216.0, 216.0], 0, 500.0, GAP);
+        assert_eq!(widths[1], 60.0);
+        assert!((widths[2] - 106.0).abs() < 1e-9 && (widths[3] - 106.0).abs() < 1e-9, "{widths:?}");
+        // With room for everyone nothing changes, except that the selected chip is at least 100 wide.
+        assert_eq!(tab_widths(&[80.0, 80.0, 30.0], 0, 800.0, GAP), [100.0, 80.0, 48.0]);
+        assert_eq!(tab_widths(&[400.0], 0, 800.0, GAP), [216.0]);
+        assert_eq!(tab_widths(&[], 0, 800.0, GAP), Vec::<f64>::new());
+    }
+
+    #[test]
+    fn tab_widths_hold_their_invariants_for_any_tabs_and_any_strip() {
+        let mut random = Lcg(7);
+        for _ in 0..3000 {
+            let count = 1 + random.below(40);
+            let preferred: Vec<f64> = (0..count).map(|_| random.between(20.0, 300.0)).collect();
+            let selected = random.below(count);
+            let available = random.between(100.0, 2000.0);
+            let widths = tab_widths(&preferred, selected, available, GAP);
+
+            assert_eq!(widths.len(), count);
+            for (index, width) in widths.iter().enumerate() {
+                let (floor, wanted) = if index == selected {
+                    (SELECTED_MIN_WIDTH, preferred[index].clamp(SELECTED_MIN_WIDTH, CHIP_MAX_WIDTH))
+                } else {
+                    (CHIP_MIN_WIDTH, preferred[index].clamp(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH))
+                };
+                assert!(*width >= floor - 1e-9 && *width <= wanted + 1e-9, "{index}: {width} not in {floor}..{wanted}");
+            }
+            assert_eq!(widths[selected], preferred[selected].clamp(SELECTED_MIN_WIDTH, CHIP_MAX_WIDTH));
+            // Either everything fits, or every unselected chip is at the floor (and the strip scrolls).
+            let fits = sum_with_gaps(&widths) <= available + 1e-6;
+            let at_floor = widths.iter().enumerate().all(|(i, w)| i == selected || *w <= CHIP_MIN_WIDTH + 1e-9);
+            assert!(fits || at_floor, "{widths:?} in {available}");
+
+            // More room never narrows a chip.
+            let wider = tab_widths(&preferred, selected, available + random.between(0.0, 500.0), GAP);
+            for (before, after) in widths.iter().zip(&wider) {
+                assert!(*after >= *before - 1e-9, "{before} became {after}");
+            }
+
+            // Another tab, with the selection where it was, never widens the others.
+            let mut more = preferred.clone();
+            more.push(random.between(20.0, 300.0));
+            let with_new = tab_widths(&more, selected, available, GAP);
+            for (before, after) in widths.iter().zip(&with_new) {
+                assert!(*after <= *before + 1e-9, "{before} became {after}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chip_narrower_than_64_dip_shows_its_number() {
+        assert!(shows_ordinal(48.0) && shows_ordinal(63.9));
+        assert!(!shows_ordinal(64.0) && !shows_ordinal(216.0));
+    }
+
+    #[test]
+    fn hidden_and_visible_chips_add_up_to_all_of_them() {
+        let widths = [100.0; 12];
+        let extent = strip_extent(&widths, GAP, 4.0);
+        assert_eq!(extent, 12.0 * 100.0 + 11.0 * GAP + 4.0);
+        let viewport = 500.0;
+        for offset in [0.0, 1.0, 104.0, 300.0, 520.0, extent - viewport] {
+            let (left, right) = hidden_counts(&widths, GAP, 4.0, offset, viewport);
+            let visible = widths
+                .iter()
+                .enumerate()
+                .filter(|(i, w)| {
+                    let edge = 2.0 + *i as f64 * (100.0 + GAP);
+                    edge + **w > offset && edge < offset + viewport
+                })
+                .count();
+            assert_eq!(left + visible + right, widths.len(), "offset {offset}");
+        }
+        assert_eq!(hidden_counts(&widths, GAP, 4.0, 0.0, viewport), (0, 7));
+        assert_eq!(hidden_counts(&widths, GAP, 4.0, extent - viewport, viewport), (7, 0));
+        // A chip cut by the edge still shows.
+        assert_eq!(hidden_counts(&widths, GAP, 4.0, 50.0, viewport).0, 0);
+    }
+
+    #[test]
+    fn revealing_a_chip_leaves_a_margin_and_makes_room_for_the_count_blocks() {
+        let (viewport, extent) = (500.0, 1304.0);
+        let reveal =
+            |left, offset| reveal_offset((left, 100.0), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
+        // Already in view: nothing moves.
+        assert_eq!(reveal(200.0, 0.0), 0.0);
+        assert_eq!(reveal(300.0, 100.0), 100.0);
+        // The first chip of the strip stays flush at the left edge.
+        assert_eq!(reveal(2.0, 300.0), 0.0);
+        // A chip to the right scrolls in with the margin and the block behind it.
+        assert_eq!(reveal(600.0, 0.0), 600.0 + 100.0 + REVEAL_MARGIN + COUNT_BLOCK_WIDTH - 500.0);
+        // The last chip scrolls to the end, with the margin only.
+        assert_eq!(reveal(1202.0, 0.0), extent - viewport);
+        // A chip to the left of the view scrolls in from the left.
+        assert_eq!(reveal(300.0, 700.0), 300.0 - REVEAL_MARGIN - COUNT_BLOCK_WIDTH);
+        // A strip that fits has nothing to scroll.
+        assert_eq!(reveal_offset((300.0, 100.0), 0.0, 500.0, 400.0, REVEAL_MARGIN, COUNT_BLOCK_WIDTH), 0.0);
+    }
+
+    #[test]
+    fn a_revealed_chip_is_in_view_inside_its_margins_for_any_strip() {
+        let mut random = Lcg(11);
+        for _ in 0..3000 {
+            let count = 2 + random.below(40);
+            let widths: Vec<f64> = (0..count).map(|_| random.between(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH)).collect();
+            let extent = strip_extent(&widths, GAP, 4.0);
+            // Wide enough for the widest chip between two count blocks and their margins.
+            let viewport = random.between(400.0, 900.0);
+            let index = random.below(count);
+            let left = 2.0 + widths[..index].iter().sum::<f64>() + GAP * index as f64;
+            let offset = random.between(0.0, (extent - viewport).max(0.0) + 50.0);
+            let at = reveal_offset((left, widths[index]), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
+            assert!(at >= 0.0 && at <= (extent - viewport).max(0.0) + 1e-9, "offset {at}");
+            assert!(left >= at - 1e-9 && left + widths[index] <= at + viewport + 1e-9, "the chip is cut off");
+            if extent > viewport {
+                // Every scroll position has the chip clear of the blocks, unless it sits at an end of the strip.
+                let margin_left = if at > 0.0 { REVEAL_MARGIN + COUNT_BLOCK_WIDTH } else { 0.0 };
+                assert!(left >= at + margin_left - 1e-9 || index == 0, "left margin at {at}");
+                let at_end = at + viewport >= extent - 1e-9;
+                let margin_right = if at_end { 0.0 } else { REVEAL_MARGIN + COUNT_BLOCK_WIDTH };
+                assert!(
+                    left + widths[index] <= at + viewport - margin_right + 1e-9 || index == count - 1,
+                    "right margin"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_plate_is_hidden_for_one_tab_and_total_only_on_a_narrow_strip() {
+        assert_eq!(plate(0, 0, 800.0), None);
+        assert_eq!(plate(0, 1, 800.0), None);
+        assert_eq!(plate(2, 12, 800.0), Some(Plate::Position { current: 3, total: 12 }));
+        assert_eq!(plate(1, 2, 300.0), Some(Plate::Position { current: 2, total: 2 }));
+        assert_eq!(plate(2, 12, 299.9), Some(Plate::Total(12)));
+    }
+
+    #[test]
+    fn next_tab_walks_the_most_recently_used_order_while_the_keys_are_held() {
+        let mut mru = Mru::default();
+        for tab in ['a', 'b', 'c'] {
+            mru.touch(tab);
+        }
+        // Select A, B, C in turn: the order is C, B, A. One tap goes to B.
+        assert_eq!(mru.step(1), Some('b'));
+        mru.commit();
+        assert!(!mru.is_walking());
+        // Held: two more presses go to C and then A, and A is the most recent when the keys come up.
+        assert_eq!(mru.step(1), Some('c'));
+        assert_eq!(mru.step(1), Some('a'));
+        mru.commit();
+        assert_eq!(mru.most_recent(), Some('a'));
+        // The order after that: A, B, C (B was used after C).
+        assert_eq!(mru.step(1), Some('b'));
+        assert_eq!(mru.step(1), Some('c'));
+        assert_eq!(mru.step(1), Some('a'), "the walk wraps around");
+        mru.commit();
+        assert_eq!(mru.most_recent(), Some('a'));
+    }
+
+    #[test]
+    fn previous_tab_walks_backwards_and_a_tap_toggles_between_two_tabs() {
+        let mut mru = Mru::default();
+        for tab in [1, 2, 3, 4] {
+            mru.touch(tab);
+        }
+        assert_eq!(mru.step(-1), Some(1), "previous starts from the least recently used");
+        mru.commit();
+        assert_eq!(mru.most_recent(), Some(1));
+        // Tapping twice with the keys released between returns to where it began.
+        let mut pair = Mru::default();
+        pair.touch('x');
+        pair.touch('y');
+        assert_eq!(pair.step(1), Some('x'));
+        pair.commit();
+        assert_eq!(pair.step(1), Some('y'));
+        pair.commit();
+        assert_eq!(pair.most_recent(), Some('y'));
+    }
+
+    #[test]
+    fn selecting_a_tab_another_way_ends_the_walk_and_a_closed_tab_leaves_the_order() {
+        let mut mru = Mru::default();
+        for tab in [1, 2, 3] {
+            mru.touch(tab);
+        }
+        assert_eq!(mru.step(1), Some(2));
+        mru.touch(1);
+        assert!(!mru.is_walking());
+        assert_eq!(mru.most_recent(), Some(1));
+        // Closing the most recent tab leaves the one used before it.
+        mru.remove(1);
+        assert_eq!(mru.most_recent(), Some(3));
+        mru.remove(2);
+        mru.remove(3);
+        assert_eq!(mru.most_recent(), None);
+        assert_eq!(mru.step(1), None);
+        let mut single = Mru::default();
+        single.touch(9);
+        assert_eq!(single.step(1), None, "nothing to walk to");
+    }
+
+    #[test]
+    fn a_folder_is_shown_by_its_last_segment_with_home_and_drives_spelled_short() {
+        let home = Some(r"C:\Users\me");
+        assert_eq!(folder_label(r"C:\Users\me\src\nekominal", home), "nekominal");
+        assert_eq!(folder_label(r"C:\Users\me\src\nekominal\", home), "nekominal");
+        assert_eq!(folder_label(r"C:\Users\me", home), "~");
+        assert_eq!(folder_label(r"c:\users\ME\", home), "~", "paths of Windows ignore case and a trailing slash");
+        assert_eq!(folder_label("C:/Users/me", home), "~", "OSC 7 may report forward slashes");
+        assert_eq!(folder_label(r"C:\Users", home), "Users");
+        assert_eq!(folder_label(r"C:\", home), "C:");
+        assert_eq!(folder_label("D:", home), "D:");
+        assert_eq!(folder_label(r"\\server\share\docs", home), "docs");
+        assert_eq!(folder_label("/home/me/project", home), "project");
+        assert_eq!(folder_label("/", home), "/");
+        assert_eq!(folder_label("", home), "");
+        assert_eq!(folder_label(r"C:\Users\me", None), "me");
+        assert_eq!(folder_label("", Some("")), "", "an unknown home is not every folder");
     }
 
     #[test]

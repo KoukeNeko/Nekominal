@@ -24,12 +24,13 @@ use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
-use crate::chip::{Chip, TabEvent, TabId, TabState};
+use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId, TabState};
 use crate::design;
 use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
-use crate::logic;
+use crate::logic::{self, COUNT_BLOCK_WIDTH, Plate, REVEAL_MARGIN};
+use crate::palette::TabRow;
 use crate::pane_view::{Look, PaneView};
 use crate::tab::Tab;
 use crate::util::*;
@@ -42,13 +43,22 @@ const SHELL_XAML: &str = include_str!("xaml/shell.xaml");
 const SAVE_DELAY: Duration = Duration::from_millis(600);
 
 /// Space on the bar that is not the tab strip: app mark, new-tab buttons, tool cluster margins, the smallest
-/// useful drag area. Together with the cluster and the caption buttons this bounds the width of the strip.
+/// useful drag area. Together with the cluster, the position plate and the caption buttons this bounds the width
+/// of the strip.
 const BAR_FIXED_WIDTH: f64 = 46.0 + 4.0 + 54.0 + 18.0 + 40.0;
+
+/// Padding of the strip inside its scroll viewer, both sides together (`shell.xaml`).
+const STRIP_PADDING: f64 = 4.0;
+
+/// The smallest the strip gets, however narrow the window.
+const STRIP_MIN_WIDTH: f64 = 120.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overlay {
     None,
     Palette,
+    /// The palette as the list of every tab.
+    Tabs,
     Find,
     Settings,
 }
@@ -58,8 +68,18 @@ struct Ui {
     bar_tint: Border,
     tab_scroll: ScrollViewer,
     tab_strip: StackPanel,
+    /// Counts of the chips hidden behind the left and right edge of the strip, and their fades.
+    more_left: Border,
+    more_left_text: TextBlock,
+    fade_left: Border,
+    more_right: Border,
+    more_right_text: TextBlock,
+    fade_right: Border,
     new_tab: Button,
     new_tab_menu: Button,
+    tab_plate: Border,
+    tab_plate_button: Button,
+    tab_plate_text: TextBlock,
     drag: Grid,
     tool_cluster: Border,
     tool_split_right: Button,
@@ -92,6 +112,15 @@ pub struct Shell {
     look: Rc<Look>,
     tabs: RefCell<Vec<Rc<Tab>>>,
     selected: Cell<usize>,
+    /// Tabs by most recent use, and the walk of the next/previous tab keys through them.
+    mru: RefCell<logic::Mru<TabId>>,
+    /// The width of every chip as the last layout of the strip set it.
+    strip_widths: RefCell<Vec<f64>>,
+    /// The width of the visible part of the strip as the last layout set it (the viewer reports it late).
+    strip_viewport: Cell<f64>,
+    /// The selected chip must be scrolled into view once the viewer has laid out at its new size (it clamps a
+    /// scroll to the size it had).
+    reveal_pending: Cell<bool>,
     next_tab: Cell<TabId>,
     next_pane: Cell<PaneId>,
     pub overlay: Cell<Overlay>,
@@ -229,8 +258,17 @@ pub fn launch() -> Result<()> {
         bar_tint: find(&root, "BarTint")?,
         tab_scroll: find(&root, "TabScroll")?,
         tab_strip: find(&root, "TabStrip")?,
+        more_left: find(&root, "MoreLeft")?,
+        more_left_text: find(&root, "MoreLeftText")?,
+        fade_left: find(&root, "FadeLeft")?,
+        more_right: find(&root, "MoreRight")?,
+        more_right_text: find(&root, "MoreRightText")?,
+        fade_right: find(&root, "FadeRight")?,
         new_tab: find(&root, "NewTabButton")?,
         new_tab_menu: find(&root, "NewTabMenuButton")?,
+        tab_plate: find(&root, "TabPlate")?,
+        tab_plate_button: find(&root, "TabPlateButton")?,
+        tab_plate_text: find(&root, "TabPlateText")?,
         drag: find(&root, "DragRegion")?,
         tool_cluster: find(&root, "ToolCluster")?,
         tool_split_right: find(&root, "ToolSplitRight")?,
@@ -262,6 +300,10 @@ pub fn launch() -> Result<()> {
         look,
         tabs: RefCell::new(Vec::new()),
         selected: Cell::new(0),
+        mru: RefCell::new(logic::Mru::default()),
+        strip_widths: RefCell::new(Vec::new()),
+        strip_viewport: Cell::new(0.0),
+        reveal_pending: Cell::new(false),
         next_tab: Cell::new(1),
         next_pane: Cell::new(1),
         overlay: Cell::new(Overlay::None),
@@ -317,7 +359,7 @@ impl Shell {
         let (left, right) = window::caption_insets(&self.window, scale);
         let _ = self.ui.left_inset.SetWidth(GridLength { value: left, grid_unit_type: GridUnitType::Pixel });
         let _ = self.ui.right_inset.SetWidth(GridLength { value: right, grid_unit_type: GridUnitType::Pixel });
-        self.update_tab_strip_width();
+        self.layout_tabs();
 
         // Discovery has been running since launch; it is normally done by now.
         let found = self
@@ -411,6 +453,7 @@ impl Shell {
             ("NkDivider", glass.divider()),
             ("NkAccent", glass.accent),
             ("NkInk", themes::Color { a: 255, ..glass.background }),
+            ("NkPanel", glass.panel()),
         ] {
             self.palette_brush(key)?.SetColor(xaml_color(color))?;
         }
@@ -425,6 +468,7 @@ impl Shell {
         for tab in self.tabs.borrow().iter() {
             tab.set_glass(glass);
         }
+        self.restyle_strip_fades(&glass)?;
         if let Some(page) = self.settings_page.borrow().as_ref() {
             page.restyle(&glass);
         }
@@ -555,6 +599,7 @@ impl Shell {
         };
         tip(&self.ui.new_tab, keymap.tooltip(Command::TabNew, lang));
         tip(&self.ui.new_tab_menu, keymap.tooltip(Command::TabProfiles, lang));
+        tip(&self.ui.tab_plate_button, t(Text::TabAll).to_owned());
         tip(&self.ui.tool_split_right, keymap.tooltip(Command::PaneSplitRight, lang));
         tip(&self.ui.tool_split_down, keymap.tooltip(Command::PaneSplitDown, lang));
         tip(&self.ui.tool_search, keymap.tooltip(Command::EditFind, lang));
@@ -579,6 +624,8 @@ impl Shell {
         }
         let this = self.clone();
         revokers.push(self.ui.new_tab_menu.on_click(cb!("profile menu", |_, _| this.show_profile_menu()))?);
+        let this = self.clone();
+        revokers.push(self.ui.tab_plate_button.on_click(cb!("tab list", |_, _| this.toggle_overlay(Overlay::Tabs)))?);
 
         // Quick appearance flyout: changes apply while the control moves.
         let this = self.clone();
@@ -609,10 +656,11 @@ impl Shell {
 
         // The strip's width follows the bar; the wheel scrolls it sideways.
         let this = self.clone();
-        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| this.update_tab_strip_width()))?);
+        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| this.layout_tabs()))?);
         let this = self.clone();
-        revokers
-            .push(fe(&self.ui.tool_cluster)?.SizeChanged(cb!("cluster size", |_, _| this.update_tab_strip_width()))?);
+        revokers.push(fe(&self.ui.tool_cluster)?.SizeChanged(cb!("cluster size", |_, _| this.layout_tabs()))?);
+        let this = self.clone();
+        revokers.push(self.ui.tab_scroll.ViewChanged(cb!("strip scrolled", |_, _| this.update_strip_edges(None)))?);
         let scroll = self.ui.tab_scroll.clone();
         revokers.push(ui(&self.ui.tab_scroll)?.PointerWheelChanged(cb!("strip wheel", |_, args| {
             let Some(args) = args.as_ref() else { return };
@@ -628,12 +676,108 @@ impl Shell {
         Ok(())
     }
 
-    fn update_tab_strip_width(&self) {
+    /// The width the strip and the position plate may share: the bar without the app mark, the new-tab buttons,
+    /// the tool cluster, the caption buttons and the smallest drag area.
+    fn strip_budget(&self) -> f64 {
         let bar = fe(&self.ui.top_bar).and_then(|b| b.ActualWidth()).unwrap_or(0.0);
         let cluster = fe(&self.ui.tool_cluster).and_then(|b| b.ActualWidth()).unwrap_or(0.0);
         let insets = self.ui.left_inset.ActualWidth().unwrap_or(0.0) + self.ui.right_inset.ActualWidth().unwrap_or(0.0);
-        let available = (bar - insets - cluster - BAR_FIXED_WIDTH).max(120.0);
-        let _ = fe(&self.ui.tab_scroll).and_then(|s| s.SetMaxWidth(available));
+        (bar - insets - cluster - BAR_FIXED_WIDTH).max(STRIP_MIN_WIDTH)
+    }
+
+    /// Sizes the whole tab strip: the position plate, the width of every chip, the scroll position that keeps the
+    /// selected chip in view and the counts at the cut edges. Runs whenever the tabs, their titles, the selection or
+    /// the window change.
+    fn layout_tabs(&self) {
+        let tabs = self.tabs.borrow().clone();
+        let selected = self.selected.get();
+        let budget = self.strip_budget();
+        let strip = (budget - self.update_plate(tabs.len(), selected, budget)).max(STRIP_MIN_WIDTH);
+        let _ = fe(&self.ui.tab_scroll).and_then(|scroll| scroll.SetMaxWidth(strip));
+        let preferred: Vec<f64> = tabs.iter().map(|tab| tab.chip.natural_width()).collect();
+        let widths = logic::tab_widths(&preferred, selected, strip - STRIP_PADDING, CHIP_GAP);
+        for (index, (tab, width)) in tabs.iter().zip(&widths).enumerate() {
+            tab.chip.set_width(*width);
+            tab.chip.set_position(index, tabs.len());
+        }
+        let extent = logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING);
+        *self.strip_widths.borrow_mut() = widths;
+        self.strip_viewport.set(strip.min(extent));
+        self.reveal_pending.set(true);
+        self.update_strip_edges(None);
+    }
+
+    /// Shows `current / total` (or the total alone on a narrow strip) and returns the width the plate takes.
+    fn update_plate(&self, count: usize, selected: usize, budget: f64) -> f64 {
+        let text = match logic::plate(selected, count, budget) {
+            None => {
+                let _ = ui(&self.ui.tab_plate).and_then(|plate| plate.SetVisibility(Visibility::Collapsed));
+                return 0.0;
+            }
+            Some(Plate::Position { current, total }) => tf(Text::FindCount, &[&current, &total]),
+            Some(Plate::Total(total)) => total.to_string(),
+        };
+        let _ = self.ui.tab_plate_text.SetText(&text);
+        let plate = ui(&self.ui.tab_plate);
+        let _ = plate.as_ref().map(|plate| plate.SetVisibility(Visibility::Visible));
+        let measured = plate.and_then(|plate| {
+            plate.Measure(Size { width: f32::INFINITY, height: f32::INFINITY })?;
+            plate.DesiredSize()
+        });
+        // The plate and the 4 DIP in front of it.
+        measured.map_or(0.0, |size| f64::from(size.width)) + 4.0
+    }
+
+    /// Scrolls the strip so the selected chip is in view with a margin; returns the offset it scrolls to.
+    fn reveal_selected(&self) -> Option<f64> {
+        let widths = self.strip_widths.borrow();
+        let selected = self.selected.get();
+        let width = *widths.get(selected)?;
+        let left = STRIP_PADDING / 2.0 + widths[..selected].iter().sum::<f64>() + CHIP_GAP * selected as f64;
+        let extent = logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING);
+        let offset = self.ui.tab_scroll.HorizontalOffset().unwrap_or(0.0);
+        let viewport = self.strip_viewport.get();
+        let target = logic::reveal_offset((left, width), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
+        if (target - offset).abs() > 0.5 {
+            // The viewer must know the new extent before it can scroll that far.
+            let _ = ui(&self.ui.tab_scroll).and_then(|scroll| scroll.UpdateLayout());
+            let _ = self.ui.tab_scroll.ChangeViewWithOptionalAnimation(Some(target), None, None, true);
+            log(&format!("strip scrolled from {offset:.0} to {target:.0} for tab {}", selected + 1));
+        }
+        Some(target)
+    }
+
+    /// Shows how many chips are hidden at each cut edge. `offset` is where a layout is about to scroll the strip
+    /// to; without it the viewer's own position is read (the user scrolled).
+    fn update_strip_edges(&self, offset: Option<f64>) {
+        let widths = self.strip_widths.borrow();
+        let offset = offset.unwrap_or_else(|| self.ui.tab_scroll.HorizontalOffset().unwrap_or(0.0));
+        let (left, right) = logic::hidden_counts(&widths, CHIP_GAP, STRIP_PADDING, offset, self.strip_viewport.get());
+        for (count, glyph_first, block, text, fade) in [
+            (left, true, &self.ui.more_left, &self.ui.more_left_text, &self.ui.fade_left),
+            (right, false, &self.ui.more_right, &self.ui.more_right_text, &self.ui.fade_right),
+        ] {
+            let label = if glyph_first { format!("‹ {count}") } else { format!("{count} ›") };
+            let _ = text.SetText(&label);
+            let _ = ui(block).and_then(|block| block.SetVisibility(visibility(count > 0)));
+            let _ = ui(fade).and_then(|fade| fade.SetVisibility(visibility(count > 0)));
+        }
+    }
+
+    /// The fades at the cut edges of the strip go from the colour of the count blocks to clear.
+    fn restyle_strip_fades(&self, glass: &Glass) -> Result<()> {
+        let solid = hex_color(glass.panel());
+        let clear = hex_color(themes::Color { a: 0, ..glass.panel() });
+        for (fade, start, end) in [(&self.ui.fade_left, "0,0.5", "1,0.5"), (&self.ui.fade_right, "1,0.5", "0,0.5")] {
+            let brush: Brush = XamlReader::Load(&format!(
+                r#"<LinearGradientBrush xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" StartPoint="{start}" EndPoint="{end}">
+                     <GradientStop Color="{solid}" Offset="0"/><GradientStop Color="{clear}" Offset="1"/>
+                   </LinearGradientBrush>"#
+            ))?
+            .cast()?;
+            fade.SetBackground(&brush)?;
+        }
+        Ok(())
     }
 
     fn attach_window(self: &Rc<Self>) -> Result<()> {
@@ -647,6 +791,7 @@ impl Shell {
             this.window_active.set(active);
             log(&format!("window active = {active}"));
             if !active {
+                this.mru.borrow_mut().commit();
                 // Losing the focus ends a drag: apply the last opacity and write the settings now.
                 this.apply_pending_opacity();
                 this.flush_settings();
@@ -689,6 +834,10 @@ impl Shell {
 
     fn tick(self: &Rc<Self>) {
         self.apply_pending_opacity();
+        if self.reveal_pending.take() {
+            let offset = self.reveal_selected();
+            self.update_strip_edges(offset);
+        }
         if self.save_due.get().is_some_and(|due| Instant::now() >= due) {
             self.flush_settings();
         }
@@ -718,6 +867,7 @@ impl Shell {
                 if tab.focused.get() == pane.id && !tab.renamed.get() {
                     *tab.title.borrow_mut() = title.clone();
                     tab.chip.set_title(&title);
+                    self.layout_tabs();
                 }
             }
             UiEvent::Cwd(path) => *pane.cwd.borrow_mut() = Some(path.into()),
@@ -750,6 +900,42 @@ impl Shell {
 
     fn tab_index(&self, id: TabId) -> Option<usize> {
         self.tabs.borrow().iter().position(|tab| tab.id == id)
+    }
+
+    /// The open tabs in strip order, for the "go to tab" entries of the palette.
+    pub fn palette_tabs(&self) -> Vec<nekominal_model::palette::PaletteTab> {
+        let tabs = self.tabs.borrow();
+        tabs.iter()
+            .map(|tab| nekominal_model::palette::PaletteTab { id: tab.id, title: tab.title.borrow().clone() })
+            .collect()
+    }
+
+    /// One row per tab for the list of every tab.
+    pub fn tab_rows(&self) -> Vec<TabRow> {
+        let tabs = self.tabs.borrow();
+        let keymap = self.keymap.borrow();
+        let home = std::env::var("USERPROFILE").ok();
+        tabs.iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                let title = tab.title.borrow().clone();
+                let cwd = tab.focused_pane().and_then(|pane| pane.cwd.borrow().clone());
+                let folder =
+                    cwd.map(|cwd| logic::folder_label(&cwd.to_string_lossy(), home.as_deref())).unwrap_or_default();
+                TabRow {
+                    id: tab.id,
+                    ordinal: index + 1,
+                    search: format!("{title} {folder}"),
+                    title,
+                    folder,
+                    panes: tab.pane_count(),
+                    state: tab.chip.state(),
+                    shortcut: Command::tab_goto_number(index, tabs.len())
+                        .map(|number| keymap.shortcut_text(Command::TabGoto(number)))
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
     }
 
     pub fn selected_tab(&self) -> Option<Rc<Tab>> {
@@ -811,6 +997,7 @@ impl Shell {
                 let title = view.title.borrow().clone();
                 *tab.title.borrow_mut() = title.clone();
                 tab.chip.set_title(&title);
+                self.layout_tabs();
             }
             tab.chip.set_state(TabState::Idle);
         }
@@ -851,7 +1038,16 @@ impl Shell {
         }
     }
 
+    /// Selects a tab by a click, the palette, a number or a command: it becomes the most recently used.
     pub fn select_index(self: &Rc<Self>, index: usize) {
+        if let Some(tab) = self.tabs.borrow().get(index) {
+            self.mru.borrow_mut().touch(tab.id);
+        }
+        self.show_index(index);
+    }
+
+    /// Shows the tab at `index` without touching the order of use (the next/previous keys do that when they come up).
+    fn show_index(self: &Rc<Self>, index: usize) {
         let tabs = self.tabs.borrow().clone();
         let Some(selected) = tabs.get(index) else { return };
         self.selected.set(index);
@@ -862,7 +1058,7 @@ impl Shell {
         }
         selected.chip.set_state(TabState::Idle);
         selected.update_focus_look();
-        let _ = ui(&selected.chip.root).and_then(|chip| chip.StartBringIntoView());
+        self.layout_tabs();
         selected.relayout();
         if self.overlay.get() == Overlay::None {
             self.focus_active_pane();
@@ -877,6 +1073,10 @@ impl Shell {
         if let Some(pane) = self.selected_tab().and_then(|tab| tab.focused_pane()) {
             pane.focus();
         }
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected.get()
     }
 
     fn move_tab(self: &Rc<Self>, id: TabId, to: usize) {
@@ -897,6 +1097,7 @@ impl Shell {
         {
             self.selected.set(index);
         }
+        self.layout_tabs();
         self.focus_active_pane();
         log(&format!("tab {from} moved to {to}"));
     }
@@ -915,7 +1116,9 @@ impl Shell {
 
     pub fn close_tab(self: &Rc<Self>, id: TabId) {
         let Some(index) = self.tab_index(id) else { return };
+        let current = self.selected_tab().map(|tab| tab.id);
         let tab = self.tabs.borrow_mut().remove(index);
+        self.mru.borrow_mut().remove(id);
         if let Ok(children) = self.ui.tab_strip.cast::<Panel>().and_then(|p| p.Children()) {
             let _ = children.RemoveAt(index as u32);
         }
@@ -934,8 +1137,9 @@ impl Shell {
             let _ = self.window.Close();
             return;
         }
-        let next = if index < remaining { index } else { remaining - 1 };
-        self.select_index(if self.selected.get() > index { self.selected.get() - 1 } else { next.min(remaining - 1) });
+        // The selected tab stays; closing it hands over to the tab used most recently before.
+        let next = if current == Some(id) { self.mru.borrow().most_recent() } else { current };
+        self.show_index(next.and_then(|next| self.tab_index(next)).unwrap_or(0));
     }
 
     pub fn close_pane_in(self: &Rc<Self>, tab_id: TabId, pane_id: PaneId) {
@@ -1116,6 +1320,7 @@ impl Shell {
             dialog.SetDefaultButton(ContentDialogButton::Primary)?;
             ui(&dialog)?.SetXamlRoot(&self.root.xaml_root()?)?;
             let tab = tab.clone();
+            let this_layout = self.clone();
             let revoker = dialog.PrimaryButtonClick(cb!("rename confirmed", |_, _| {
                 let name = input.Text().unwrap_or_default().trim().to_owned();
                 if name.is_empty() {
@@ -1125,6 +1330,7 @@ impl Shell {
                     *tab.title.borrow_mut() = name.clone();
                     tab.chip.set_title(&name);
                 }
+                this_layout.layout_tabs();
             }))?;
             self.revokers.borrow_mut().push(revoker);
             let this = self.clone();
@@ -1148,7 +1354,7 @@ impl Shell {
             return;
         }
         if let Some(p) = self.palette.borrow().as_ref() {
-            p.show(which == Overlay::Palette);
+            p.show(matches!(which, Overlay::Palette | Overlay::Tabs));
         }
         if let Some(f) = self.find.borrow().as_ref() {
             f.show(which == Overlay::Find);
@@ -1164,6 +1370,11 @@ impl Shell {
             Overlay::Palette => {
                 if let Some(p) = self.palette.borrow().as_ref() {
                     p.open(self);
+                }
+            }
+            Overlay::Tabs => {
+                if let Some(p) = self.palette.borrow().as_ref() {
+                    p.open_tabs(self);
                 }
             }
             Overlay::Find => {
@@ -1229,20 +1440,14 @@ impl Shell {
                     }
                 }
                 Command::TabNext | Command::TabPrevious => {
-                    let count = self.tabs.borrow().len();
-                    if count > 1 {
-                        let current = self.selected.get();
-                        let next = if command == Command::TabNext {
-                            (current + 1) % count
-                        } else {
-                            (current + count - 1) % count
-                        };
-                        self.select_index(next);
+                    let step = if command == Command::TabNext { 1 } else { -1 };
+                    let shown = self.mru.borrow_mut().step(step);
+                    if let Some(index) = shown.and_then(|id| self.tab_index(id)) {
+                        self.show_index(index);
                     }
                 }
                 Command::TabGoto(number) => {
-                    let index = usize::from(number).saturating_sub(1);
-                    if index < self.tabs.borrow().len() {
+                    if let Some(index) = Command::tab_goto_index(number, self.tabs.borrow().len()) {
                         self.select_index(index);
                     }
                 }
@@ -1343,6 +1548,11 @@ impl Shell {
         use nekominal_model::palette::PaletteAction;
         match action {
             PaletteAction::Run(command) => self.run(command),
+            PaletteAction::GotoTab(id) => {
+                if let Some(index) = self.tab_index(id) {
+                    self.select_index(index);
+                }
+            }
             PaletteAction::NewTab(id) => {
                 if let Some(profile) = self.profile_by_id(&id) {
                     let _ = self.add_tab(&profile);
@@ -1389,6 +1599,17 @@ impl Shell {
                 return;
             }
             this.run(command);
+        }))?;
+        self.revokers.borrow_mut().push(revoker);
+
+        // The keys of next/previous tab are up: the tab shown last becomes the most recently used.
+        let this = self.clone();
+        let revoker = ui(&self.root)?.PreviewKeyUp(cb!("shortcut released", |_, args| {
+            let code = args.as_ref().and_then(|args| args.Key().ok()).map_or(0, |key| key.0);
+            let is_modifier = matches!(code, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5);
+            if is_modifier && keyboard::held_modifiers() == Default::default() {
+                this.mru.borrow_mut().commit();
+            }
         }))?;
         self.revokers.borrow_mut().push(revoker);
         Ok(())
