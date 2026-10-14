@@ -1,0 +1,337 @@
+//! The profiles a new tab can open: the shells found on the machine plus the ones written in `settings.json`.
+
+use crate::{settings::CustomProfile, shell_integration};
+
+/// Icon of a profile whose program is not one of the known shells.
+pub const GENERIC_ICON: &str = "terminal";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileKind {
+    PowerShell,
+    Cmd,
+    Bash,
+    Wsl,
+    Ssh,
+    /// A custom profile, or a kind this version does not know.
+    Other,
+}
+
+impl ProfileKind {
+    /// `name` is the `kind` string the discovery step reports (`powershell`, `cmd`, `bash`, `wsl`, `ssh`).
+    pub fn from_name(name: &str) -> ProfileKind {
+        match name {
+            "powershell" => ProfileKind::PowerShell,
+            "cmd" => ProfileKind::Cmd,
+            "bash" => ProfileKind::Bash,
+            "wsl" => ProfileKind::Wsl,
+            "ssh" => ProfileKind::Ssh,
+            _ => ProfileKind::Other,
+        }
+    }
+}
+
+/// A shell found by `nekominal_pty::profiles::discover`, as plain data so this crate does not depend on
+/// the PTY crate: copy the fields of `nekominal_pty::profiles::Profile`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredProfile {
+    pub id: String,
+    pub name: String,
+    pub kind: &'static str,
+    pub icon: &'static str,
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Profile {
+    /// Unique and stable across runs; what `defaultProfile` and a saved session refer to.
+    pub id: String,
+    pub name: String,
+    pub kind: ProfileKind,
+    /// Key the shell maps to a glyph: one of the discovery step's icon keys or [`GENERIC_ICON`].
+    pub icon: &'static str,
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    /// Written in `settings.json` rather than found on the machine.
+    pub custom: bool,
+}
+
+fn from_discovered(found: &DiscoveredProfile) -> Profile {
+    Profile {
+        id: found.id.clone(),
+        name: found.name.clone(),
+        kind: ProfileKind::from_name(found.kind),
+        icon: found.icon,
+        program: found.program.clone(),
+        args: found.args.clone(),
+        cwd: None,
+        custom: false,
+    }
+}
+
+fn from_custom(entry: &CustomProfile) -> Profile {
+    Profile {
+        id: entry.id.clone(),
+        name: entry.name.clone(),
+        kind: ProfileKind::Other,
+        icon: icon_for_program(&entry.program),
+        program: entry.program.clone(),
+        args: entry.args.clone(),
+        cwd: entry.cwd.clone(),
+        custom: true,
+    }
+}
+
+/// The icon of a known shell, from the file name of the program (`C:\Program Files\PowerShell\7\pwsh.exe`).
+pub fn icon_for_program(program: &str) -> &'static str {
+    let file = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match file.strip_suffix(".exe").unwrap_or(&file) {
+        "pwsh" => "pwsh",
+        "powershell" => "windows-powershell",
+        "cmd" => "cmd",
+        "wsl" => "wsl",
+        "ssh" => "ssh",
+        _ => GENERIC_ICON,
+    }
+}
+
+/// The discovered profiles in their own order, then the custom ones in the order of `settings.json`.
+///
+/// A custom profile with the id of a discovered one replaces it in place: that is how a built-in is given
+/// other arguments. Of several custom profiles with one id only the first counts.
+pub fn merge(discovered: &[DiscoveredProfile], custom: &[CustomProfile]) -> Vec<Profile> {
+    let mut profiles: Vec<Profile> = discovered.iter().map(from_discovered).collect();
+    let mut taken: Vec<&str> = Vec::new();
+    for entry in custom {
+        if taken.contains(&entry.id.as_str()) {
+            continue;
+        }
+        taken.push(&entry.id);
+        let profile = from_custom(entry);
+        match profiles
+            .iter()
+            .position(|existing| !existing.custom && existing.id == entry.id)
+        {
+            Some(index) => profiles[index] = profile,
+            None => profiles.push(profile),
+        }
+    }
+    profiles
+}
+
+pub fn find<'a>(profiles: &'a [Profile], id: &str) -> Option<&'a Profile> {
+    profiles.iter().find(|profile| profile.id == id)
+}
+
+/// The profile a new tab opens: the one `defaultProfile` names, else the first (also for an empty or
+/// stale name, so a removed shell never leaves the user without one).
+pub fn resolve_default<'a>(profiles: &'a [Profile], default_id: &str) -> Option<&'a Profile> {
+    find(profiles, default_id).or_else(|| profiles.first())
+}
+
+/// The arguments to start the profile with. A discovered PowerShell gets the prompt marks and working
+/// directory reports when `shell_integration` is on; custom profiles are launched exactly as written.
+pub fn launch_args(profile: &Profile, shell_integration: bool) -> Vec<String> {
+    if shell_integration && profile.kind == ProfileKind::PowerShell && !profile.custom {
+        shell_integration::powershell_args(&profile.args)
+    } else {
+        profile.args.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn discovered(
+        id: &str,
+        kind: &'static str,
+        icon: &'static str,
+        program: &str,
+    ) -> DiscoveredProfile {
+        DiscoveredProfile {
+            id: id.into(),
+            name: id.to_uppercase(),
+            kind,
+            icon,
+            program: program.into(),
+            args: vec!["-NoLogo".into()],
+        }
+    }
+
+    fn custom(id: &str, program: &str) -> CustomProfile {
+        CustomProfile {
+            id: id.into(),
+            name: format!("my {id}"),
+            program: program.into(),
+            args: vec!["-x".into()],
+            cwd: Some("C:\\work".into()),
+        }
+    }
+
+    fn shells() -> Vec<DiscoveredProfile> {
+        vec![
+            discovered("pwsh", "powershell", "pwsh", "C:\\pwsh.exe"),
+            discovered("cmd", "cmd", "cmd", "C:\\cmd.exe"),
+            discovered("wsl-Ubuntu", "wsl", "wsl", "C:\\wsl.exe"),
+        ]
+    }
+
+    fn ids(profiles: &[Profile]) -> Vec<&str> {
+        profiles.iter().map(|p| p.id.as_str()).collect()
+    }
+
+    #[test]
+    fn discovered_profiles_keep_their_order_and_custom_ones_follow() {
+        let merged = merge(&shells(), &[custom("b", "b.exe"), custom("a", "a.exe")]);
+        assert_eq!(ids(&merged), ["pwsh", "cmd", "wsl-Ubuntu", "b", "a"]);
+        assert!(merged[..3].iter().all(|p| !p.custom));
+        assert!(merged[3..].iter().all(|p| p.custom));
+        assert_eq!(merged[0].kind, ProfileKind::PowerShell);
+        assert_eq!(merged[0].icon, "pwsh");
+        assert_eq!(merged[0].cwd, None);
+        assert_eq!(merged[3].cwd.as_deref(), Some("C:\\work"));
+        assert_eq!(merged[3].kind, ProfileKind::Other);
+    }
+
+    #[test]
+    fn merging_the_same_input_twice_gives_the_same_list() {
+        let again = || merge(&shells(), &[custom("b", "b.exe"), custom("a", "a.exe")]);
+        assert_eq!(again(), again());
+        assert_eq!(merge(&[], &[]), Vec::new());
+        assert_eq!(ids(&merge(&[], &[custom("only", "x.exe")])), ["only"]);
+        assert_eq!(ids(&merge(&shells(), &[])), ["pwsh", "cmd", "wsl-Ubuntu"]);
+    }
+
+    #[test]
+    fn a_custom_profile_with_a_discovered_id_replaces_it_in_place() {
+        let merged = merge(&shells(), &[custom("cmd", "C:\\tools\\cmd.exe")]);
+        assert_eq!(ids(&merged), ["pwsh", "cmd", "wsl-Ubuntu"]);
+        let replaced = &merged[1];
+        assert!(replaced.custom);
+        assert_eq!(replaced.program, "C:\\tools\\cmd.exe");
+        assert_eq!(replaced.args, ["-x"]);
+    }
+
+    #[test]
+    fn of_several_custom_profiles_with_one_id_the_first_wins() {
+        let merged = merge(
+            &shells(),
+            &[
+                custom("a", "first.exe"),
+                custom("a", "second.exe"),
+                custom("pwsh", "p1.exe"),
+                custom("pwsh", "p2.exe"),
+            ],
+        );
+        assert_eq!(ids(&merged), ["pwsh", "cmd", "wsl-Ubuntu", "a"]);
+        assert_eq!(merged[3].program, "first.exe");
+        assert_eq!(merged[0].program, "p1.exe");
+    }
+
+    #[test]
+    fn icons_come_from_the_discovery_step_or_the_program_name() {
+        for (program, icon) in [
+            ("pwsh.exe", "pwsh"),
+            ("C:\\Program Files\\PowerShell\\7\\PWSH.EXE", "pwsh"),
+            ("powershell", "windows-powershell"),
+            ("C:/Windows/System32/cmd.exe", "cmd"),
+            // The Git logo belongs to Git Bash only, which discovery names itself.
+            ("bash.exe", GENERIC_ICON),
+            ("C:\\Windows\\System32\\wsl.exe", "wsl"),
+            ("ssh", "ssh"),
+            ("node.exe", GENERIC_ICON),
+            ("C:\\tools\\pwsh-preview\\run.cmd", GENERIC_ICON),
+            ("", GENERIC_ICON),
+        ] {
+            assert_eq!(icon_for_program(program), icon, "{program}");
+        }
+        assert_eq!(merge(&[], &[custom("n", "node.exe")])[0].icon, GENERIC_ICON);
+        assert_eq!(merge(&[], &[custom("p", "pwsh.exe")])[0].icon, "pwsh");
+    }
+
+    #[test]
+    fn kinds_follow_the_names_of_the_discovery_step() {
+        for (name, kind) in [
+            ("powershell", ProfileKind::PowerShell),
+            ("cmd", ProfileKind::Cmd),
+            ("bash", ProfileKind::Bash),
+            ("wsl", ProfileKind::Wsl),
+            ("ssh", ProfileKind::Ssh),
+            ("something-new", ProfileKind::Other),
+        ] {
+            assert_eq!(ProfileKind::from_name(name), kind, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_the_named_profile_else_the_first() {
+        let merged = merge(&shells(), &[]);
+        assert_eq!(
+            resolve_default(&merged, "cmd").map(|p| p.id.as_str()),
+            Some("cmd")
+        );
+        assert_eq!(
+            resolve_default(&merged, "").map(|p| p.id.as_str()),
+            Some("pwsh")
+        );
+        assert_eq!(
+            resolve_default(&merged, "removed").map(|p| p.id.as_str()),
+            Some("pwsh")
+        );
+        assert_eq!(resolve_default(&[], "cmd"), None);
+        assert_eq!(
+            find(&merged, "wsl-Ubuntu").map(|p| p.name.as_str()),
+            Some("WSL-UBUNTU")
+        );
+        assert_eq!(find(&merged, "nope"), None);
+    }
+
+    #[test]
+    fn only_a_discovered_powershell_gets_the_shell_integration() {
+        let merged = merge(&shells(), &[custom("mine", "pwsh.exe")]);
+        let pwsh = &merged[0];
+        let with = launch_args(pwsh, true);
+        assert_eq!(&with[..3], ["-NoLogo", "-NoExit", "-EncodedCommand"]);
+        assert_eq!(with.len(), 4);
+        assert_eq!(launch_args(pwsh, false), ["-NoLogo"]);
+        assert_eq!(
+            launch_args(&merged[1], true),
+            ["-NoLogo"],
+            "cmd has no integration"
+        );
+        assert_eq!(
+            launch_args(&merged[2], true),
+            ["-NoLogo"],
+            "wsl has no integration"
+        );
+        assert_eq!(
+            launch_args(&merged[3], true),
+            ["-x"],
+            "custom profiles run as written"
+        );
+    }
+
+    #[test]
+    fn a_powershell_that_runs_its_own_command_is_left_alone() {
+        let mut developer = discovered(
+            "vs-1-powershell",
+            "powershell",
+            "visual-studio",
+            "C:\\powershell.exe",
+        );
+        developer.args = vec![
+            "-NoLogo".into(),
+            "-NoExit".into(),
+            "-Command".into(),
+            "&{Import-Module x}".into(),
+        ];
+        let merged = merge(&[developer.clone()], &[]);
+        assert_eq!(launch_args(&merged[0], true), developer.args);
+    }
+}
