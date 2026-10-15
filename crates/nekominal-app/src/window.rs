@@ -134,10 +134,21 @@ pub fn set_system_backdrop(window: &Window, backdrop: Backdrop) -> Result<()> {
     Ok(())
 }
 
-/// Without a backdrop the root gets an opaque scheme-coloured background; with one it stays clear.
-pub fn apply_root_background(root: &FrameworkElement, backdrop: Backdrop, glass: &Glass) -> Result<()> {
+/// Whether the transparency effects of Windows are on (the "Transparency effects" setting, which saving battery turns
+/// off too), as `UISettings` tells it; on when it cannot be told.
+pub fn transparency_effects() -> bool {
+    thread_local! {
+        static SETTINGS: Option<IUISettings4> = UISettings::new().and_then(|settings| settings.cast::<IUISettings4>()).ok();
+    }
+    SETTINGS
+        .with(|settings| settings.as_ref().and_then(|settings| settings.AdvancedEffectsEnabled().ok()).unwrap_or(true))
+}
+
+/// While the backdrop is flat (`Material::is_flat`: none, or made flat by the system) the root gets an opaque
+/// scheme-coloured background; while it shows through it stays clear.
+pub fn apply_root_background(root: &FrameworkElement, flat: bool, glass: &Glass) -> Result<()> {
     let panel: Panel = root.cast()?;
-    if backdrop == Backdrop::None {
+    if flat {
         panel.SetBackground(&solid_brush(glass.background)?)?;
     } else {
         panel.SetBackground(None::<&Brush>)?;

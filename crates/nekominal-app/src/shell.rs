@@ -34,7 +34,7 @@ use windows_reference::IReference;
 
 use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId, status_text};
 use crate::design;
-use crate::glass::{self, Glass};
+use crate::glass::{self, Glass, Material};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
 use crate::logic::{
@@ -55,6 +55,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(600);
 
 /// Padding of the strip inside its scroll viewer, both sides together (`shell.xaml`).
 const STRIP_PADDING: f64 = 4.0;
+
+/// How often the transparency effects of Windows are asked about.
+const EFFECTS_CHECK_EVERY: Duration = Duration::from_secs(1);
 
 /// Width of the box in which a tab is renamed, in DIP.
 const RENAME_WIDTH: f64 = 240.0;
@@ -153,6 +156,9 @@ pub struct Shell {
     /// The quick flyout is being brought in line with the settings: its events are not user input.
     syncing_controls: Cell<bool>,
     window_active: Cell<bool>,
+    /// Whether the transparency effects of Windows are on, and when that was last asked (it is asked once a second).
+    effects_on: Cell<bool>,
+    effects_checked: Cell<Instant>,
     /// When the window last flashed its taskbar button or played a sound: those happen at most once a second.
     last_alert: Cell<Option<Instant>>,
     /// The count after the position on the plate as the last layout of the strip drew it, and the title the window has.
@@ -319,7 +325,8 @@ pub fn launch() -> Result<()> {
 
     let scheme = themes::scheme(&settings.theme);
     let glass = Glass::from_scheme(scheme);
-    let opacity = glass::terminal_opacity(settings.appearance.backdrop, settings.appearance.opacity);
+    let material = Material { window_active: true, effects_on: window::transparency_effects() };
+    let opacity = glass::terminal_opacity(settings.appearance.backdrop, settings.appearance.opacity, material);
     let look = Rc::new(Look {
         theme: RefCell::new(glass::render_theme(scheme, opacity)),
         font_pt: Cell::new(settings.font.size as f32),
@@ -395,6 +402,8 @@ pub fn launch() -> Result<()> {
         opacity_apply: RefCell::new(logic::OpacityApply::default()),
         syncing_controls: Cell::new(false),
         window_active: Cell::new(true),
+        effects_on: Cell::new(material.effects_on),
+        effects_checked: Cell::new(Instant::now()),
         last_alert: Cell::new(None),
         plate_attention: Cell::new(0),
         window_title: RefCell::new(APP_NAME.to_owned()),
@@ -490,6 +499,11 @@ impl Shell {
         }
     }
 
+    /// What the system does to the backdrop now: the window is active or not, the transparency effects are on or not.
+    fn material(&self) -> Material {
+        Material { window_active: self.window_active.get(), effects_on: self.effects_on.get() }
+    }
+
     fn scale(&self) -> f64 {
         self.root.xaml_root().and_then(|root| root.RasterizationScale()).unwrap_or(1.0)
     }
@@ -547,7 +561,9 @@ impl Shell {
             (s.appearance.backdrop, s.appearance.opacity)
         };
         let scheme = themes::scheme(scheme_name);
-        let glass = Glass::from_scheme(scheme);
+        // A window that is not active has quieter chrome; what asks for the user keeps its strength (`Glass::calm`).
+        let glass =
+            if self.window_active.get() { Glass::from_scheme(scheme) } else { Glass::from_scheme(scheme).calm() };
         self.glass.set(glass);
         for (key, color) in [
             ("NkText", glass.text()),
@@ -583,9 +599,10 @@ impl Shell {
                 }
             }
         }
-        window::apply_root_background(&self.root, backdrop, &glass)?;
+        let flat = self.material().is_flat(backdrop);
+        window::apply_root_background(&self.root, flat, &glass)?;
         window::apply_theme(&self.window, &self.root, &glass)?;
-        let opacity = glass::terminal_opacity(backdrop, setting_opacity);
+        let opacity = glass::terminal_opacity(backdrop, setting_opacity, self.material());
         self.apply_opacity(scheme, &glass, opacity)?;
         for tab in self.tabs.borrow().iter() {
             tab.set_glass(glass);
@@ -651,7 +668,7 @@ impl Shell {
             s.appearance.opacity = opacity;
             (s.theme.clone(), s.appearance.backdrop)
         };
-        let effective = glass::terminal_opacity(backdrop, opacity);
+        let effective = glass::terminal_opacity(backdrop, opacity, self.material());
         match self.apply_opacity(themes::scheme(&scheme_name), &self.glass.get(), effective) {
             Ok(()) => self.opacity_apply.borrow_mut().applied(),
             Err(e) => {
@@ -1031,6 +1048,12 @@ impl Shell {
                 args.as_ref().and_then(|a| a.WindowActivationState().ok()) != Some(WindowActivationState::Deactivated);
             this.window_active.set(active);
             log(&format!("window active = {active}"));
+            // The system makes the backdrop flat while the window is not active: the chrome follows (`Material`).
+            if !this.closed.get()
+                && let Err(e) = this.apply_glass()
+            {
+                log(&format!("apply_glass: {e}"));
+            }
             if active {
                 // Coming back, the user sees the tab that was selected.
                 if let Some(tab) = this.selected_tab() {
@@ -1087,6 +1110,7 @@ impl Shell {
             drawer.tick();
         }
         self.apply_pending_opacity();
+        self.check_transparency_effects();
         if self.reveal_pending.take() {
             let offset = self.reveal_selected();
             self.update_strip_edges(offset);
@@ -1113,6 +1137,22 @@ impl Shell {
         }
         for (tab_id, pane_id) in closed_panes {
             self.close_pane_in(tab_id, pane_id);
+        }
+    }
+
+    /// Asks once a second whether the user turned the transparency effects of Windows on or off, and gives the chrome the
+    /// look of a flat backdrop (or takes it away) when they did.
+    fn check_transparency_effects(self: &Rc<Self>) {
+        if self.effects_checked.get().elapsed() < EFFECTS_CHECK_EVERY {
+            return;
+        }
+        self.effects_checked.set(Instant::now());
+        let on = window::transparency_effects();
+        if on != self.effects_on.replace(on) {
+            log(&format!("transparency effects = {on}"));
+            if let Err(e) = self.apply_glass() {
+                log(&format!("apply_glass: {e}"));
+            }
         }
     }
 

@@ -51,6 +51,24 @@ impl Glass {
         if self.light { Color::rgb(0x000000) } else { Color::rgb(0xFFFFFF) }
     }
 
+    /// The chrome of a window that is not active: its text a step quieter, never below what the scheme itself reads at
+    /// (4.5:1, or the scheme's own contrast when that is lower) and never stronger than it was. The marks that ask for the
+    /// user (`mark`: the amber of what waits, the red of a failure, the count on the plate) are made from the scheme's
+    /// colours and not from its text, so they keep their full strength.
+    pub fn calm(&self) -> Glass {
+        let rgb = |c: Color| r::Rgb(c.r, c.g, c.b);
+        let own = r::contrast::contrast_ratio(rgb(self.foreground), rgb(self.background));
+        let quiet = r::contrast::ensure_min_contrast(
+            rgb(self.foreground.mix(self.background, CALM_MIX)),
+            rgb(self.background),
+            MIN_CALM_TEXT_CONTRAST.min(own),
+        );
+        // A scheme whose text reads at the floor already has no room: reaching the floor must not make it stronger.
+        let quiet = Color { r: quiet.0, g: quiet.1, b: quiet.2, a: 255 };
+        let stronger = r::contrast::contrast_ratio(rgb(quiet), rgb(self.background)) > own;
+        Glass { foreground: if stronger { self.foreground } else { quiet }, ..*self }
+    }
+
     /// A scheme colour for a mark that must stay visible on the chrome (a status glyph, a ring): moved toward black
     /// or white until it has [`MIN_MARK_CONTRAST`] against the scheme background, and left alone when it already has.
     pub fn mark(&self, color: Color) -> Color {
@@ -181,18 +199,36 @@ pub fn bar_tint_alpha(opacity: f32) -> f32 {
     if opacity >= 1.0 { 1.0 } else { (opacity * 0.85).clamp(0.40, 0.95) }
 }
 
-/// The opacity the terminal is painted with: the setting while a backdrop shows through, opaque without one.
-pub fn terminal_opacity(backdrop: Backdrop, setting: f64) -> f32 {
-    match backdrop {
-        Backdrop::None => 1.0,
-        _ => setting.clamp(0.0, 1.0) as f32,
+/// What the system does to the material behind the window, apart from the one that was asked for. Acrylic and Mica are
+/// made one flat colour while the window is not active, and while transparency effects are off (the Windows setting,
+/// which saving battery turns off as well): the chrome then has to look intentional on a flat colour of the system's
+/// choosing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Material {
+    pub window_active: bool,
+    pub effects_on: bool,
+}
+
+impl Material {
+    /// The window is active and the effects are on: the backdrop shows as asked.
+    pub const NORMAL: Material = Material { window_active: true, effects_on: true };
+
+    /// Nothing shows through whatever the backdrop is: it is none, or the system made it flat.
+    pub fn is_flat(self, backdrop: Backdrop) -> bool {
+        backdrop == Backdrop::None || !self.window_active || !self.effects_on
     }
+}
+
+/// The opacity the terminal is painted with: the setting while a backdrop shows through, and opaque once it is flat, so
+/// the scheme keeps its own colour instead of mixing with the one the system chose.
+pub fn terminal_opacity(backdrop: Backdrop, setting: f64, material: Material) -> f32 {
+    if material.is_flat(backdrop) { 1.0 } else { setting.clamp(0.0, 1.0) as f32 }
 }
 
 /// What an opacity slider shows (percent) and whether it can be moved. Without a backdrop nothing shows through,
 /// so the slider reads 100% and is off, while the saved setting stays as it is for the next backdrop.
 pub fn opacity_control(backdrop: Backdrop, setting: f64) -> (f64, bool) {
-    let shown = (f64::from(terminal_opacity(backdrop, setting)) * 100.0).round();
+    let shown = (f64::from(terminal_opacity(backdrop, setting, Material::NORMAL)) * 100.0).round();
     (shown, backdrop != Backdrop::None)
 }
 
@@ -213,6 +249,11 @@ pub const MIN_DRAWER_CONTROL_CONTRAST: f32 = 3.0;
 
 /// Lowest contrast between a status mark and the background it sits on (WCAG non-text contrast).
 pub const MIN_MARK_CONTRAST: f32 = 3.0;
+
+/// How far the text of the chrome of a window that is not active goes toward the background, and the contrast it keeps
+/// (WCAG normal text, AA).
+pub const CALM_MIX: f32 = 0.25;
+pub const MIN_CALM_TEXT_CONTRAST: f32 = 4.5;
 
 /// Lowest contrast ratio between text and its background that the terminals keep (WCAG large-text AA). Text of a
 /// program below it, such as PSReadLine's bright white on a light scheme, is moved toward black or white.
@@ -286,9 +327,64 @@ mod tests {
 
     #[test]
     fn without_a_backdrop_the_terminal_is_opaque() {
-        assert_eq!(terminal_opacity(Backdrop::None, 0.5), 1.0);
-        assert_eq!(terminal_opacity(Backdrop::Acrylic, 0.72), 0.72);
-        assert_eq!(terminal_opacity(Backdrop::Mica, 7.0), 1.0);
+        assert_eq!(terminal_opacity(Backdrop::None, 0.5, Material::NORMAL), 1.0);
+        assert_eq!(terminal_opacity(Backdrop::Acrylic, 0.72, Material::NORMAL), 0.72);
+        assert_eq!(terminal_opacity(Backdrop::Mica, 7.0, Material::NORMAL), 1.0);
+    }
+
+    #[test]
+    fn a_flat_backdrop_is_painted_opaque_whatever_the_setting_and_the_slider_does_not_follow_the_window() {
+        let inactive = Material { window_active: false, ..Material::NORMAL };
+        let off = Material { effects_on: false, ..Material::NORMAL };
+        for backdrop in [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt] {
+            assert!(!Material::NORMAL.is_flat(backdrop), "{backdrop:?} shows through while the window is active");
+            for flat in [inactive, off, Material { window_active: false, effects_on: false }] {
+                assert!(flat.is_flat(backdrop), "{backdrop:?} {flat:?}");
+                assert_eq!(terminal_opacity(backdrop, 0.5, flat), 1.0, "{backdrop:?} {flat:?}");
+            }
+            assert_eq!(terminal_opacity(backdrop, 0.5, Material::NORMAL), 0.5);
+        }
+        assert!(Material::NORMAL.is_flat(Backdrop::None), "no backdrop is flat in any case");
+        // An opaque terminal has an opaque bar: the bar keeps the tint of the scheme and not the system's colour.
+        assert_eq!(bar_tint_alpha(terminal_opacity(Backdrop::Acrylic, 0.5, inactive)), 1.0);
+        // The slider reads the setting, whether the window is active or not.
+        assert_eq!(opacity_control(Backdrop::Acrylic, 0.72), (72.0, true));
+    }
+
+    #[test]
+    fn the_chrome_of_an_inactive_window_is_quieter_and_the_marks_that_ask_for_the_user_keep_their_strength() {
+        for scheme in &SCHEMES {
+            let glass = Glass::from_scheme(scheme);
+            let calm = glass.calm();
+            let own = contrast(glass.foreground, glass.background);
+            let quiet = contrast(calm.foreground, calm.background);
+            assert!(quiet <= own + 0.01, "{}: {quiet:.2} against {own:.2}", scheme.name);
+            assert!(quiet >= MIN_CALM_TEXT_CONTRAST.min(own) - 0.01, "{}: {quiet:.2}", scheme.name);
+            // What asks for the user is made from the scheme's colours: the same, and still legible, calm or not.
+            for (name, color) in [
+                ("accent", glass.accent),
+                ("warning", glass.warning),
+                ("success", glass.success),
+                ("danger", glass.danger),
+            ] {
+                assert_eq!(calm.mark(color), glass.mark(color), "{} {name}", scheme.name);
+                assert!(
+                    contrast(calm.mark(color), glass.background) >= MIN_MARK_CONTRAST - 0.01,
+                    "{} {name}",
+                    scheme.name
+                );
+            }
+            assert_eq!((calm.light, calm.background, calm.accent), (glass.light, glass.background, glass.accent));
+            assert_eq!(
+                (calm.chip_selected(), calm.hover(), calm.cluster()),
+                (glass.chip_selected(), glass.hover(), glass.cluster())
+            );
+        }
+        // A scheme with room to spare gets visibly quieter.
+        let tokyo = Glass::from_scheme(themes::scheme("Tokyo Night"));
+        assert!(
+            contrast(tokyo.calm().foreground, tokyo.background) < contrast(tokyo.foreground, tokyo.background) - 1.0
+        );
     }
 
     #[test]

@@ -5,7 +5,9 @@
 #   Scenario-BlurProof        # blur-proof.png, backdrop-*.png, opacity-*.png, blur-light.png over the striped test window
 #   Scenario-TabsSplits       # tabs-splits.png plus tabs-focus-left, pane-zoom, tab-reorder, tab-middle-click-confirm, tab-middle-closed
 #   Scenario-Overlays         # palette, find bar, appearance flyout, tab menu, close dialog, settings pages
-#   Scenario-Inactive         # the window while another window is active`n#   Scenario-Ime              # Bopomofo composition in two panes (ime-preedit, ime-two-panes)
+#   Scenario-Inactive         # the window while another window is active
+#   Scenario-InactiveLook     # the chrome of an inactive window: its own tint, quieter text, the count and the marks as strong
+#   Scenario-Ime              # Bopomofo composition in two panes (ime-preedit, ime-two-panes)
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
@@ -161,6 +163,99 @@ function Scenario-Inactive {
         $r = Win-Rect; $ap = [uint32]$script:App.Id
         $visible = ([D]::PidAt([int](($r.Left + $r.Right) / 2), [int](($r.Top + $r.Bottom) / 2)) -eq $ap) -and ([D]::PidAt($r.Left + 20, $r.Top + 20) -eq $ap) -and ([D]::PidAt($r.Right - 20, $r.Bottom - 20) -eq $ap)
         if ($visible -and [D]::ForegroundPid() -eq [uint32]$script:PatternProc.Id) { Shot (Shot-Path 'inactive-2-inactive') } else { 'inactive shot skipped (another window interfered)' }
+    } -Pattern -NoShot
+}
+
+# The brightest amber pixel (R, G, B) of a rectangle of a screenshot: the one with the most red over blue, which is what a
+# glyph or a count in the amber of the scheme has at its core whatever sits behind it.
+function Strongest-Amber([string]$Png, $Rect, $Window) {
+    $X = [int]($Rect.X - $Window.Left); $Y = [int]($Rect.Y - $Window.Top); $W = [int]$Rect.Width; $H = [int]$Rect.Height
+    $bmp = [System.Drawing.Bitmap]::FromFile($Png)
+    try {
+        $best = $null; $score = -1
+        for ($yy = [Math]::Max(0, $Y); $yy -lt [Math]::Min($bmp.Height, $Y + $H); $yy++) {
+            for ($xx = [Math]::Max(0, $X); $xx -lt [Math]::Min($bmp.Width, $X + $W); $xx++) {
+                $c = $bmp.GetPixel($xx, $yy); $s = $c.R - $c.B
+                if ($s -gt $score) { $score = $s; $best = $c }
+            }
+        }
+        if ($best) { @([int]$best.R, [int]$best.G, [int]$best.B) } else { @(0, 0, 0) }
+    } finally { $bmp.Dispose() }
+}
+
+# The brightest pixel (by luminance) of a rectangle of a screenshot, as its Rec. 709 luma.
+function Brightest-Luma([string]$Png, $Rect, $Window) {
+    $X = [int]($Rect.X - $Window.Left); $Y = [int]($Rect.Y - $Window.Top); $W = [int]$Rect.Width; $H = [int]$Rect.Height
+    $bmp = [System.Drawing.Bitmap]::FromFile($Png)
+    try {
+        $best = 0.0
+        for ($yy = [Math]::Max(0, $Y); $yy -lt [Math]::Min($bmp.Height, $Y + $H); $yy++) {
+            for ($xx = [Math]::Max(0, $X); $xx -lt [Math]::Min($bmp.Width, $X + $W); $xx++) {
+                $c = $bmp.GetPixel($xx, $yy); $l = 0.2126 * $c.R + 0.7152 * $c.G + 0.0722 * $c.B
+                if ($l -gt $best) { $best = $l }
+            }
+        }
+        $best
+    } finally { $bmp.Dispose() }
+}
+
+# The look of an inactive window: the system makes acrylic flat, and the chrome keeps its own tint (the bar is the colour of
+# the scheme, not a mix with the colour the system chose), is a step quieter in its text, and what asks for the user (the amber
+# of a tab that waits and the `!1` of the plate) is as strong as before. Measured on two screenshots of the same window, one
+# while it is active and one while another window of this script is.
+function Scenario-InactiveLook {
+    Run-App 'inactive-look' @{ theme = 'Tokyo Night'; confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $esc = '$e=[char]27;$a=[char]7;'
+        Name-Tab 'a'
+        New-Tab; Name-Tab 'b'
+        Type-Line ($esc + 'Start-Sleep 6;Write-Host -NoNewline "$e]7501;state=blocked:kind=question:id=k:app=claude$a";Start-Sleep 300'); Start-Sleep -Milliseconds 300
+        New-Tab; Name-Tab 'c'
+        Start-Sleep -Milliseconds 8000
+        $results.Add((Check 'a tab that waits shows its count on the plate' '3 / 3|!1' ((Plate-Parts) -join '|')))
+        $window = Win-Rect
+        $count = (Get-ElementsByName '!1' 'TextBlock' | Select-Object -First 1).Current.BoundingRectangle
+        $position = (Get-ElementsByName '3 / 3' 'TextBlock' | Select-Object -First 1).Current.BoundingRectangle
+        $waiting = (Get-Chips | Where-Object { (Chip-Title $_) -eq 'b' } | Select-Object -First 1).Rect
+        $plate = (Get-Element (Nk-Text 'tab.all') 'Button').Current.BoundingRectangle
+        Move-To ($window.Left + 200) ($window.Top + 500); Start-Sleep -Milliseconds 600
+        $active = Join-Path $global:NkShots 'inactive-look-1-active.png'
+        Shot-Safe $active | Out-Null
+        if (-not (Move-PatternAway)) { throw 'no corner of the screen is free of the app window' }
+        [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 1800
+        $inactive = Join-Path $global:NkShots 'inactive-look-2-inactive.png'
+        $app = [uint32]$script:App.Id; $mid = [int](($window.Left + $window.Right) / 2)
+        $visible = ([D]::PidAt($mid, [int](($window.Top + $window.Bottom) / 2)) -eq $app) -and ([D]::ForegroundPid() -ne $app)
+        $results.Add((Check-True 'the window is not the active one while it is shot, and is all in view' $visible 'another window is in the way'))
+        Shot $inactive | Out-Null
+        # The bar: a point of its drag area, 20 DIP right of the plate (the area is narrow in a window of this size).
+        $x = [int]($plate.X + $plate.Width + 20 * (Get-Scale) - $window.Left); $y = [int]($plate.Y + $plate.Height / 2 - $window.Top)
+        $bar = { param($png) (Region-Average $png ($x - 4) ($y - 4) 8 8) -split ',' | ForEach-Object { [int]$_ } }
+        $barActive = & $bar $active; $barInactive = & $bar $inactive
+        'bar while active {0}, while inactive {1} (the colour of Tokyo Night is 26,27,38)' -f ($barActive -join ','), ($barInactive -join ',')
+        $results.Add((Check-True 'the bar of an inactive window is the colour of the scheme' ((Rgb-Distance ($barInactive -join ',') '26,27,38') -le 6) ($barInactive -join ',')))
+        # What asks for the user is as strong as it was.
+        $countA = Strongest-Amber $active $count $window
+        $countI = Strongest-Amber $inactive $count $window
+        $markA = Strongest-Amber $active $waiting $window
+        $markI = Strongest-Amber $inactive $waiting $window
+        'the count: {0} then {1}; the mark of the tab that waits: {2} then {3}' -f ($countA -join ','), ($countI -join ','), ($markA -join ','), ($markI -join ',')
+        $results.Add((Check-True 'the count on the plate is as strong as it was' ((Rgb-Distance ($countA -join ',') ($countI -join ',')) -le 24) "$($countA -join ',') then $($countI -join ',')"))
+        $results.Add((Check-True 'and is amber still' ($countI[0] -gt 150 -and $countI[0] - $countI[2] -gt 60) ($countI -join ',')))
+        $results.Add((Check-True 'the mark of the tab that waits is as strong as it was' ((Rgb-Distance ($markA -join ',') ($markI -join ',')) -le 24) "$($markA -join ',') then $($markI -join ',')"))
+        # The quieter text: the position on the plate.
+        $textA = Brightest-Luma $active $position $window
+        $textI = Brightest-Luma $inactive $position $window
+        'the text of the plate: brightest pixel {0:N0}, then {1:N0}' -f $textA, $textI
+        $results.Add((Check-True 'the text of the chrome is quieter' ($textI -lt $textA - 5) ('{0:N0} then {1:N0}' -f $textA, $textI)))
+        [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 1500
+        $back = Join-Path $global:NkShots 'inactive-look-3-active-again.png'
+        Shot-Safe $back | Out-Null
+        $countB = Strongest-Amber $back $count $window
+        $textB = Brightest-Luma $back $position $window
+        $results.Add((Check-True 'activating the window gives the chrome its text back' ([Math]::Abs($textB - $textA) -lt 6) ('{0:N0} against {1:N0}' -f $textB, $textA)))
+        Assert-Results $results 'inactive look'
     } -Pattern -NoShot
 }
 
@@ -2503,4 +2598,4 @@ function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-TabDragScroll; Scenario-TabKeys; Scenario-TabNav; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-TitleFormat; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-InactiveLook; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-TabDragScroll; Scenario-TabKeys; Scenario-TabNav; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-TitleFormat; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
