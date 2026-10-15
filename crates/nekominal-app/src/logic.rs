@@ -5,7 +5,8 @@
 use nekominal_model::commands::Command;
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::{
-    Cursor, CursorStyle as CursorShapeSetting, OPACITY_RANGE, Osc52Policy, PasteSettings, Settings,
+    Cursor, CursorStyle as CursorShapeSetting, OPACITY_RANGE, Osc52Policy, PasteSettings, Settings, TITLE_SEPARATOR,
+    TitlePart, TitleSlot,
 };
 use nekominal_model::settings_ui::Range;
 use nekominal_term::CoreConfig;
@@ -707,9 +708,57 @@ pub const MAX_TITLE_CHARS: usize = 120;
 /// no control, directional or noncharacter code points (a title is never markup and never reorders what is around
 /// it), no blanks at either end, at most [`MAX_TITLE_CHARS`] characters, cut between two characters.
 pub fn clean_title(raw: &str) -> String {
+    clean_text(raw, MAX_TITLE_CHARS)
+}
+
+/// The most characters of a working directory a tooltip shows: the whole of any path Windows allows.
+pub const MAX_PATH_CHARS: usize = 520;
+
+/// [`clean_title`] with a limit of its own.
+pub fn clean_text(raw: &str, max: usize) -> String {
     let kept: String =
-        raw.chars().filter(|c| !is_control_or_bidi(*c)).skip_while(|c| c.is_whitespace()).take(MAX_TITLE_CHARS).collect();
+        raw.chars().filter(|c| !is_control_or_bidi(*c)).skip_while(|c| c.is_whitespace()).take(max).collect();
     kept.trim_end().to_owned()
+}
+
+/// The parts of a line of a tooltip that have something to say, joined by [`TITLE_SEPARATOR`]; none when none has.
+pub fn tip_line(parts: &[Option<&str>]) -> Option<String> {
+    let said: Vec<&str> = parts.iter().flatten().copied().filter(|part| !part.is_empty()).collect();
+    (!said.is_empty()).then(|| said.join(TITLE_SEPARATOR))
+}
+
+/// The tooltip of a chip, in at most four lines, each of them left out when it has nothing to say: the whole title (the
+/// chip cuts it short), the state when the tab is not at rest, the whole working directory, and the profile with the
+/// panes. The command line is not in it: its arguments may hold secrets.
+pub fn tab_tooltip(title: &str, state: Option<String>, cwd: Option<&str>, place: Option<String>) -> String {
+    [Some(title.to_owned()), state, cwd.map(str::to_owned), place]
+        .into_iter()
+        .flatten()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The width of the zone at each end of the strip in which a dragged chip makes the strip scroll, in DIP.
+pub const DRAG_EDGE: f64 = 24.0;
+/// How fast the strip scrolls (DIP a second) at the inner border of that zone, and at the edge of the viewer or
+/// beyond it.
+pub const DRAG_SCROLL_SLOW: f64 = 200.0;
+pub const DRAG_SCROLL_FAST: f64 = 900.0;
+
+/// The scroll speed (DIP a second; negative toward the start of the strip, zero in the middle) for a dragged chip whose
+/// pointer is `x` DIP from the left edge of a viewer `viewport` DIP wide. It grows with the depth in the zone, so the
+/// strip starts at once and the user can slow it by moving back.
+pub fn drag_scroll_speed(x: f64, viewport: f64) -> f64 {
+    let ramp =
+        |depth: f64| DRAG_SCROLL_SLOW + (DRAG_SCROLL_FAST - DRAG_SCROLL_SLOW) * (depth / DRAG_EDGE).clamp(0.0, 1.0);
+    if x < DRAG_EDGE && x <= viewport / 2.0 {
+        -ramp(DRAG_EDGE - x)
+    } else if x > viewport - DRAG_EDGE {
+        ramp(x - (viewport - DRAG_EDGE))
+    } else {
+        0.0
+    }
 }
 
 /// The last segment of a working directory and the one before it as `parent/last`, for the tabs whose last
@@ -729,10 +778,12 @@ pub fn folder_label_with_parent(path: &str, home: Option<&str>) -> Option<String
 /// Where the default title of a tab comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitleSource {
+    /// The name the user gave the tab.
     User,
-    Program,
-    Folder,
-    Profile,
+    /// Made from the parts of the title format; `folder` is whether the working directory is one of them, so that
+    /// tabs with the same title can be told apart by the folder above it.
+    Parts { folder: bool },
+    /// Nothing the format asks for had anything to say.
     Untitled,
 }
 
@@ -788,40 +839,59 @@ impl AgentLabel {
     }
 }
 
-/// The title of a tab: the name the user gave it; else what a program set (an agent's title, then the terminal
-/// title) unless that is generic; else the working directory (`with_parent` adds the folder above it, for tabs
-/// whose last segments collide); else the name of the profile; else `untitled`.
-pub fn default_title(parts: &TitleParts, with_parent: bool) -> (String, TitleSource) {
+/// What a part of the title says about a tab: nothing (an empty text) when it has nothing to say.
+fn part_text(part: TitlePart, parts: &TitleParts, with_parent: bool) -> String {
+    match part {
+        // What an agent called the session, else what the terminal title says, unless it says nothing new.
+        TitlePart::Title => parts
+            .agent_title
+            .iter()
+            .map(String::as_str)
+            .chain([parts.program.as_str()])
+            .map(|title| tab_title(&clean_title(title), ""))
+            .find(|title| !parts.is_generic(title))
+            .unwrap_or_default(),
+        TitlePart::Folder => {
+            let Some(cwd) = parts.cwd.as_deref().filter(|cwd| !cwd.is_empty()) else { return String::new() };
+            let home = parts.home.as_deref();
+            let with_parent = if with_parent { folder_label_with_parent(cwd, home) } else { None };
+            with_parent.unwrap_or_else(|| folder_label(cwd, home))
+        }
+        TitlePart::Profile => clean_title(&parts.profile),
+        TitlePart::Shell => clean_title(&parts.shell),
+        TitlePart::Agent => parts.agent_app.as_deref().map(clean_title).unwrap_or_default(),
+    }
+}
+
+/// The title of a tab: the name the user gave it; else what `format` makes of it: each slot says the first of its parts
+/// that has something to say, the slots that say nothing are left out and the rest are joined by [`TITLE_SEPARATOR`];
+/// else `untitled`. `with_parent` adds the folder above the working directory, for tabs whose titles collide.
+pub fn default_title(parts: &TitleParts, format: &[TitleSlot], with_parent: bool) -> (String, TitleSource) {
     if let Some(user) = parts.user.as_deref().map(clean_title).filter(|name| !name.is_empty()) {
         return (user, TitleSource::User);
     }
-    let program = parts
-        .agent_title
-        .iter()
-        .map(String::as_str)
-        .chain([parts.program.as_str()])
-        .map(|title| tab_title(&clean_title(title), ""))
-        .find(|title| !parts.is_generic(title));
-    if let Some(program) = program {
-        return (program, TitleSource::Program);
-    }
-    if let Some(cwd) = parts.cwd.as_deref().filter(|cwd| !cwd.is_empty()) {
-        let home = parts.home.as_deref();
-        let folder = if with_parent { folder_label_with_parent(cwd, home) } else { None };
-        let folder = folder.unwrap_or_else(|| folder_label(cwd, home));
-        if !folder.is_empty() {
-            return (folder, TitleSource::Folder);
+    let mut said = Vec::new();
+    let mut folder = false;
+    for slot in format {
+        let found = slot.0.iter().find_map(|part| {
+            let text = part_text(*part, parts, with_parent);
+            (!text.is_empty()).then_some((*part, text))
+        });
+        if let Some((part, text)) = found {
+            folder |= part == TitlePart::Folder;
+            said.push(text);
         }
     }
-    let profile = clean_title(&parts.profile);
-    if !profile.is_empty() {
-        return (profile, TitleSource::Profile);
+    let title = clean_title(&said.join(TITLE_SEPARATOR));
+    if title.is_empty() {
+        (parts.untitled.clone(), TitleSource::Untitled)
+    } else {
+        (title, TitleSource::Parts { folder })
     }
-    (parts.untitled.clone(), TitleSource::Untitled)
 }
 
-/// For every tab whose title is a folder name (`Some(label)`), whether another such tab has the same label, so it
-/// needs the parent folder to be told apart. Labels compare without case.
+/// For every tab whose title says its folder (`Some(title)`), whether another such tab has the same title, so it needs
+/// the parent folder to be told apart. Titles compare without case.
 pub fn colliding_folders(labels: &[Option<String>]) -> Vec<bool> {
     labels
         .iter()
@@ -1003,6 +1073,8 @@ pub struct Effects {
     /// The shape of the cursor a program that chose none gets, and how many lines of scrollback a pane keeps.
     pub cursor: bool,
     pub scrollback: bool,
+    /// How the title of a tab is made.
+    pub titles: bool,
 }
 
 /// What `now` changes of the screen compared with `before`. The opacity is not part of it: it has its own way.
@@ -1015,6 +1087,7 @@ pub fn effects(before: &Settings, now: &Settings) -> Effects {
         osc52: before.osc52 != now.osc52,
         cursor: before.cursor != now.cursor,
         scrollback: before.scrollback != now.scrollback,
+        titles: before.tabs != now.tabs,
     }
 }
 
@@ -1109,6 +1182,7 @@ pub fn step_number(value: f64, steps: i32, range: Range) -> f64 {
 #[cfg(test)]
 mod tests {
     use nekominal_model::layout::{Axis, Node, UNIT};
+    use nekominal_model::settings::TabTitle;
 
     use super::*;
 
@@ -1260,6 +1334,61 @@ mod tests {
             let with_new = tab_width(count + 1, available, GAP);
             assert!(with_new <= width + 1e-9, "{width} became {with_new}");
         }
+    }
+    #[test]
+    fn the_tooltip_has_four_lines_at_most_and_leaves_out_the_ones_with_nothing_to_say() {
+        let full = tab_tooltip(
+            "build the thing",
+            tip_line(&[Some("Waiting for input"), Some("40%"), Some("Allow edit?")]),
+            Some(r"C:\work\nekominal"),
+            tip_line(&[Some("PowerShell"), Some("3 panes"), Some("Zoomed")]),
+        );
+        assert_eq!(
+            full.lines().collect::<Vec<_>>(),
+            [
+                "build the thing",
+                "Waiting for input · 40% · Allow edit?",
+                r"C:\work\nekominal",
+                "PowerShell · 3 panes · Zoomed"
+            ]
+        );
+        // A tab at rest has no state line, and a tab that never reported a folder has no folder line.
+        assert_eq!(tab_tooltip("t", None, None, tip_line(&[Some("PowerShell"), None, None])), "t\nPowerShell");
+        assert_eq!(tab_tooltip("t", None, Some(""), None), "t");
+        assert_eq!(tip_line(&[None, Some(""), None]), None);
+        assert_eq!(tip_line(&[Some("a"), None, Some("b")]).as_deref(), Some("a · b"));
+        // What a program sent never adds a line: a break in it is cleaned out before it gets here.
+        let sent = clean_text("C:\\a\nb\u{202e}\r\nc", MAX_PATH_CHARS);
+        assert_eq!(tab_tooltip("t", None, Some(&sent), None).lines().count(), 2);
+        assert_eq!(clean_text(&"x".repeat(2000), MAX_PATH_CHARS).chars().count(), MAX_PATH_CHARS);
+        assert_eq!(clean_title("  a\u{7}b "), clean_text("  a\u{7}b ", MAX_TITLE_CHARS));
+    }
+
+    #[test]
+    fn a_dragged_chip_scrolls_the_strip_from_the_edge_zones_and_only_there() {
+        let viewport = 440.0;
+        // Nothing in the middle, and not on the very border of a zone.
+        for x in [DRAG_EDGE, 100.0, 220.0, viewport - DRAG_EDGE] {
+            assert_eq!(drag_scroll_speed(x, viewport), 0.0, "{x}");
+        }
+        // Toward the start at the left, toward the end at the right, as soon as the pointer is in the zone.
+        assert!(drag_scroll_speed(DRAG_EDGE - 0.1, viewport) <= -DRAG_SCROLL_SLOW);
+        assert!(drag_scroll_speed(viewport - DRAG_EDGE + 0.1, viewport) >= DRAG_SCROLL_SLOW);
+        // Faster the deeper, and as fast as it gets at the edge and beyond; the two ends are alike.
+        assert!(drag_scroll_speed(2.0, viewport) < drag_scroll_speed(14.0, viewport));
+        assert_eq!(drag_scroll_speed(0.0, viewport), -DRAG_SCROLL_FAST);
+        assert_eq!(drag_scroll_speed(-300.0, viewport), -DRAG_SCROLL_FAST);
+        assert_eq!(drag_scroll_speed(viewport, viewport), DRAG_SCROLL_FAST);
+        assert_eq!(drag_scroll_speed(viewport + 300.0, viewport), DRAG_SCROLL_FAST);
+        for x in [0.0, 5.0, 12.0, 23.0] {
+            assert_eq!(drag_scroll_speed(x, viewport), -drag_scroll_speed(viewport - x, viewport), "{x}");
+        }
+        // A viewer too narrow for two zones scrolls toward the nearer end.
+        assert!(drag_scroll_speed(10.0, 40.0) < 0.0 && drag_scroll_speed(30.0, 40.0) > 0.0);
+        // The strip crosses 22 chips of 52 DIP in under two seconds at the edge, and in under six at the border of
+        // the zone: the drag of the study (tab 3 to the 25th place among 30) fits its three seconds.
+        let distance = 22.0 * (CHIP_MIN_WIDTH + 4.0);
+        assert!(distance / DRAG_SCROLL_FAST < 2.0 && distance / DRAG_SCROLL_SLOW < 6.0);
     }
     fn agent(state: AgentState) -> PaneSignal {
         let record =
@@ -1907,6 +2036,16 @@ mod tests {
         assert_eq!(folder_label("", Some("")), "", "an unknown home is not every folder");
     }
 
+    /// The title of a tab by the default format: what a program says, else the folder, else the profile.
+    fn titled(parts: &TitleParts, with_parent: bool) -> (String, TitleSource) {
+        default_title(parts, &TabTitle::default().parts, with_parent)
+    }
+
+    /// The title by a format written as it is in the settings: `["folder", "title|profile"]`.
+    fn titled_by(texts: &[&str], parts: &TitleParts) -> (String, TitleSource) {
+        let format: Vec<TitleSlot> = texts.iter().map(|text| TitleSlot::parse(text).expect("known parts")).collect();
+        default_title(parts, &format, false)
+    }
     fn parts(program: &str, cwd: Option<&str>) -> TitleParts {
         TitleParts {
             program: program.into(),
@@ -1920,21 +2059,82 @@ mod tests {
     }
 
     #[test]
+    fn a_format_joins_the_slots_that_have_something_to_say_and_skips_the_others() {
+        let mut p = parts("build", Some(r"C:\src\nekominal"));
+        p.agent_app = Some("claude".into());
+        let built = |texts: &[&str], p: &TitleParts| titled_by(texts, p).0;
+        assert_eq!(built(&["folder", "title"], &p), "nekominal · build");
+        assert_eq!(built(&["title", "folder", "profile"], &p), "build · nekominal · PowerShell");
+        assert_eq!(built(&["agent", "folder"], &p), "claude · nekominal");
+        assert_eq!(built(&["shell"], &p), "pwsh");
+        // The first part of a slot that has something to say fills it; the others of that slot stay silent.
+        assert_eq!(built(&["title|folder"], &p), "build");
+        p.program.clear();
+        assert_eq!(built(&["title|folder"], &p), "nekominal");
+        // A slot that says nothing leaves no separator behind, at the start, in the middle or at the end.
+        assert_eq!(built(&["title", "folder"], &p), "nekominal");
+        assert_eq!(built(&["folder", "title"], &p), "nekominal");
+        assert_eq!(
+            built(&["agent", "title", "folder", "title|agent", "profile"], &p),
+            "claude · nekominal · claude · PowerShell"
+        );
+        p.cwd = None;
+        assert_eq!(built(&["folder", "title"], &p), "終端機", "nothing to say: the title of last resort");
+        assert_eq!(titled_by(&["folder", "title"], &p).1, TitleSource::Untitled);
+        // The user's name wins over any format, and the folder is in the title only when a part says it.
+        p.user = Some("mine".into());
+        assert_eq!(titled_by(&["folder"], &p), ("mine".to_owned(), TitleSource::User));
+    }
+
+    #[test]
+    fn a_title_that_says_its_folder_can_take_the_parent_and_one_that_does_not_cannot() {
+        let p = parts("build", Some(r"C:\work\api"));
+        let format =
+            |texts: &[&str]| -> Vec<TitleSlot> { texts.iter().map(|text| TitleSlot::parse(text).unwrap()).collect() };
+        assert_eq!(
+            default_title(&p, &format(&["folder", "title"]), false),
+            ("api · build".to_owned(), TitleSource::Parts { folder: true })
+        );
+        assert_eq!(default_title(&p, &format(&["folder", "title"]), true).0, "work/api · build");
+        let without = default_title(&p, &format(&["title", "profile"]), true);
+        assert_eq!(without, ("build · PowerShell".to_owned(), TitleSource::Parts { folder: false }));
+        // A fallback that did not reach the folder does not count as saying it.
+        assert_eq!(
+            default_title(&p, &format(&["title|folder"]), true),
+            ("build".to_owned(), TitleSource::Parts { folder: false })
+        );
+        // Tabs whose whole titles are the same are told apart, those that only share a folder are not.
+        let same = ["api · build".to_owned(), "api · build".to_owned(), "api · logs".to_owned()];
+        let labels: Vec<Option<String>> = same.iter().cloned().map(Some).collect();
+        assert_eq!(colliding_folders(&labels), [true, true, false]);
+    }
+
+    #[test]
+    fn a_title_is_made_of_cleaned_parts_and_stays_within_the_limit() {
+        let mut p = parts("pay\u{202e}load", Some("C:\\work\\a\u{7}pi"));
+        p.agent_app = Some("cla\u{202e}ude".into());
+        assert_eq!(titled_by(&["title", "folder", "agent"], &p).0, "payload · api · claude");
+        let long = TitleParts { program: "x".repeat(200), ..parts("", Some(r"C:\work\api")) };
+        let title = titled_by(&["title", "folder"], &long).0;
+        assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
+        assert!(title.starts_with("xxx") && !title.contains('·'), "the cut keeps the head");
+    }
+    #[test]
     fn a_title_comes_from_the_user_then_the_program_then_the_folder_then_the_profile_then_nothing() {
         let mut p = parts("build", Some(r"C:\src\nekominal"));
         p.user = Some("  mine ".into());
-        assert_eq!(default_title(&p, false), ("mine".to_owned(), TitleSource::User));
+        assert_eq!(titled(&p, false), ("mine".to_owned(), TitleSource::User));
         p.user = None;
-        assert_eq!(default_title(&p, false), ("build".to_owned(), TitleSource::Program));
+        assert_eq!(titled(&p, false), ("build".to_owned(), TitleSource::Parts { folder: false }));
         p.program.clear();
-        assert_eq!(default_title(&p, false), ("nekominal".to_owned(), TitleSource::Folder));
+        assert_eq!(titled(&p, false), ("nekominal".to_owned(), TitleSource::Parts { folder: true }));
         p.cwd = None;
-        assert_eq!(default_title(&p, false), ("PowerShell".to_owned(), TitleSource::Profile));
+        assert_eq!(titled(&p, false), ("PowerShell".to_owned(), TitleSource::Parts { folder: false }));
         p.profile.clear();
-        assert_eq!(default_title(&p, false), ("終端機".to_owned(), TitleSource::Untitled));
+        assert_eq!(titled(&p, false), ("終端機".to_owned(), TitleSource::Untitled));
         // A name of only invisible characters is no name.
         p.user = Some("\u{202e}\u{7}  ".into());
-        assert_eq!(default_title(&p, false).1, TitleSource::Untitled);
+        assert_eq!(titled(&p, false).1, TitleSource::Untitled);
     }
 
     #[test]
@@ -1943,16 +2143,19 @@ mod tests {
         for generic in [r"C:\Program Files\PowerShell\7\pwsh.exe", "pwsh.exe", "PWSH", "powershell", "", "  "] {
             let mut p = parts(generic, folder);
             p.profile = "PowerShell".into();
-            assert_eq!(default_title(&p, false), ("api".to_owned(), TitleSource::Folder), "{generic:?}");
+            assert_eq!(titled(&p, false), ("api".to_owned(), TitleSource::Parts { folder: true }), "{generic:?}");
         }
         let mut agent = parts("claude", folder);
         agent.agent_app = Some("claude".into());
-        assert_eq!(default_title(&agent, false).0, "api", "the app id of the agent says nothing");
+        assert_eq!(titled(&agent, false).0, "api", "the app id of the agent says nothing");
         agent.agent_title = Some("Fix the build".into());
-        assert_eq!(default_title(&agent, false), ("Fix the build".to_owned(), TitleSource::Program));
+        assert_eq!(titled(&agent, false), ("Fix the build".to_owned(), TitleSource::Parts { folder: false }));
         // Titles a program chose are kept as they are, an executable's path or not.
         for chosen in ["build", "vim main.rs", "claude - Nekominal", "✳ Claude Code"] {
-            assert_eq!(default_title(&parts(chosen, folder), false), (chosen.to_owned(), TitleSource::Program));
+            assert_eq!(
+                titled(&parts(chosen, folder), false),
+                (chosen.to_owned(), TitleSource::Parts { folder: false })
+            );
         }
     }
 
@@ -1961,7 +2164,7 @@ mod tests {
         let mut p = parts("Windows PowerShell", Some(r"C:\work\api"));
         p.profile = "Windows PowerShell".into();
         p.shell = "powershell".into();
-        assert_eq!(default_title(&p, false).0, "api");
+        assert_eq!(titled(&p, false).0, "api");
     }
 
     #[test]
@@ -1969,11 +2172,8 @@ mod tests {
         assert_eq!(clean_title("  build\u{202e}evil\u{7}\u{1b}[31m "), "buildevil[31m");
         assert_eq!(clean_title("a\u{2066}b\u{2069}c"), "abc");
         assert_eq!(clean_title("終端\u{200b}機"), "終端\u{200b}機", "zero-width joiners of real text stay");
-        assert_eq!(default_title(&parts("pay\u{202e}load", None), false).0, "payload");
-        assert_eq!(
-            default_title(&TitleParts { agent_title: Some("x\u{202e}y".into()), ..parts("", None) }, false).0,
-            "xy"
-        );
+        assert_eq!(titled(&parts("pay\u{202e}load", None), false).0, "payload");
+        assert_eq!(titled(&TitleParts { agent_title: Some("x\u{202e}y".into()), ..parts("", None) }, false).0, "xy");
     }
 
     #[test]
@@ -2033,33 +2233,33 @@ mod tests {
         assert_eq!(folder_label(&long, None).chars().count(), MAX_TITLE_CHARS);
         assert_eq!(folder_label("C:\\work\\\u{202e}\u{7}", None), "", "a folder of invisible characters has no name");
         // The same cleaning reaches the title of a tab, with a parent or not.
-        let at = |cwd: &str, with_parent| default_title(&parts("", Some(cwd)), with_parent).0;
+        let at = |cwd: &str, with_parent| titled(&parts("", Some(cwd)), with_parent).0;
         assert_eq!(at("C:\\Users\\me\\src\\pay\u{202e}load", false), "payload");
         assert_eq!(at("C:\\Users\\me\\sr\u{7}c\\pay\u{202e}load", true), "src/payload");
-        assert_eq!(default_title(&parts("", Some("C:\\a\\\u{202e}\u{7}")), false).1, TitleSource::Profile);
+        assert_eq!(titled(&parts("", Some("C:\\a\\\u{202e}\u{7}")), false).1, TitleSource::Parts { folder: false });
         assert!(at(&long, true).chars().count() <= MAX_TITLE_CHARS);
     }
 
     #[test]
     fn the_folder_is_the_last_segment_and_gets_its_parent_only_when_asked() {
         let at = |cwd| parts("", Some(cwd));
-        assert_eq!(default_title(&at(r"C:\Users\me"), false).0, "~");
-        assert_eq!(default_title(&at(r"C:\"), false).0, "C:");
-        assert_eq!(default_title(&at(r"C:\Users\me\nekominal\src"), false).0, "src");
-        assert_eq!(default_title(&at(r"C:\Users\me\nekominal\src"), true).0, "nekominal/src");
-        assert_eq!(default_title(&at(r"C:\work"), true).0, "C:/work");
-        assert_eq!(default_title(&at("/home/me/api"), true).0, "me/api");
+        assert_eq!(titled(&at(r"C:\Users\me"), false).0, "~");
+        assert_eq!(titled(&at(r"C:\"), false).0, "C:");
+        assert_eq!(titled(&at(r"C:\Users\me\nekominal\src"), false).0, "src");
+        assert_eq!(titled(&at(r"C:\Users\me\nekominal\src"), true).0, "nekominal/src");
+        assert_eq!(titled(&at(r"C:\work"), true).0, "C:/work");
+        assert_eq!(titled(&at("/home/me/api"), true).0, "me/api");
         // There is no parent to add to these.
-        assert_eq!(default_title(&at(r"C:\Users\me"), true).0, "~");
-        assert_eq!(default_title(&at(r"C:\"), true).0, "C:");
-        assert_eq!(default_title(&at("/"), true).0, "/");
-        assert_eq!(default_title(&at("/usr"), true).0, "usr");
+        assert_eq!(titled(&at(r"C:\Users\me"), true).0, "~");
+        assert_eq!(titled(&at(r"C:\"), true).0, "C:");
+        assert_eq!(titled(&at("/"), true).0, "/");
+        assert_eq!(titled(&at("/usr"), true).0, "usr");
     }
 
     #[test]
     fn five_tabs_in_different_folders_have_five_names_and_the_same_name_gets_a_parent() {
         let folders = [r"C:\Users\me", r"C:\work\api", r"C:\work\web", r"D:\other", r"C:\Users\me\src\api"];
-        let names: Vec<String> = folders.iter().map(|f| default_title(&parts("pwsh", Some(f)), false).0).collect();
+        let names: Vec<String> = folders.iter().map(|f| titled(&parts("pwsh", Some(f)), false).0).collect();
         assert_eq!(names, ["~", "api", "web", "other", "api"]);
         let labels: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
         let collide = colliding_folders(&labels);
@@ -2067,7 +2267,7 @@ mod tests {
         let told_apart: Vec<String> = folders
             .iter()
             .zip(&collide)
-            .map(|(f, with_parent)| default_title(&parts("pwsh", Some(f)), *with_parent).0)
+            .map(|(f, with_parent)| titled(&parts("pwsh", Some(f)), *with_parent).0)
             .collect();
         assert_eq!(told_apart, ["~", "work/api", "web", "other", "src/api"]);
         // Tabs that are not named after a folder never collide, and the comparison ignores case.

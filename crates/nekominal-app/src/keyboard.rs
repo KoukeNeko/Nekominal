@@ -18,6 +18,7 @@ const VK_RWIN: i32 = 0x5C;
 pub const VK_BACK: i32 = 0x08;
 pub const VK_ESCAPE: i32 = 0x1B;
 pub const VK_RETURN: i32 = 0x0D;
+pub const VK_SPACE: i32 = 0x20;
 pub const VK_PAGE_UP: i32 = 0x21;
 pub const VK_PAGE_DOWN: i32 = 0x22;
 pub const VK_END: i32 = 0x23;
@@ -27,6 +28,7 @@ pub const VK_UP: i32 = 0x26;
 pub const VK_RIGHT: i32 = 0x27;
 pub const VK_DOWN: i32 = 0x28;
 pub const VK_DELETE: i32 = 0x2E;
+pub const VK_F2: i32 = 0x71;
 
 fn is_down(code: i32) -> bool {
     InputKeyboardSource::GetKeyStateForCurrentThread(VirtualKey(code)).map(|state| (state.0 & 1) != 0).unwrap_or(false)

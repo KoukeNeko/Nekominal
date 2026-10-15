@@ -56,6 +56,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(600);
 /// Padding of the strip inside its scroll viewer, both sides together (`shell.xaml`).
 const STRIP_PADDING: f64 = 4.0;
 
+/// Width of the box in which a tab is renamed, in DIP.
+const RENAME_WIDTH: f64 = 240.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overlay {
     None,
@@ -172,6 +175,8 @@ pub struct Shell {
     app_menu: RefCell<Option<(MenuFlyout, Vec<EventRevoker>)>>,
     /// The row Background opacity... of that menu was chosen: the appearance flyout opens when the menu has closed.
     appearance_requested: Cell<bool>,
+    /// The row Rename of the menu of a chip was chosen: the flyout of the name opens when the menu has closed.
+    rename_requested: Cell<Option<TabId>>,
 }
 
 thread_local! {
@@ -405,6 +410,7 @@ pub fn launch() -> Result<()> {
         pane_menu: RefCell::new(None),
         app_menu: RefCell::new(None),
         appearance_requested: Cell::new(false),
+        rename_requested: Cell::new(None),
     });
     SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
@@ -705,6 +711,9 @@ impl Shell {
         }
         if effects.osc52 {
             self.apply_osc52();
+        }
+        if effects.titles {
+            self.refresh_titles();
         }
         self.apply_terminal_settings(&effects);
         if !effects.glass {
@@ -1091,6 +1100,8 @@ impl Shell {
         let tabs: Vec<Rc<Tab>> = self.tabs.borrow().clone();
         let mut closed_panes = Vec::new();
         for tab in &tabs {
+            // A chip being dragged at an end of the strip scrolls it.
+            tab.chip.tick_drag();
             for pane in tab.panes.borrow().iter() {
                 for event in pane.poll_events() {
                     self.on_pane_event(tab, pane, event, &mut closed_panes);
@@ -1227,15 +1238,20 @@ impl Shell {
                 }
             })
             .collect();
-        let first: Vec<(String, TitleSource)> = parts.iter().map(|parts| logic::default_title(parts, false)).collect();
-        let folders: Vec<Option<String>> =
-            first.iter().map(|(title, source)| (*source == TitleSource::Folder).then(|| title.clone())).collect();
+        let format = self.settings.borrow().tabs.title.parts.clone();
+        let first: Vec<(String, TitleSource)> =
+            parts.iter().map(|parts| logic::default_title(parts, &format, false)).collect();
+        let folders: Vec<Option<String>> = first
+            .iter()
+            .map(|(title, source)| (*source == TitleSource::Parts { folder: true }).then(|| title.clone()))
+            .collect();
         let collide = logic::colliding_folders(&folders);
         for (((tab, parts), (title, _)), with_parent) in tabs.iter().zip(&parts).zip(first).zip(collide) {
+            tab.chip.set_context(parts.cwd.clone(), &parts.profile);
             if tab.renamed.get() {
                 continue;
             }
-            let title = if with_parent { logic::default_title(parts, true).0 } else { title };
+            let title = if with_parent { logic::default_title(parts, &format, true).0 } else { title };
             if *tab.title.borrow() != title {
                 *tab.title.borrow_mut() = title.clone();
                 tab.chip.set_title(&title);
@@ -1518,7 +1534,7 @@ impl Shell {
                 shell.on_tab_event(event);
             }
         });
-        let chip = Chip::new(id, &title, self.glass.get(), &self.ui.tab_strip, on_event)?;
+        let chip = Chip::new(id, &title, self.glass.get(), &self.ui.tab_strip, &self.ui.tab_scroll, on_event)?;
         let on_unzoom: Rc<dyn Fn()> = {
             let weak = Rc::downgrade(self);
             Rc::new(move || {
@@ -1546,6 +1562,7 @@ impl Shell {
                 }
             }
             TabEvent::Close(id) => self.request_close_tab(id),
+            TabEvent::Rename(id) => self.rename_tab(id),
             TabEvent::Move { id, to } => self.move_tab(id, to),
         }
     }
@@ -1859,8 +1876,9 @@ impl Shell {
         let flyout = MenuFlyout::new()?;
         let items = flyout.Items()?;
         let id = tab.id;
+        // The flyout of the name opens when this menu has closed: closing it gives the focus back to the pane.
         let this = self.clone();
-        items.Append(&self.menu_item(t(Text::TabRename), move || this.rename_tab(id))?)?;
+        items.Append(&self.menu_item(t(Text::TabRename), move || this.rename_requested.set(Some(id)))?)?;
         let this = self.clone();
         items.Append(&self.menu_item(t(Text::TabDuplicate), move || {
             let profile = this
@@ -1891,6 +1909,13 @@ impl Shell {
         items.Append(&self.menu_item(t(Text::TabCloseRight), move || this.close_other_tabs(id, true))?)?;
         let this = self.clone();
         items.Append(&self.menu_item(t(Text::TabClose), move || this.request_close_tab(id))?)?;
+        let this = self.clone();
+        let closed = flyout.cast::<FlyoutBase>()?.Closed(cb!("tab menu closed", |_, _| {
+            if let Some(id) = this.rename_requested.take() {
+                this.rename_tab(id);
+            }
+        }))?;
+        self.revokers.borrow_mut().push(closed);
         ui(&tab.chip.root)?.SetContextFlyout(&flyout)?;
         Ok(())
     }
@@ -2141,6 +2166,7 @@ impl Shell {
         self.apply_osc52();
         let now = self.settings.borrow().clone();
         self.apply_terminal_settings(&logic::effects(before, &now));
+        self.refresh_titles();
         // The shortcuts show in tooltips and menus, and the profiles of the file may differ.
         self.set_tooltips();
         *self.pane_menu.borrow_mut() = None;
@@ -2237,44 +2263,73 @@ impl Shell {
         shown.map_err(|e| log(&format!("close confirmation: {e}"))).is_ok()
     }
 
+    /// Asks for the name of a tab in a flyout under its chip, which keeps the chip as wide as it is. Enter, and a click
+    /// elsewhere, put the name in effect; Esc leaves it as it was.
     fn rename_tab(self: &Rc<Self>, id: TabId) {
-        let Some(tab) = self.tabs.borrow().iter().find(|tab| tab.id == id).cloned() else { return };
+        let Some(index) = self.tab_index(id) else { return };
+        self.select_index(index);
+        let Some(tab) = self.tabs.borrow().get(index).cloned() else { return };
         let result = (|| -> Result<()> {
             let input = TextBox::new()?;
             input.SetText(&tab.title.borrow())?;
-            input.SelectAll()?;
-            let dialog = ContentDialog::new()?;
-            dialog.SetTitle(&IReference::from(t(Text::TabRename)))?;
-            dialog.cast::<ContentControl>()?.SetContent(&input)?;
-            dialog.SetPrimaryButtonText(t(Text::TabRename))?;
-            dialog.SetCloseButtonText(t(Text::CommonCancel))?;
-            dialog.SetDefaultButton(ContentDialogButton::Primary)?;
-            ui(&dialog)?.SetXamlRoot(&self.root.xaml_root()?)?;
-            let tab = tab.clone();
-            let this_layout = self.clone();
-            let revoker = dialog.PrimaryButtonClick(cb!("rename confirmed", |_, _| {
-                let name = logic::clean_title(&input.Text().unwrap_or_default());
-                if name.is_empty() {
-                    tab.renamed.set(false);
-                } else {
-                    tab.renamed.set(true);
-                    *tab.title.borrow_mut() = name.clone();
-                    tab.chip.set_title(&name);
+            fe(&input)?.SetWidth(RENAME_WIDTH)?;
+            let flyout = Flyout::new()?;
+            flyout.SetContent(&ui(&input)?)?;
+            let base = flyout.cast::<FlyoutBase>()?;
+            base.SetPlacement(FlyoutPlacementMode::Bottom)?;
+            // The name is put in effect once, whichever of Enter and the closing of the flyout comes first.
+            let done = Rc::new(Cell::new(false));
+            let finish = {
+                let (this, tab, input, done) = (self.clone(), tab.clone(), input.clone(), done.clone());
+                move |keep: bool| {
+                    if !done.replace(true) && keep {
+                        this.apply_rename(&tab, &input.Text().unwrap_or_default());
+                    }
                 }
-                this_layout.refresh_titles();
+            };
+            let (hide, ends) = (base.clone(), finish.clone());
+            let keys = ui(&input)?.PreviewKeyDown(cb!("rename key", |_, args| {
+                let Some(args) = args.as_ref() else { return };
+                let key = args.Key().map_or(0, |key| key.0);
+                if key == keyboard::VK_RETURN || key == keyboard::VK_ESCAPE {
+                    let _ = args.SetHandled(true);
+                    ends(key == keyboard::VK_RETURN);
+                    let _ = hide.Hide();
+                }
             }))?;
-            self.revokers.borrow_mut().push(revoker);
+            let opened = {
+                let input = input.clone();
+                base.Opened(cb!("rename opened", |_, _| {
+                    let _ = ui(&input).and_then(|input| input.Focus(FocusState::Programmatic));
+                    let _ = input.SelectAll();
+                }))?
+            };
             let this = self.clone();
-            let revoker = dialog.Closed(cb!("dialog closed", |_, _| this.focus_active_pane()))?;
-            self.revokers.borrow_mut().push(revoker);
-            *self.dialog.borrow_mut() = Some(dialog.ShowAsync()?);
-            Ok(())
+            let closed = base.Closed(cb!("rename closed", |_, _| {
+                finish(true);
+                this.focus_active_pane();
+            }))?;
+            self.revokers.borrow_mut().extend([keys, opened, closed]);
+            base.ShowAt(&tab.chip.root)
         })();
         if let Err(e) = result {
-            log(&format!("rename dialog: {e}"));
+            log(&format!("rename flyout: {e}"));
         }
     }
 
+    /// The name the user typed for a tab: cleaned like any title, an empty one gives the title back to the rules, and
+    /// one that is only what the rules made already changes nothing (the tab keeps following them).
+    fn apply_rename(self: &Rc<Self>, tab: &Rc<Tab>, text: &str) {
+        let name = logic::clean_title(text);
+        if name.is_empty() {
+            tab.renamed.set(false);
+        } else if tab.renamed.get() || name != *tab.title.borrow() {
+            tab.renamed.set(true);
+            *tab.title.borrow_mut() = name.clone();
+            tab.chip.set_title(&name);
+        }
+        self.refresh_titles();
+    }
     // ---------------------------------------------------------------------------------------------
     // Overlays
     // ---------------------------------------------------------------------------------------------
@@ -2547,6 +2602,13 @@ impl Shell {
         let this = self.clone();
         let revoker = ui(&self.root)?.PreviewKeyDown(cb!("shortcut", |_, args| {
             let Some(args) = args.as_ref() else { return };
+            // Esc during the drag of a chip puts the chips back where they were.
+            if args.Key().map_or(0, |key| key.0) == keyboard::VK_ESCAPE
+                && this.tabs.borrow().iter().any(|tab| tab.chip.cancel_drag())
+            {
+                let _ = args.SetHandled(true);
+                return;
+            }
             // The shortcuts page is waiting for a chord to give to a command: the chord is not a command now.
             if this.recording_keys.get() {
                 return;

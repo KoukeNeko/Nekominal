@@ -10,8 +10,11 @@
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
 #   Scenario-TabWidths        # every chip has one width, which selecting, retitling, splitting and hovering leave alone
+#   Scenario-TabDragScroll    # a chip dragged to the edge of the strip scrolls it: tab 3 to the 25th of 30, Esc puts it back
+#   Scenario-TabKeys          # arrow keys, Space, Enter, F2 and a double click on chips, the rename box, the tooltip
 #   Scenario-TabDrag          # dragging an unselected chip of a compressed strip moves it by the widths of the layout the press made
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
+#   Scenario-TitleFormat      # tabs.title.parts: the file, the row of the drawer, a part that is not one
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-Unread           # unread responses: the !N of the plate, the grouped list, Ctrl+Shift+U, alerts of an inactive window
@@ -437,7 +440,7 @@ function Get-Chips {
     foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
         $p = $e.GetCurrentPropertyValue($pos)
         # Any other named container (the drawer) reports the default position, -1.
-        if ($p -is [int] -and $p -ge 1) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Status = $e.Current.ItemStatus; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
+        if ($p -is [int] -and $p -ge 1) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Status = $e.Current.ItemStatus; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen; Element = $e } }
     }
 }
 
@@ -1042,6 +1045,186 @@ function Scenario-TabDrag {
         Assert-Results $results 'tab drag'
     } -NoShot
 }
+# Dragging a chip to the edge of the strip scrolls it: among 30 tabs, tab 3 is taken to the 25th place by holding it in the
+# zone at the right end of the strip until the 25th place is in view and letting it go there. The strip starts to move
+# within 150 ms of the pointer entering the zone (the app says how long it took), the chip lands exactly in the 25th place, the
+# whole drag takes under 3 s, and Esc during a drag puts every chip back.
+function Scenario-TabDragScroll {
+    Run-App 'tab-drag-scroll' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Name-Tab 't1'
+        foreach ($n in 2..30) { New-Tab; Name-Tab "t$n" }
+        Set-WindowWidth 988
+        $scale = Get-Scale
+        $order = { @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ }) }
+        $viewer = { [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd).FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer'))).Current.BoundingRectangle }
+        $before = @(1..30 | ForEach-Object { "t$_" })
+        $results.Add((Check 'there are 30 tabs in order' ($before -join ' ') ((& $order) -join ' ')))
+        # --- tab 3 to the 25th place
+        Select-By-List 't3'
+        $v = & $viewer
+        $chip = Get-Chips | Where-Object { $_.Index -eq 3 } | Select-Object -First 1
+        $w = $chip.Rect.Width / $scale
+        $x0 = [int]($chip.Rect.X + $chip.Rect.Width / 2); $y = [int]($chip.Rect.Y + $chip.Rect.Height / 2)
+        $mark = Log-Mark
+        Assert-Foreground
+        Move-To $x0 $y; Start-Sleep -Milliseconds 200
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 100
+        $zone = [int]($v.X + $v.Width - 6 * $scale)
+        $steps = 8
+        for ($i = 1; $i -le $steps; $i++) { Move-To ([int]($x0 + ($zone - $x0) * $i / $steps)) $y; Start-Sleep -Milliseconds 15 }
+        # held still at the edge: the strip must scroll by itself until the 25th place is in view
+        $slot = { param($k) 2 + ($k - 1) * ($w + 4) + $w / 2 }       # x of the middle of place k, in DIP from the start of the strip
+        $seen = $false
+        while ($clock.Elapsed.TotalSeconds -lt 6) {
+            $offset = Strip-Offset
+            $onscreen = (& $slot 25) - $offset
+            if ($onscreen -gt 40 -and $onscreen -lt ($v.Width / $scale - 60)) { $seen = $true; break }
+        }
+        $reached = $clock.Elapsed.TotalSeconds
+        $results.Add((Check-True 'holding the chip at the right edge brings the 25th place into view' $seen ('after {0:N2} s, offset {1:N0}' -f $reached, $offset)))
+        # let it go a little past the middle of the 25th place
+        $target = [int]($v.X + (((& $slot 25) + 10 - $offset) * $scale))
+        for ($i = 1; $i -le 4; $i++) { Move-To ([int]($zone + ($target - $zone) * $i / 4)) $y; Start-Sleep -Milliseconds 30 }
+        Start-Sleep -Milliseconds 150
+        [D]::Mouse(0x0004, 0)
+        $total = $clock.Elapsed.TotalSeconds
+        Start-Sleep -Milliseconds 900
+        $after = & $order
+        $expected = @($before | Where-Object { $_ -ne 't3' }); $expected = @($expected[0..23]) + 't3' + @($expected[24..28])
+        'drag took {0:N2} s of scripted time; order now: {1}' -f $total, ($after -join ' ')
+        $results.Add((Check 'tab 3 is now the 25th and the others kept their order' ($expected -join ' ') ($after -join ' ')))
+        $results.Add((Check-True 'the whole drag took under 3 seconds of scripted time' ($total -lt 3.0) ('{0:N2} s' -f $total)))
+        $started = @(Log-Since $mark | Where-Object { $_ -match 'drag: the strip started to scroll (\d+) ms after the pointer entered the zone' })
+        $latency = if ($started.Count -gt 0) { [int][regex]::Match($started[0], 'scroll (\d+) ms').Groups[1].Value } else { -1 }
+        'the strip started to scroll {0} ms after the pointer entered the zone' -f $latency
+        $results.Add((Check-True 'the strip started to scroll within 150 ms of the pointer entering the zone' ($latency -ge 0 -and $latency -le 150) "$latency ms"))
+        $results.Add((Check 'the plate says tab 25 is shown' '25 / 30' (Plate-Text)))
+        # --- Esc during a drag puts everything back
+        Select-By-List 't10'
+        $v = & $viewer
+        $chip = Get-Chips | Where-Object { (Chip-Title $_) -eq 't10' } | Select-Object -First 1
+        $x0 = [int]($chip.Rect.X + $chip.Rect.Width / 2); $y = [int]($chip.Rect.Y + $chip.Rect.Height / 2)
+        $held = & $order
+        Move-To $x0 $y; Start-Sleep -Milliseconds 200
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 100
+        for ($i = 1; $i -le 10; $i++) { Move-To ([int]($x0 + 3 * $w * $scale * $i / 10)) $y; Start-Sleep -Milliseconds 25 }
+        Start-Sleep -Milliseconds 200
+        $moving = (Get-Chips | Where-Object { (Chip-Title $_) -eq 't10' } | Select-Object -First 1).Rect.X
+        Press 0x1B; Start-Sleep -Milliseconds 300
+        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 700
+        $results.Add((Check 'Esc during a drag puts every chip back in its place' ($held -join ' ') ((& $order) -join ' ')))
+        $results.Add((Check 'and the tab is still the one shown' ([array]::IndexOf($held, 't10') + 1) (Selected-Tab)))
+        Assert-Results $results 'tab drag scroll'
+    } -NoShot
+}
+
+# The text of the tooltip that is open, as the lines it shows; empty when none is.
+function Get-ToolTipLines {
+    $cond = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::ToolTip)),
+        (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$script:App.Id)))
+    $tip = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if (-not $tip) { return @() }
+    $text = $tip.Current.Name
+    if (-not $text) {
+        $texts = $tip.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)))
+        $text = ($texts | ForEach-Object { $_.Current.Name }) -join "`n"
+    }
+    @(($text -replace "`r", '') -split "`n" | Where-Object { $_ -ne '' })
+}
+
+# The keyboard on the strip, the rename and the tooltip of a chip. A chip takes the focus from a screen reader (UI Automation
+# here) and from the Tab key; the arrows move it along the strip without selecting, Space and Enter select (and the focus goes
+# back to the terminal), F2 and a double click and the row of the menu of the chip open the box of the name under the chip,
+# where Enter keeps a name, Esc leaves it and an empty name hands the title back. The tooltip has the four lines of the study.
+function Scenario-TabKeys {
+    Run-App 'tab-keys' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Set-WindowWidth 1400
+        Name-Tab 'one'
+        foreach ($name in 'two', 'three', 'four') { New-Tab; Name-Tab $name }
+        $chip = { param($k) Get-Chips | Where-Object { $_.Index -eq $k } | Select-Object -First 1 }
+        $titles = { @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ }) -join ' ' }
+        $focused = { try { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name } catch { '' } }
+        (& $chip 2).Element.SetFocus(); Start-Sleep -Milliseconds 400
+        $results.Add((Check 'a screen reader can put the focus on a chip' 'two' (& $focused)))
+        Press 0x27; $results.Add((Check 'Right moves the focus to the next chip' 'three' (& $focused)))
+        Press 0x27; Press 0x27; $results.Add((Check 'and stops at the last one' 'four' (& $focused)))
+        Press 0x24; $results.Add((Check 'Home goes to the first chip' 'one' (& $focused)))
+        Press 0x23; $results.Add((Check 'End to the last' 'four' (& $focused)))
+        Press 0x25; $results.Add((Check 'Left goes back one' 'three' (& $focused)))
+        $results.Add((Check 'moving the focus selects nothing' 4 (Selected-Tab)))
+        Press 0x20; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Space selects the chip that has the focus' 3 (Selected-Tab)))
+        $results.Add((Check 'and the focus goes back to the terminal' 'NekominalTerminal' (Focused-Class)))
+        (& $chip 1).Element.SetFocus(); Start-Sleep -Milliseconds 300
+        Press 0x27; Press 0x0D; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Enter selects too' 2 (Selected-Tab)))
+        # F2
+        (& $chip 1).Element.SetFocus(); Start-Sleep -Milliseconds 300
+        Press 0x71; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'F2 on a chip opens the box of its name, with the name in it' 'TextBox' (Focused-Class)))
+        $results.Add((Check 'the tab that is renamed is the one shown' 1 (Selected-Tab)))
+        Type-Unicode 'renamed' 40; Press 0x0D; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'Enter keeps what was typed in place of the name' 'renamed two three four' (& $titles)))
+        $results.Add((Check 'and the focus goes back to the terminal' 'NekominalTerminal' (Focused-Class)))
+        (& $chip 2).Element.SetFocus(); Start-Sleep -Milliseconds 300
+        Press 0x71; Start-Sleep -Milliseconds 900; Type-Unicode 'zzz' 40; Press 0x1B; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'Esc leaves the name as it was' 'renamed two three four' (& $titles)))
+        # a double click
+        $three = & $chip 3
+        $x = [int]($three.Rect.X + $three.Rect.Width / 2); $y = [int]($three.Rect.Y + $three.Rect.Height / 2)
+        Click-At $x $y 'left' 0; Click-At $x $y 'left' 900
+        $results.Add((Check 'a double click opens the box of the name' 'TextBox' (Focused-Class)))
+        Type-Unicode 'dbl' 40; Press 0x0D; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'and renames that tab' 'renamed two dbl four' (& $titles)))
+        # the row of the menu of the chip
+        $four = & $chip 4
+        Click-At ([int]($four.Rect.X + $four.Rect.Width / 2)) ([int]($four.Rect.Y + $four.Rect.Height / 2)) 'right' 900
+        Click-Name (Nk-Text 'tab.rename') | Out-Null; Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'the row Rename of the menu opens it too' 'TextBox' (Focused-Class)))
+        Type-Unicode 'menu' 40; Press 0x0D; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'and renames that tab' 'renamed two dbl menu' (& $titles)))
+        # an empty name hands the title back to the rules (the program title, here)
+        (& $chip 1).Element.SetFocus(); Start-Sleep -Milliseconds 300
+        Press 0x71; Start-Sleep -Milliseconds 900; Press 0x08; Press 0x0D; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'an empty name gives the title back to the rules' 'one two dbl menu' (& $titles)))
+        # a name that is the title already changes nothing: the tab keeps following the rules
+        (& $chip 2).Element.SetFocus(); Start-Sleep -Milliseconds 300
+        Press 0x71; Start-Sleep -Milliseconds 900; Press 0x0D; Start-Sleep -Milliseconds 900
+        Select-By-List 'two'
+        Type-Line '$Host.UI.RawUI.WindowTitle = "later"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'a rename that changes nothing leaves the tab following the title of its program' 'one later dbl menu' (& $titles)))
+        # the tooltip: four lines at most, never the command line
+        Select-By-List 'one'
+        Type-Line 'Set-Location C:\Windows'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 700
+        $one = & $chip 1
+        Move-To ([int]($one.Rect.X + $one.Rect.Width / 2)) ([int]($one.Rect.Y + $one.Rect.Height / 2)); Start-Sleep -Milliseconds 1800
+        $lines = @(Get-ToolTipLines)
+        'tooltip: ' + ($lines -join ' | ')
+        $results.Add((Check 'the tooltip of a tab at rest has three lines' 3 $lines.Count))
+        $results.Add((Check 'the first is the whole title' 'one' $lines[0]))
+        $results.Add((Check 'the second the whole working directory' 'C:\Windows' $lines[1]))
+        Move-To 5 5; Start-Sleep -Milliseconds 600
+        $esc = '$e=[char]27;$a=[char]7;'
+        Type-Line ($esc + 'Write-Host -NoNewline "$e]7501;state=blocked:kind=question:id=k:app=claude:msg=QWxsb3cgZWRpdD8=$a"; Start-Sleep 60'); Start-Sleep -Milliseconds 800
+        Split-Right
+        Select-By-List 'two'; Start-Sleep -Milliseconds 500
+        $one = & $chip 1
+        Move-To ([int]($one.Rect.X + $one.Rect.Width / 2)) ([int]($one.Rect.Y + $one.Rect.Height / 2)); Start-Sleep -Milliseconds 1800
+        $lines = @(Get-ToolTipLines)
+        'tooltip: ' + ($lines -join ' | ')
+        $results.Add((Check 'a tab that waits has four lines' 4 $lines.Count))
+        $results.Add((Check 'the second is its state and what it said' ((Nk-Text 'agent.blocked') + ' · Allow edit?') $lines[1]))
+        $results.Add((Check 'the last is the profile and the panes' $true ($lines[3] -match [regex]::Escape((Nk-Text 'tab.paneCount' @(2))))))
+        Assert-Results $results 'tab keys'
+    } -NoShot
+}
+
 # A program that reported progress and then ended with an error shows an error, not the work it was doing: the exit
 # clears the progress and a failed exit outranks it. The program is a profile of its own (it keeps its last screen).
 function Scenario-StatusExit {
@@ -1130,6 +1313,47 @@ function Scenario-Titles {
         [IO.Directory]::Delete($global:NkCjk, $true)
         [IO.Directory]::Delete($global:NkRlo, $true)
     }
+}
+
+# The format of the title of a tab (`tabs.title.parts`): the file names the tab, the row of the drawer edits it and keeps the
+# file small, an entry it cannot take is put back, and a part the title does not know is a problem of the file.
+function Scenario-TitleFormat {
+    Run-App 'title-format' @{ confirmClose = $false; tabs = @{ title = @{ parts = @('folder', 'title') } } } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $title = { Chip-Title (Get-Chips | Sort-Object Index | Select-Object -First 1) }
+        Type-Line 'Set-Location C:\Windows'; Wait-Prompt | Out-Null; Name-Tab 'build'; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'the file asks for the folder and the title' 'Windows · build' (& $title)))
+        Open-Drawer
+        $row = Nk-Text 'settings.tabTitle'
+        # The row is the last of a long page: the search of the drawer brings it up.
+        Type-Unicode $row 40; Start-Sleep -Milliseconds 600
+        $field = { Field-Value $row }
+        $results.Add((Check 'the row of the drawer shows the format of the file' 'folder, title' (& $field)))
+        $type = { param($text) Click-Name $row -Class 'TextBox'; Press 0x41 @(0x11); Type-Unicode $text 30; Press 0x0D; Start-Sleep -Milliseconds 1500 }
+        & $type 'title|folder'
+        $results.Add((Check 'typing another format changes the tab at once' 'build' (& $title)))
+        $results.Add((Check 'and the file holds it' 'title|folder' ((Saved-Settings).tabs.title.parts -join ',')))
+        & $type 'folder, branch'
+        $results.Add((Check 'a part the title does not know changes nothing' 'build' (& $title)))
+        $results.Add((Check 'and the row shows the format that is in effect again' 'title|folder' (& $field)))
+        Click-Name (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), $row)) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'restoring the default makes the program title, else the folder, else the profile' 'build' (& $title)))
+        $results.Add((Check 'and takes the entry out of the file' $null ((Saved-Settings).tabs)))
+        Close-Drawer
+        Assert-Results $results 'title format'
+    } -NoShot
+    Run-App 'title-format-bad' @{ tabs = @{ title = @{ parts = @('folder', 'branch') } } } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $results.Add((Check 'a part the title does not know is a problem of the file' $true ([bool](Get-Element (Nk-Text 'status.settingsProblems' @(1))))))
+        Type-Line 'Set-Location C:\Windows'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'the default format stays in effect' 'Windows' (Chip-Title (Get-Chips | Select-Object -First 1))))
+        Open-Drawer
+        $results.Add((Check 'and the row of the format is tagged' 1 @(Get-ElementsByName (Nk-Text 'setting.invalid')).Count))
+        Close-Drawer
+        Assert-Results $results 'title format (bad)'
+    } -NoShot
 }
 
 # Closing: a tab at its prompt closes without asking, a running command asks and the dialog names the tab, the
@@ -2233,4 +2457,4 @@ function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-TabDragScroll; Scenario-TabKeys; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-TitleFormat; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }

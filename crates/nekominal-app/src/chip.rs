@@ -6,6 +6,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::Instant;
 
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
@@ -15,7 +16,8 @@ use nekominal_model::strings::Text;
 
 use crate::glass::Glass;
 use crate::i18n::{t, tf};
-use crate::logic::{Attention, TabState, TabStatus, reorder_target, shows_ordinal};
+use crate::keyboard::{self, VK_END, VK_F2, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SPACE};
+use crate::logic::{self, Attention, TabState, TabStatus, reorder_target, shows_ordinal};
 use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
 pub type TabId = u32;
@@ -29,10 +31,14 @@ const DRAG_THRESHOLD: f64 = 5.0;
 /// The activity id of the notifications a chip raises, which lets a screen reader tell them from other notifications.
 const ANNOUNCEMENT_ID: &str = "nekominal.tab.needs-response";
 
+/// The host of a chip is a control only so that it can take the keyboard focus (the arrow keys move it along the strip):
+/// a pointer press does not focus it, the keyboard and a screen reader do. Every chip can be focused, and the strip is
+/// one stop of the Tab key (`TabFocusNavigation="Once"` in `shell.xaml`).
 const CHIP_XAML: &str = r#"
-<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Name="Chip" Height="32" MinWidth="48" MaxWidth="216" CornerRadius="{StaticResource NkCornerRadius}"
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Host" IsTabStop="True" AllowFocusOnInteraction="False" UseSystemFocusVisuals="False" Padding="0">
+<Border x:Name="Chip" Height="32" MinWidth="48" MaxWidth="216" CornerRadius="{StaticResource NkCornerRadius}"
         BorderThickness="1" Background="Transparent" BorderBrush="Transparent" Padding="12,0,3,0">
   <Border.BackgroundTransition>
     <BrushTransition Duration="0:0:0.14"/>
@@ -80,13 +86,16 @@ const CHIP_XAML: &str = r#"
     </Border>
     </StackPanel>
   </Grid>
-</Border>"#;
+</Border>
+</UserControl>"#;
 
 /// What the user did with a chip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabEvent {
     Select(TabId),
     Close(TabId),
+    /// F2 on the chip, or a double click on it.
+    Rename(TabId),
     /// The chip was dragged to this position in the strip.
     Move {
         id: TabId,
@@ -95,6 +104,7 @@ pub enum TabEvent {
 }
 
 struct Drag {
+    /// Where the pointer was on the strip (DIP from its first edge, scrolled content included) when it went down.
     start_x: f64,
     started: bool,
     index: usize,
@@ -102,12 +112,24 @@ struct Drag {
     /// Left edge of the dragged chip, measured from the left edge of the strip's first chip.
     origin: f64,
     target: usize,
+    /// Where the pointer is in the viewer of the strip (DIP from its left edge), as the last pointer event said. It
+    /// decides whether the strip scrolls under a pointer that is held at an edge and sends no events.
+    viewport_x: f64,
+    /// When the strip last had its turn to scroll for this drag.
+    last_tick: Option<Instant>,
+    /// Since when the pointer has been in a zone at an end of the strip, and whether the log says the strip scrolled.
+    zone_since: Option<Instant>,
+    scroll_logged: bool,
 }
 
 pub struct Chip {
     pub id: TabId,
-    pub root: Border,
+    /// What the strip holds and what takes the focus; the chip is drawn in `border`.
+    pub root: UserControl,
+    border: Border,
     strip: Panel,
+    /// The viewer that scrolls the strip.
+    scroll: ScrollViewer,
     dot: Ellipse,
     glyph: TextBlock,
     ring: ProgressRing,
@@ -136,6 +158,11 @@ pub struct Chip {
     /// The chip is in the visible part of the strip: only then does a working chip spin.
     in_view: Cell<bool>,
     glass: Cell<Glass>,
+    /// The chip has the keyboard focus (never from a pointer press: the chip does not take it).
+    focused: Cell<bool>,
+    /// Where the tab works and with which profile, for the tooltip.
+    cwd: RefCell<Option<String>>,
+    profile: RefCell<String>,
     drag: RefCell<Option<Drag>>,
     on_event: Rc<dyn Fn(TabEvent)>,
     revokers: RefCell<Vec<EventRevoker>>,
@@ -197,6 +224,7 @@ impl Chip {
         title: &str,
         glass: Glass,
         strip: &StackPanel,
+        scroll: &ScrollViewer,
         on_event: Rc<dyn Fn(TabEvent)>,
     ) -> Result<Rc<Chip>> {
         let markup = CHIP_XAML.replace("{title}", &xml_escape(title));
@@ -204,7 +232,9 @@ impl Chip {
         let chip = Rc::new(Chip {
             id,
             root: element.cast()?,
+            border: find(&element, "Chip")?,
             strip: strip.cast()?,
+            scroll: scroll.clone(),
             dot: find(&element, "Dot")?,
             glyph: find(&element, "Glyph")?,
             ring: find(&element, "Ring")?,
@@ -228,6 +258,9 @@ impl Chip {
             status: RefCell::new(TabStatus::default()),
             in_view: Cell::new(true),
             glass: Cell::new(glass),
+            focused: Cell::new(false),
+            cwd: RefCell::new(None),
+            profile: RefCell::new(String::new()),
             drag: RefCell::new(None),
             on_event,
             revokers: RefCell::new(Vec::new()),
@@ -244,21 +277,24 @@ impl Chip {
         self.update_labels();
     }
 
-    /// Accessible name, status and tooltip: the title, then the state in words and what the agent said. The state is
-    /// also words for assistive technology, so it never depends on colour.
+    /// Accessible name, status and tooltip. The name is the title, then the state in words: the state is also words for
+    /// assistive technology, so it never depends on colour. The tooltip has four lines at most (`logic::tab_tooltip`).
     fn update_labels(&self) {
         let title = self.title_text.borrow();
         let status = self.status.borrow();
         let word = status_text(&status);
         let name = word.map_or_else(|| title.clone(), |word| tf(Text::TabNameStatus, &[&*title, &word]));
-        let mut tip = title.clone();
+        // The state, when the tab is not at rest: its word, the progress it reports and what it said.
+        let progress = status.progress.map(|progress| format!("{progress}%"));
+        let message = status.message.as_deref().map(logic::clean_title);
+        let state = word.and_then(|word| logic::tip_line(&[Some(word), progress.as_deref(), message.as_deref()]));
+        let cwd = self.cwd.borrow().as_deref().map(|cwd| logic::clean_text(cwd, logic::MAX_PATH_CHARS));
+        // The profile, how many panes there are when there are several, and that one is zoomed.
+        let profile = self.profile.borrow();
         let panes = (self.panes.get() >= 2).then(|| tf(Text::TabPaneCount, &[&self.panes.get()]));
-        let zoomed = self.zoomed.get().then(|| t(Text::TabZoomed).to_owned());
-        let lines = word.map(str::to_owned).into_iter().chain(status.message.clone()).chain(panes).chain(zoomed);
-        for line in lines {
-            tip.push('\n');
-            tip.push_str(&line);
-        }
+        let zoomed = self.zoomed.get().then(|| t(Text::TabZoomed));
+        let place = logic::tip_line(&[(!profile.is_empty()).then_some(profile.as_str()), panes.as_deref(), zoomed]);
+        let tip = logic::tab_tooltip(&title, state, cwd.as_deref(), place);
         let _ = AutomationProperties::SetName(&self.root, &name);
         let _ = AutomationProperties::SetItemStatus(&self.root, word.unwrap_or_default());
         let _ = ToolTipService::SetToolTip(&self.root, &IReference::from(tip.as_str()));
@@ -276,7 +312,7 @@ impl Chip {
             } else {
                 (Thickness { left: 12.0, top: 0.0, right: 3.0, bottom: 0.0 }, 8.0)
             };
-            let _ = self.root.SetPadding(padding);
+            let _ = self.border.SetPadding(padding);
             let _ = self.content.SetColumnSpacing(spacing);
             let _ = ui(&self.title).and_then(|title| title.SetOpacity(if narrow { 0.0 } else { 1.0 }));
             let _ = ui(&self.ordinal).and_then(|ordinal| ordinal.SetVisibility(visibility(narrow)));
@@ -315,6 +351,16 @@ impl Chip {
     pub fn set_selected(&self, selected: bool) {
         self.selected.set(selected);
         self.refresh();
+    }
+
+    /// Where the tab works and with which profile, as the tooltip tells them.
+    pub fn set_context(&self, cwd: Option<String>, profile: &str) {
+        if *self.cwd.borrow() == cwd && *self.profile.borrow() == profile {
+            return;
+        }
+        *self.cwd.borrow_mut() = cwd;
+        *self.profile.borrow_mut() = profile.to_owned();
+        self.update_labels();
     }
 
     pub fn state(&self) -> TabState {
@@ -378,10 +424,17 @@ impl Chip {
         } else {
             fade(glass.hover())
         };
-        let border = if selected { glass.chip_selected_border() } else { fade(glass.chip_selected_border()) };
+        let border = if self.focused.get() {
+            // The keyboard focus: the accent, as legible as any mark of the chip.
+            glass.mark(glass.accent)
+        } else if selected {
+            glass.chip_selected_border()
+        } else {
+            fade(glass.chip_selected_border())
+        };
         let paint = || -> Result<()> {
-            self.root.SetBackground(&solid_brush(fill)?)?;
-            self.root.SetBorderBrush(&solid_brush(border)?)?;
+            self.border.SetBackground(&solid_brush(fill)?)?;
+            self.border.SetBorderBrush(&solid_brush(border)?)?;
             self.title.cast::<TextBlock>()?.SetForeground(&solid_brush(if selected {
                 glass.text()
             } else {
@@ -480,15 +533,98 @@ impl Chip {
             })
         })?);
         revokers.push(root.PointerCaptureLost({
-            let weak: Weak<Chip> = weak;
+            let weak = weak.clone();
             cb!("chip capture lost", |_, _| {
                 if let Some(chip) = weak.upgrade() {
                     chip.end_drag();
                 }
             })
         })?);
+        // A double click renames, as F2 does on a chip that has the focus.
+        revokers.push(root.DoubleTapped({
+            let weak = weak.clone();
+            cb!("chip double tapped", |_, _| {
+                if let Some(chip) = weak.upgrade() {
+                    (chip.on_event)(TabEvent::Rename(chip.id));
+                }
+            })
+        })?);
+        revokers.push(root.KeyDown({
+            let weak = weak.clone();
+            cb!("chip key", |_, args| {
+                let (Some(chip), Some(args)) = (weak.upgrade(), args.as_ref()) else { return };
+                chip.on_key(args);
+            })
+        })?);
+        revokers.push(root.GotFocus({
+            let weak = weak.clone();
+            cb!("chip focus", |_, _| {
+                if let Some(chip) = weak.upgrade() {
+                    chip.focused.set(true);
+                    chip.refresh();
+                }
+            })
+        })?);
+        revokers.push(root.LostFocus({
+            let weak: Weak<Chip> = weak;
+            cb!("chip blur", |_, _| {
+                if let Some(chip) = weak.upgrade() {
+                    chip.focused.set(false);
+                    chip.refresh();
+                }
+            })
+        })?);
         *self.revokers.borrow_mut() = revokers;
         Ok(())
+    }
+
+    /// The place of this chip in the strip and how many chips it has.
+    fn strip_position(&self) -> Option<(usize, usize)> {
+        let children = self.strip.Children().ok()?;
+        let mut at = 0u32;
+        let found = ui(&self.root).and_then(|root| children.IndexOf(&root, &mut at)).ok()?;
+        found.then(|| (at as usize, children.Size().unwrap_or(0) as usize))
+    }
+
+    /// Gives the keyboard focus to the chip at `index` of the strip.
+    fn focus_chip(&self, index: usize) {
+        let chip = self
+            .strip
+            .Children()
+            .and_then(|children| children.GetAt(index as u32))
+            .and_then(|child| child.cast::<UIElement>());
+        if let Ok(chip) = chip {
+            let _ = chip.Focus(FocusState::Keyboard);
+        }
+    }
+
+    /// The keys of a chip that has the focus: Left and Right move the focus along the strip (Home and End to its ends),
+    /// Space and Enter select the chip and F2 renames it. Ctrl and Alt chords are the commands of the window.
+    fn on_key(&self, args: &KeyRoutedEventArgs) {
+        let held = keyboard::held_modifiers();
+        if held.ctrl || held.alt {
+            return;
+        }
+        let Some((at, count)) = self.strip_position() else { return };
+        let target = match args.Key().map_or(0, |key| key.0) {
+            VK_LEFT => at.saturating_sub(1),
+            VK_RIGHT => (at + 1).min(count.saturating_sub(1)),
+            VK_HOME => 0,
+            VK_END => count.saturating_sub(1),
+            VK_SPACE | VK_RETURN => {
+                let _ = args.SetHandled(true);
+                (self.on_event)(TabEvent::Select(self.id));
+                return;
+            }
+            VK_F2 => {
+                let _ = args.SetHandled(true);
+                (self.on_event)(TabEvent::Rename(self.id));
+                return;
+            }
+            _ => return,
+        };
+        let _ = args.SetHandled(true);
+        self.focus_chip(target);
     }
 
     /// Whether `x` (DIP, from the left edge of the chip) is over the close glyph.
@@ -549,8 +685,19 @@ impl Chip {
         let widths = self.chip_widths();
         let index = index as usize;
         let origin: f64 = widths[..index.min(widths.len())].iter().sum::<f64>() + CHIP_GAP * index as f64;
-        *self.drag.borrow_mut() =
-            Some(Drag { start_x: f64::from(in_strip.x), started: false, index, widths, origin, target: index });
+        let viewport_x = self.position_in(args, &self.scroll).map_or(0.0, |point| f64::from(point.x));
+        *self.drag.borrow_mut() = Some(Drag {
+            start_x: f64::from(in_strip.x),
+            started: false,
+            index,
+            widths,
+            origin,
+            target: index,
+            viewport_x,
+            last_tick: None,
+            zone_since: None,
+            scroll_logged: false,
+        });
     }
 
     /// The width every chip of the strip has been given. `Width`, not `ActualWidth`: the press that starts a drag also
@@ -579,17 +726,32 @@ impl Chip {
         let Some(in_strip) = self.position_in(args, &self.strip) else { return };
         let mut drag = self.drag.borrow_mut();
         let Some(drag) = drag.as_mut() else { return };
-        let delta = f64::from(in_strip.x) - drag.start_x;
+        if let Some(point) = self.position_in(args, &self.scroll) {
+            drag.viewport_x = f64::from(point.x);
+            if logic::drag_scroll_speed(drag.viewport_x, self.viewport_width()) == 0.0 {
+                drag.zone_since = None;
+                drag.scroll_logged = false;
+            } else {
+                drag.zone_since.get_or_insert_with(Instant::now);
+            }
+        }
         if !drag.started {
-            if delta.abs() < DRAG_THRESHOLD {
+            if (f64::from(in_strip.x) - drag.start_x).abs() < DRAG_THRESHOLD {
                 return;
             }
             drag.started = true;
+            drag.last_tick = Some(Instant::now());
             let _ = Canvas::SetZIndex(&self.root, 10);
         }
+        self.place_drag(drag, f64::from(in_strip.x));
+    }
+
+    /// Puts the dragged chip where the pointer is, `pointer_x` DIP along the strip, and every chip it passes one place
+    /// aside; the place it would be dropped in is the target.
+    fn place_drag(&self, drag: &mut Drag, pointer_x: f64) {
         let width = drag.widths[drag.index];
         let total: f64 = drag.widths.iter().sum::<f64>() + CHIP_GAP * drag.widths.len().saturating_sub(1) as f64;
-        let delta = delta.clamp(-drag.origin, (total - width - drag.origin).max(-drag.origin));
+        let delta = (pointer_x - drag.start_x).clamp(-drag.origin, (total - width - drag.origin).max(-drag.origin));
         drag.target = reorder_target(&drag.widths, CHIP_GAP, drag.index, drag.origin + width / 2.0 + delta);
         let shift = width + CHIP_GAP;
         let Ok(children) = self.strip.Children() else { return };
@@ -607,6 +769,48 @@ impl Chip {
                 let _ = child.SetTranslation(Vector3 { x: x as f32, y: 0.0, z: 0.0 });
             }
         }
+    }
+
+    /// Every frame: a dragged chip whose pointer rests in the zone at an end of the strip scrolls the strip, though the
+    /// pointer sends no events, and the chip stays under it as the strip moves (`logic::drag_scroll_speed`).
+    pub fn tick_drag(&self) {
+        let mut guard = self.drag.borrow_mut();
+        let Some(drag) = guard.as_mut().filter(|drag| drag.started) else { return };
+        let now = Instant::now();
+        let seconds = drag.last_tick.replace(now).map_or(0.0, |last| now.duration_since(last).as_secs_f64()).min(0.05);
+        let speed = logic::drag_scroll_speed(drag.viewport_x, self.viewport_width());
+        if speed == 0.0 {
+            return;
+        }
+        let offset = self.scroll.HorizontalOffset().unwrap_or(0.0);
+        let target = (offset + speed * seconds).clamp(0.0, self.scroll.ScrollableWidth().unwrap_or(0.0));
+        if (target - offset).abs() < 0.01 {
+            return;
+        }
+        let _ = self.scroll.ChangeViewWithOptionalAnimation(Some(target), None, None, true);
+        if let Some(since) = drag.zone_since.filter(|_| !drag.scroll_logged) {
+            drag.scroll_logged = true;
+            crate::util::log(&format!(
+                "drag: the strip started to scroll {} ms after the pointer entered the zone",
+                since.elapsed().as_millis()
+            ));
+        }
+        let pointer_x = drag.viewport_x + target;
+        self.place_drag(drag, pointer_x);
+    }
+
+    /// The width of the part of the strip that shows, in DIP.
+    fn viewport_width(&self) -> f64 {
+        fe(&self.scroll).and_then(|scroll| scroll.ActualWidth()).unwrap_or(0.0)
+    }
+
+    /// Esc during a drag: the chips go back where they were and nothing moves. True when there was a drag to end.
+    pub fn cancel_drag(&self) -> bool {
+        let dragging = self.drag.borrow().as_ref().is_some_and(|drag| drag.started);
+        if dragging {
+            self.end_drag();
+        }
+        dragging
     }
 
     fn on_released(&self, args: &PointerRoutedEventArgs) {

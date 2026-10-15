@@ -44,7 +44,7 @@
         <ScrollViewer x:Name="TabScroll"
                       HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
                       HorizontalScrollMode="Auto" VerticalScrollMode="Disabled" IsTabStop="False">
-          <StackPanel x:Name="TabStrip" Orientation="Horizontal" Spacing="4" Padding="2,0"/>
+          <StackPanel x:Name="TabStrip" Orientation="Horizontal" Spacing="4" Padding="2,0" TabFocusNavigation="Once"/>
         </ScrollViewer>
         <Border x:Name="FadeLeft" Width="16" Height="32" Margin="32,0,0,0" HorizontalAlignment="Left"
                 IsHitTestVisible="False" Visibility="Collapsed"/>
