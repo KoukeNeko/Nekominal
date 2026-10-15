@@ -121,6 +121,33 @@ function Scenario-NextMenu {
     }
 }
 
+# The middle of the tab-list button in DIP, from the same arithmetic as crates/nekominal-shell/src/layout.rs.
+function Next-TabListX([int]$Tabs) {
+    $r = Win-Rect; $scale = Get-Scale
+    $width = ($r.Right - $r.Left) / $scale
+    $menuX = $width - 138 - 12 - 32
+    $stripEnd = $menuX - 48
+    $available = [Math]::Max(0.0, $stripEnd - 12 - 72)
+    $chip = [Math]::Min(216.0, [Math]::Max(48.0, ($available - 4 * ($Tabs - 1)) / $Tabs))
+    $shown = [Math]::Min($Tabs, [Math]::Max(1.0, [Math]::Floor(($available + 4) / ($chip + 4) + 0.001)))
+    $newTab = [Math]::Max(12.0, [Math]::Min(12 + $shown * ($chip + 4), $stripEnd - 72 - 4))
+    $newTab + 36 + 16
+}
+
+function Scenario-NextTabList {
+    Run-Next {
+        Next-Line 'echo MARK-1'
+        foreach ($n in 2..6) { Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500; Next-Line "echo MARK-$n" }
+        $button = Next-At (Next-TabListX 6) 24
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 120) ($button[1] - 20) 420 340 }
+        $row = Next-At ((Next-TabListX 6) - 40) (44 + 6 + 32 * 1 + 16)    # the second row: tab 2
+        Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 800
+        $text = Next-Text
+        Next-Check 'tablist.select-second' ($text -match 'MARK-2' -and $text -notmatch 'MARK-6') 'choosing the second row of the list selects the second tab'
+    }
+}
+
 function Scenario-NextSplitter {
     Run-Next {
         Press 0x44 @(0x12, 0x10); Start-Sleep -Milliseconds 1500    # Alt+Shift+D: split right

@@ -31,6 +31,7 @@ pub enum Hit {
     Chip(usize),
     ChipClose(usize),
     NewTab,
+    TabList,
     Menu,
     Pane,
 }
@@ -38,33 +39,53 @@ pub enum Hit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
     pub size: (f32, f32),
+    /// One rectangle per tab. Only the tabs from `first` on for `shown` of them are in the strip; the others lie
+    /// outside it (left of the start or past the end) and are neither drawn nor hit.
     pub chips: Vec<Rect>,
+    pub first: usize,
+    pub shown: usize,
     pub new_tab: Rect,
+    /// Opens the list of all tabs.
+    pub tab_list: Rect,
     pub menu: Rect,
     pub pane: Rect,
 }
 
 impl Layout {
-    /// `caption` is the width of the system caption buttons at the right edge.
-    pub fn new(width: f32, height: f32, tabs: usize, caption: f32) -> Layout {
+    /// `caption` is the width of the system caption buttons at the right edge. When the chips at their narrowest do not
+    /// all fit, the strip shows the ones that do, scrolled so that tab `selected` is the last of them or earlier.
+    pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize) -> Layout {
         let top = (TITLE_HEIGHT - CHIP_HEIGHT) / 2.0;
         let menu = Rect::new((width - caption - MENU_RIGHT - BUTTON).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
         let strip_end = menu.x - DRAG_MIN;
-        // The room for the chips: what is between the strip start and the new-tab button at the end of the strip.
-        let available = (strip_end - STRIP_LEFT - BUTTON - CHIP_GAP).max(0.0);
+        // The room for the chips: what is between the strip start and the two buttons at the end of the strip.
+        let available = (strip_end - STRIP_LEFT - 2.0 * (BUTTON + CHIP_GAP)).max(0.0);
         let chip_width = logic::tab_width(tabs, f64::from(available), f64::from(CHIP_GAP)) as f32;
+        // The epsilon: chips that fill the strip exactly divide to 5.999... as easily as to 6.
+        let fits = (((available + CHIP_GAP) / (chip_width + CHIP_GAP) + 1e-3).floor() as usize).max(1);
+        let shown = tabs.min(fits);
+        let first = if tabs <= shown { 0 } else { (selected + 1).saturating_sub(shown).min(tabs - shown) };
         let chips: Vec<Rect> = (0..tabs)
-            .map(|i| Rect::new(STRIP_LEFT + i as f32 * (chip_width + CHIP_GAP), top, chip_width, CHIP_HEIGHT))
+            .map(|i| Rect::new(STRIP_LEFT + (i as f32 - first as f32) * (chip_width + CHIP_GAP), top, chip_width, CHIP_HEIGHT))
             .collect();
-        let after = chips.last().map_or(STRIP_LEFT, |c| c.x + c.w + CHIP_GAP);
-        let new_tab = Rect::new(after.min(strip_end - BUTTON).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
+        let after = STRIP_LEFT + shown as f32 * (chip_width + CHIP_GAP);
+        let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON - CHIP_GAP).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
+        let tab_list = Rect::new(new_tab.x + BUTTON + CHIP_GAP, top, BUTTON, CHIP_HEIGHT);
         Layout {
             size: (width, height),
             chips,
+            first,
+            shown,
             new_tab,
+            tab_list,
             menu,
             pane: Rect::new(0.0, TITLE_HEIGHT, width, (height - TITLE_HEIGHT).max(0.0)),
         }
+    }
+
+    /// Whether tab `i` is in the strip.
+    pub fn is_shown(&self, i: usize) -> bool {
+        (self.first..self.first + self.shown).contains(&i)
     }
 
     /// The close button inside a chip, `None` when the chip is too narrow for one.
@@ -77,10 +98,13 @@ impl Layout {
         if self.new_tab.contains(x, y) {
             return Hit::NewTab;
         }
+        if self.tab_list.contains(x, y) {
+            return Hit::TabList;
+        }
         if self.menu.contains(x, y) {
             return Hit::Menu;
         }
-        for (i, chip) in self.chips.iter().enumerate() {
+        for (i, chip) in self.chips.iter().enumerate().filter(|(i, _)| self.is_shown(*i)) {
             if chip.contains(x, y) {
                 return if Self::close_button(*chip).is_some_and(|close| close.contains(x, y)) {
                     Hit::ChipClose(i)
@@ -108,25 +132,26 @@ mod tests {
     #[test]
     fn every_chip_has_the_same_width_and_the_strip_leaves_room_to_drag() {
         for tabs in [1, 3, 12, 30] {
-            let layout = Layout::new(1200.0, 700.0, tabs, CAPTION);
+            let layout = Layout::new(1200.0, 700.0, tabs, CAPTION, 0);
             let first = layout.chips[0].w;
             assert!(layout.chips.iter().all(|c| c.w == first), "{tabs} tabs");
             let strip_end = layout.chips.last().unwrap().x + first;
             // the chips themselves stay left of the free drag area, until the floor width makes the strip overflow
             if first > logic::CHIP_MIN_WIDTH as f32 {
-                assert!(strip_end + BUTTON + CHIP_GAP + DRAG_MIN <= 1200.0 - CAPTION + 0.01, "{tabs} tabs");
+                assert!(strip_end + 2.0 * (BUTTON + CHIP_GAP) + DRAG_MIN <= 1200.0 - CAPTION + 0.01, "{tabs} tabs");
             }
         }
     }
 
     #[test]
     fn the_hit_test_names_what_is_under_the_pointer() {
-        let layout = Layout::new(1000.0, 600.0, 3, CAPTION);
+        let layout = Layout::new(1000.0, 600.0, 3, CAPTION, 0);
         let chip = layout.chips[1];
         assert_eq!(layout.hit(chip.x + 10.0, chip.y + 10.0), Hit::Chip(1));
         let close = Layout::close_button(chip).expect("a wide chip has a close button");
         assert_eq!(layout.hit(close.x + 2.0, close.y + 2.0), Hit::ChipClose(1));
         assert_eq!(layout.hit(layout.new_tab.x + 4.0, layout.new_tab.y + 4.0), Hit::NewTab);
+        assert_eq!(layout.hit(layout.tab_list.x + 4.0, layout.tab_list.y + 4.0), Hit::TabList);
         assert_eq!(layout.hit(layout.menu.x + 4.0, layout.menu.y + 4.0), Hit::Menu);
         assert_eq!(layout.hit(layout.menu.x - 20.0, 10.0), Hit::Drag);
         assert_eq!(layout.hit(chip.x + 10.0, 2.0), Hit::Drag, "above the chips is still the title bar");
@@ -135,8 +160,37 @@ mod tests {
     }
 
     #[test]
+    fn chips_that_fill_the_strip_exactly_all_show() {
+        for width in [900.0_f32, 1088.0, 1100.0, 1234.5] {
+            let layout = Layout::new(width, 600.0, 6, CAPTION, 5);
+            assert_eq!(layout.shown, 6, "width {width}");
+        }
+    }
+
+    #[test]
+    fn a_strip_that_overflows_shows_the_tabs_that_fit_and_scrolls_to_the_selected_one() {
+        let at = |selected| Layout::new(1000.0, 600.0, 30, CAPTION, selected);
+        let start = at(0);
+        assert_eq!(start.first, 0);
+        assert!(start.shown >= 1 && start.shown < 30, "{} tabs shown", start.shown);
+        let new_tab_left = start.new_tab.x;
+        for i in 0..30 {
+            let chip = start.chips[i];
+            assert_eq!(start.is_shown(i), chip.x >= STRIP_LEFT && chip.x + chip.w <= new_tab_left, "tab {i}");
+            if !start.is_shown(i) {
+                assert!(!matches!(start.hit(chip.x + 2.0, chip.y + 2.0), Hit::Chip(_)), "tab {i} is hidden but hit");
+            }
+        }
+        let end = at(29);
+        assert!(end.is_shown(29) && !end.is_shown(0), "the selected tab is in the strip");
+        assert_eq!(end.shown, start.shown);
+        let middle = at(start.shown - 1);
+        assert_eq!(middle.first, 0, "a selected tab that already fits does not scroll the strip");
+    }
+
+    #[test]
     fn a_narrow_chip_has_no_close_button() {
-        let layout = Layout::new(700.0, 500.0, 30, CAPTION);
+        let layout = Layout::new(700.0, 500.0, 30, CAPTION, 0);
         assert!(layout.chips.iter().all(|c| Layout::close_button(*c).is_none()));
     }
 }

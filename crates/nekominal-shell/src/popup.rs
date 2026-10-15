@@ -1,4 +1,4 @@
-//! A floating list of rows in a window of its own: the "…" menu. The window is a pop-up with the DWM acrylic
+//! A floating list of rows in a window of its own: the "…" menu and the list of all tabs. The window is a pop-up with the DWM acrylic
 //! backdrop, so the blur is real, not painted. This file holds the rows, their geometry and the window; the drawing
 //! and the messages go through `App`, which owns the device and the UI layer.
 
@@ -35,21 +35,31 @@ const SEPARATOR_HEIGHT: f32 = 9.0;
 /// How far the pop-up hangs below the point it is anchored at.
 const GAP: f32 = 4.0;
 
-/// One row: a command with its label and shortcut, or a separator (no command, empty label).
+/// What choosing a row does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Command(Command),
+    /// Select the tab with this index.
+    Tab(usize),
+}
+
+/// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub label: String,
-    pub shortcut: String,
-    pub command: Option<Command>,
+    pub hint: String,
+    pub action: Option<Action>,
+    /// The row of what is current (the selected tab).
+    pub current: bool,
 }
 
 impl Row {
     pub fn separator() -> Row {
-        Row { label: String::new(), shortcut: String::new(), command: None }
+        Row { label: String::new(), hint: String::new(), action: None, current: false }
     }
 
     pub fn is_separator(&self) -> bool {
-        self.command.is_none()
+        self.action.is_none()
     }
 }
 
@@ -61,7 +71,39 @@ pub struct Popup {
     pub rects: Vec<Rect>,
     /// Size of the window in DIP.
     pub size: (f32, f32),
+    /// Height of all the rows together; more than `size.1` when the list scrolls.
+    pub content_height: f32,
+    /// How far the rows are scrolled up, in DIP.
+    pub scroll: f32,
     pub hover: Option<usize>,
+}
+
+impl Popup {
+    /// Scrolls by `delta` DIP (positive moves the rows up), within the content.
+    pub fn scroll_by(&mut self, delta: f32) {
+        self.scroll = clamp_scroll(self.scroll + delta, self.content_height, self.size.1);
+    }
+
+    /// Scrolls the least that shows row `i` whole.
+    pub fn reveal(&mut self, i: usize) {
+        self.scroll = reveal_scroll(self.scroll, self.rects[i], self.content_height, self.size.1);
+    }
+}
+
+fn clamp_scroll(scroll: f32, content: f32, view: f32) -> f32 {
+    scroll.clamp(0.0, (content - view).max(0.0))
+}
+
+/// The scroll offset that shows `rect` whole in a window of height `view`, moving as little as possible.
+fn reveal_scroll(scroll: f32, rect: Rect, content: f32, view: f32) -> f32 {
+    let scroll = if rect.y < scroll {
+        rect.y - PADDING
+    } else if rect.y + rect.h > scroll + view {
+        rect.y + rect.h + PADDING - view
+    } else {
+        scroll
+    };
+    clamp_scroll(scroll, content, view)
 }
 
 /// The rectangles of `rows` and the size of the window around them, in DIP.
@@ -79,7 +121,7 @@ pub fn layout(rows: &[Row]) -> (Vec<Rect>, (f32, f32)) {
     (rects, (WIDTH, y + PADDING))
 }
 
-/// The row under a point of the window (DIP); separators are not under anything.
+/// The row under a point of the content (DIP, scrolling included); separators are not under anything.
 pub fn row_at(rows: &[Row], rects: &[Rect], x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|&i| !rows[i].is_separator())
 }
@@ -94,6 +136,7 @@ pub fn step(rows: &[Row], from: Option<usize>, forward: bool) -> Option<usize> {
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
 pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
     let (rects, size) = layout(&rows);
+    let content_height = size.1;
     let (w, h) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
     // SAFETY: plain Win32 calls on the thread of the owner window; every pointer outlives its call.
     unsafe {
@@ -113,6 +156,9 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, anchor: (i32, i32), scale: f
         let work = monitor.rcWork;
         let gap = (GAP * scale).round() as i32;
         let x = (anchor.0 - w).clamp(work.left, (work.right - w).max(work.left));
+        // A list taller than the screen below the anchor scrolls.
+        let h = h.min((work.bottom - anchor.1 - gap - (8.0 * scale) as i32).max(ROW_HEIGHT as i32));
+        let size = (size.0, h as f32 / scale);
         let y = (anchor.1 + gap).clamp(work.top, (work.bottom - h).max(work.top));
 
         let hwnd = CreateWindowExW(
@@ -150,7 +196,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, anchor: (i32, i32), scale: f
         let _ = ShowWindow(hwnd, SW_SHOW);
         // Taking the activation is what lets the pop-up notice that the user went elsewhere.
         let _ = SetForegroundWindow(hwnd);
-        Ok(Popup { hwnd, surface, rows, rects, size, hover: None })
+        Ok(Popup { hwnd, surface, rows, rects, size, content_height, scroll: 0.0, hover: None })
     }
 }
 
@@ -159,7 +205,7 @@ mod tests {
     use super::*;
 
     fn row(label: &str) -> Row {
-        Row { label: label.into(), shortcut: String::new(), command: Some(Command::TabNew) }
+        Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false }
     }
 
     fn rows() -> Vec<Row> {
@@ -193,5 +239,20 @@ mod tests {
         assert_eq!(step(&rows, Some(0), true), Some(2), "down from the row above a separator");
         assert_eq!(step(&rows, Some(2), false), Some(0), "up from the row below a separator");
         assert_eq!(step(&rows, Some(3), true), Some(0), "wraps at the end");
+    }
+
+    #[test]
+    fn scrolling_stays_inside_the_content_and_reveals_a_row_with_the_least_movement() {
+        let rows: Vec<Row> = (0..20).map(|i| row(&i.to_string())).collect();
+        let (rects, size) = layout(&rows);
+        let view = 200.0;
+        assert_eq!(clamp_scroll(-5.0, size.1, view), 0.0);
+        assert_eq!(clamp_scroll(10_000.0, size.1, view), size.1 - view);
+        assert_eq!(clamp_scroll(10.0, 100.0, view), 0.0, "a short list never scrolls");
+        assert_eq!(reveal_scroll(0.0, rects[1], size.1, view), 0.0, "a visible row moves nothing");
+        let last = rects[19];
+        let scrolled = reveal_scroll(0.0, last, size.1, view);
+        assert!(scrolled > 0.0 && last.y + last.h <= scrolled + view, "the last row is shown whole");
+        assert_eq!(reveal_scroll(scrolled, rects[0], size.1, view), 0.0, "back to the first row");
     }
 }

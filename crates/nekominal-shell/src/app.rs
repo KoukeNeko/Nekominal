@@ -170,7 +170,7 @@ impl App {
             profile,
             tabs: Vec::new(),
             selected: 0,
-            layout: Layout::new(1.0, 1.0, 0, 0.0),
+            layout: Layout::new(1.0, 1.0, 0, 0.0, 0),
             caption: 138.0,
             hover: Hit::None,
             pressed: Hit::None,
@@ -408,7 +408,7 @@ impl App {
     /// Chips, panes and the cells each shown pane has.
     fn relayout(&mut self) {
         let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), self.caption);
+        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), self.caption, self.selected);
         let area = self.pane_area();
         let divider = logic::divider_px(f64::from(self.scale));
         let Some(tab) = self.tabs.get_mut(self.selected) else { return };
@@ -598,6 +598,7 @@ impl App {
                             util::log(&format!("new tab: {e}"));
                         }
                     }
+                    Hit::TabList => self.open_tab_list(),
                     Hit::Menu => self.open_menu(),
                     _ => {}
                 }
@@ -885,6 +886,9 @@ impl App {
 
         let line = self.ui.line_height(TEXT_SIZE);
         for (i, chip) in self.layout.chips.clone().into_iter().enumerate() {
+            if !self.layout.is_shown(i) {
+                continue;
+            }
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
             let (fill, border) = if selected {
@@ -898,7 +902,7 @@ impl App {
             let title = if logic::shows_ordinal(f64::from(chip.w)) {
                 (i + 1).to_string()
             } else {
-                self.tabs[i].title().to_owned()
+                self.tab_label(i)
             };
             let close = Layout::close_button(chip).filter(|_| selected || hover);
             let right = close.map_or(chip.x + chip.w - 10.0, |c| c.x - 4.0);
@@ -918,6 +922,25 @@ impl App {
             self.ui.rrect(plus, CORNER_RADIUS, col(g.hover()), None);
         }
         self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
+        let list = self.layout.tab_list;
+        if self.hover == Hit::TabList || self.popup.as_ref().is_some_and(|p| p.rows.iter().any(|r| matches!(r.action, Some(popup::Action::Tab(_))))) {
+            self.ui.rrect(list, CORNER_RADIUS, col(g.hover()), None);
+        }
+        self.icon_centered(list, '\u{E70D}', 12.0, col(g.text()));
+        // The position plate: where the selected tab is among all of them, which a strip of narrow chips cannot say.
+        let strip = self.layout.tab_list.x;
+        let tier = if self.layout.size.0 < logic::MEDIUM_FROM as f32 { logic::BarTier::Narrow } else { logic::BarTier::Wide };
+        if let Some(plate) = logic::plate(self.selected, self.tabs.len(), f64::from(strip), tier) {
+            let text = match plate {
+                logic::Plate::Position { current, total } => format!("{current} / {total}"),
+                logic::Plate::Total(total) => total.to_string(),
+            };
+            let (x, room) = (list.x + list.w + 8.0, self.layout.menu.x - list.x - list.w - 12.0);
+            let line = self.ui.line_height(TEXT_SIZE);
+            self.ui.push_clip(Rect::new(x, list.y, room.max(0.0), list.h));
+            self.ui.text(x, list.y + (list.h - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
+            self.ui.pop_clip();
+        }
         let menu = self.layout.menu;
         if self.hover == Hit::Menu || self.popup.is_some() {
             self.ui.rrect(menu, CORNER_RADIUS, col(g.hover()), None);
@@ -947,8 +970,9 @@ impl App {
             match row {
                 MenuRow::Command(command) if WIRED.contains(command) => rows.push(popup::Row {
                     label: command.label(lang),
-                    shortcut: self.keymap.shortcut_text(*command).to_string(),
-                    command: Some(*command),
+                    hint: self.keymap.shortcut_text(*command).to_string(),
+                    action: Some(popup::Action::Command(*command)),
+                    current: false,
                 }),
                 MenuRow::Separator if rows.last().is_some_and(|r| !r.is_separator()) => rows.push(popup::Row::separator()),
                 _ => {}
@@ -961,14 +985,38 @@ impl App {
     }
 
     fn open_menu(&mut self) {
+        let rows = self.menu_rows();
+        self.open_popup(rows, self.layout.menu);
+    }
+
+    /// The list of all tabs: one row per tab with its number, the selected one marked.
+    fn open_tab_list(&mut self) {
+        let rows = (0..self.tabs.len())
+            .map(|i| popup::Row {
+                label: self.tab_label(i),
+                hint: (i + 1).to_string(),
+                action: Some(popup::Action::Tab(i)),
+                current: i == self.selected,
+            })
+            .collect();
+        self.open_popup(rows, self.layout.tab_list);
+        let selected = self.selected;
+        if let Some(popup) = self.popup.as_mut() {
+            popup.hover = Some(selected);
+            popup.reveal(selected);
+        }
+    }
+
+    /// Opens a list under the button `button` (DIP), right edges aligned.
+    fn open_popup(&mut self, rows: Vec<popup::Row>, button: Rect) {
         if self.popup.is_some() || self.popup_closed.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
             return;
         }
-        let menu = self.layout.menu;
+        let menu = button;
         let mut anchor = POINT { x: ((menu.x + menu.w) * self.scale).round() as i32, y: ((menu.y + menu.h) * self.scale).round() as i32 };
         // SAFETY: converts a point of our own window.
         unsafe { let _ = ClientToScreen(self.hwnd, &mut anchor); }
-        match popup::open(self.hwnd, &self.gpu, self.menu_rows(), (anchor.x, anchor.y), self.scale, self.dark()) {
+        match popup::open(self.hwnd, &self.gpu, rows, (anchor.x, anchor.y), self.scale, self.dark()) {
             Ok(popup) => {
                 // SAFETY: invalidating the window just made.
                 unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
@@ -1001,7 +1049,7 @@ impl App {
     pub fn popup_move(&mut self, at: Option<(i32, i32)>) {
         let scale = self.scale;
         let Some(popup) = self.popup.as_mut() else { return };
-        let row = at.and_then(|(x, y)| popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale));
+        let row = at.and_then(|(x, y)| popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale + popup.scroll));
         if row != popup.hover {
             popup.hover = row;
             // SAFETY: invalidating our own window.
@@ -1012,7 +1060,7 @@ impl App {
     pub fn popup_click(&mut self, x: i32, y: i32) {
         let scale = self.scale;
         let Some(popup) = self.popup.as_ref() else { return };
-        if let Some(row) = popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale) {
+        if let Some(row) = popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale + popup.scroll) {
             self.choose(row);
         }
     }
@@ -1025,6 +1073,9 @@ impl App {
         match vk_code {
             VK_UP | VK_DOWN => {
                 popup.hover = popup::step(&popup.rows, popup.hover, vk_code == VK_DOWN);
+                if let Some(row) = popup.hover {
+                    popup.reveal(row);
+                }
                 // SAFETY: invalidating our own window.
                 unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
             }
@@ -1037,13 +1088,28 @@ impl App {
         }
     }
 
-    /// Closes the menu and does what its row `row` says.
+    /// The wheel over the list (a notch is `delta` 120).
+    pub fn popup_wheel(&mut self, delta: i16) {
+        let Some(popup) = self.popup.as_mut() else { return };
+        popup.scroll_by(-f32::from(delta) / 120.0 * 3.0 * 32.0);
+        // SAFETY: invalidating our own window.
+        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+    }
+
+    /// Closes the list and does what its row `row` says.
     fn choose(&mut self, row: usize) {
-        let command = self.popup.as_ref().and_then(|p| p.rows[row].command);
+        let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
         self.close_popup();
-        if let Some(command) = command {
-            self.run(command);
+        match action {
+            Some(popup::Action::Command(command)) => self.run(command),
+            Some(popup::Action::Tab(index)) => self.select(index),
+            None => {}
         }
+    }
+
+    /// What tab `i` shows: the title its program set, the profile name until there is one.
+    fn tab_label(&self, i: usize) -> String {
+        logic::tab_title(self.tabs[i].title(), &self.profile.name)
     }
 
     pub fn popup_paint(&mut self) {
@@ -1059,17 +1125,26 @@ impl App {
         ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
         let line = ui.line_height(TEXT_SIZE);
         for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
+            let rect = Rect::new(rect.x, rect.y - popup.scroll, rect.w, rect.h);
+            if rect.y + rect.h < 0.0 || rect.y > popup.size.1 {
+                continue;
+            }
             if row.is_separator() {
                 ui.fill(Rect::new(rect.x + 8.0, rect.y + rect.h / 2.0, rect.w - 16.0, 1.0), col(g.divider()));
                 continue;
             }
             if popup.hover == Some(i) {
-                ui.rrect(*rect, CORNER_RADIUS, col(g.hover()), None);
+                ui.rrect(rect, CORNER_RADIUS, col(g.hover()), None);
+            } else if row.current {
+                ui.rrect(rect, CORNER_RADIUS, col(g.chip_selected()), Some((col(g.chip_selected_border()), 1.0)));
             }
             let y = rect.y + (rect.h - line) / 2.0;
+            let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
+            ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
+            let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
+            ui.push_clip(Rect::new(rect.x, rect.y, (label_end - rect.x).max(0.0), rect.h));
             ui.text(rect.x + 12.0, y, &row.label, TEXT_SIZE, col(g.text()), false);
-            let width = ui.measure(&row.shortcut, TEXT_SIZE, false);
-            ui.text(rect.x + rect.w - 12.0 - width, y, &row.shortcut, TEXT_SIZE, col(g.text_secondary()), false);
+            ui.pop_clip();
         }
         ui.end_frame(&view);
         popup.surface.present();
