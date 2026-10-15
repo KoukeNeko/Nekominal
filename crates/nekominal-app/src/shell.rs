@@ -137,6 +137,8 @@ pub struct Shell {
     backdrop_applied: Cell<Option<Backdrop>>,
     /// The opacity the controls asked for, applied by the next frame.
     pending_opacity: RefCell<logic::PendingOpacity>,
+    /// Whether the last apply of the opacity failed, for the row of the opacity.
+    opacity_apply: RefCell<logic::OpacityApply>,
     /// The quick flyout is being brought in line with the settings: its events are not user input.
     syncing_controls: Cell<bool>,
     window_active: Cell<bool>,
@@ -367,6 +369,7 @@ pub fn launch() -> Result<()> {
         save_due: Cell::new(None),
         backdrop_applied: Cell::new(None),
         pending_opacity: RefCell::new(logic::PendingOpacity::default()),
+        opacity_apply: RefCell::new(logic::OpacityApply::default()),
         syncing_controls: Cell::new(false),
         window_active: Cell::new(true),
         last_alert: Cell::new(None),
@@ -523,8 +526,15 @@ impl Shell {
             self.palette_brush(key)?.SetColor(xaml_color(color))?;
         }
         if self.backdrop_applied.get() != Some(backdrop) {
-            window::set_system_backdrop(&self.window, backdrop)?;
-            self.backdrop_applied.set(Some(backdrop));
+            // The rest of the glass is applied either way; what stays as it was is said once, in the InfoBar.
+            match window::set_system_backdrop(&self.window, backdrop) {
+                Ok(()) => self.backdrop_applied.set(Some(backdrop)),
+                Err(e) => {
+                    log(&format!("system backdrop {backdrop:?}: {e}"));
+                    let what = tf(Text::LabelValue, &[&t(Text::SettingsBackdrop), &t(Text::SettingNotApplied)]);
+                    self.show_message(&what, InfoBarSeverity::Warning);
+                }
+            }
         }
         window::apply_root_background(&self.root, backdrop, &glass)?;
         window::apply_theme(&self.window, &self.root, &glass)?;
@@ -578,6 +588,7 @@ impl Shell {
         // Without a backdrop nothing shows through: the slider is off and the saved value stays.
         if self.settings.borrow().appearance.backdrop != Backdrop::None {
             self.pending_opacity.borrow_mut().request(opacity);
+            self.opacity_apply.borrow_mut().requested();
         }
     }
 
@@ -597,8 +608,12 @@ impl Shell {
             (s.theme.clone(), s.appearance.backdrop)
         };
         let effective = glass::terminal_opacity(backdrop, opacity);
-        if let Err(e) = self.apply_opacity(themes::scheme(&scheme_name), &self.glass.get(), effective) {
-            log(&format!("apply_opacity: {e}"));
+        match self.apply_opacity(themes::scheme(&scheme_name), &self.glass.get(), effective) {
+            Ok(()) => self.opacity_apply.borrow_mut().applied(),
+            Err(e) => {
+                log(&format!("apply_opacity: {e}"));
+                self.opacity_apply.borrow_mut().failed();
+            }
         }
         self.sync_appearance_controls();
         self.save_due.set(Some(Instant::now() + SAVE_DELAY));
@@ -644,7 +659,12 @@ impl Shell {
             let _ = range.SetValue(percent);
         }
         let _ = self.ui.opacity_slider.cast::<Control>().and_then(|slider| slider.SetIsEnabled(enabled));
-        let _ = self.ui.opacity_value.SetText(&format!("{percent:.0}%"));
+        let value = if self.opacity_apply.borrow().shows_label() {
+            t(Text::SettingNotApplied).to_owned()
+        } else {
+            format!("{percent:.0}%")
+        };
+        let _ = self.ui.opacity_value.SetText(&value);
         self.syncing_controls.set(false);
         if let Some(page) = self.settings_page.borrow().as_ref() {
             page.sync();
@@ -945,6 +965,9 @@ impl Shell {
         }
         if self.save_due.get().is_some_and(|due| Instant::now() >= due) {
             self.flush_settings();
+            // The slider has rested: an opacity that did not apply is said in its row now.
+            self.opacity_apply.borrow_mut().rested();
+            self.sync_appearance_controls();
         }
         let tabs: Vec<Rc<Tab>> = self.tabs.borrow().clone();
         let mut closed_panes = Vec::new();

@@ -161,6 +161,10 @@ texts! {
     DialogCloseTab "dialog.closeTab" "關閉「{0}」？" "Close \"{0}\"?";
     DialogRestartSession "dialog.restartSession" "重新啟動「{0}」？" "Restart \"{0}\"?";
 
+    // A setting that was changed and could not be put in effect: the InfoBar names it, the row of the opacity says it.
+    SettingNotApplied "setting.notApplied" "未套用" "Not applied";
+    LabelValue "common.labelValue" "{0}：{1}" "{0}: {1}";
+
     // Messages: what happened, and the recovery when there is one.
     StatusExited "status.exited" "[已結束，代碼 {0}]" "[Exited with code {0}]";
     StatusSpawnFailed "status.spawnFailed" "無法啟動 {0}：{1}" "Cannot start {0}: {1}";

@@ -695,6 +695,42 @@ impl PendingOpacity {
     }
 }
 
+/// Whether the opacity of the background could be put in effect. A failure while the slider moves is only logged (the
+/// next change applies again); one that is still there when the slider has rested (the settings are about to be
+/// written) is shown in the row of the opacity, until the next change.
+#[derive(Debug, Default)]
+pub struct OpacityApply {
+    failed: bool,
+    settled: bool,
+}
+
+impl OpacityApply {
+    /// The latest opacity is in effect.
+    pub fn applied(&mut self) {
+        *self = OpacityApply::default();
+    }
+
+    /// Applying the latest opacity failed.
+    pub fn failed(&mut self) {
+        *self = OpacityApply { failed: true, settled: false };
+    }
+
+    /// The slider (or a command) asked for another opacity: whatever the row said is out of date.
+    pub fn requested(&mut self) {
+        self.settled = false;
+    }
+
+    /// The slider has rested: a failure that is still there is now worth saying.
+    pub fn rested(&mut self) {
+        self.settled = self.failed;
+    }
+
+    /// The row of the opacity says `Not applied` instead of the percent.
+    pub fn shows_label(&self) -> bool {
+        self.failed && self.settled
+    }
+}
+
 /// The text a tab shows for the title a program set. Shells report the path of their own executable until
 /// the first prompt (`C:\Program Files\PowerShell\7\pwsh.exe`): that becomes the program name. An empty
 /// title falls back to `fallback`.
@@ -1579,6 +1615,34 @@ mod tests {
         // The slider's own echo of a value it was given arrives as the same request.
         pending.request(72.0 / 100.0);
         assert_eq!(pending.take(0.72), None);
+    }
+
+    #[test]
+    fn a_failed_opacity_is_said_in_its_row_only_once_the_slider_has_rested_and_until_the_next_change() {
+        let mut state = OpacityApply::default();
+        assert!(!state.shows_label(), "nothing failed");
+        // While the slider moves a failure is only logged.
+        state.failed();
+        assert!(!state.shows_label());
+        state.requested();
+        state.failed();
+        assert!(!state.shows_label(), "still moving");
+        // The slider rests with the last apply failed: the row says so.
+        state.rested();
+        assert!(state.shows_label());
+        // Resting again changes nothing, and so does a request that has not been applied yet.
+        state.rested();
+        assert!(state.shows_label());
+        state.requested();
+        assert!(!state.shows_label(), "moving again hides it");
+        // A request that applies puts the percent back for good; resting then has nothing to say.
+        state.applied();
+        state.rested();
+        assert!(!state.shows_label());
+        // A slider that rested without a failure says nothing either.
+        let mut fine = OpacityApply::default();
+        fine.rested();
+        assert!(!fine.shows_label());
     }
 
     #[test]
