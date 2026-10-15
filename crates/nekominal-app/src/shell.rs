@@ -374,7 +374,7 @@ impl Shell {
         let (left, right) = window::caption_insets(&self.window, scale);
         let _ = self.ui.left_inset.SetWidth(GridLength { value: left, grid_unit_type: GridUnitType::Pixel });
         let _ = self.ui.right_inset.SetWidth(GridLength { value: right, grid_unit_type: GridUnitType::Pixel });
-        self.layout_tabs();
+        self.layout_tabs(true);
 
         // Discovery has been running since launch; it is normally done by now.
         let found = self
@@ -676,9 +676,9 @@ impl Shell {
 
         // The strip's width follows the bar; the wheel scrolls it sideways.
         let this = self.clone();
-        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| this.layout_tabs()))?);
+        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| this.layout_tabs(true)))?);
         let this = self.clone();
-        revokers.push(fe(&self.ui.tool_cluster)?.SizeChanged(cb!("cluster size", |_, _| this.layout_tabs()))?);
+        revokers.push(fe(&self.ui.tool_cluster)?.SizeChanged(cb!("cluster size", |_, _| this.layout_tabs(true)))?);
         let this = self.clone();
         revokers.push(self.ui.tab_scroll.ViewChanged(cb!("strip scrolled", |_, _| this.update_strip_edges(None)))?);
         let scroll = self.ui.tab_scroll.clone();
@@ -705,10 +705,11 @@ impl Shell {
         (bar - insets - cluster - BAR_FIXED_WIDTH).max(STRIP_MIN_WIDTH)
     }
 
-    /// Sizes the whole tab strip: the position plate, the width of every chip, the scroll position that keeps the
-    /// selected chip in view and the counts at the cut edges. Runs whenever the tabs, their titles, the selection or
-    /// the window change.
-    fn layout_tabs(&self) {
+    /// Sizes the whole tab strip: the position plate, the width of every chip and the counts at the cut edges. Runs
+    /// whenever the tabs, their titles, the selection or the window change. `reveal` also scrolls the selected chip
+    /// into view; only a change of the selection, of the set or order of the tabs or of the viewport asks for it, so
+    /// that a strip the user scrolled away is not snapped back by every title a program sets.
+    fn layout_tabs(&self, reveal: bool) {
         let tabs = self.tabs.borrow().clone();
         let selected = self.selected.get();
         let budget = self.strip_budget();
@@ -723,7 +724,9 @@ impl Shell {
         let extent = logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING);
         *self.strip_widths.borrow_mut() = widths;
         self.strip_viewport.set(strip.min(extent));
-        self.reveal_pending.set(true);
+        if reveal {
+            self.reveal_pending.set(true);
+        }
         self.update_strip_edges(None);
     }
 
@@ -750,11 +753,14 @@ impl Shell {
 
     /// Scrolls the strip so the selected chip is in view with a margin; returns the offset it scrolls to.
     fn reveal_selected(&self) -> Option<f64> {
-        let widths = self.strip_widths.borrow();
         let selected = self.selected.get();
-        let width = *widths.get(selected)?;
-        let left = STRIP_PADDING / 2.0 + widths[..selected].iter().sum::<f64>() + CHIP_GAP * selected as f64;
-        let extent = logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING);
+        // Copied out: `UpdateLayout` below raises SizeChanged handlers that write the widths.
+        let (left, width, extent) = {
+            let widths = self.strip_widths.borrow();
+            let width = *widths.get(selected)?;
+            let left = STRIP_PADDING / 2.0 + widths[..selected].iter().sum::<f64>() + CHIP_GAP * selected as f64;
+            (left, width, logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING))
+        };
         let offset = self.ui.tab_scroll.HorizontalOffset().unwrap_or(0.0);
         let viewport = self.strip_viewport.get();
         let target = logic::reveal_offset((left, width), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
@@ -770,9 +776,9 @@ impl Shell {
     /// Shows how many chips are hidden at each cut edge. `offset` is where a layout is about to scroll the strip
     /// to; without it the viewer's own position is read (the user scrolled).
     fn update_strip_edges(&self, offset: Option<f64>) {
-        let widths = self.strip_widths.borrow();
         let offset = offset.unwrap_or_else(|| self.ui.tab_scroll.HorizontalOffset().unwrap_or(0.0));
-        let (left, right) = logic::hidden_counts(&widths, CHIP_GAP, STRIP_PADDING, offset, self.strip_viewport.get());
+        let (left, right) =
+            logic::hidden_counts(&self.strip_widths.borrow(), CHIP_GAP, STRIP_PADDING, offset, self.strip_viewport.get());
         // Only the chips in the visible part of the strip spin.
         let tabs = self.tabs.borrow();
         for (index, tab) in tabs.iter().enumerate() {
@@ -992,6 +998,7 @@ impl Shell {
         let folders: Vec<Option<String>> =
             first.iter().map(|(title, source)| (*source == TitleSource::Folder).then(|| title.clone())).collect();
         let collide = logic::colliding_folders(&folders);
+        let mut changed = false;
         for (((tab, parts), (title, _)), with_parent) in tabs.iter().zip(&parts).zip(first).zip(collide) {
             if tab.renamed.get() {
                 continue;
@@ -1000,9 +1007,13 @@ impl Shell {
             if *tab.title.borrow() != title {
                 *tab.title.borrow_mut() = title.clone();
                 tab.chip.set_title(&title);
+                changed = true;
             }
         }
-        self.layout_tabs();
+        // Most events (a prompt's working directory, an agent report) leave every title as it was.
+        if changed {
+            self.layout_tabs(false);
+        }
     }
 
     /// The pane is on screen, has the focus and the window is active: the user is looking at it.
@@ -1259,7 +1270,7 @@ impl Shell {
             self.mark_seen(selected);
         }
         selected.update_focus_look();
-        self.layout_tabs();
+        self.layout_tabs(true);
         selected.relayout();
         if self.overlay.get() == Overlay::None {
             self.focus_active_pane();
@@ -1298,7 +1309,7 @@ impl Shell {
         {
             self.selected.set(index);
         }
-        self.layout_tabs();
+        self.layout_tabs(true);
         self.focus_active_pane();
         log(&format!("tab {from} moved to {to}"));
     }
@@ -1352,6 +1363,8 @@ impl Shell {
         }
         self.refresh_status(&tab);
         self.refresh_titles();
+        // The chip lost its pane count.
+        self.layout_tabs(false);
         if tab.is_visible() {
             self.focus_active_pane();
         }
@@ -1386,7 +1399,8 @@ impl Shell {
         if let Some(new) = tab.pane(id) {
             new.focus();
         }
-        self.layout_tabs();
+        // The chip gained a pane count.
+        self.layout_tabs(false);
         Ok(())
     }
 
@@ -1910,7 +1924,7 @@ impl Shell {
                 Command::PaneZoom => {
                     if let Some(tab) = &tab {
                         tab.toggle_zoom();
-                        self.layout_tabs();
+                        self.layout_tabs(false);
                         self.focus_active_pane();
                     }
                 }

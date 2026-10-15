@@ -534,6 +534,8 @@ impl Chip {
             Some(Drag { start_x: f64::from(in_strip.x), started: false, index, widths, origin, target: index });
     }
 
+    /// The width every chip of the strip has been given. `Width`, not `ActualWidth`: the press that starts a drag also
+    /// selects the chip, which re-sizes the strip, and `ActualWidth` still has the sizes of the layout before it.
     fn chip_widths(&self) -> Vec<f64> {
         let Ok(children) = self.strip.Children() else { return Vec::new() };
         (0..children.Size().unwrap_or(0))
@@ -542,7 +544,7 @@ impl Chip {
                     .GetAt(i)
                     .ok()
                     .and_then(|child| child.cast::<FrameworkElement>().ok())
-                    .and_then(|fe| fe.ActualWidth().ok())
+                    .and_then(|fe| fe.Width().ok().filter(|width| width.is_finite()).or_else(|| fe.ActualWidth().ok()))
                     .unwrap_or(0.0)
             })
             .collect()
