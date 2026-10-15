@@ -244,6 +244,7 @@ texts! {
     BackdropNone "backdrop.none" "無" "None";
     SettingsOpacity "settings.opacity" "背景不透明度" "Background opacity";
     SettingsTheme "settings.theme" "色彩配置" "Color scheme";
+    SettingsTabTitle "settings.tabTitle" "標題格式" "Title format";
     SettingsFontFamily "settings.fontFamily" "字型" "Font";
     SettingsFontSize "settings.fontSize" "字型大小" "Font size";
     SettingsLineHeight "settings.lineHeight" "行高" "Line height";

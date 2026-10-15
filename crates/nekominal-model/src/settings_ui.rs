@@ -12,7 +12,7 @@ use crate::{
     keymap::Keymap,
     settings::{
         Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
-        split_font_families,
+        TabTitle, split_font_families,
     },
     strings::{Lang, Text},
     themes,
@@ -298,6 +298,20 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
+    Descriptor {
+        id: "tabs.title.parts",
+        section: Section::Appearance,
+        label: Text::SettingsTabTitle,
+        control: Control::Text,
+        get: |s| Value::Text(s.tabs.title.to_text()),
+        set: |s, v| {
+            if let Value::Text(text) = v
+                && let Some(title) = TabTitle::from_text(&text)
+            {
+                s.tabs.title = title;
+            }
+        },
+    },
     // Terminal
     count!("scrollback", Terminal, SettingsScrollback, SCROLLBACK, scrollback),
     toggle!("copyOnSelect", Terminal, SettingsCopyOnSelect, copy_on_select),
@@ -562,6 +576,7 @@ mod tests {
             }
             (Control::Themes, _) => Value::Text("Nord".to_owned()),
             (Control::Profiles, _) => Value::Text("wsl".to_owned()),
+            (Control::Text, _) if row.id == "tabs.title.parts" => Value::Text("folder, title|profile".to_owned()),
             (Control::Text, _) => Value::Text("Fira Code, Consolas".to_owned()),
             (control, value) => panic!("{}: {control:?} cannot hold {value:?}", row.id),
         }
@@ -605,6 +620,8 @@ mod tests {
             ("keyboard.kittyProtocol", Value::Number(1.0)),
             ("font.size", Value::Number(f64::NAN)),
             ("font.family", Value::Text(" , ".into())),
+            ("tabs.title.parts", Value::Text("folder, branch".into())),
+            ("tabs.title.parts", Value::Text(" , ".into())),
             ("osc52", Value::Text("write".into())),
         ] {
             (find(id).unwrap().set)(&mut settings, bad);

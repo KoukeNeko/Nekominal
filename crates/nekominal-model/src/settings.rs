@@ -200,6 +200,111 @@ pub struct Bell {
     pub sound: BellSound,
 }
 
+/// A thing a tab title can say (`tabs.title.parts`). The names are the words of `settings.json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitlePart {
+    /// What a program or an agent called the session (OSC 0, 2 or 7501), unless that only repeats the profile, the shell
+    /// or the agent.
+    Title,
+    /// The last folder of the working directory.
+    Folder,
+    /// The name of the profile.
+    Profile,
+    /// The program of the pane without its extension: `pwsh`.
+    Shell,
+    /// The name an agent gave itself (the `app` of OSC 7501).
+    Agent,
+}
+
+impl TitlePart {
+    pub const ALL: [TitlePart; 5] =
+        [TitlePart::Title, TitlePart::Folder, TitlePart::Profile, TitlePart::Shell, TitlePart::Agent];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TitlePart::Title => "title",
+            TitlePart::Folder => "folder",
+            TitlePart::Profile => "profile",
+            TitlePart::Shell => "shell",
+            TitlePart::Agent => "agent",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<TitlePart> {
+        TitlePart::ALL.into_iter().find(|part| part.name() == name)
+    }
+}
+
+/// One slot of a title: the parts it can be filled by, `title|folder|profile` in the file. The slot says the first of
+/// them that has something to say, so a tab with no program title falls back to its folder, and one without a folder
+/// to its profile. There is nothing more to it: no conditions, no text of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleSlot(pub Vec<TitlePart>);
+
+impl TitleSlot {
+    /// The slot written as `text`; the first name that is not a part is the error.
+    pub fn parse(text: &str) -> Result<TitleSlot, String> {
+        let parts = text
+            .split('|')
+            .map(|name| TitlePart::from_name(name.trim()).ok_or_else(|| name.trim().to_owned()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(TitleSlot(parts))
+    }
+}
+
+impl std::fmt::Display for TitleSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.0.iter().map(|part| part.name()).collect();
+        f.write_str(&names.join("|"))
+    }
+}
+
+impl Serialize for TitleSlot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+/// How the title of a tab is made when the user has not named it: its slots in order, with the empty ones left out and
+/// the others joined by [`TITLE_SEPARATOR`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TabTitle {
+    pub parts: Vec<TitleSlot>,
+}
+
+/// What stands between the slots of a title.
+pub const TITLE_SEPARATOR: &str = " · ";
+
+impl TabTitle {
+    /// The slots as the settings drawer shows and takes them: `folder, title|profile`.
+    pub fn to_text(&self) -> String {
+        self.parts.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    }
+
+    /// The reverse of [`TabTitle::to_text`]. `None` when a name is not a part or there is no slot at all.
+    pub fn from_text(text: &str) -> Option<TabTitle> {
+        let parts = text
+            .split(',')
+            .map(str::trim)
+            .filter(|slot| !slot.is_empty())
+            .map(|slot| TitleSlot::parse(slot).ok())
+            .collect::<Option<Vec<_>>>()?;
+        (!parts.is_empty()).then_some(TabTitle { parts })
+    }
+}
+
+impl Default for TabTitle {
+    /// What the program says, else the folder, else the profile.
+    fn default() -> Self {
+        TabTitle { parts: vec![TitleSlot(vec![TitlePart::Title, TitlePart::Folder, TitlePart::Profile])] }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Tabs {
+    pub title: TabTitle,
+}
+
 /// Window backdrop shown behind (and through) the translucent terminal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -285,6 +390,7 @@ pub struct Settings {
     pub font: Font,
     pub cursor: Cursor,
     pub appearance: Appearance,
+    pub tabs: Tabs,
     pub scrollback: u32,
     /// Profile id; empty selects the first discovered profile.
     pub default_profile: String,
@@ -331,6 +437,7 @@ impl Default for Settings {
             },
             cursor: Cursor { style: CursorStyle::Block, blink: true },
             appearance: Appearance { backdrop: Backdrop::Acrylic, opacity: 0.72, tab_bar_density: TabBarDensity::Comfortable },
+            tabs: Tabs::default(),
             scrollback: 10_000,
             default_profile: String::new(),
             profiles: Vec::new(),
@@ -544,6 +651,27 @@ pub fn split_font_families(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// The slots of `tabs.title.parts`: an array of strings such as `["folder", "title|profile"]`. A name that is not a
+/// part, an entry that is not text, a value that is not an array and an empty array are each reported once, under the
+/// key of the setting, and leave the default in effect.
+fn title_slots(source: &Map<String, Value>, fallback: &[TitleSlot], problems: &mut Problems) -> Vec<TitleSlot> {
+    let names = || TitlePart::ALL.iter().map(|part| part.name().to_owned()).collect();
+    let read = |item: &Value| match item {
+        Value::String(text) => TitleSlot::parse(text).map_err(|_| Expected::OneOf(names())),
+        _ => Err(Expected::Text),
+    };
+    let found = match source.get("parts") {
+        None => return fallback.to_vec(),
+        Some(Value::Array(items)) if items.is_empty() => Err(Expected::OneOf(names())),
+        Some(Value::Array(items)) => items.iter().map(read).collect::<Result<Vec<_>, _>>(),
+        Some(_) => Err(Expected::Array),
+    };
+    found.unwrap_or_else(|expected| {
+        problems.fail("tabs.title", "parts", expected);
+        fallback.to_vec()
+    })
+}
+
 /// Accepts an array of family names or a comma separated string such as `"Cascadia Mono", Consolas`.
 fn font_families(source: &Map<String, Value>, fallback: &[String], problems: &mut Problems) -> Vec<String> {
     let parsed: Option<Vec<String>> = match source.get("family") {
@@ -649,6 +777,8 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let paste = section(&root, "paste", "", &mut problems);
     let bell = section(&root, "bell", "", &mut problems);
     let keyboard = section(&root, "keyboard", "", &mut problems);
+    let tabs = section(&root, "tabs", "", &mut problems);
+    let tab_title = section(&tabs, "title", "tabs", &mut problems);
 
     let theme_name = text(&root, "theme", &d.theme, "", &mut problems);
     let theme = if themes::is_known(&theme_name) {
@@ -704,6 +834,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 &mut problems,
             ),
         },
+        tabs: Tabs { title: TabTitle { parts: title_slots(&tab_title, &d.tabs.title.parts, &mut problems) } },
         scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 1_000_000.0), "", &mut problems) as u32,
         default_profile: text(&root, "defaultProfile", &d.default_profile, "", &mut problems),
         profiles: read_profiles(&root, &mut problems),
@@ -1081,6 +1212,71 @@ mod tests {
         changed.appearance.tab_bar_density = TabBarDensity::Compact;
         let written = round_trips(changed);
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "appearance": { "tabBarDensity": "compact" } }));
+    }
+
+    fn slots(texts: &[&str]) -> Vec<TitleSlot> {
+        texts.iter().map(|text| TitleSlot::parse(text).expect("a slot of known parts")).collect()
+    }
+
+    #[test]
+    fn the_title_of_a_tab_is_the_first_of_title_folder_and_profile_unless_the_file_says_otherwise() {
+        assert_eq!(Settings::default().tabs.title.parts, slots(&["title|folder|profile"]));
+        assert_eq!(Settings::default().tabs.title.to_text(), "title|folder|profile");
+        let own = parsed_ok(r#""tabs": { "title": { "parts": ["folder", "title|profile", " agent "] } }"#);
+        assert_eq!(own.tabs.title.parts, slots(&["folder", "title|profile", "agent"]));
+        // Only what differs from the default is written, and it reads back.
+        assert!(!serialize(&Settings::default()).contains("tabs"));
+        let written = round_trips(own);
+        assert_eq!(
+            serde_json::from_str::<Value>(&written).unwrap(),
+            serde_json::json!({ "tabs": { "title": { "parts": ["folder", "title|profile", "agent"] } } })
+        );
+    }
+
+    #[test]
+    fn a_part_the_title_does_not_know_goes_through_the_problems_of_the_file_and_the_default_stays() {
+        for entry in [
+            r#""tabs": { "title": { "parts": ["folder", "branch"] } }"#,
+            r#""tabs": { "title": { "parts": ["title|nope"] } }"#,
+            r#""tabs": { "title": { "parts": [] } }"#,
+            r#""tabs": { "title": { "parts": [""] } }"#,
+        ] {
+            let result = parsed(&format!("{{ {entry} }}"));
+            assert_eq!(result.problems.len(), 1, "{entry}: {:?}", result.problems);
+            assert_eq!(result.problems[0].key, "tabs.title.parts", "{entry}");
+            assert!(matches!(result.problems[0].expected, Expected::OneOf(_)), "{entry}");
+            assert_eq!(result.settings, Settings::default(), "{entry}");
+        }
+        let result = parsed(r#"{ "tabs": { "title": { "parts": ["folder", "oops"] } } }"#);
+        assert_eq!(result.problems[0].text(Lang::EnUs), "tabs.title.parts: Needs one of title, folder, profile, shell, agent");
+        assert_eq!(result.problems[0].text(Lang::ZhTw), "tabs.title.parts：需要 title、folder、profile、shell、agent 其中之一");
+        // What is not a list of text is told as such.
+        for (entry, expected) in [
+            (r#""tabs": { "title": { "parts": "folder" } }"#, Expected::Array),
+            (r#""tabs": { "title": { "parts": ["folder", 3] } }"#, Expected::Text),
+            (r#""tabs": { "title": 5 }"#, Expected::Object),
+            (r#""tabs": [] "#, Expected::Object),
+        ] {
+            let result = parsed(&format!("{{ {entry} }}"));
+            assert_eq!(result.problems.len(), 1, "{entry}: {:?}", result.problems);
+            assert_eq!(result.problems[0].expected, expected, "{entry}");
+            assert_eq!(result.settings, Settings::default(), "{entry}");
+        }
+    }
+
+    #[test]
+    fn the_title_format_is_typed_as_slots_separated_by_commas_and_parts_by_bars() {
+        let title = TabTitle::from_text(" folder , title|profile,, agent ").expect("a valid format");
+        assert_eq!(title.parts, slots(&["folder", "title|profile", "agent"]));
+        assert_eq!(title.to_text(), "folder, title|profile, agent");
+        assert_eq!(TabTitle::from_text(&title.to_text()), Some(title));
+        for text in ["", " , ", "folder, branch", "title|", "|folder", "Title"] {
+            assert_eq!(TabTitle::from_text(text), None, "{text:?}");
+        }
+        assert_eq!(TitlePart::ALL.map(TitlePart::name), ["title", "folder", "profile", "shell", "agent"]);
+        for part in TitlePart::ALL {
+            assert_eq!(TitlePart::from_name(part.name()), Some(part));
+        }
     }
 
     #[test]
