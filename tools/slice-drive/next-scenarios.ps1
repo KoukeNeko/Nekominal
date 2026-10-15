@@ -101,6 +101,26 @@ function Scenario-NextSplit {
     }
 }
 
+function Scenario-NextMenu {
+    Run-Next {
+        Next-Line 'echo ONE'
+        $r = Win-Rect; $s = Get-Scale
+        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16    # the middle of the "..." button, with 138 DIP of caption buttons
+        $button = Next-At $menuX 24
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 300) $button[1] 340 300 }
+        $row = Next-At ($menuX - 60) 98                        # second row: split right
+        Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1500
+        Next-Line 'echo TWO'
+        $text = Next-Text
+        Next-Check 'menu.split-right' ($text -match 'TWO' -and $text -notmatch 'ONE') 'the menu row split the pane and the new pane has the keyboard'
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        Press 0x1B; Start-Sleep -Milliseconds 600               # Esc
+        Next-Line 'echo AFTER-ESC'
+        Next-Check 'menu.escape-closes' ((Next-Text) -match 'AFTER-ESC') 'after Esc the pane takes the typing again'
+    }
+}
+
 function Scenario-NextSplitter {
     Run-Next {
         Press 0x44 @(0x12, 0x10); Start-Sleep -Milliseconds 1500    # Alt+Shift+D: split right

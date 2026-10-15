@@ -13,8 +13,10 @@ pub const CHIP_HEIGHT: f32 = 32.0;
 pub const CHIP_GAP: f32 = 4.0;
 /// Space left of the first chip.
 pub const STRIP_LEFT: f32 = 12.0;
-/// Width and height of the new-tab button.
+/// Width and height of the new-tab and menu buttons.
 pub const BUTTON: f32 = 32.0;
+/// Space between the menu button and the caption buttons.
+const MENU_RIGHT: f32 = 12.0;
 /// The part of the title bar that stays free for dragging the window.
 pub const DRAG_MIN: f32 = 48.0;
 /// A chip at least this wide has room for a close button.
@@ -29,6 +31,7 @@ pub enum Hit {
     Chip(usize),
     ChipClose(usize),
     NewTab,
+    Menu,
     Pane,
 }
 
@@ -37,17 +40,19 @@ pub struct Layout {
     pub size: (f32, f32),
     pub chips: Vec<Rect>,
     pub new_tab: Rect,
+    pub menu: Rect,
     pub pane: Rect,
 }
 
 impl Layout {
     /// `caption` is the width of the system caption buttons at the right edge.
     pub fn new(width: f32, height: f32, tabs: usize, caption: f32) -> Layout {
-        let strip_end = width - caption - DRAG_MIN;
+        let top = (TITLE_HEIGHT - CHIP_HEIGHT) / 2.0;
+        let menu = Rect::new((width - caption - MENU_RIGHT - BUTTON).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
+        let strip_end = menu.x - DRAG_MIN;
         // The room for the chips: what is between the strip start and the new-tab button at the end of the strip.
         let available = (strip_end - STRIP_LEFT - BUTTON - CHIP_GAP).max(0.0);
         let chip_width = logic::tab_width(tabs, f64::from(available), f64::from(CHIP_GAP)) as f32;
-        let top = (TITLE_HEIGHT - CHIP_HEIGHT) / 2.0;
         let chips: Vec<Rect> = (0..tabs)
             .map(|i| Rect::new(STRIP_LEFT + i as f32 * (chip_width + CHIP_GAP), top, chip_width, CHIP_HEIGHT))
             .collect();
@@ -57,6 +62,7 @@ impl Layout {
             size: (width, height),
             chips,
             new_tab,
+            menu,
             pane: Rect::new(0.0, TITLE_HEIGHT, width, (height - TITLE_HEIGHT).max(0.0)),
         }
     }
@@ -70,6 +76,9 @@ impl Layout {
     pub fn hit(&self, x: f32, y: f32) -> Hit {
         if self.new_tab.contains(x, y) {
             return Hit::NewTab;
+        }
+        if self.menu.contains(x, y) {
+            return Hit::Menu;
         }
         for (i, chip) in self.chips.iter().enumerate() {
             if chip.contains(x, y) {
@@ -118,7 +127,8 @@ mod tests {
         let close = Layout::close_button(chip).expect("a wide chip has a close button");
         assert_eq!(layout.hit(close.x + 2.0, close.y + 2.0), Hit::ChipClose(1));
         assert_eq!(layout.hit(layout.new_tab.x + 4.0, layout.new_tab.y + 4.0), Hit::NewTab);
-        assert_eq!(layout.hit(900.0, 10.0), Hit::Drag);
+        assert_eq!(layout.hit(layout.menu.x + 4.0, layout.menu.y + 4.0), Hit::Menu);
+        assert_eq!(layout.hit(layout.menu.x - 20.0, 10.0), Hit::Drag);
         assert_eq!(layout.hit(chip.x + 10.0, 2.0), Hit::Drag, "above the chips is still the title bar");
         assert_eq!(layout.hit(600.0, 300.0), Hit::Pane);
         assert_eq!(layout.hit(-1.0, 300.0), Hit::None);

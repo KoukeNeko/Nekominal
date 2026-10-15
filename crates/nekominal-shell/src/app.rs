@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use nekominal_input::{
     KeyEvent, KeyInput, Mods, MouseButton, PointerEvent, PointerGrid, PointerKind, Utf16Assembler, vk,
@@ -10,8 +11,10 @@ use nekominal_model::{
     commands::{self, Command},
     keymap::{self, Keymap, Modifiers},
     layout::{Axis, PaneId},
+    menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, Settings},
+    strings::Lang,
     store,
     themes::{self, Color as SchemeColor},
 };
@@ -21,11 +24,12 @@ use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_ui::{Color, Rect, Ui};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, WPARAM},
-    Graphics::Gdi::InvalidateRect,
+    Foundation::{HWND, LPARAM, POINT, WPARAM},
+    Globalization::GetUserDefaultLocaleName,
+    Graphics::Gdi::{ClientToScreen, InvalidateRect},
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
-        WindowsAndMessaging::{PostMessageW, WM_APP, WM_CLOSE},
+        WindowsAndMessaging::{DestroyWindow, GetForegroundWindow, PostMessageW, WM_APP, WM_CLOSE},
     },
 };
 
@@ -35,7 +39,7 @@ use crate::{
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
     logic::{self, PxRect},
-    open,
+    open, popup,
     tab::{PaneEntry, Tab},
     util,
 };
@@ -95,6 +99,10 @@ pub struct App {
     over_splitter: Option<Axis>,
     /// The path of the divider being dragged.
     dragged_splitter: Option<Vec<u8>>,
+    /// The "…" menu while it is open.
+    popup: Option<popup::Popup>,
+    /// When the menu last closed: the click that closed it (outside it) must not open it again.
+    popup_closed: Option<Instant>,
     text: Utf16Assembler,
 }
 
@@ -171,6 +179,8 @@ impl App {
             hand: false,
             over_splitter: None,
             dragged_splitter: None,
+            popup: None,
+            popup_closed: None,
             text: Utf16Assembler::default(),
         };
         app.relayout();
@@ -386,6 +396,10 @@ impl App {
     }
 
     pub fn on_activate(&mut self, active: bool) {
+        // The menu takes the activation while it is open; the window is still the one in use.
+        if !active && self.popup.is_some() {
+            return;
+        }
         self.active = active;
         self.sync_focus();
         self.redraw();
@@ -584,6 +598,7 @@ impl App {
                             util::log(&format!("new tab: {e}"));
                         }
                     }
+                    Hit::Menu => self.open_menu(),
                     _ => {}
                 }
             }
@@ -903,6 +918,161 @@ impl App {
             self.ui.rrect(plus, CORNER_RADIUS, col(g.hover()), None);
         }
         self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
+        let menu = self.layout.menu;
+        if self.hover == Hit::Menu || self.popup.is_some() {
+            self.ui.rrect(menu, CORNER_RADIUS, col(g.hover()), None);
+        }
+        self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
+    }
+
+    // --- the menu -----------------------------------------------------------------------------------------------
+
+    fn language(&self) -> Lang {
+        let mut name = [0u16; 85];
+        // SAFETY: the buffer has the room LOCALE_NAME_MAX_LENGTH asks for.
+        let len = unsafe { GetUserDefaultLocaleName(&mut name) };
+        let tag = String::from_utf16_lossy(&name[..(len.max(1) as usize - 1)]);
+        self.settings.language.resolve(&tag)
+    }
+
+    /// The rows of the menu: `APP_MENU` without what the shell cannot do yet, and without separators left dangling.
+    fn menu_rows(&self) -> Vec<popup::Row> {
+        // shortcut: only the commands `run` handles are offered; the find bar, the palette, full screen and the
+        // settings join when they exist, and the backdrop and opacity rows with the settings drawer.
+        const WIRED: &[Command] =
+            &[Command::TabNew, Command::PaneSplitRight, Command::PaneSplitDown, Command::PaneZoom, Command::PaneClose];
+        let lang = self.language();
+        let mut rows: Vec<popup::Row> = Vec::new();
+        for row in APP_MENU {
+            match row {
+                MenuRow::Command(command) if WIRED.contains(command) => rows.push(popup::Row {
+                    label: command.label(lang),
+                    shortcut: self.keymap.shortcut_text(*command).to_string(),
+                    command: Some(*command),
+                }),
+                MenuRow::Separator if rows.last().is_some_and(|r| !r.is_separator()) => rows.push(popup::Row::separator()),
+                _ => {}
+            }
+        }
+        if rows.last().is_some_and(popup::Row::is_separator) {
+            rows.pop();
+        }
+        rows
+    }
+
+    fn open_menu(&mut self) {
+        if self.popup.is_some() || self.popup_closed.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
+            return;
+        }
+        let menu = self.layout.menu;
+        let mut anchor = POINT { x: ((menu.x + menu.w) * self.scale).round() as i32, y: ((menu.y + menu.h) * self.scale).round() as i32 };
+        // SAFETY: converts a point of our own window.
+        unsafe { let _ = ClientToScreen(self.hwnd, &mut anchor); }
+        match popup::open(self.hwnd, &self.gpu, self.menu_rows(), (anchor.x, anchor.y), self.scale, self.dark()) {
+            Ok(popup) => {
+                // SAFETY: invalidating the window just made.
+                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                self.popup = Some(popup);
+            }
+            Err(e) => util::log(&format!("menu: {e}")),
+        }
+        self.redraw();
+    }
+
+    pub fn close_popup(&mut self) {
+        let Some(popup) = self.popup.take() else { return };
+        self.popup_closed = Some(Instant::now());
+        // SAFETY: destroys a window of this thread; the swap chain goes with the `Popup`.
+        unsafe { let _ = DestroyWindow(popup.hwnd); }
+        drop(popup);
+        self.redraw();
+    }
+
+    /// The menu lost the activation: another window was clicked, or this one.
+    pub fn popup_deactivated(&mut self) {
+        self.close_popup();
+        // SAFETY: plain query.
+        if unsafe { GetForegroundWindow() } != self.hwnd {
+            self.on_activate(false);
+        }
+    }
+
+    /// The pointer moved over the menu (pixels), or left it.
+    pub fn popup_move(&mut self, at: Option<(i32, i32)>) {
+        let scale = self.scale;
+        let Some(popup) = self.popup.as_mut() else { return };
+        let row = at.and_then(|(x, y)| popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale));
+        if row != popup.hover {
+            popup.hover = row;
+            // SAFETY: invalidating our own window.
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        }
+    }
+
+    pub fn popup_click(&mut self, x: i32, y: i32) {
+        let scale = self.scale;
+        let Some(popup) = self.popup.as_ref() else { return };
+        if let Some(row) = popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale) {
+            self.choose(row);
+        }
+    }
+
+    pub fn popup_key(&mut self, vk_code: i32) {
+        const VK_RETURN: i32 = 0x0D;
+        const VK_UP: i32 = 0x26;
+        const VK_DOWN: i32 = 0x28;
+        let Some(popup) = self.popup.as_mut() else { return };
+        match vk_code {
+            VK_UP | VK_DOWN => {
+                popup.hover = popup::step(&popup.rows, popup.hover, vk_code == VK_DOWN);
+                // SAFETY: invalidating our own window.
+                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            }
+            VK_RETURN => {
+                if let Some(row) = popup.hover {
+                    self.choose(row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Closes the menu and does what its row `row` says.
+    fn choose(&mut self, row: usize) {
+        let command = self.popup.as_ref().and_then(|p| p.rows[row].command);
+        self.close_popup();
+        if let Some(command) = command {
+            self.run(command);
+        }
+    }
+
+    pub fn popup_paint(&mut self) {
+        let scale = self.scale;
+        let g = self.glass;
+        let Some(popup) = self.popup.as_mut() else { return };
+        let Some(view) = popup.surface.acquire() else { return };
+        self.gpu.clear(&view, [0.0; 4]);
+        let ui = &mut self.ui;
+        ui.begin_frame(popup.surface.size(), scale);
+        // The acrylic is the window; a tint over it keeps the text readable on any wallpaper.
+        let tint = Color([g.background.r, g.background.g, g.background.b, 140]);
+        ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
+        let line = ui.line_height(TEXT_SIZE);
+        for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
+            if row.is_separator() {
+                ui.fill(Rect::new(rect.x + 8.0, rect.y + rect.h / 2.0, rect.w - 16.0, 1.0), col(g.divider()));
+                continue;
+            }
+            if popup.hover == Some(i) {
+                ui.rrect(*rect, CORNER_RADIUS, col(g.hover()), None);
+            }
+            let y = rect.y + (rect.h - line) / 2.0;
+            ui.text(rect.x + 12.0, y, &row.label, TEXT_SIZE, col(g.text()), false);
+            let width = ui.measure(&row.shortcut, TEXT_SIZE, false);
+            ui.text(rect.x + rect.w - 12.0 - width, y, &row.shortcut, TEXT_SIZE, col(g.text_secondary()), false);
+        }
+        ui.end_frame(&view);
+        popup.surface.present();
     }
 
     fn icon_centered(&mut self, rect: Rect, ch: char, size: f32, color: Color) {

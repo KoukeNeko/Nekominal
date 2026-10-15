@@ -32,10 +32,16 @@ pub struct Surface {
     committed: bool,
 }
 
-/// The device and a swap chain of `size` pixels for `hwnd`. The adapter is the low-power one (the integrated GPU
+/// The device, and a swap chain of `size` pixels for `hwnd`. The adapter is the low-power one (the integrated GPU
 /// where there are two): a terminal does not need the other, and it costs the battery.
 pub fn create(hwnd: HWND, size: (u32, u32)) -> Result<(Gpu, Surface), String> {
     let gpu = Gpu::new(AdapterKind::Real)?;
+    let surface = create_surface(&gpu, hwnd, size)?;
+    Ok((gpu, surface))
+}
+
+/// A swap chain of `size` pixels for another window, on the device the first window made.
+pub fn create_surface(gpu: &Gpu, hwnd: HWND, size: (u32, u32)) -> Result<Surface, String> {
     let size = (size.0.max(1), size.1.max(1));
     // SAFETY: the DirectComposition objects are created for a window of this thread and kept in `Surface` for as long
     // as the swap chain lives.
@@ -64,8 +70,8 @@ pub fn create(hwnd: HWND, size: (u32, u32)) -> Result<(Gpu, Surface), String> {
         visual.SetContent(&swap).map_err(|e| format!("SetContent: {e}"))?;
         target.SetRoot(&visual).map_err(|e| format!("SetRoot: {e}"))?;
         let mut surface = Surface { swap, target: None, size, dcomp, _target: target, _visual: visual, committed: false };
-        surface.target = Some(surface.create_target(&gpu)?);
-        Ok((gpu, surface))
+        surface.target = Some(surface.create_target(gpu)?);
+        Ok(surface)
     }
 }
 

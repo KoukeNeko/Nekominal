@@ -5,6 +5,7 @@
 mod app;
 mod gpu;
 mod layout;
+mod popup;
 mod tab;
 mod win;
 

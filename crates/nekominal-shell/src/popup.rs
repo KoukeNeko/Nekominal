@@ -1,0 +1,197 @@
+//! A floating list of rows in a window of its own: the "…" menu. The window is a pop-up with the DWM acrylic
+//! backdrop, so the blur is real, not painted. This file holds the rows, their geometry and the window; the drawing
+//! and the messages go through `App`, which owns the device and the UI layer.
+
+use nekominal_model::commands::Command;
+use nekominal_ui::Rect;
+use windows::{
+    Win32::{
+        Foundation::{HWND, POINT},
+        Graphics::{
+            Dwm::{
+                DWM_SYSTEMBACKDROP_TYPE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
+                DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+            },
+            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
+        },
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            Controls::MARGINS,
+            WindowsAndMessaging::{
+                CreateWindowExW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, WNDCLASSW,
+                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            },
+        },
+    },
+    core::w,
+};
+
+use crate::gpu::{self, Gpu, Surface};
+
+pub const WIDTH: f32 = 260.0;
+const PADDING: f32 = 6.0;
+const ROW_HEIGHT: f32 = 32.0;
+const SEPARATOR_HEIGHT: f32 = 9.0;
+/// How far the pop-up hangs below the point it is anchored at.
+const GAP: f32 = 4.0;
+
+/// One row: a command with its label and shortcut, or a separator (no command, empty label).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub label: String,
+    pub shortcut: String,
+    pub command: Option<Command>,
+}
+
+impl Row {
+    pub fn separator() -> Row {
+        Row { label: String::new(), shortcut: String::new(), command: None }
+    }
+
+    pub fn is_separator(&self) -> bool {
+        self.command.is_none()
+    }
+}
+
+pub struct Popup {
+    pub hwnd: HWND,
+    pub surface: Surface,
+    pub rows: Vec<Row>,
+    /// The rectangle of each row in DIP, inside the window.
+    pub rects: Vec<Rect>,
+    /// Size of the window in DIP.
+    pub size: (f32, f32),
+    pub hover: Option<usize>,
+}
+
+/// The rectangles of `rows` and the size of the window around them, in DIP.
+pub fn layout(rows: &[Row]) -> (Vec<Rect>, (f32, f32)) {
+    let mut y = PADDING;
+    let rects = rows
+        .iter()
+        .map(|row| {
+            let height = if row.is_separator() { SEPARATOR_HEIGHT } else { ROW_HEIGHT };
+            let rect = Rect::new(PADDING, y, WIDTH - 2.0 * PADDING, height);
+            y += height;
+            rect
+        })
+        .collect();
+    (rects, (WIDTH, y + PADDING))
+}
+
+/// The row under a point of the window (DIP); separators are not under anything.
+pub fn row_at(rows: &[Row], rects: &[Rect], x: f32, y: f32) -> Option<usize> {
+    rects.iter().position(|r| r.contains(x, y)).filter(|&i| !rows[i].is_separator())
+}
+
+/// The next row that can be chosen after `from` in a direction (wrapping), for the arrow keys.
+pub fn step(rows: &[Row], from: Option<usize>, forward: bool) -> Option<usize> {
+    let n = rows.len();
+    let start = from.unwrap_or(if forward { n - 1 } else { 0 });
+    (1..=n).map(|k| if forward { (start + k) % n } else { (start + n - k) % n }).find(|&i| !rows[i].is_separator())
+}
+
+/// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
+pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
+    let (rects, size) = layout(&rows);
+    let (w, h) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
+    // SAFETY: plain Win32 calls on the thread of the owner window; every pointer outlives its call.
+    unsafe {
+        let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(crate::win::popup_proc),
+            hInstance: module.into(),
+            lpszClassName: w!("NekominalPopup"),
+            hCursor: LoadCursorW(None, IDC_ARROW).map_err(|e| e.to_string())?,
+            ..Default::default()
+        };
+        // Registered once; a second registration fails and the first stays.
+        RegisterClassW(&class);
+
+        let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let _ = GetMonitorInfoW(MonitorFromPoint(POINT { x: anchor.0, y: anchor.1 }, MONITOR_DEFAULTTONEAREST), &mut monitor);
+        let work = monitor.rcWork;
+        let gap = (GAP * scale).round() as i32;
+        let x = (anchor.0 - w).clamp(work.left, (work.right - w).max(work.left));
+        let y = (anchor.1 + gap).clamp(work.top, (work.bottom - h).max(work.top));
+
+        let hwnd = CreateWindowExW(
+            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            w!("NekominalPopup"),
+            w!(""),
+            WS_POPUP,
+            x,
+            y,
+            w,
+            h,
+            Some(owner),
+            None,
+            Some(module.into()),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+
+        // Transient-window acrylic, rounded corners, over the whole client area.
+        let dark = i32::from(dark);
+        let acrylic = DWM_SYSTEMBACKDROP_TYPE(3);
+        let rounded: i32 = 2;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const i32).cast(), 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&acrylic as *const DWM_SYSTEMBACKDROP_TYPE).cast(), 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&rounded as *const i32).cast(), 4);
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 });
+
+        let surface = match gpu::create_surface(gpu, hwnd, (w as u32, h as u32)) {
+            Ok(surface) => surface,
+            Err(e) => {
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+                return Err(e);
+            }
+        };
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        // Taking the activation is what lets the pop-up notice that the user went elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        Ok(Popup { hwnd, surface, rows, rects, size, hover: None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(label: &str) -> Row {
+        Row { label: label.into(), shortcut: String::new(), command: Some(Command::TabNew) }
+    }
+
+    fn rows() -> Vec<Row> {
+        vec![row("a"), Row::separator(), row("b"), row("c")]
+    }
+
+    #[test]
+    fn the_rows_stack_with_a_thin_separator_and_padding_around() {
+        let (rects, size) = layout(&rows());
+        assert_eq!(rects[0].y, PADDING);
+        assert_eq!(rects[1].h, SEPARATOR_HEIGHT);
+        assert_eq!(rects[2].y, PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT);
+        assert_eq!(size.1, PADDING * 2.0 + ROW_HEIGHT * 3.0 + SEPARATOR_HEIGHT);
+    }
+
+    #[test]
+    fn a_separator_is_never_under_the_pointer() {
+        let rows = rows();
+        let (rects, _) = layout(&rows);
+        assert_eq!(row_at(&rows, &rects, 20.0, rects[0].y + 4.0), Some(0));
+        assert_eq!(row_at(&rows, &rects, 20.0, rects[1].y + 4.0), None);
+        assert_eq!(row_at(&rows, &rects, 20.0, rects[3].y + 4.0), Some(3));
+        assert_eq!(row_at(&rows, &rects, 2.0, 20.0), None, "the padding is not a row");
+    }
+
+    #[test]
+    fn the_arrow_keys_skip_separators_and_wrap() {
+        let rows = rows();
+        assert_eq!(step(&rows, None, true), Some(0));
+        assert_eq!(step(&rows, None, false), Some(3));
+        assert_eq!(step(&rows, Some(0), true), Some(2), "down from the row above a separator");
+        assert_eq!(step(&rows, Some(2), false), Some(0), "up from the row below a separator");
+        assert_eq!(step(&rows, Some(3), true), Some(0), "wraps at the end");
+    }
+}

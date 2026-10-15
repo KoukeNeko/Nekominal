@@ -375,6 +375,51 @@ fn set_backdrop(hwnd: HWND, backdrop: Backdrop, dark: bool) {
     }
 }
 
+/// The messages of the menu pop-up. They go to `App`, which owns what is drawn; while `App` is busy (a message sent
+/// from inside one of its own calls) `with_app` finds it taken and the message is dropped.
+pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    const VK_ESCAPE: i32 = 0x1B;
+    match msg {
+        WM_PAINT => {
+            with_app(App::popup_paint);
+            // SAFETY: the swap chain is the content; only the update region is cleared.
+            unsafe { let _ = ValidateRect(Some(hwnd), None); };
+            LRESULT(0)
+        }
+        WM_ERASEBKGND => LRESULT(1),
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+            // SAFETY: a valid request for this window.
+            unsafe { let _ = TrackMouseEvent(&mut track); };
+            with_app(|app| app.popup_move(Some((lo(lparam), hi(lparam)))));
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            with_app(|app| app.popup_move(None));
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            with_app(|app| app.popup_click(lo(lparam), hi(lparam)));
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            let key = wparam.0 as i32;
+            if key == VK_ESCAPE {
+                with_app(App::close_popup);
+            } else {
+                with_app(|app| app.popup_key(key));
+            }
+            LRESULT(0)
+        }
+        WM_ACTIVATE if (wparam.0 & 0xFFFF) == 0 => {
+            with_app(App::popup_deactivated);
+            LRESULT(0)
+        }
+        // SAFETY: default handling of every other message.
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
 pub fn run() -> Result<(), String> {
     // SAFETY: plain Win32 calls on the thread that owns the window.
     unsafe {
