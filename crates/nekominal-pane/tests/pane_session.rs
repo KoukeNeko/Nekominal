@@ -199,6 +199,39 @@ fn clearing_the_buffer_asks_a_shell_at_its_prompt_to_redraw_it_and_leaves_other_
 }
 
 #[test]
+fn a_bracketed_paste_is_data_and_starts_no_command_but_typed_and_unbracketed_lines_do() {
+    use nekominal_pane::host::Activity;
+    // A prompt that asked for bracketed paste (PSReadLine does), and one that did not.
+    let bracketed = r#"[Console]::Out.Write("$([char]27)[?2004h$([char]27)]133;A$([char]7)prompt> "); $null = [Console]::ReadKey($true)"#;
+    let plain = r#"[Console]::Out.Write("$([char]27)]133;A$([char]7)prompt> "); $null = [Console]::ReadKey($true)"#;
+    for (script, is_bracketed) in [(bracketed, true), (plain, false)] {
+        let pane = powershell_session(script, Osc52::OnlyCopy);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !(pane.activity() == Activity::AtPrompt && pane.input_modes().bracketed_paste == is_bracketed)
+            && Instant::now() < deadline
+        {
+            sleep(Duration::from_millis(50));
+        }
+        assert_eq!(pane.activity(), Activity::AtPrompt, "the prompt mark arrived");
+        assert_eq!(pane.input_modes().bracketed_paste, is_bracketed, "the mode the program set");
+        pane.paste("one\ntwo");
+        let expected = if is_bracketed { Activity::AtPrompt } else { Activity::Running };
+        assert_eq!(pane.activity(), expected, "a paste with bracketed mode {is_bracketed}");
+        pane.shutdown();
+    }
+    // Pressing Enter at a prompt starts a command whatever the mode.
+    let pane = powershell_session(bracketed, Osc52::OnlyCopy);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while pane.activity() != Activity::AtPrompt && Instant::now() < deadline {
+        sleep(Duration::from_millis(50));
+    }
+    assert_eq!(pane.activity(), Activity::AtPrompt, "the prompt mark arrived");
+    assert!(pane.send_key(&KeyInput::new(Key::Enter)));
+    assert_eq!(pane.activity(), Activity::Running);
+    pane.shutdown();
+}
+
+#[test]
 fn restarting_runs_a_new_session_in_the_same_pane_and_the_old_one_is_not_heard_from_again() {
     let pane = powershell_session("Write-Host first-session", Osc52::OnlyCopy);
     assert!(wait_for_text(&pane, |text| text.contains("first-session")));

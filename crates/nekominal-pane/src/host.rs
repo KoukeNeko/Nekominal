@@ -84,6 +84,13 @@ pub enum UiEvent {
 /// Whether a command runs in the pane, as far as the prompt marks of the shell (OSC 133) and the input sent to it
 /// tell. The integration of PowerShell marks the prompt and the end of a command but not its start, so a command
 /// starts when a line is submitted at the prompt.
+///
+/// Known limit: a line typed while a command runs (type-ahead) is not counted. The shell runs it as soon as it has
+/// shown its next prompt, and no mark says so, so the pane reads `AtPrompt` while that command runs and closing it
+/// asks nothing. Counting the submitted lines would not fix it: a line a program reads itself (a `[Y/n]` question) or
+/// a continuation line is never matched by a prompt, which would leave the pane busy until the next empty Enter.
+/// Only a mark at the start of every command (OSC 133 `C`) can tell, and the PowerShell integration cannot send it
+/// from `prompt`, which runs before the line is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     /// No mark has come yet: a shell without integration, or one that has not shown its first prompt.
@@ -330,13 +337,19 @@ impl Pane {
         *self.live.borrow_mut() = live;
         Ok(())
     }
-    /// Keyboard, paste and IME bytes from the UI thread.
+    /// Keyboard, IME and unbracketed paste bytes from the UI thread: a line break in them is Enter, which submits a
+    /// line at the prompt.
     pub fn send(&self, bytes: Vec<u8>) {
         if bytes.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
             let _ = self.activity.try_update(Ordering::Relaxed, Ordering::Relaxed, |code| {
                 Some(Activity::from_code(code).after_submit().code())
             });
         }
+        self.queue(bytes);
+    }
+
+    /// Bytes for the program that submit nothing by themselves.
+    fn queue(&self, bytes: Vec<u8>) {
         let _ = self.live.borrow().input.send(bytes);
     }
 
@@ -405,7 +418,10 @@ impl Pane {
     pub fn paste(&self, text: &str) {
         let bracketed = self.input_modes().bracketed_paste;
         self.typed();
-        self.send(prepare_paste(text, bracketed));
+        let bytes = prepare_paste(text, bracketed);
+        // A program that asked for bracketed paste takes the text as data: nothing runs until it sees Enter, so its
+        // line breaks are not a submitted line. Without the brackets they are keys.
+        if bracketed { self.queue(bytes) } else { self.send(bytes) }
     }
 
     /// A pointer event over the grid of the pane: the selection and the view change here, mouse reports go to the
