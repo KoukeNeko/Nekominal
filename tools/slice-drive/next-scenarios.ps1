@@ -16,6 +16,7 @@
 # A scenario fails (throws) when a check fails. The clipboard of the user is saved and restored.
 
 . (Join-Path $PSScriptRoot 'drive-lib.ps1')
+. (Join-Path $PSScriptRoot 'app-lib.ps1')
 
 $global:NextExe = Join-Path $PSScriptRoot '..\..\target\release\nekominal-next.exe'
 $global:NextFailures = @()
@@ -26,15 +27,17 @@ function Next-Check([string]$Name, [bool]$Ok, [string]$Detail) {
 }
 
 # Runs `$Body` with the shell started, in a clean environment, and puts the user's clipboard back afterwards.
-function Run-Next([scriptblock]$Body) {
+function Run-Next([scriptblock]$Body, [string]$Settings = '') {
     $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
     $global:NextFailures = @()
     try {
         # A settings folder of its own: what the app saves must not reach the user's settings.
         $global:NextAppData = Join-Path $env:TEMP ('nk-appdata-' + [guid]::NewGuid())
+        if ($Settings) { $folder = Join-Path $global:NextAppData 'Nekominal'; [void](New-Item -ItemType Directory -Force $folder); [IO.File]::WriteAllText((Join-Path $folder 'settings.json'), $Settings) }
         Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500 -Env @{ APPDATA = $global:NextAppData }
         & $Body
     } finally {
+        Stop-Pattern
         Stop-App
         if ($null -ne $saved) { Set-Clipboard -Value $saved }
     }
@@ -579,3 +582,53 @@ function Scenario-NextWindows([switch]$Inspect) {
 }
 
 function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextResize fullscreen; Scenario-NextResize classic; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle; Scenario-NextExit }
+
+# How much of the picture behind a pop-up shows through it: the mean colour spread (largest channel minus smallest) of
+# the pixels that are not text. A flat surface has none (0.0 measured with the system backdrop, 33 with the blur).
+function Next-BackdropSpread([string]$Path, [int]$X, [int]$Y, [int]$W, [int]$H) {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+    try {
+        $spread = 0.0; $count = 0
+        for ($py = $Y; $py -lt $Y + $H; $py += 3) {
+            for ($px = $X; $px -lt $X + $W; $px++) {
+                $c = $bitmap.GetPixel($px, $py)
+                if ($c.GetBrightness() -gt 0.6) { continue }
+                $spread += [Math]::Max($c.R, [Math]::Max($c.G, $c.B)) - [Math]::Min($c.R, [Math]::Min($c.G, $c.B)); $count++
+            }
+        }
+        if ($count) { $spread / $count } else { 0 }
+    } finally { $bitmap.Dispose() }
+}
+# The stripes below the window (very transparent for this) must show through the pop-up that is open.
+function Next-CheckAcrylic([string]$Name, [string]$Shot) {
+    $popup = Next-PopupWindow
+    if ($popup -eq [IntPtr]::Zero) { Next-Check "acrylic.$Name-opens" $false 'no pop-up window'; return }
+    $rect = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$rect)
+    [void](Shot-WithPattern $Shot)
+    $window = Win-Rect
+    $spread = Next-BackdropSpread $Shot ($rect.Left - $window.Left + 40 + 4) ($rect.Top - $window.Top + 40 + 4) ($rect.Right - $rect.Left - 8) ($rect.Bottom - $rect.Top - 8)
+    Next-Check "acrylic.$Name-shows-the-stripes" ($spread -gt 20) ("colour spread {0:N1}" -f $spread)
+}
+
+# The menu, the command palette and a confirmation over a window of strong colours.
+function Scenario-NextAcrylic {
+    Run-Next {
+        Start-Pattern
+        Place-PatternUnderApp 40
+        $r = Win-Rect; $s = Get-Scale
+        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $button = Next-At $menuX 24
+        $dir = if ($env:NEXT_SHOT) { Split-Path $env:NEXT_SHOT } else { $env:TEMP }
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        Next-CheckAcrylic 'menu' (Join-Path $dir 'acrylic-menu.png')
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900    # Ctrl+Shift+P
+        Next-CheckAcrylic 'palette' (Join-Path $dir 'acrylic-palette.png')
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        Set-Clipboard -Value ('x' * 6000)
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Next-CheckAcrylic 'confirm' (Join-Path $dir 'acrylic-confirm.png')
+        Press 0x1B; Start-Sleep -Milliseconds 300
+    } '{ "appearance": { "opacity": 0.2 } }'
+}

@@ -1,4 +1,4 @@
-//! Floating lists and confirmations in their own windows, requesting DWM acrylic behind the translucent content.
+//! Floating lists and confirmations in their own windows, with the acrylic of the system behind the translucent content.
 //! This file holds the rows, their geometry and the window; the drawing
 //! and the messages go through `App`, which owns the device and the UI layer.
 
@@ -10,21 +10,19 @@ use windows::{
         Foundation::{HWND, POINT},
         Graphics::{
             Dwm::{
-                DWM_SYSTEMBACKDROP_TYPE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
-                DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+                DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
             },
             Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint},
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
         UI::{
-            Controls::MARGINS,
             WindowsAndMessaging::{
                 CreateWindowExW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOWNOACTIVATE, ShowWindow, WNDCLASSW,
                 WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WINDOW_EX_STYLE,
             },
         },
     },
-    core::w,
+    core::{s, w},
 };
 
 use crate::gpu::{self, Gpu, Surface};
@@ -254,6 +252,39 @@ pub fn edit_query(query: &mut String, input: &mut Utf16Assembler, unit: u16) -> 
     }
 }
 
+/// Blurs what is behind the window. The system backdrop attribute does not do it for these windows: they never take the
+/// focus, and the backdrop of a window that is not the active one is a flat colour. The accent policy keeps blurring.
+fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
+    #[repr(C)]
+    struct AccentPolicy {
+        state: u32,
+        flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+    #[repr(C)]
+    struct CompositionAttribute {
+        attribute: u32,
+        data: *mut AccentPolicy,
+        size: usize,
+    }
+    const ACCENT_POLICY: u32 = 19;
+    const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+    type SetWindowCompositionAttribute = unsafe extern "system" fn(HWND, *mut CompositionAttribute) -> i32;
+    // SAFETY: user32 is loaded in every GUI process; the export has this signature and the structs match its ABI.
+    unsafe {
+        let module = GetModuleHandleW(w!("user32.dll")).map_err(|e| e.to_string())?;
+        let function = GetProcAddress(module, s!("SetWindowCompositionAttribute")).ok_or("SetWindowCompositionAttribute is missing")?;
+        let function: SetWindowCompositionAttribute = std::mem::transmute(function);
+        let mut policy = AccentPolicy { state: ACCENT_ENABLE_ACRYLICBLURBEHIND, flags: 0, gradient_color: tint, animation_id: 0 };
+        let mut attribute = CompositionAttribute { attribute: ACCENT_POLICY, data: &mut policy, size: std::mem::size_of::<AccentPolicy>() };
+        if function(hwnd, &mut attribute) == 0 {
+            return Err("the acrylic request was refused".into());
+        }
+    }
+    Ok(())
+}
+
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
 pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
     let (width, header, fixed_height, query) = match kind {
@@ -305,18 +336,15 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
         )
         .map_err(|e| e.to_string())?;
 
-        // Transient-window acrylic, rounded corners, over the whole client area.
+        // Rounded corners and the blur behind, over the whole client area.
         let dark = i32::from(dark);
-        let acrylic = DWM_SYSTEMBACKDROP_TYPE(3);
         let rounded: i32 = 2;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const i32).cast(), 4);
-        let backdrop = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&acrylic as *const DWM_SYSTEMBACKDROP_TYPE).cast(), 4)
-            .and_then(|_| DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }));
-        if let Err(e) = backdrop {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&rounded as *const i32).cast(), 4);
+        if let Err(e) = blur_behind(hwnd, 0x01_00_00_00) {
             let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
             return Err(format!("popup acrylic: {e}"));
         }
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&rounded as *const i32).cast(), 4);
 
         let surface = match gpu::create_surface(gpu, hwnd, (w as u32, h as u32)) {
             Ok(surface) => surface,
