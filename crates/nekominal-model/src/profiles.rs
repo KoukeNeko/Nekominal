@@ -12,7 +12,9 @@ pub enum ProfileKind {
     Bash,
     Wsl,
     Ssh,
-    /// A custom profile, or a kind this version does not know.
+    /// Another interactive shell a custom profile starts (`zsh`, `fish`, `nu`).
+    Shell,
+    /// A program that is not a known shell, or a kind this version does not know.
     Other,
 }
 
@@ -81,7 +83,7 @@ fn from_custom(entry: &CustomProfile) -> Profile {
     Profile {
         id: entry.id.clone(),
         name: entry.name.clone(),
-        kind: ProfileKind::Other,
+        kind: kind_for_program(&entry.program),
         icon: icon_for_program(&entry.program),
         program: entry.program.clone(),
         args: entry.args.clone(),
@@ -90,20 +92,39 @@ fn from_custom(entry: &CustomProfile) -> Profile {
     }
 }
 
-/// The icon of a known shell, from the file name of the program (`C:\Program Files\PowerShell\7\pwsh.exe`).
-pub fn icon_for_program(program: &str) -> &'static str {
+/// The file name of a program in lower case, without `.exe` (`C:\Program Files\PowerShell\7\pwsh.exe` is `pwsh`).
+fn program_name(program: &str) -> String {
     let file = program
         .rsplit(['\\', '/'])
         .next()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    match file.strip_suffix(".exe").unwrap_or(&file) {
+    file.strip_suffix(".exe").unwrap_or(&file).to_owned()
+}
+
+/// The icon of a known shell, from the file name of the program (`C:\Program Files\PowerShell\7\pwsh.exe`).
+pub fn icon_for_program(program: &str) -> &'static str {
+    match program_name(program).as_str() {
         "pwsh" => "pwsh",
         "powershell" => "windows-powershell",
         "cmd" => "cmd",
         "wsl" => "wsl",
         "ssh" => "ssh",
         _ => GENERIC_ICON,
+    }
+}
+
+/// The kind of a custom profile, from the file name of its program like its icon: the names the discovery step gives
+/// its kinds to, then the other interactive shells. Any other program is [`ProfileKind::Other`].
+pub fn kind_for_program(program: &str) -> ProfileKind {
+    match program_name(program).as_str() {
+        "pwsh" | "powershell" => ProfileKind::PowerShell,
+        "cmd" => ProfileKind::Cmd,
+        "bash" => ProfileKind::Bash,
+        "wsl" => ProfileKind::Wsl,
+        "ssh" => ProfileKind::Ssh,
+        "sh" | "dash" | "ksh" | "zsh" | "fish" | "nu" => ProfileKind::Shell,
+        _ => ProfileKind::Other,
     }
 }
 
@@ -119,12 +140,16 @@ pub fn merge(discovered: &[DiscoveredProfile], custom: &[CustomProfile]) -> Vec<
             continue;
         }
         taken.push(&entry.id);
-        let profile = from_custom(entry);
+        let mut profile = from_custom(entry);
         match profiles
             .iter()
             .position(|existing| !existing.custom && existing.id == entry.id)
         {
-            Some(index) => profiles[index] = profile,
+            Some(index) => {
+                // A built-in given other arguments is still that shell: it keeps how its sessions behave.
+                profile.kind = profiles[index].kind;
+                profiles[index] = profile;
+            }
             None => profiles.push(profile),
         }
     }
@@ -284,15 +309,71 @@ mod tests {
             ProfileKind::Bash,
             ProfileKind::Wsl,
             ProfileKind::Ssh,
+            ProfileKind::Shell,
         ] {
             assert!(kind.closes_pane_on_clean_exit(), "{kind:?}");
         }
         assert!(!ProfileKind::Other.closes_pane_on_clean_exit());
-        // A custom profile is Other, whatever program it names.
-        assert!(
-            !merge(&[], &[custom("agent", "claude.exe")])[0]
-                .kind
-                .closes_pane_on_clean_exit()
+    }
+
+    #[test]
+    fn a_custom_profile_is_classified_by_its_program_like_its_icon() {
+        for (program, kind) in [
+            ("pwsh.exe", ProfileKind::PowerShell),
+            ("C:\\Program Files\\PowerShell\\7\\PWSH.EXE", ProfileKind::PowerShell),
+            ("powershell", ProfileKind::PowerShell),
+            ("C:/Windows/System32/cmd.exe", ProfileKind::Cmd),
+            ("bash.exe", ProfileKind::Bash),
+            ("C:\\Windows\\System32\\wsl.exe", ProfileKind::Wsl),
+            ("ssh", ProfileKind::Ssh),
+            ("zsh", ProfileKind::Shell),
+            ("C:\\tools\\nu.exe", ProfileKind::Shell),
+            ("/usr/bin/fish", ProfileKind::Shell),
+            // Anything else is a program whose last screen is what the session was for.
+            ("claude.exe", ProfileKind::Other),
+            ("node.exe", ProfileKind::Other),
+            ("C:\\tools\\pwsh-preview\\run.cmd", ProfileKind::Other),
+            ("", ProfileKind::Other),
+        ] {
+            assert_eq!(kind_for_program(program), kind, "{program}");
+            assert_eq!(merge(&[], &[custom("mine", program)])[0].kind, kind, "{program}");
+        }
+    }
+
+    #[test]
+    fn a_custom_shell_closes_its_pane_when_it_exits_and_an_agent_keeps_its_screen() {
+        let merged = merge(
+            &[],
+            &[
+                custom("pwsh7", "C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+                custom("nushell", "nu.exe"),
+                custom("agent", "claude.exe"),
+            ],
+        );
+        let closes: Vec<bool> = merged
+            .iter()
+            .map(|p| p.kind.closes_pane_on_clean_exit())
+            .collect();
+        assert_eq!(closes, [true, true, false]);
+    }
+
+    #[test]
+    fn a_built_in_given_other_arguments_keeps_its_kind_whatever_program_it_names() {
+        let merged = merge(
+            &shells(),
+            &[
+                custom("pwsh", "C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+                custom("cmd", "C:\\tools\\launcher.exe"),
+            ],
+        );
+        assert!(merged[0].custom && merged[1].custom);
+        assert_eq!(merged[0].kind, ProfileKind::PowerShell);
+        assert_eq!(merged[1].kind, ProfileKind::Cmd);
+        assert!(merged[1].kind.closes_pane_on_clean_exit());
+        // The profile that replaces nothing has only its program to go by.
+        assert_eq!(
+            merge(&shells(), &[custom("launcher", "C:\\tools\\launcher.exe")])[3].kind,
+            ProfileKind::Other
         );
     }
 
