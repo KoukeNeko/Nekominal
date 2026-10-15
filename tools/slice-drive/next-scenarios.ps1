@@ -74,6 +74,33 @@ function Scenario-NextTabs {
     }
 }
 
+function Scenario-NextSplit {
+    Run-Next {
+        Next-Line 'echo LEFT-PANE'
+        Press 0x44 @(0x12, 0x10); Start-Sleep -Milliseconds 1500    # Alt+Shift+D: split right
+        Next-Line 'echo RIGHT-PANE'
+        $text = Next-Text
+        Next-Check 'split.new-pane-is-focused-and-separate' ($text -match 'RIGHT-PANE' -and $text -notmatch 'LEFT-PANE') 'the new pane has the keyboard and its own text'
+        Press 0x25 @(0x12); Start-Sleep -Milliseconds 800           # Alt+Left
+        $text = Next-Text
+        Next-Check 'split.focus-left' ($text -match 'LEFT-PANE' -and $text -notmatch 'RIGHT-PANE') 'Alt+Left moves the keyboard to the left pane'
+        Press 0x53 @(0x12, 0x10); Start-Sleep -Milliseconds 1500    # Alt+Shift+S: split down
+        Next-Line 'echo BOTTOM-PANE'
+        $text = Next-Text
+        Next-Check 'split.down' ($text -match 'BOTTOM-PANE' -and $text -notmatch 'LEFT-PANE') 'a pane split below has its own text'
+        Press 0x5A @(0x11, 0x10); Start-Sleep -Milliseconds 500     # Ctrl+Shift+Z: zoom
+        Next-Line 'echo ZOOMED'
+        Press 0x5A @(0x11, 0x10); Start-Sleep -Milliseconds 500
+        $text = Next-Text
+        Next-Check 'split.zoom-round-trip' ($text -match 'ZOOMED' -and $text -match 'BOTTOM-PANE') 'zooming and back keeps the pane and its text'
+        Press 0x57 @(0x11, 0x10); Start-Sleep -Milliseconds 800     # Ctrl+Shift+W: close pane
+        Press 0x57 @(0x11, 0x10); Start-Sleep -Milliseconds 800
+        Next-Line 'echo LAST-PANE'
+        $text = Next-Text
+        Next-Check 'split.close-leaves-one' ($text -match 'LAST-PANE') 'after closing two panes the remaining one takes input'
+    }
+}
+
 function Scenario-NextClipboard {
     Run-Next {
         Set-Clipboard -Value 'before'

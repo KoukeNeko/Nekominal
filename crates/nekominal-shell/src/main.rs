@@ -5,6 +5,7 @@
 mod app;
 mod gpu;
 mod layout;
+mod tab;
 mod win;
 
 /// What the shared modules below call to write to the log: the file named by NEKOMINAL_LOG, when there is one.
