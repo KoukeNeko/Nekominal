@@ -1,0 +1,15 @@
+[package]
+name = "nekominal-ui"
+description = "Self-drawn UI layer: rounded rectangles, shadows and text on wgpu, in DIP with a scale factor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nekominal-render = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+nekominal-render = { workspace = true, features = ["offscreen"] }

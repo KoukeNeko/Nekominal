@@ -8,6 +8,7 @@ members = [
     "crates/nekominal-term",
     "crates/nekominal-input",
     "crates/nekominal-render",
+    "crates/nekominal-ui",
     "tools/winprobe",
     "tools/agent-probe",
     "tools/ui-spike",
@@ -30,6 +31,7 @@ nekominal-model = { path = "crates/nekominal-model" }
 nekominal-term = { path = "crates/nekominal-term" }
 nekominal-input = { path = "crates/nekominal-input" }
 nekominal-render = { path = "crates/nekominal-render" }
+nekominal-ui = { path = "crates/nekominal-ui" }
 nekominal-winui-sys = { path = "crates/nekominal-winui-sys" }
 nekominal-pane = { path = "crates/nekominal-pane" }
 nekominal-winui = { path = "crates/nekominal-winui" }
