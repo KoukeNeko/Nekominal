@@ -9,6 +9,7 @@ use nekominal_input::{
 };
 use nekominal_model::{
     commands::{self, Command},
+    palette::{self, PaletteAction, PaletteTab},
     keymap::{self, Keymap, Modifiers},
     layout::{Axis, PaneId},
     menu::{APP_MENU, MenuRow},
@@ -104,6 +105,35 @@ pub struct App {
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
+}
+
+/// Whether `App::run` does something for the command.
+fn wired(command: Command) -> bool {
+    matches!(
+        command,
+        Command::TabNew
+            | Command::TabClose
+            | Command::TabNext
+            | Command::TabPrevious
+            | Command::PaneSplitRight
+            | Command::PaneSplitDown
+            | Command::PaneClose
+            | Command::PaneZoom
+            | Command::PaneFocus(_)
+            | Command::PaneResize(_)
+            | Command::EditCopy
+            | Command::EditSmartCopy
+            | Command::EditPaste
+            | Command::EditSelectAll
+            | Command::EditClear
+            | Command::ScrollPageUp
+            | Command::ScrollPageDown
+            | Command::ScrollTop
+            | Command::ScrollBottom
+            | Command::PromptPrevious
+            | Command::PromptNext
+            | Command::AppPalette
+    )
 }
 
 fn col(c: SchemeColor) -> Color {
@@ -765,6 +795,7 @@ impl App {
                 }
                 self.relayout();
             }
+            Command::AppPalette => self.open_palette(),
             Command::EditCopy => {
                 self.copy_selection();
             }
@@ -960,15 +991,13 @@ impl App {
 
     /// The rows of the menu: `APP_MENU` without what the shell cannot do yet, and without separators left dangling.
     fn menu_rows(&self) -> Vec<popup::Row> {
-        // shortcut: only the commands `run` handles are offered; the find bar, the palette, full screen and the
-        // settings join when they exist, and the backdrop and opacity rows with the settings drawer.
-        const WIRED: &[Command] =
-            &[Command::TabNew, Command::PaneSplitRight, Command::PaneSplitDown, Command::PaneZoom, Command::PaneClose];
+        // shortcut: only the commands `run` handles are offered; the find bar, full screen and the settings join
+        // when they exist, and the backdrop and opacity rows with the settings drawer.
         let lang = self.language();
         let mut rows: Vec<popup::Row> = Vec::new();
         for row in APP_MENU {
             match row {
-                MenuRow::Command(command) if WIRED.contains(command) => rows.push(popup::Row {
+                MenuRow::Command(command) if wired(*command) => rows.push(popup::Row {
                     label: command.label(lang),
                     hint: self.keymap.shortcut_text(*command).to_string(),
                     action: Some(popup::Action::Command(*command)),
@@ -984,9 +1013,74 @@ impl App {
         rows
     }
 
+    /// The screen point (pixels) at the bottom right of a button (DIP): where a list hangs from.
+    fn button_anchor(&self, button: Rect) -> (i32, i32) {
+        self.screen_point((button.x + button.w) * self.scale, (button.y + button.h) * self.scale)
+    }
+
+    fn screen_point(&self, x: f32, y: f32) -> (i32, i32) {
+        let mut point = POINT { x: x.round() as i32, y: y.round() as i32 };
+        // SAFETY: converts a point of our own window.
+        unsafe { let _ = ClientToScreen(self.hwnd, &mut point); }
+        (point.x, point.y)
+    }
+
     fn open_menu(&mut self) {
         let rows = self.menu_rows();
-        self.open_popup(rows, self.layout.menu);
+        let anchor = self.button_anchor(self.layout.menu);
+        self.open_popup(rows, popup::Kind::List, anchor);
+    }
+
+    /// The command palette: what matches `query` of the commands the shell can run and the open tabs.
+    fn palette_rows(&self, query: &str) -> Vec<popup::Row> {
+        let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
+        let items = palette::items(self.language(), &self.keymap, &[], &tabs);
+        palette::search(items, query)
+            .into_iter()
+            .filter_map(|item| {
+                let action = match item.action {
+                    PaletteAction::Run(command) if wired(command) => popup::Action::Command(command),
+                    PaletteAction::GotoTab(index) => popup::Action::Tab(index as usize),
+                    // shortcut: new tab with a profile, color scheme and settings entries wait for the settings
+                    // drawer and the profile picker.
+                    _ => return None,
+                };
+                Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false })
+            })
+            .collect()
+    }
+
+    fn open_palette(&mut self) {
+        let rows = self.palette_rows("");
+        // Centered under the top bar: the pop-up hangs from its top right corner.
+        let anchor = self.screen_point(
+            (self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale,
+            (layout::TITLE_HEIGHT + 16.0) * self.scale,
+        );
+        self.open_popup(rows, popup::Kind::Palette, anchor);
+    }
+
+    /// A character typed into the palette: it goes into the query, and the rows follow.
+    pub fn popup_char(&mut self, unit: u16) {
+        let Some(query) = self.popup.as_ref().and_then(|p| p.query.clone()) else { return };
+        let mut query = query;
+        match unit {
+            0x08 => {
+                query.pop();
+            }
+            u if u >= 0x20 && u != 0x7F => {
+                // Surrogates (outside the BMP) are left out: the input method sends them one half at a time.
+                let Some(ch) = char::from_u32(u32::from(u)) else { return };
+                query.push(ch);
+            }
+            _ => return,
+        }
+        let rows = self.palette_rows(&query);
+        let Some(popup) = self.popup.as_mut() else { return };
+        popup.query = Some(query);
+        popup.set_rows(rows);
+        // SAFETY: invalidating our own window.
+        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
     }
 
     /// The list of all tabs: one row per tab with its number, the selected one marked.
@@ -999,7 +1093,8 @@ impl App {
                 current: i == self.selected,
             })
             .collect();
-        self.open_popup(rows, self.layout.tab_list);
+        let anchor = self.button_anchor(self.layout.tab_list);
+        self.open_popup(rows, popup::Kind::List, anchor);
         let selected = self.selected;
         if let Some(popup) = self.popup.as_mut() {
             popup.hover = Some(selected);
@@ -1007,16 +1102,12 @@ impl App {
         }
     }
 
-    /// Opens a list under the button `button` (DIP), right edges aligned.
-    fn open_popup(&mut self, rows: Vec<popup::Row>, button: Rect) {
+    /// Opens a list with its top right corner at the screen point `anchor`.
+    fn open_popup(&mut self, rows: Vec<popup::Row>, kind: popup::Kind, anchor: (i32, i32)) {
         if self.popup.is_some() || self.popup_closed.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
             return;
         }
-        let menu = button;
-        let mut anchor = POINT { x: ((menu.x + menu.w) * self.scale).round() as i32, y: ((menu.y + menu.h) * self.scale).round() as i32 };
-        // SAFETY: converts a point of our own window.
-        unsafe { let _ = ClientToScreen(self.hwnd, &mut anchor); }
-        match popup::open(self.hwnd, &self.gpu, rows, (anchor.x, anchor.y), self.scale, self.dark()) {
+        match popup::open(self.hwnd, &self.gpu, rows, kind, anchor, self.scale, self.dark()) {
             Ok(popup) => {
                 // SAFETY: invalidating the window just made.
                 unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
@@ -1049,7 +1140,7 @@ impl App {
     pub fn popup_move(&mut self, at: Option<(i32, i32)>) {
         let scale = self.scale;
         let Some(popup) = self.popup.as_mut() else { return };
-        let row = at.and_then(|(x, y)| popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale + popup.scroll));
+        let row = at.and_then(|(x, y)| popup.row_at_point(x as f32 / scale, y as f32 / scale));
         if row != popup.hover {
             popup.hover = row;
             // SAFETY: invalidating our own window.
@@ -1060,7 +1151,7 @@ impl App {
     pub fn popup_click(&mut self, x: i32, y: i32) {
         let scale = self.scale;
         let Some(popup) = self.popup.as_ref() else { return };
-        if let Some(row) = popup::row_at(&popup.rows, &popup.rects, x as f32 / scale, y as f32 / scale + popup.scroll) {
+        if let Some(row) = popup.row_at_point(x as f32 / scale, y as f32 / scale) {
             self.choose(row);
         }
     }
@@ -1124,9 +1215,12 @@ impl App {
         let tint = Color([g.background.r, g.background.g, g.background.b, 140]);
         ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
         let line = ui.line_height(TEXT_SIZE);
+        let header = popup.header;
+        // The rows scroll under the query line, so they are clipped to the part below it.
+        ui.push_clip(Rect::new(0.0, header, popup.size.0, popup.size.1 - header));
         for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
-            let rect = Rect::new(rect.x, rect.y - popup.scroll, rect.w, rect.h);
-            if rect.y + rect.h < 0.0 || rect.y > popup.size.1 {
+            let rect = Rect::new(rect.x, header + rect.y - popup.scroll, rect.w, rect.h);
+            if rect.y + rect.h < header || rect.y > popup.size.1 {
                 continue;
             }
             if row.is_separator() {
@@ -1142,9 +1236,19 @@ impl App {
             let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
             ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
             let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
-            ui.push_clip(Rect::new(rect.x, rect.y, (label_end - rect.x).max(0.0), rect.h));
+            ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));
             ui.text(rect.x + 12.0, y, &row.label, TEXT_SIZE, col(g.text()), false);
             ui.pop_clip();
+        }
+        ui.pop_clip();
+        if let Some(query) = &popup.query {
+            let y = (header - line) / 2.0;
+            let icon_line = ui.line_height(14.0);
+            ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
+            let width = ui.text(44.0, y, query, TEXT_SIZE, col(g.text()), false);
+            // The caret: a bar after the text, not blinking, so the window needs no timer.
+            ui.fill(Rect::new(44.0 + width + 1.0, y, 1.5, line), col(g.text()));
+            ui.fill(Rect::new(0.0, header - 1.0, popup.size.0, 1.0), col(g.divider()));
         }
         ui.end_frame(&view);
         popup.surface.present();

@@ -402,6 +402,10 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
             with_app(|app| app.popup_click(lo(lparam), hi(lparam)));
             LRESULT(0)
         }
+        WM_CHAR => {
+            with_app(|app| app.popup_char(wparam.0 as u16));
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
             with_app(|app| app.popup_wheel(delta));

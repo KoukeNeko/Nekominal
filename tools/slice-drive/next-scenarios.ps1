@@ -101,6 +101,19 @@ function Scenario-NextSplit {
     }
 }
 
+# How many pixels of a screen region are light (text on a dark surface): a pop-up that drew nothing has none.
+function Next-LightPixels([int]$X, [int]$Y, [int]$W, [int]$H) {
+    Add-Type -AssemblyName System.Drawing
+    $path = Join-Path $env:TEMP 'next-light.png'
+    [void](ShotRegion $path $X $Y $W $H)
+    $bitmap = [System.Drawing.Bitmap]::FromFile($path)
+    try {
+        $count = 0
+        for ($py = 0; $py -lt $bitmap.Height; $py += 2) { for ($px = 0; $px -lt $bitmap.Width; $px += 2) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt 0.6) { $count++ } } }
+        $count
+    } finally { $bitmap.Dispose() }
+}
+
 function Scenario-NextMenu {
     Run-Next {
         Next-Line 'echo ONE'
@@ -109,6 +122,7 @@ function Scenario-NextMenu {
         $button = Next-At $menuX 24
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
         if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 300) $button[1] 340 300 }
+        Next-Check 'menu.is-drawn' ((Next-LightPixels ($button[0] - 300) ($button[1] + 10) 300 250) -gt 100) 'the pop-up shows text, not just its backdrop'
         $row = Next-At ($menuX - 60) 98                        # second row: split right
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1500
         Next-Line 'echo TWO'
@@ -145,6 +159,25 @@ function Scenario-NextTabList {
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 800
         $text = Next-Text
         Next-Check 'tablist.select-second' ($text -match 'MARK-2' -and $text -notmatch 'MARK-6') 'choosing the second row of the list selects the second tab'
+    }
+}
+
+function Scenario-NextPalette {
+    Run-Next {
+        Next-Line 'echo ONE'
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900    # Ctrl+Shift+P
+        Type-Unicode 'split pane right' 40; Start-Sleep -Milliseconds 500
+        $r = Win-Rect
+        if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($r.Left + 200) ($r.Top + 40) 1000 420 }
+        Next-Check 'palette.is-drawn' ((Next-LightPixels ($r.Left + 430) ($r.Top + 110) 700 200) -gt 100) 'the palette shows its query and rows, not just its backdrop'
+        Press 0x0D; Start-Sleep -Milliseconds 1500                  # Enter: the first match
+        Next-Line 'echo TWO'
+        $text = Next-Text
+        Next-Check 'palette.runs-the-first-match' ($text -match 'TWO' -and $text -notmatch 'ONE') 'typing a name and Enter ran the command: the pane was split'
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 700
+        Press 0x1B; Start-Sleep -Milliseconds 500                   # Esc
+        Next-Line 'echo AFTER-ESC'
+        Next-Check 'palette.escape-closes' ((Next-Text) -match 'AFTER-ESC') 'after Esc the pane takes the typing again'
     }
 }
 
