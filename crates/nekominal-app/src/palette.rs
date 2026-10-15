@@ -56,11 +56,13 @@ const TAB_ROW_XAML: &str = r#"
   <TextBlock x:Name="Shortcut" Grid.Column="5" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
 </Grid>"#;
 
-/// The list item for a row, stretched over the width of the list.
-fn list_item(content: &FrameworkElement) -> Result<ListViewItem> {
+/// The list item for a row, stretched over the width of the list, with the accessible name and shortcut the row shows.
+fn list_item(content: &FrameworkElement, name: &str, shortcut: &str) -> Result<ListViewItem> {
     let item = ListViewItem::new()?;
     item.cast::<ContentControl>()?.SetContent(content)?;
     item.cast::<Control>()?.SetHorizontalContentAlignment(HorizontalAlignment::Stretch)?;
+    AutomationProperties::SetName(&item, name)?;
+    AutomationProperties::SetAcceleratorKey(&item, shortcut)?;
     Ok(item)
 }
 
@@ -68,7 +70,7 @@ fn command_item(entry: &PaletteItem) -> Result<ListViewItem> {
     let row = load_xaml(COMMAND_ROW_XAML)?;
     find::<TextBlock>(&row, "Label")?.SetText(&entry.label)?;
     find::<TextBlock>(&row, "Shortcut")?.SetText(&entry.shortcut)?;
-    list_item(&row)
+    list_item(&row, &entry.label, &entry.shortcut)
 }
 
 fn tab_item(entry: &TabRow, glass: Option<Glass>) -> Result<ListViewItem> {
@@ -88,7 +90,7 @@ fn tab_item(entry: &TabRow, glass: Option<Glass>) -> Result<ListViewItem> {
     {
         log(&format!("tab row mark: {e}"));
     }
-    list_item(&row)
+    list_item(&row, &entry.title, &entry.shortcut)
 }
 
 /// The state of the tab: a glyph that differs from the others without its colour, or the dot.
