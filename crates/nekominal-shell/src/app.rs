@@ -536,6 +536,30 @@ impl App {
         }
     }
 
+    // --- input method -------------------------------------------------------------------------------------------
+
+    /// The text being composed, drawn at the cursor; `None` when the composition ended.
+    pub fn on_ime_preedit(&mut self, text: Option<String>) {
+        if let Some(tab) = self.tabs.get_mut(self.selected) {
+            tab.view.set_preedit(text);
+        }
+        self.redraw();
+    }
+
+    /// Text the input method finished: it goes to the program as typed.
+    pub fn on_ime_commit(&mut self, text: &str) {
+        if let Some(tab) = self.tabs.get(self.selected) {
+            tab.pane.send_text(text);
+        }
+    }
+
+    /// Where the cursor cell is in the window, in pixels: left, top and height (the candidate window hangs under it).
+    pub fn ime_anchor(&self) -> Option<(i32, i32, i32)> {
+        let tab = self.tabs.get(self.selected)?;
+        let (x, y, _, height) = tab.view.cursor_cell_px(&tab.pane.term);
+        Some((x as i32, (y + self.pane_top()) as i32, height as i32))
+    }
+
     // --- clipboard ----------------------------------------------------------------------------------------------
 
     fn copy_selection(&mut self) -> bool {

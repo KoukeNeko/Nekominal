@@ -4,6 +4,7 @@
 #   . .\tools\slice-drive\next-scenarios.ps1
 #   Scenario-NextTabs        # a new tab from the button and from the keyboard, switching, closing: each tab keeps its own text
 #   Scenario-NextClipboard   # select by dragging, copy, paste, and a program copying through OSC 52
+#   Scenario-NextIme         # Zhuyin: composition and commit
 #   Scenario-NextKeys        # Ctrl+U, Ctrl+C, Backspace and CJK text reach the shell
 #   Scenario-NextClaude [fullscreen|classic]   # Claude Code starts, takes text and exits, no model call
 #   Scenario-NextIdle        # memory and CPU of an idle window
@@ -156,6 +157,22 @@ function Scenario-NextClaude([ValidateSet('fullscreen', 'classic')][string]$Mode
     }
     if ($global:NextFailures.Count -gt 0) { throw "failed: $($global:NextFailures -join ', ')" }
 }
+# Microsoft Bopomofo through real key presses: s u 3 is the syllable for ni3 and the first candidate is 你, c l 3 is hao3
+# and 好. The composition is drawn inline at the cursor (its picture is kept for looking at), Enter commits it, and the
+# committed text reaches the shell once.
+function Scenario-NextIme {
+    Run-Next {
+        Press 0x53; Press 0x55; Press 0x33; Start-Sleep -Milliseconds 700
+        # Not Next-Text here: its chords would commit the composition.
+        Shot (Join-Path ([IO.Path]::GetTempPath()) 'nekominal-drive\next-ime-preedit.png') | Out-Null
+        Press 0x0D; Start-Sleep -Milliseconds 900
+        Press 0x43; Press 0x4C; Press 0x33; Start-Sleep -Milliseconds 500
+        Press 0x0D; Start-Sleep -Milliseconds 900
+        $text = Next-Text
+        Next-Check 'ime.commit' ($text -match '你好') "the composed text 你好 reached the prompt"
+        Next-Check 'ime.once' (([regex]::Matches($text, '你')).Count -eq 1) 'each committed character appears once'
+    }
+}
 function Scenario-NextIdle {
     Run-Next {
         Start-Sleep -Seconds 3
@@ -168,4 +185,4 @@ function Scenario-NextIdle {
     }
 }
 
-function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }
+function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }

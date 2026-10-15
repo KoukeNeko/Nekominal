@@ -21,6 +21,11 @@ use windows::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, GetSystemMetricsForDpi,
                 SetProcessDpiAwarenessContext,
             },
+            Input::Ime::{
+                CANDIDATEFORM, CFS_CANDIDATEPOS, CFS_POINT, COMPOSITIONFORM, GCS_COMPSTR, GCS_RESULTSTR, HIMC,
+                IME_COMPOSITION_STRING, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+                ImmSetCompositionWindow,
+            },
             Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
             WindowsAndMessaging::*,
         },
@@ -119,6 +124,36 @@ fn edge_hit(hwnd: HWND, x: i32, y: i32) -> Option<u32> {
     .map(|code| code as u32)
 }
 
+/// The composition string of the input method (`what` is the preedit or the result), as text.
+fn composition_text(himc: HIMC, what: IME_COMPOSITION_STRING) -> String {
+    // SAFETY: the buffer is as long as the call says it needs.
+    unsafe {
+        let bytes = ImmGetCompositionStringW(himc, what, None, 0);
+        if bytes <= 0 {
+            return String::new();
+        }
+        let mut units = vec![0u16; bytes as usize / 2];
+        ImmGetCompositionStringW(himc, what, Some(units.as_mut_ptr().cast()), bytes as u32);
+        String::from_utf16_lossy(&units)
+    }
+}
+
+/// Puts the composition and candidate windows of the input method at the cursor cell of the pane.
+fn place_ime(hwnd: HWND) {
+    let Some((x, y, height)) = with_app(|app| app.ime_anchor()).flatten() else { return };
+    // SAFETY: the context belongs to this window and is released below; the forms live through the calls.
+    unsafe {
+        let himc = ImmGetContext(hwnd);
+        if himc.is_invalid() {
+            return;
+        }
+        let composition = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: POINT { x, y }, rcArea: RECT::default() };
+        let _ = ImmSetCompositionWindow(himc, &composition);
+        let candidates = CANDIDATEFORM { dwIndex: 0, dwStyle: CFS_CANDIDATEPOS, ptCurrentPos: POINT { x, y: y + height }, rcArea: RECT::default() };
+        let _ = ImmSetCandidateWindow(himc, &candidates);
+        let _ = ImmReleaseContext(hwnd, himc);
+    }
+}
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // The caption buttons are DWM's: it answers the hit tests, the hovering and the clicks on them first.
     if matches!(msg, WM_NCHITTEST | WM_NCMOUSEMOVE | WM_NCLBUTTONDOWN | WM_NCLBUTTONUP | WM_NCMOUSELEAVE) {
@@ -248,7 +283,38 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let time = unsafe { GetMessageTime() } as u32;
             with_app(|app| app.on_wheel(p.x, p.y, delta, time));
             LRESULT(0)
-        }        WM_KEYDOWN | WM_SYSKEYDOWN => {
+        }        // The input method composes into the terminal: its text is drawn inline at the cursor by the pane, so the
+        // system's own composition window stays hidden (these messages are not passed on), and the candidate window
+        // is placed under the cursor cell.
+        WM_IME_STARTCOMPOSITION => {
+            place_ime(hwnd);
+            LRESULT(0)
+        }
+        WM_IME_COMPOSITION => {
+            // SAFETY: the context belongs to this window and is released below.
+            unsafe {
+                let himc = ImmGetContext(hwnd);
+                if !himc.is_invalid() {
+                    let flags = lparam.0 as u32;
+                    if flags & GCS_RESULTSTR.0 != 0 {
+                        let text = composition_text(himc, GCS_RESULTSTR);
+                        with_app(|app| app.on_ime_commit(&text));
+                    }
+                    if flags & GCS_COMPSTR.0 != 0 {
+                        let text = composition_text(himc, GCS_COMPSTR);
+                        with_app(|app| app.on_ime_preedit((!text.is_empty()).then_some(text)));
+                    }
+                    let _ = ImmReleaseContext(hwnd, himc);
+                }
+            }
+            place_ime(hwnd);
+            LRESULT(0)
+        }
+        WM_IME_ENDCOMPOSITION => {
+            with_app(|app| app.on_ime_preedit(None));
+            LRESULT(0)
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
             let (scan, extended, repeat) = (((lparam.0 >> 16) & 0xFF) as u16, (lparam.0 >> 24) & 1 == 1, (lparam.0 >> 30) & 1 == 1);
             let handled = with_app(|app| app.on_key_down(wparam.0 as i32, scan, extended, repeat)).unwrap_or(false);
             // Alt+Space opens the system menu; every other Alt chord belongs to the terminal.
