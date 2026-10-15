@@ -123,6 +123,8 @@ pub struct App {
     plate_rect: Option<Rect>,
     /// Where the window was when the session was saved, for the window code to put it back.
     placement: Option<Placement>,
+    /// Keys (by scan code) that went down as a shortcut of the shell: the program does not get their release either.
+    shortcut_keys: Vec<u16>,
     /// The title of the window as it was last set.
     window_title: String,
     tabs: Vec<Tab>,
@@ -314,6 +316,7 @@ impl App {
             drag: None,
             plate_rect: None,
             placement: None,
+            shortcut_keys: Vec::new(),
             window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
@@ -1372,6 +1375,7 @@ impl App {
         {
             if !repeat {
                 self.run(command);
+                self.shortcut_keys.push(scan);
             }
             return true;
         }
@@ -1388,6 +1392,23 @@ impl App {
         let event = if repeat { KeyEvent::Repeat } else { KeyEvent::Press };
         entry.pane.send_key(&KeyInput::new(key).with_mods(mods).with_event(event));
         true
+    }
+
+    /// A key came up. A program that asked for key releases (the kitty keyboard protocol) is told; the encoder says
+    /// nothing for the others.
+    pub fn on_key_up(&mut self, vk_code: i32, scan: u16, extended: bool) {
+        if let Some(at) = self.shortcut_keys.iter().position(|pressed| *pressed == scan) {
+            self.shortcut_keys.remove(at);
+            return;
+        }
+        if self.popup.is_some() || self.page.is_some() || vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
+            return;
+        }
+        let mods = input_mods(held());
+        let Some(key) = vk::key_for_vk_scan(vk_code, scan, extended, mods) else { return };
+        if let Some(entry) = self.focused() {
+            entry.pane.send_key(&KeyInput::new(key).with_mods(mods).with_event(KeyEvent::Release));
+        }
     }
 
     /// One UTF-16 unit of text from the keyboard or the IME.

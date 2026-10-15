@@ -1103,3 +1103,25 @@ function Scenario-NextKeybind {
         Press 0x1B; Start-Sleep -Milliseconds 500
     }
 }
+
+# kitty keyboard protocol: a program that asks for key release events (flag 2) gets them, in the shell's own window.
+function Scenario-NextKittyKeys {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        $script = Join-Path $env:TEMP 'nk-kitty-keys.js'
+        Set-Content -Path $script -Encoding ascii -Value @'
+process.stdout.write('\x1b[>11u');
+process.stdin.setRawMode(true);
+process.stdin.on('data', d => { const s = JSON.stringify(d.toString('latin1')); console.log('KEYS' + s.replace(/\u001b/g, 'ESC')); if (s.includes('q')) { process.stdout.write('\x1b[<u'); process.exit(0); } });
+'@
+        Next-Line "node '$script'"
+        Start-Sleep -Milliseconds 1200
+        Press 0x74; Start-Sleep -Milliseconds 600       # F5: the input method takes the letters
+        # Read from the tree a screen reader gets: the clipboard shortcuts of the shell are not what is looked at here.
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $document = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document))
+        $text = $document.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+        Next-Check 'kitty.release-is-reported' ($text -match 'KEYS' -and $text -match '15;1:3~') "what the program read: $((($text -split "`n") | Where-Object { $_ -match 'KEYS' }) -join ' | ')"
+        Press 0x51; Start-Sleep -Milliseconds 600
+    } '{ "keyboard": { "kittyProtocol": true } }'
+}

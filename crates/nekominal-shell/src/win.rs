@@ -429,7 +429,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         // A lone Alt press and release must not start the (empty) window menu.
-        WM_SYSKEYUP if wparam.0 != 0x20 => LRESULT(0),
+        WM_KEYUP | WM_SYSKEYUP if msg == WM_KEYUP || wparam.0 != 0x20 => {
+            let (scan, extended) = (((lparam.0 >> 16) & 0xFF) as u16, (lparam.0 >> 24) & 1 == 1);
+            let (scan, extended) = key_scan(wparam.0 as i32, scan, extended);
+            with_app(hwnd, |app| app.on_key_up(wparam.0 as i32, scan, extended));
+            LRESULT(0)
+        }
         WM_CHAR => {
             with_app(hwnd, |app| app.on_char(wparam.0 as u16));
             LRESULT(0)
