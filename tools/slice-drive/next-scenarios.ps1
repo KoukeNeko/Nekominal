@@ -843,3 +843,64 @@ function Scenario-NextCaption {
         Next-Check 'caption.close' ($script:App.HasExited) 'the right button closes the window and the process ends'
     }
 }
+
+function Next-WindowTitle {
+    $text = [Text.StringBuilder]::new(256)
+    [void][D]::GetWindowText($script:Hwnd, $text, 256)
+    $text.ToString()
+}
+
+function Next-TabNames {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.TabItem' } | ForEach-Object { $_.Current.Name })
+}
+
+# What the settings change in the window: the title of a tab, the mark of a bell, the menu of the right button, the title
+# of the window while it waits for the user.
+function Scenario-NextBehavior {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        Next-Line 'Set-Location C:\Windows'
+        Start-Sleep -Milliseconds 800
+        $names = Next-TabNames
+        Next-Check 'behavior.tab-title-names-the-folder' ($names -contains 'Windows') "tab titles: $($names -join ' | ')"
+    }
+    foreach ($visual in $true, $false) {
+        Run-Next {
+            $r = Win-Rect; $scale = Get-Scale
+            $region = @([int]($r.Left + 12 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
+            $quiet = Join-Path $env:TEMP 'bell-quiet.png'; $rung = Join-Path $env:TEMP 'bell-rung.png'
+            Next-Line 'Start-Sleep 5; [Console]::Out.Write([char]7)'
+            Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+            [void](ShotRegion $quiet $region[0] $region[1] $region[2] $region[3])
+            Start-Sleep -Seconds 6
+            [void](ShotRegion $rung $region[0] $region[1] $region[2] $region[3])
+            $marked = Next-DiffPixels $quiet $rung
+            if ($visual) { Next-Check 'behavior.bell-marks-the-tab' ($marked -gt 8) "$marked pixels of the chip changed" }
+            else { Next-Check 'behavior.bell-mark-can-be-turned-off' ($marked -lt 8) "$marked pixels of the chip changed with bell.visual off" }
+        } ('{ "bell": { "visual": ' + $visual.ToString().ToLower() + ' } }')
+    }
+    Run-Next {
+        $r = Win-Rect; $scale = Get-Scale
+        Click-At ([int]($r.Left + 400 * $scale)) ([int]($r.Top + 300 * $scale)) 'right'; Start-Sleep -Milliseconds 900
+        $popup = Next-PopupWindow
+        Next-Check 'behavior.right-click-opens-the-menu' ($popup -ne [IntPtr]::Zero) 'rightClick menu opens a menu'
+        if ($popup -ne [IntPtr]::Zero) {
+            $rect = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$rect)
+            Next-Check 'behavior.right-click-menu-is-drawn' ((Next-LightPixels ($rect.Left + 10) ($rect.Top + 10) ($rect.Right - $rect.Left - 20) ($rect.Bottom - $rect.Top - 20)) -gt 50) 'the menu shows its rows'
+        }
+        Press 0x1B; Start-Sleep -Milliseconds 400
+    } '{ "rightClick": "menu" }'
+    Run-Next {
+        Start-Pattern
+        Place-PatternUnderApp 0
+        Next-Line 'exit 3'
+        Start-Sleep -Milliseconds 800
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Check 'behavior.title-is-plain-while-active' ((Next-WindowTitle) -eq 'Nekominal') "title: $(Next-WindowTitle)"
+        if (Move-PatternAway 320 220) { [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 1200 }
+        Next-Check 'behavior.title-counts-the-tabs-that-wait' ((Next-WindowTitle) -eq '!1 Nekominal') "title: $(Next-WindowTitle)"
+        Stop-Pattern
+    }
+}

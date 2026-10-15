@@ -9,13 +9,14 @@ use nekominal_input::{
     KeyEvent, KeyInput, Mods, MouseButton, PointerEvent, PointerGrid, PointerKind, Utf16Assembler, vk,
 };
 use nekominal_model::{
+    bell::{self, BellContext, BellEffects},
     commands::{self, Command},
     palette::{self, PaletteAction, PaletteTab},
     keymap::{self, Keymap, Modifiers},
     layout::{Axis, PaneId},
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
-    settings::{self, Backdrop, Settings},
+    settings::{self, Backdrop, RightClick, Settings},
     settings_ui::{self, Control, Descriptor, Section, Value},
     strings::{Lang, Text},
     store,
@@ -27,19 +28,21 @@ use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_ui::{Color, Rect, Ui};
-use windows::Win32::{
+use windows::{core::HSTRING, Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Globalization::GetUserDefaultLocaleName,
+    System::Diagnostics::Debug::MessageBeep,
     Graphics::Gdi::{ClientToScreen, ScreenToClient, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
         WindowsAndMessaging::{
-            DestroyWindow, GWL_STYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
+            DestroyWindow, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
+            SM_SHOWSOUNDS, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
             SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
             SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WS_OVERLAPPEDWINDOW,
         },
     },
-};
+}};
 
 use crate::{
     access, clipboard, find,
@@ -98,6 +101,12 @@ pub struct App {
     profiles: Vec<Profile>,
     /// The settings page while it is open: it takes the place of the panes.
     page: Option<Page>,
+    /// When the taskbar button last flashed or a sound last played: they are limited to one a second.
+    last_alert: Option<Instant>,
+    /// The right button opened the menu and is still down: letting go of it must not close the menu.
+    context_release: bool,
+    /// The title of the window as it was last set.
+    window_title: String,
     tabs: Vec<Tab>,
     selected: usize,
     layout: Layout,
@@ -252,6 +261,9 @@ impl App {
             profile,
             profiles: all,
             page: None,
+            last_alert: None,
+            context_release: false,
+            window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
             layout: Layout::new(1.0, 1.0, 0, 0.0, 0),
@@ -369,6 +381,9 @@ impl App {
             grid: (cols as u16, rows as u16),
             rect: PxRect { x: 0, y: 0, w: size_px.0 as i32, h: size_px.1 as i32 },
             title: String::new(),
+            cwd: None,
+            profile: self.profile.name.clone(),
+            shell: std::path::Path::new(&self.profile.program).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default(),
             exited: false,
             attention: None,
             note: None,
@@ -567,6 +582,7 @@ impl App {
     pub fn on_activate(&mut self, active: bool) {
         if !active { self.close_popup(); }
         self.active = active;
+        self.update_window_title();
         if active && let Some(tab) = self.tabs.get_mut(self.selected) {
             tab.mark_seen();
         }
@@ -605,22 +621,38 @@ impl App {
         }
         let mut ended: Vec<(usize, PaneId)> = Vec::new();
         let (selected, active) = (self.selected, self.active);
+        let mut ring = BellEffects::default();
+        // SAFETY: a plain query.
+        let show_sounds = unsafe { GetSystemMetrics(SM_SHOWSOUNDS) } != 0;
         for (t, tab) in self.tabs.iter_mut().enumerate() {
             // Bells and notifications are for what the user is not looking at.
             let watched = t == selected && active;
+            let focused = tab.focused;
             for entry in &mut tab.panes {
                 while let Ok(event) = entry.pane.events.try_recv() {
                     entry.progress = status::progress_after(entry.progress, &event);
                     match event {
                         UiEvent::Title(title) => entry.title = logic::clean_title(&title),
+                        UiEvent::Cwd(path) => entry.cwd = Some(path),
                         UiEvent::ClipboardStore(text) => {
                             clipboard::write_text(&text);
                         }
                         UiEvent::ClipboardLoad(request) => {
                             entry.pane.answer_clipboard(&request, &clipboard::read_text().unwrap_or_default());
                         }
-                        UiEvent::Bell if !watched => {
-                            entry.attention = entry.attention.or(Some(Attention::Bell));
+                        UiEvent::Bell => {
+                            let context = BellContext {
+                                window_active: active,
+                                pane_in_view: t == selected && focused == entry.id,
+                                since_last_alert: self.last_alert.map(|at| at.elapsed()),
+                                show_sounds,
+                            };
+                            let effects = bell::bell_effects(&self.settings.bell, &context);
+                            if effects.chip {
+                                entry.attention = entry.attention.or(Some(Attention::Bell));
+                            }
+                            ring.taskbar_flash |= effects.taskbar_flash;
+                            ring.sound |= effects.sound;
                         }
                         UiEvent::Notification(notification) if !watched => {
                             if entry.attention != Some(Attention::Exit) {
@@ -646,7 +678,46 @@ impl App {
         for (t, id) in ended.into_iter().rev() {
             self.close_pane(t, id);
         }
+        self.alert(ring);
+        self.update_window_title();
         self.redraw();
+    }
+
+    /// The taskbar button flashes and the sound plays that a bell asked for, at most once a second.
+    fn alert(&mut self, effects: BellEffects) {
+        if !effects.taskbar_flash && !effects.sound {
+            return;
+        }
+        if effects.taskbar_flash {
+            let flash = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: self.hwnd, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 0, dwTimeout: 0 };
+            // SAFETY: the structure lives through the call and names our own window.
+            unsafe { let _ = FlashWindowEx(&flash); }
+        }
+        if effects.sound {
+            // SAFETY: plays the sound of the system for a plain message.
+            unsafe { let _ = MessageBeep(MESSAGEBOX_STYLE(0)); }
+        }
+        self.last_alert = Some(Instant::now());
+    }
+
+    /// The title of the window: the name of the application, with the count of the tabs that wait for the user while the
+    /// window is not active (the taskbar button and Alt+Tab show it).
+    fn update_window_title(&mut self) {
+        let tabs: Vec<logic::TabAttention> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| {
+                let status = tab.status();
+                logic::TabAttention { state: status.state, unread: status.attention.is_some(), selected: i == self.selected, waiting: logic::is_urgent(status.state) }
+            })
+            .collect();
+        let title = logic::window_title("Nekominal", logic::waiting_count(&tabs), self.active);
+        if title != self.window_title {
+            // SAFETY: names our own window.
+            unsafe { let _ = SetWindowTextW(self.hwnd, &HSTRING::from(title.as_str())); }
+            self.window_title = title;
+        }
     }
 
     // --- mouse --------------------------------------------------------------------------------------------------
@@ -775,6 +846,9 @@ impl App {
     pub fn on_button(&mut self, x: i32, y: i32, button: MouseButton, down: bool, time_ms: u32) -> Capture {
         if self.popup_keeps_owner_active() {
             // Consume both halves of the outside click; it dismisses the menu without reaching the shell.
+            if !down && std::mem::take(&mut self.context_release) && button == MouseButton::Right {
+                return Capture::None;
+            }
             if !down { self.close_popup(); }
             return Capture::None;
         }
@@ -851,6 +925,12 @@ impl App {
             .tab()
             .and_then(|t| t.entry(target))
             .is_some_and(|e| e.pane.input_modes().program_gets_pointer(input_mods(held())));
+        if down && button == MouseButton::Right && !program_has_it && self.settings.right_click == RightClick::Menu {
+            self.buttons[index] = false;
+            self.open_context_menu(x, y);
+            self.context_release = self.popup.is_some();
+            return Capture::None;
+        }
         if down && button == MouseButton::Right && !program_has_it {
             // The terminal owns the right button: copy what is selected, paste when nothing is.
             if self.focused().is_some_and(|e| e.pane.selection_text().is_some()) {
@@ -1968,13 +2048,25 @@ impl App {
         if self.settings.theme != before.theme || self.settings.appearance != before.appearance {
             self.apply_look();
         }
-        if self.settings.font.size != before.font.size {
+        let effects = logic::effects(before, &self.settings);
+        if effects.font {
             for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
-                if let Err(e) = entry.view.set_font_size(self.settings.font.size as f32) {
-                    util::log(&format!("font size: {e}"));
+                if let Err(e) = entry.view.set_font_size(self.settings.font.size as f32).and_then(|()| entry.view.set_line_height(self.settings.font.line_height as f32)) {
+                    util::log(&format!("font: {e}"));
                 }
             }
             self.relayout();
+        }
+        for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
+            if effects.osc52 {
+                entry.pane.set_osc52(logic::osc52_for(self.settings.osc52));
+            }
+            if effects.cursor {
+                entry.pane.set_cursor_style(logic::cursor_style_for(&self.settings.cursor));
+            }
+            if effects.scrollback {
+                entry.pane.set_scrollback_lines(self.settings.scrollback as usize);
+            }
         }
         if self.settings.default_profile != before.default_profile
             && let Some(profile) = profiles::resolve_default(&self.profiles, &self.settings.default_profile)
@@ -2121,6 +2213,19 @@ impl App {
         popup.set_rows(rows);
         // SAFETY: invalidating our own window.
         unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+    }
+
+    /// The menu of the right button (the setting `rightClick` is `menu`), with its left edge at the pointer.
+    fn open_context_menu(&mut self, x: i32, y: i32) {
+        let lang = self.language();
+        let has_selection = self.focused().is_some_and(|entry| entry.pane.selection_text().is_some());
+        let rows: Vec<popup::Row> = [Command::EditCopy, Command::EditPaste, Command::EditSelectAll]
+            .into_iter()
+            .filter(|command| *command != Command::EditCopy || has_selection)
+            .map(|command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false })
+            .collect();
+        let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
+        self.open_popup(rows, popup::Kind::List, anchor);
     }
 
     /// The list of all tabs: one row per tab with its number, the selected one marked.
@@ -2298,9 +2403,21 @@ impl App {
         }
     }
 
-    /// What tab `i` shows: the title its program set, the profile name until there is one.
+    /// What tab `i` shows: what the title format of the settings makes of the focused pane.
     fn tab_label(&self, i: usize) -> String {
-        logic::tab_title(self.tabs[i].title(), &self.profile.name)
+        let lang = self.language();
+        let untitled = Text::TabUntitled.get(lang);
+        let Some(entry) = self.tabs[i].focused_entry() else { return untitled.to_owned() };
+        let parts = logic::TitleParts {
+            program: entry.title.clone(),
+            cwd: entry.cwd.clone(),
+            profile: entry.profile.clone(),
+            shell: entry.shell.clone(),
+            home: std::env::var("USERPROFILE").ok(),
+            untitled: untitled.to_owned(),
+            ..Default::default()
+        };
+        logic::default_title(&parts, &self.settings.tabs.title.parts, false).0
     }
 
     pub fn popup_paint(&mut self) {

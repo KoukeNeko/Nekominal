@@ -26,6 +26,11 @@ pub struct PaneEntry {
     pub rect: PxRect,
     /// The title the program set.
     pub title: String,
+    /// The working directory the shell reported (OSC 7).
+    pub cwd: Option<String>,
+    /// The profile the session was started with, and the name of its program without the extension.
+    pub profile: String,
+    pub shell: String,
     pub exited: bool,
     /// A bell, a notification or a failed exit nobody has looked at.
     pub attention: Option<Attention>,

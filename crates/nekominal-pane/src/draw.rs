@@ -101,6 +101,14 @@ impl PaneRenderer {
         Ok(())
     }
 
+    /// The height of a line as a multiple of the font's own, keeping the size and the scale.
+    pub fn set_line_height(&mut self, line_height: f32) -> Result<(), String> {
+        let (size_pt, scale) = (self.renderer.cfg.font_size_pt, self.renderer.cfg.scale);
+        self.renderer.set_font(size_pt, scale, line_height)?;
+        self.force_draw = true;
+        Ok(())
+    }
+
     pub fn set_theme(&mut self, theme: r::Theme) {
         self.theme = theme;
         self.force_draw = true;
