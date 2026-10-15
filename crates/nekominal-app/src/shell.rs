@@ -887,21 +887,21 @@ impl Shell {
     }
 
     /// Sizes the whole tab strip: the position plate, the width of every chip and the counts at the cut edges. Runs
-    /// whenever the tabs, their titles, the selection or the window change. `reveal` also scrolls the selected chip
-    /// into view; only a change of the selection, of the set or order of the tabs or of the viewport asks for it, so
-    /// that a strip the user scrolled away is not snapped back by every title a program sets.
+    /// whenever the tabs, the selection or the window change. `reveal` also scrolls the selected chip into view; only a
+    /// change of the selection, of the set or order of the tabs or of the viewport asks for it, so that a strip the user
+    /// scrolled away is not snapped back by what a program does. Nothing a program or the selection does changes the
+    /// width of a chip (`logic::tab_width`), so a title is not a reason to lay the strip out again.
     fn layout_tabs(&self, reveal: bool) {
         let tabs = self.tabs.borrow().clone();
-        let selected = self.selected.get();
         let budget = self.strip_budget();
-        let strip = (budget - self.update_plate(tabs.len(), selected, budget)).max(logic::STRIP_MIN_WIDTH);
+        let strip = (budget - self.update_plate(tabs.len(), self.selected.get(), budget)).max(logic::STRIP_MIN_WIDTH);
         let _ = fe(&self.ui.tab_scroll).and_then(|scroll| scroll.SetMaxWidth(strip));
-        let preferred: Vec<f64> = tabs.iter().map(|tab| tab.chip.natural_width()).collect();
-        let widths = logic::tab_widths(&preferred, selected, strip - STRIP_PADDING, CHIP_GAP);
-        for (index, (tab, width)) in tabs.iter().zip(&widths).enumerate() {
-            tab.chip.set_width(*width);
+        let width = logic::tab_width(tabs.len(), strip - STRIP_PADDING, CHIP_GAP);
+        for (index, tab) in tabs.iter().enumerate() {
+            tab.chip.set_width(width);
             tab.chip.set_position(index, tabs.len());
         }
+        let widths = vec![width; tabs.len()];
         let extent = logic::strip_extent(&widths, CHIP_GAP, STRIP_PADDING);
         *self.strip_widths.borrow_mut() = widths;
         self.strip_viewport.set(strip.min(extent));
@@ -912,32 +912,46 @@ impl Shell {
     }
 
     /// Shows `current / total` (or the total alone on a narrow strip), then the `!N` of the tabs that wait for the user,
-    /// and returns the width the plate takes. The count is shown on a narrow strip too: it is what the plate is for.
+    /// and returns the room the strip leaves it. The room is that of the plate at its widest (the position of the last
+    /// tab, the count of every tab but one) whatever it says now: selecting a tab or a tab needing a response changes the
+    /// plate, and must not change the room, because the width of the chips comes from it. The count is shown on a narrow
+    /// strip too: it is what the plate is for.
     fn update_plate(&self, count: usize, selected: usize, budget: f64) -> f64 {
         let unread = logic::plate_count(&self.attention_tabs());
         self.plate_attention.set(unread);
-        let text = match logic::plate(selected, count, budget, self.tier()) {
-            None => {
-                let _ = ui(&self.ui.tab_plate).and_then(|plate| plate.SetVisibility(Visibility::Collapsed));
-                return 0.0;
-            }
-            Some(Plate::Position { current, total }) => tf(Text::FindCount, &[&current, &total]),
-            Some(Plate::Total(total)) => total.to_string(),
+        let Some(shown) = logic::plate(selected, count, budget, self.tier()) else {
+            let _ = ui(&self.ui.tab_plate).and_then(|plate| plate.SetVisibility(Visibility::Collapsed));
+            return 0.0;
         };
-        let _ = self.ui.tab_plate_text.SetText(&text);
-        let attention = logic::attention_text(unread);
-        let _ = self.ui.tab_plate_attention.SetText(attention.as_deref().unwrap_or_default());
-        let _ = ui(&self.ui.tab_plate_attention).and_then(|mark| mark.SetVisibility(visibility(attention.is_some())));
-        let plate = ui(&self.ui.tab_plate);
-        let _ = plate.as_ref().map(|plate| plate.SetVisibility(Visibility::Visible));
-        let measured = plate.and_then(|plate| {
-            plate.Measure(Size { width: f32::INFINITY, height: f32::INFINITY })?;
-            plate.DesiredSize()
-        });
-        // The plate and the 4 DIP in front of it.
-        measured.map_or(0.0, |size| f64::from(size.width)) + 4.0
+        let text = |plate: Plate| match plate {
+            Plate::Position { current, total } => tf(Text::FindCount, &[&current, &total]),
+            Plate::Total(total) => total.to_string(),
+        };
+        let widest = match shown {
+            Plate::Position { total, .. } => Plate::Position { current: total, total },
+            Plate::Total(total) => Plate::Total(total),
+        };
+        let plate = ui(&self.ui.tab_plate).ok();
+        if let Some(plate) = &plate {
+            let _ = plate.SetVisibility(Visibility::Visible);
+        }
+        // Says `position` and `attention` on the plate and measures it.
+        let say = |position: &str, attention: Option<String>| -> f64 {
+            let _ = self.ui.tab_plate_text.SetText(position);
+            let _ = self.ui.tab_plate_attention.SetText(attention.as_deref().unwrap_or_default());
+            let _ =
+                ui(&self.ui.tab_plate_attention).and_then(|mark| mark.SetVisibility(visibility(attention.is_some())));
+            let measured = plate.as_ref().and_then(|plate| {
+                plate.Measure(Size { width: f32::INFINITY, height: f32::INFINITY }).ok()?;
+                plate.DesiredSize().ok()
+            });
+            measured.map_or(0.0, |size| f64::from(size.width))
+        };
+        let room = say(&text(widest), logic::attention_text(count - 1));
+        say(&text(shown), logic::attention_text(unread));
+        // The room and the 4 DIP in front of it.
+        room + 4.0
     }
-
     /// Scrolls the strip so the selected chip is in view with a margin; returns the offset it scrolls to.
     fn reveal_selected(&self) -> Option<f64> {
         let selected = self.selected.get();
@@ -1217,7 +1231,6 @@ impl Shell {
         let folders: Vec<Option<String>> =
             first.iter().map(|(title, source)| (*source == TitleSource::Folder).then(|| title.clone())).collect();
         let collide = logic::colliding_folders(&folders);
-        let mut changed = false;
         for (((tab, parts), (title, _)), with_parent) in tabs.iter().zip(&parts).zip(first).zip(collide) {
             if tab.renamed.get() {
                 continue;
@@ -1226,12 +1239,7 @@ impl Shell {
             if *tab.title.borrow() != title {
                 *tab.title.borrow_mut() = title.clone();
                 tab.chip.set_title(&title);
-                changed = true;
             }
-        }
-        // Most events (a prompt's working directory, an agent report) leave every title as it was.
-        if changed {
-            self.layout_tabs(false);
         }
     }
 
@@ -1660,8 +1668,6 @@ impl Shell {
         }
         self.refresh_status(&tab);
         self.refresh_titles();
-        // The chip lost its pane count.
-        self.layout_tabs(false);
         if tab.is_visible() {
             self.focus_active_pane();
         }
@@ -1696,8 +1702,6 @@ impl Shell {
         if let Some(new) = tab.pane(id) {
             new.focus();
         }
-        // The chip gained a pane count.
-        self.layout_tabs(false);
         Ok(())
     }
 
@@ -2415,7 +2419,6 @@ impl Shell {
                     if let Some(tab) = &tab {
                         tab.toggle_zoom();
                         self.refresh_status(tab);
-                        self.layout_tabs(false);
                         self.focus_active_pane();
                     }
                 }

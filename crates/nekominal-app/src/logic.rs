@@ -424,12 +424,10 @@ pub fn list_order(tabs: &[(TabState, Option<Attention>)], any_unread: bool) -> V
         .collect()
 }
 
-/// An unselected chip is never narrower than this, in DIP.
+/// No chip is narrower than this, in DIP.
 pub const CHIP_MIN_WIDTH: f64 = 48.0;
 /// No chip is wider than this.
 pub const CHIP_MAX_WIDTH: f64 = 216.0;
-/// The selected chip keeps at least this much, so its title and close glyph stay usable.
-pub const SELECTED_MIN_WIDTH: f64 = 100.0;
 /// A chip narrower than this shows its number instead of its title.
 pub const ORDINAL_BELOW: f64 = 64.0;
 /// Below this strip width the position plate shows only the total.
@@ -439,43 +437,15 @@ pub const REVEAL_MARGIN: f64 = 12.0;
 /// Width of what covers a cut edge of the strip: the block that counts the hidden chips (32) and its fade (16).
 pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
 
-/// The width of every chip of the strip. `preferred` is what each chip wants (its title and chrome), `selected`
-/// the index of the selected one, `available` the width of the strip and `gap` the space between chips.
-///
-/// The selected chip keeps its preferred width, clamped to [`SELECTED_MIN_WIDTH`]..[`CHIP_MAX_WIDTH`]. When
-/// everything fits, every chip keeps its preferred width. Otherwise the others share what is left by water-filling:
-/// a common level that short titles stay under (they are never enlarged) down to [`CHIP_MIN_WIDTH`]. Below that
-/// floor the sum exceeds `available` and the strip scrolls.
-pub fn tab_widths(preferred: &[f64], selected: usize, available: f64, gap: f64) -> Vec<f64> {
-    let wanted: Vec<f64> = preferred
-        .iter()
-        .enumerate()
-        .map(|(index, width)| {
-            let floor = if index == selected { SELECTED_MIN_WIDTH } else { CHIP_MIN_WIDTH };
-            width.clamp(floor, CHIP_MAX_WIDTH)
-        })
-        .collect();
-    let usable = available - gap * preferred.len().saturating_sub(1) as f64;
-    if wanted.iter().sum::<f64>() <= usable {
-        return wanted;
+/// The width of every chip of the strip, for `count` tabs in a strip `available` DIP wide with `gap` between chips: an
+/// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
+/// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
+/// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
+pub fn tab_width(count: usize, available: f64, gap: f64) -> f64 {
+    if count == 0 {
+        return CHIP_MAX_WIDTH;
     }
-    let mut widths = wanted.clone();
-    let mut others: Vec<usize> = (0..wanted.len()).filter(|index| *index != selected).collect();
-    others.sort_by(|a, b| wanted[*a].total_cmp(&wanted[*b]));
-    let mut remaining = (usable - wanted.get(selected).copied().unwrap_or(0.0)).max(0.0);
-    for (position, index) in others.iter().enumerate() {
-        let level = remaining / (others.len() - position) as f64;
-        if wanted[*index] <= level {
-            remaining -= wanted[*index];
-        } else {
-            // This chip and every longer one get the level, but never less than the floor.
-            for rest in &others[position..] {
-                widths[*rest] = level.max(CHIP_MIN_WIDTH).min(wanted[*rest]);
-            }
-            break;
-        }
-    }
-    widths
+    ((available - gap * (count - 1) as f64) / count as f64).clamp(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH)
 }
 
 /// Whether a chip of this width shows its number instead of its title.
@@ -1252,73 +1222,45 @@ mod tests {
     }
 
     #[test]
-    fn five_long_titled_tabs_share_a_653_dip_strip_and_twelve_hit_the_floor() {
-        let five = tab_widths(&[216.0; 5], 1, 649.0, GAP);
-        assert_eq!(five[1], 216.0, "the selected chip keeps its width");
-        for index in [0, 2, 3, 4] {
-            assert!((five[index] - 104.25).abs() < 1e-9, "{five:?}");
-        }
-        assert!((sum_with_gaps(&five) - 649.0).abs() < 1e-9, "the strip is used exactly");
-
-        let twelve = tab_widths(&[216.0; 12], 0, 649.0, GAP);
-        assert_eq!(twelve[0], 216.0);
-        assert!(twelve[1..].iter().all(|width| *width == CHIP_MIN_WIDTH), "{twelve:?}");
-        assert!(sum_with_gaps(&twelve) > 649.0, "more than fits: the strip scrolls");
+    fn five_tabs_share_a_649_dip_strip_and_thirty_hit_the_floor() {
+        let five = tab_width(5, 649.0, GAP);
+        assert!((five - 126.6).abs() < 1e-9, "{five}");
+        assert!((sum_with_gaps(&[five; 5]) - 649.0).abs() < 1e-9, "the strip is used exactly");
+        let twelve = tab_width(12, 649.0, GAP);
+        assert!((twelve - 605.0 / 12.0).abs() < 1e-9, "{twelve}");
+        let thirty = tab_width(30, 649.0, GAP);
+        assert_eq!(thirty, CHIP_MIN_WIDTH, "more than fits: the chips keep their floor and the strip scrolls");
+        assert!(sum_with_gaps(&[thirty; 30]) > 649.0);
+        // Few tabs stop at the ceiling, and no tab at all is not a division by zero.
+        assert_eq!(tab_width(1, 800.0, GAP), CHIP_MAX_WIDTH);
+        assert_eq!(tab_width(2, 800.0, GAP), CHIP_MAX_WIDTH);
+        assert_eq!(tab_width(0, 800.0, GAP), CHIP_MAX_WIDTH);
     }
 
     #[test]
-    fn short_titles_are_never_enlarged_and_what_they_leave_goes_to_the_long_ones() {
-        // Selected 216, one short (60) and two long (216): the short one keeps 60, the long ones split the rest.
-        let widths = tab_widths(&[216.0, 60.0, 216.0, 216.0], 0, 500.0, GAP);
-        assert_eq!(widths[1], 60.0);
-        assert!((widths[2] - 106.0).abs() < 1e-9 && (widths[3] - 106.0).abs() < 1e-9, "{widths:?}");
-        // With room for everyone nothing changes, except that the selected chip is at least 100 wide.
-        assert_eq!(tab_widths(&[80.0, 80.0, 30.0], 0, 800.0, GAP), [100.0, 80.0, 48.0]);
-        assert_eq!(tab_widths(&[400.0], 0, 800.0, GAP), [216.0]);
-        assert_eq!(tab_widths(&[], 0, 800.0, GAP), Vec::<f64>::new());
-    }
-
-    #[test]
-    fn tab_widths_hold_their_invariants_for_any_tabs_and_any_strip() {
+    fn only_the_strip_and_the_count_decide_the_width_of_the_chips() {
+        // The rule has neither a selected tab nor a title to look at, so selecting every tab in turn, or a program
+        // retitling one, cannot change a width. What is left to hold it to is what it does with the two numbers it takes.
         let mut random = Lcg(7);
         for _ in 0..3000 {
             let count = 1 + random.below(40);
-            let preferred: Vec<f64> = (0..count).map(|_| random.between(20.0, 300.0)).collect();
-            let selected = random.below(count);
             let available = random.between(100.0, 2000.0);
-            let widths = tab_widths(&preferred, selected, available, GAP);
+            let width = tab_width(count, available, GAP);
 
-            assert_eq!(widths.len(), count);
-            for (index, width) in widths.iter().enumerate() {
-                let (floor, wanted) = if index == selected {
-                    (SELECTED_MIN_WIDTH, preferred[index].clamp(SELECTED_MIN_WIDTH, CHIP_MAX_WIDTH))
-                } else {
-                    (CHIP_MIN_WIDTH, preferred[index].clamp(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH))
-                };
-                assert!(*width >= floor - 1e-9 && *width <= wanted + 1e-9, "{index}: {width} not in {floor}..{wanted}");
-            }
-            assert_eq!(widths[selected], preferred[selected].clamp(SELECTED_MIN_WIDTH, CHIP_MAX_WIDTH));
-            // Either everything fits, or every unselected chip is at the floor (and the strip scrolls).
-            let fits = sum_with_gaps(&widths) <= available + 1e-6;
-            let at_floor = widths.iter().enumerate().all(|(i, w)| i == selected || *w <= CHIP_MIN_WIDTH + 1e-9);
-            assert!(fits || at_floor, "{widths:?} in {available}");
+            assert!((CHIP_MIN_WIDTH..=CHIP_MAX_WIDTH).contains(&width), "{count} in {available}: {width}");
+            let total = sum_with_gaps(&vec![width; count]);
+            // The chips fit the strip, unless they are at the floor: only then does it scroll.
+            assert!(total <= available + 1e-6 || width == CHIP_MIN_WIDTH, "{count} in {available}: {width}");
+            // And they use all of it, unless they are at the ceiling.
+            assert!((total - available).abs() < 1e-6 || width == CHIP_MIN_WIDTH || width == CHIP_MAX_WIDTH);
 
-            // More room never narrows a chip.
-            let wider = tab_widths(&preferred, selected, available + random.between(0.0, 500.0), GAP);
-            for (before, after) in widths.iter().zip(&wider) {
-                assert!(*after >= *before - 1e-9, "{before} became {after}");
-            }
-
-            // Another tab, with the selection where it was, never widens the others.
-            let mut more = preferred.clone();
-            more.push(random.between(20.0, 300.0));
-            let with_new = tab_widths(&more, selected, available, GAP);
-            for (before, after) in widths.iter().zip(&with_new) {
-                assert!(*after <= *before + 1e-9, "{before} became {after}");
-            }
+            // More room never narrows a chip, another tab never widens one.
+            let wider = tab_width(count, available + random.between(0.0, 500.0), GAP);
+            assert!(wider >= width - 1e-9, "{width} became {wider}");
+            let with_new = tab_width(count + 1, available, GAP);
+            assert!(with_new <= width + 1e-9, "{width} became {with_new}");
         }
     }
-
     fn agent(state: AgentState) -> PaneSignal {
         let record =
             AgentRecord { id: String::new(), state, kind: None, progress: None, app: None, title: None, message: None };

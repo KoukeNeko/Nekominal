@@ -9,6 +9,7 @@
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
+#   Scenario-TabWidths        # every chip has one width, which selecting, retitling, splitting and hovering leave alone
 #   Scenario-TabDrag          # dragging an unselected chip of a compressed strip moves it by the widths of the layout the press made
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
@@ -490,9 +491,93 @@ function Measure-Strip([int]$N, [int]$W) {
     Check-True "$label with 12 DIP to a hidden neighbour" ((($edges[0] -eq 0) -or ($left -ge 11.3)) -and (($edges[1] -eq 0) -or ($right -ge 11.3))) "margins $left / $right, hidden $($edges -join '+')"
     # Only a chip clear of both edges of the viewport has its own width: UI Automation clips the rectangle of one cut by an edge to the part that shows, so it ends at the edge.
     $whole = @($chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.X -gt $v.X + 0.7 -and $_.Rect.X + $_.Rect.Width -lt $v.X + $v.Width - 0.7 })
-    $narrow = @($whole | Where-Object { $_.Rect.Width / $scale -lt $(if ($_.Index -eq $selected) { 99 } else { 47.3 }) })
+    $narrow = @($whole | Where-Object { $_.Rect.Width / $scale -lt 47.3 })
     $wide = @($whole | Where-Object { $_.Rect.Width / $scale -gt 216.7 })
-    Check-True "$label chips are at least 48 DIP wide (the selected one 100) and at most 216" ($narrow.Count -eq 0 -and $wide.Count -eq 0) "narrow: $(($narrow | ForEach-Object { $_.Index }) -join ','), wide: $(($wide | ForEach-Object { $_.Index }) -join ',')"
+    Check-True "$label chips are at least 48 DIP wide and at most 216" ($narrow.Count -eq 0 -and $wide.Count -eq 0) "narrow: $(($narrow | ForEach-Object { $_.Index }) -join ','), wide: $(($wide | ForEach-Object { $_.Index }) -join ',')"
+    # Every chip has the width of every other, the selected one included.
+    $spread = if ($whole.Count -gt 1) { ($whole | ForEach-Object { $_.Rect.Width / $scale } | Measure-Object -Maximum -Minimum | ForEach-Object { $_.Maximum - $_.Minimum }) } else { 0 }
+    Check-True "$label every chip is as wide as every other" ($spread -lt 0.7) ('{0:N2} DIP between the widest and the narrowest' -f $spread)
+}
+
+# The chips of the strip that are whole in view, with their width in DIP and their x in DIP from the start of the content of
+# the strip (the scroll offset added, so a strip that scrolled to show another tab still gives the same x to a chip).
+function Strip-Geometry {
+    $scale = Get-Scale
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $scroll = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+    $v = $scroll.Current.BoundingRectangle
+    $offset = Strip-Offset
+    @(Get-Chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.Width / $scale -gt 47.3 -and $_.Rect.X -gt $v.X + 0.7 -and $_.Rect.X + $_.Rect.Width -lt $v.X + $v.Width - 0.7 } |
+        ForEach-Object { [pscustomobject]@{ Index = $_.Index; Width = $_.Rect.Width / $scale; X = ($_.Rect.X - $v.X) / $scale + $offset } })
+}
+
+# One check that every chip in view is `$Width` wide and stands where the strip puts its tab: 2 DIP of padding, then a
+# chip and a 4 DIP gap for each tab before it. The strip scrolls to show the tab that is selected, so a chip is placed by
+# its index and not by comparing with a measurement taken while another part of the strip was in view.
+function On-The-Grid([string]$Label, [double]$Width, $Geometry) {
+    $off = @($Geometry | Where-Object { [Math]::Abs($_.Width - $Width) -gt 0.7 -or [Math]::Abs($_.X - (2 + ($_.Index - 1) * ($Width + 4))) -gt 1.6 })
+    Check-True $Label (@($Geometry).Count -gt 0 -and $off.Count -eq 0) ("$(@($Geometry).Count) chips in view; off the grid: " + (($off | ForEach-Object { 'chip {0}: {1:N1} wide at {2:N1}' -f $_.Index, $_.Width, $_.X }) -join '; '))
+}
+# Selects the tab called `$Title` through the list of every tab.
+function Select-By-List([string]$Title) {
+    Open-TabList; Type-Unicode $Title 30; Start-Sleep -Milliseconds 350; Press 0x0D; Start-Sleep -Milliseconds 800
+}
+
+# The width of a chip is the same for every tab and does not depend on which one is selected, what a program calls it, how
+# many panes it has or the pointer being over it: 3, 12 and 30 tabs at 1440, 1000 and 700 DIP of window. Selecting each tab
+# in turn (the list or a click) leaves every chip in view where it was, and with room to spare the chips fill the strip.
+function Scenario-TabWidths {
+    Run-App 'tab-widths' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Name-Tab 't1'
+        $count = 1
+        foreach ($n in 3, 12, 30) {
+            while ($count -lt $n) { $count++; New-Tab; Name-Tab "t$count" }
+            foreach ($w in 1440, 1000, 700) {
+                Set-WindowWidth $w
+                $label = "N=$n W=$w"
+                $targets = if ($n -le 12) { 1..$n } else { 1, 2, 3, 9, 10, 15, 16, 22, 29, 30 }
+                Select-By-List 't1'
+                $base = Strip-Geometry
+                $first = ($base | Select-Object -First 1).Width
+                $scroll = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd).FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+                $viewport = $scroll.Current.BoundingRectangle.Width / (Get-Scale)
+                "$label : every chip $('{0:N1}' -f $first) DIP (strip $('{0:N0}' -f $viewport) DIP)"
+                $results.Add((Check-True "$label chips are between 48 and 216 DIP and alike" ($base.Count -gt 0 -and $first -ge 47.5 -and $first -le 216.5 -and @($base | Where-Object { [Math]::Abs($_.Width - $first) -gt 0.7 }).Count -eq 0) "widths $(($base | ForEach-Object { '{0:N1}' -f $_.Width }) -join ' ')"))
+                # An equal share of the strip when that is between the limits (strip padding 4, gap 4).
+                $share = ($viewport - 4 - 4 * ($n - 1)) / $n
+                if ($share -gt 48 -and $share -lt 216) { $results.Add((Check-True "$label the chips share the strip" ([Math]::Abs($first - $share) -lt 1.5) ('{0:N1} against a share of {1:N1}' -f $first, $share))) }
+                $moves = 0
+                foreach ($k in $targets) {
+                    Select-By-List "t$k"
+                    $r = On-The-Grid "$label selecting tab $k leaves every chip as it was" $first (Strip-Geometry)
+                    if ($r -like 'FAIL*') { $results.Add($r); $moves++ }
+                }
+                if ($moves -eq 0) { $results.Add((Check-True "$label selecting tab $($targets -join ', ') in turn leaves every chip as it was" $true)) }
+            }
+        }
+        # a program retitling the selected tab, a split, a zoom and the pointer over a chip: none of them moves a chip
+        Set-WindowWidth 1440
+        Select-By-List 't5'
+        $w5 = (Strip-Geometry | Select-Object -First 1).Width
+        Name-Tab 'a title of a program that goes on and on and on and on and on and on and on'
+        $results.Add((On-The-Grid 'a long title leaves every chip as it was' $w5 (Strip-Geometry)))
+        Split-Right
+        $results.Add((On-The-Grid 'a split pane (the pane count on the chip) leaves every chip as it was' $w5 (Strip-Geometry)))
+        Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 700
+        $results.Add((On-The-Grid 'a zoomed pane leaves every chip as it was' $w5 (Strip-Geometry)))
+        Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 700
+        $other = Get-Chips | Where-Object { $_.Index -eq 6 } | Select-Object -First 1
+        Move-To ([int]($other.Rect.X + 40)) ([int]($other.Rect.Y + $other.Rect.Height / 2)); Start-Sleep -Milliseconds 600
+        $results.Add((On-The-Grid 'the pointer over a chip (its close button shows) leaves every chip as it was' $w5 (Strip-Geometry)))
+        # a click on a chip is a selection too
+        $target = Get-Chips | Where-Object { $_.Index -eq 7 } | Select-Object -First 1
+        Click-At ([int]($target.Rect.X + 20)) ([int]($target.Rect.Y + $target.Rect.Height / 2)) 'left' 800
+        $results.Add((Check 'the click selected the seventh tab' 7 (Selected-Tab)))
+        $results.Add((On-The-Grid 'a click on a chip leaves every chip as it was' $w5 (Strip-Geometry)))
+        Assert-Results $results 'tab widths'
+    } -NoShot
 }
 
 # Tab awareness: the position plate, the width algorithm, the edge counts, the selected chip in view, the list of every
@@ -926,9 +1011,10 @@ function Scenario-Toolbar {
         Assert-Results $results 'toolbar'
     } -NoShot
 }
-# Dragging an unselected chip of a compressed strip: the press that starts the drag selects the chip, which makes it wider,
-# and the drag has to count with the widths of that layout. Twelve tabs at 988 DIP, the chip of tab 7 dragged 110 DIP to
-# the right passes the middle of its right neighbour (78 DIP away once it is selected) and not that of the next (130).
+# Dragging an unselected chip of a compressed strip: the press that starts the drag selects the chip, and nothing moves
+# for that (every chip has the same width), so the drag counts with the widths it measured. Twelve tabs at 988 DIP, the chip
+# of tab 7 dragged 1.6 chip steps (a chip and the gap) to the right passes the middle of its right neighbour, one step
+# away, and not that of the next, two steps away.
 function Scenario-TabDrag {
     Run-App 'tab-drag' @{ confirmClose = $false } {
         First-Prompt
@@ -943,13 +1029,15 @@ function Scenario-TabDrag {
         $r = $chip.Rect
         $scale = Get-Scale
         $x = [int]($r.X + 8 * $scale); $y = [int]($r.Y + $r.Height / 2)
-        Drag-To $x $y ([int]($x + 110 * $scale)) $y 20 25
+        $step = $r.Width + 4 * $scale
+        'chip {0:N1} DIP wide' -f ($r.Width / $scale)
+        Drag-To $x $y ([int]($x + 1.6 * $step)) $y 20 25
         Start-Sleep -Milliseconds 800
         $after = & $order
         'after:  ' + ($after -join ' ')
         $expected = @($before | Where-Object { $_ -ne 't7' }); $at = $expected.IndexOf('t8') + 1
         $expected = @($expected[0..($at - 1)]) + 't7' + @($expected[$at..($expected.Count - 1)])
-        $results.Add((Check 'dragging the chip of tab 7 110 DIP to the right moves it past tab 8 only' ($expected -join ' ') ($after -join ' ')))
+        $results.Add((Check 'dragging the chip of tab 7 1.6 steps to the right moves it past tab 8 only' ($expected -join ' ') ($after -join ' ')))
         $results.Add((Check 'and it stays the tab shown, now eighth' '8 / 12' (Plate-Text)))
         Assert-Results $results 'tab drag'
     } -NoShot
@@ -2145,4 +2233,4 @@ function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }

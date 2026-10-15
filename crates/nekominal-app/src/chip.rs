@@ -15,17 +15,13 @@ use nekominal_model::strings::Text;
 
 use crate::glass::Glass;
 use crate::i18n::{t, tf};
-use crate::logic::{Attention, CHIP_MAX_WIDTH, TabState, TabStatus, reorder_target, shows_ordinal};
+use crate::logic::{Attention, TabState, TabStatus, reorder_target, shows_ordinal};
 use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
 pub type TabId = u32;
 
 /// Space between two chips (`StackPanel.Spacing` of the strip in `shell.xaml`).
 pub const CHIP_GAP: f64 = 4.0;
-
-/// Width of a chip around its title: the padding, the border, the status slot, the two column gaps and the close
-/// slot (`CHIP_XAML`; a test keeps the two in step).
-const CHROME_WIDTH: f64 = 12.0 + 3.0 + 2.0 + 12.0 + 8.0 + 8.0 + 24.0;
 
 /// Pointer travel before a press on a chip becomes a drag.
 const DRAG_THRESHOLD: f64 = 5.0;
@@ -268,20 +264,9 @@ impl Chip {
         let _ = ToolTipService::SetToolTip(&self.root, &IReference::from(tip.as_str()));
     }
 
-    /// The width the chip wants for its title and chrome, at most `CHIP_MAX_WIDTH`.
-    pub fn natural_width(&self) -> f64 {
-        let unbounded = Size { width: f32::INFINITY, height: f32::INFINITY };
-        let title = ui(&self.title).and_then(|title| title.Measure(unbounded).and_then(|()| title.DesiredSize()));
-        let mark = if self.panes.get() >= 2 {
-            ui(&self.pane_mark).and_then(|mark| mark.Measure(unbounded).and_then(|()| mark.DesiredSize())).ok()
-        } else {
-            None
-        };
-        let chrome = CHROME_WIDTH + mark.map_or(0.0, |size| f64::from(size.width));
-        (chrome + title.map_or(0.0, |size| f64::from(size.width))).min(CHIP_MAX_WIDTH)
-    }
-
-    /// Gives the chip its width in the strip; a chip too narrow for a title shows its number instead.
+    /// Gives the chip its width in the strip (`logic::tab_width`): the same for every chip, whatever its title says, whether
+    /// it is selected and which marks it shows, all of which live inside it. A chip too narrow for a title shows its
+    /// number instead.
     pub fn set_width(&self, width: f64) {
         let _ = fe(&self.root).and_then(|root| root.SetWidth(width));
         let narrow = shows_ordinal(width);
@@ -703,22 +688,15 @@ mod tests {
     }
 
     #[test]
-    fn the_chrome_width_is_what_the_markup_spends_around_the_title() {
-        // Padding is left,top,right,bottom; a border thickness of one number is the same on every side.
-        let padding: Vec<f64> = attribute("Chip", "Padding").split(',').map(number).collect();
-        assert_eq!(padding.len(), 4, "left, top, right, bottom");
-        let border = number(&attribute("Chip", "BorderThickness"));
-        let columns = CHIP_XAML
-            .split("<Grid.ColumnDefinitions>")
-            .nth(1)
-            .and_then(|rest| rest.split("</Grid.ColumnDefinitions>").next())
-            .expect("the chip has columns")
-            .matches("<ColumnDefinition")
-            .count();
-        let gaps = (columns - 1) as f64 * number(&attribute("Content", "ColumnSpacing"));
-        let slot = number(&attribute("Slot", "Width"));
-        let close = number(&attribute("Close", "Width"));
-        assert_eq!(columns, 3, "status slot, title, close slot");
-        assert_eq!(CHROME_WIDTH, padding[0] + padding[2] + 2.0 * border + slot + gaps + close);
+    fn the_limits_of_the_markup_are_those_of_the_width_rule_and_nothing_inside_a_chip_asks_for_more() {
+        use crate::logic::{CHIP_MAX_WIDTH, CHIP_MIN_WIDTH};
+        // `logic::tab_width` gives every chip a width between the two; the markup must not narrow or widen it.
+        assert_eq!(number(&attribute("Chip", "MinWidth")), CHIP_MIN_WIDTH);
+        assert_eq!(number(&attribute("Chip", "MaxWidth")), CHIP_MAX_WIDTH);
+        // The status slot and the close slot have a width of their own, and the close slot is hidden by its opacity
+        // (never collapsed): hovering or selecting a chip changes how it looks and never how wide it is.
+        assert_eq!(number(&attribute("Slot", "Width")), 12.0);
+        assert_eq!(number(&attribute("Close", "Width")), 24.0);
+        assert_eq!(number(&attribute("Close", "Opacity")), 0.0);
     }
 }

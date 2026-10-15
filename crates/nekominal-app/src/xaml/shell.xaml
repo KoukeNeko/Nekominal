@@ -37,8 +37,9 @@
         </Canvas>
       </Viewbox>
 
-      <!-- The strip: chips get their widths from code (logic::tab_widths) and scroll when even the narrowest
-           do not fit. A cut edge shows a count of the hidden chips and a fade; both are ignored by the pointer. -->
+      <!-- The strip: every chip gets the same width from code (logic::tab_width), and the strip scrolls when the chips
+           at their narrowest do not fit. A cut edge shows a count of the hidden chips and a fade; both are ignored by
+           the pointer. -->
       <Grid x:Name="TabHost" Grid.Column="2" VerticalAlignment="Center">
         <ScrollViewer x:Name="TabScroll"
                       HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
