@@ -9,8 +9,7 @@
 //!   to read its screens.
 //!
 //! `tests/selftest.rs` checks the harness with `cmd.exe` and PowerShell (no CLI, no network).
-//! `tests/claude_code.rs` runs the installed Claude Code and is ignored by default; `docs/agent-cli-compat.md`
-//! explains how to run it and lists what it found.
+//! `tests/claude_code.rs` runs the installed Claude Code and is ignored by default; its header says how to run it.
 
 pub mod claude;
 pub mod env;

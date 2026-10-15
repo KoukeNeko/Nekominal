@@ -7,8 +7,7 @@
 //! `cargo test -p agent-probe --test claude_code -- --ignored --nocapture --test-threads=1`
 //!
 //! Every check prints `RESULT <id> | <pass|FAIL|gap|info> | <evidence>` and appends it to
-//! `target/agent-probe/results.txt` (emptied at the start of each run); `docs/agent-cli-compat.md` is written
-//! from those lines. Raw byte taps and scenario logs are in `target/agent-probe/` as well and can hold account
+//! `target/agent-probe/results.txt` (emptied at the start of each run). Raw byte taps and scenario logs are in `target/agent-probe/` as well and can hold account
 //! details: they are never committed.
 
 use std::{

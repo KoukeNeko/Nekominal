@@ -1,5 +1,5 @@
 # Claude Code CLI inside the real window: what a person sees and feels once claude.exe runs in a pwsh tab of nekominal.exe.
-# The headless half (queries, modes, key bytes, a resize storm) is tools/agent-probe; see docs/agent-cli-compat.md.
+# The headless half (queries, modes, key bytes, a resize storm) is tools/agent-probe.
 #
 #   . .\tools\slice-drive\claude-scenarios.ps1
 #   Scenario-ClaudeScreen       # full-screen mode: the tab's environment, the main UI pixel by pixel, typing, the help screen
