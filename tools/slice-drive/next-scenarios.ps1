@@ -1046,3 +1046,29 @@ function Scenario-NextPaste {
         Next-Check 'paste.into-the-palette-query' ($text -match 'TWO' -and $text -notmatch 'ONE') 'the pasted name ran the command: the pane was split'
     }
 }
+
+# restoreSession: what the window had when it was closed (the tabs and the folders they were in) is there again at the next
+# start, in new shells.
+function Scenario-NextRestore {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        Next-Line 'Set-Location C:\Windows'
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Line 'Set-Location C:\Windows\System32'
+        $first = $script:App
+        Press 0x73 @(0x12); Start-Sleep -Milliseconds 1500      # Alt+F4: it asks only when a shell is busy
+        if (-not $first.HasExited) { Press 0x27; Press 0x0D }
+        [void]$first.WaitForExit(10000)
+        Next-Check 'restore.window-closed' $first.HasExited 'the window closed after the confirmation'
+        $file = Join-Path $global:NextAppData 'Nekominal\session.json'
+        Next-Check 'restore.session-is-written' ((Test-Path $file) -and ((Get-Content $file -Raw) -match 'System32')) 'the session file names the folders'
+        Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500 -Env @{ APPDATA = $global:NextAppData }
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $isTab = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
+        $count = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isTab).Count
+        Next-Check 'restore.tabs-come-back' ($count -eq 2) "$count tabs after the start"
+        Next-Check 'restore.selected-tab-keeps-its-folder' ((Next-Text) -match 'System32>') 'the second tab, which was selected, is in the folder it was in'
+        $chip = Next-At 60 24; Click-At $chip[0] $chip[1]; Start-Sleep -Milliseconds 700
+        Next-Check 'restore.first-tab-keeps-its-folder' ((Next-Text) -match 'Windows>' -and (Next-Text) -notmatch 'System32') 'the first tab is in its folder too'
+    } '{ "restoreSession": true }'
+}

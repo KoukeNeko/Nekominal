@@ -459,6 +459,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 (app, apps.is_empty())
             });
             if let Some(app) = app {
+                // The last window writes what the next run starts from.
+                if last && let Ok(app) = app.try_borrow() {
+                    app.save_session();
+                }
                 RETIRED.with(|apps| apps.borrow_mut().push(app));
                 if last { unsafe { PostQuitMessage(0) }; }
             }
@@ -579,7 +583,13 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
         };
         set_backdrop(hwnd, app.backdrop(), app.dark());
         APPS.with(|apps| apps.borrow_mut().insert(hwnd.0 as isize, Rc::new(RefCell::new(app))));
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        // The window of the session that was restored goes where it was.
+        let placement = with_app(hwnd, |app| app.take_placement()).flatten();
+        if let Some(placement) = placement {
+            let rect = placement.rect;
+            let _ = SetWindowPos(hwnd, None, rect.x, rect.y, rect.width as i32, rect.height as i32, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        let _ = ShowWindow(hwnd, if placement.is_some_and(|placement| placement.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOW });
         with_app(hwnd, |app| app.redraw());
 
         Ok(hwnd)

@@ -18,6 +18,7 @@ use nekominal_model::{
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, RightClick, Settings},
+    session::{self, PaneRecord, PixelRect, Placement, Session, TabRecord},
     settings_ui::{self, Control, Descriptor, Section, Value},
     strings::{Lang, Text},
     store,
@@ -38,7 +39,7 @@ use windows::{core::HSTRING, Win32::{
         Input::KeyboardAndMouse::GetKeyState,
         WindowsAndMessaging::{
             DestroyWindow, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
-            SM_SHOWSOUNDS, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
+            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
             SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
             SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WS_OVERLAPPEDWINDOW,
         },
@@ -119,6 +120,8 @@ pub struct App {
     drag: Option<ChipDrag>,
     /// Where the position plate of the tab strip is drawn, when it is: it opens the list of all tabs.
     plate_rect: Option<Rect>,
+    /// Where the window was when the session was saved, for the window code to put it back.
+    placement: Option<Placement>,
     /// The title of the window as it was last set.
     window_title: String,
     tabs: Vec<Tab>,
@@ -279,6 +282,7 @@ impl App {
             .cloned()
             .ok_or("no shell was found")?;
 
+        let first_window = shared_gpu.is_none();
         let (gpu, surface) = match shared_gpu {
             Some(gpu) => { let surface = gpu::create_surface(&gpu, hwnd, size_px)?; (gpu, surface) }
             None => gpu::create(hwnd, size_px)?,
@@ -308,6 +312,7 @@ impl App {
             chip_size: (0, 0),
             drag: None,
             plate_rect: None,
+            placement: None,
             window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
@@ -329,7 +334,9 @@ impl App {
             access: Some(Adapter::new(hwnd, true, access::NoActions)),
         };
         app.relayout();
-        if first_tab {
+        // Only the window the process starts with picks up the saved session; a window opened later starts empty.
+        let first_window = first_window && app.settings.restore_session;
+        if first_tab && !(first_window && app.restore_session()) {
             app.new_tab()?;
         }
         Ok(app)
@@ -368,17 +375,17 @@ impl App {
 
     // --- tabs and panes -----------------------------------------------------------------------------------------
 
-    fn spawn_config(&self, cols: u16, rows: u16) -> SpawnConfig {
+    fn spawn_config(&self, profile: &Profile, directory: Option<&str>, cols: u16, rows: u16) -> SpawnConfig {
         let mut env = nekominal_pty::profiles::default_environment();
         if self.settings.agent_environment {
             env.extend(nekominal_pty::profiles::agent_environment());
         }
-        let program = nekominal_pty::profiles::resolve_program(&self.profile.program)
-            .unwrap_or_else(|| self.profile.program.clone().into());
+        let program = nekominal_pty::profiles::resolve_program(&profile.program)
+            .unwrap_or_else(|| profile.program.clone().into());
         SpawnConfig {
             program,
-            args: profiles::launch_args(&self.profile, self.settings.shell_integration),
-            cwd: self.profile.cwd.as_deref().map(std::path::PathBuf::from).filter(|dir| dir.is_dir()),
+            args: profiles::launch_args(profile, self.settings.shell_integration),
+            cwd: directory.or(profile.cwd.as_deref()).map(std::path::PathBuf::from).filter(|dir| dir.is_dir()),
             env,
             cols,
             rows,
@@ -404,6 +411,11 @@ impl App {
 
     /// A pane that will have about `size_px` pixels: its renderer and the session of the profile.
     fn make_entry(&self, id: PaneId, size_px: (u32, u32)) -> Result<PaneEntry, String> {
+        self.make_entry_with(id, size_px, &self.profile, None)
+    }
+
+    /// A pane that runs profile in directory (the directory of the profile when there is none).
+    fn make_entry_with(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
         let view = PaneRenderer::new_sharing(&self.gpu, self.renderer_config(), self.theme.clone(), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
@@ -416,7 +428,7 @@ impl App {
                 unsafe { PostMessageW(Some(hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
             }
         });
-        let config = self.spawn_config(cols as u16, rows as u16);
+        let config = self.spawn_config(profile, directory, cols as u16, rows as u16);
         let core = logic::core_config(&self.settings);
         let pane = Pane::spawn_woken(config, core, wake).map_err(|e| format!("pty: {e}"))?;
         Ok(PaneEntry {
@@ -427,8 +439,9 @@ impl App {
             rect: PxRect { x: 0, y: 0, w: size_px.0 as i32, h: size_px.1 as i32 },
             title: String::new(),
             cwd: None,
-            profile: self.profile.name.clone(),
-            shell: std::path::Path::new(&self.profile.program).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default(),
+            profile: profile.name.clone(),
+            profile_id: profile.id.clone(),
+            shell: std::path::Path::new(&profile.program).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default(),
             exited: false,
             attention: None,
             note: None,
@@ -2575,6 +2588,79 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Writes the tabs, the layout of their panes, the directories they were in and the place of the window, for the next run
+    /// to start where this one stopped. A window with no tab left writes an empty session: the next run starts afresh.
+    pub fn save_session(&self) {
+        let Some(path) = store::session_path() else { return };
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|tab| TabRecord {
+                layout: tab.tree.clone(),
+                panes: tab.panes.iter().map(|entry| (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone() })).collect(),
+                active: tab.focused,
+                zoomed: tab.zoomed.then_some(tab.focused),
+            })
+            .collect();
+        let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+        // SAFETY: a window of this thread and a structure that lives through the call.
+        let window = unsafe { GetWindowPlacement(self.hwnd, &mut placement) }.ok().map(|()| {
+            let rect = placement.rcNormalPosition;
+            Placement {
+                rect: PixelRect { x: rect.left, y: rect.top, width: (rect.right - rect.left).max(0) as u32, height: (rect.bottom - rect.top).max(0) as u32 },
+                maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
+            }
+        });
+        let session = Session { window, tabs, active_tab: self.selected };
+        if let Err(e) = store::save(&path, &session.to_json()) {
+            util::log(&format!("session: {e}"));
+        }
+    }
+
+    /// Starts the tabs of the saved session. False when there is nothing to restore (or nothing could be started).
+    fn restore_session(&mut self) -> bool {
+        let Some(text) = store::session_path().and_then(|path| store::load(&path).ok().flatten()) else { return false };
+        let parsed = session::Session::parse(&text);
+        for problem in &parsed.problems {
+            util::log(&format!("session: {problem}"));
+        }
+        let area = self.pane_area();
+        let size = (area.w.max(1) as u32, area.h.max(1) as u32);
+        for record in &parsed.session.tabs {
+            let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
+                let pane = record.panes.get(&id);
+                let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
+                self.make_entry_with(id, size, profile, pane.and_then(|pane| pane.cwd.as_deref()))
+            });
+            if let Some(tab) = restored {
+                self.tabs.push(tab);
+            }
+        }
+        if self.tabs.is_empty() {
+            return false;
+        }
+        self.selected = parsed.session.active_tab.min(self.tabs.len() - 1);
+        self.placement = parsed.session.window;
+        self.relayout();
+        self.sync_focus();
+        true
+    }
+
+    /// Where the window was in the session that was restored, once; None when it would be out of reach on the screens.
+    pub fn take_placement(&mut self) -> Option<Placement> {
+        let placement = self.placement.take()?;
+        // SAFETY: plain queries.
+        let screen = unsafe {
+            PixelRect {
+                x: GetSystemMetrics(SM_XVIRTUALSCREEN),
+                y: GetSystemMetrics(SM_YVIRTUALSCREEN),
+                width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(0) as u32,
+                height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(0) as u32,
+            }
+        };
+        (placement.rect.width >= session::MIN_WINDOW_SIZE && placement.rect.height >= session::MIN_WINDOW_SIZE && placement.is_reachable_on(&[screen])).then_some(placement)
     }
 
     /// The place a chip let go of now takes in the order of the tabs.

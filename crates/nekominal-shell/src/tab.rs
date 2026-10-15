@@ -28,8 +28,9 @@ pub struct PaneEntry {
     pub title: String,
     /// The working directory the shell reported (OSC 7).
     pub cwd: Option<String>,
-    /// The profile the session was started with, and the name of its program without the extension.
+    /// The profile the session was started with (its name and its id), and the name of its program without the extension.
     pub profile: String,
+    pub profile_id: String,
     pub shell: String,
     pub exited: bool,
     /// A bell, a notification or a failed exit nobody has looked at.
@@ -60,6 +61,31 @@ impl Tab {
     pub fn new(make: impl FnOnce(PaneId) -> Result<PaneEntry, String>) -> Result<Tab, String> {
         let entry = make(1)?;
         Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, next: 2 })
+    }
+
+    /// A tab as a saved session had it: the layout with its ratios, a pane for every leaf (make starts it), the pane that
+    /// had the keyboard and whether it was zoomed. None when no pane could be started.
+    pub fn restore(
+        layout: nekominal_model::layout::Node,
+        active: PaneId,
+        zoomed: bool,
+        mut make: impl FnMut(PaneId) -> Result<PaneEntry, String>,
+    ) -> Option<Tab> {
+        let ids = layout.pane_ids();
+        let mut panes = Vec::new();
+        for id in &ids {
+            match make(*id) {
+                Ok(entry) => panes.push(entry),
+                Err(e) => crate::util::log(&format!("restore: {e}")),
+            }
+        }
+        // A pane that could not start leaves a hole in the layout: the tab is not restored then, whole.
+        if panes.len() != ids.len() || panes.is_empty() {
+            return None;
+        }
+        let focused = if ids.contains(&active) { active } else { ids[0] };
+        let next = ids.iter().max().map_or(1, |highest| highest + 1);
+        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, next })
     }
 
     pub fn next_id(&mut self) -> PaneId {
