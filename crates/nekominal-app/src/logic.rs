@@ -161,7 +161,8 @@ const ATTENTION_RANK: u8 = 1;
 
 /// The status of a tab: that of its most urgent pane. Agent states rank by `AgentState::urgency`, the one order of
 /// the application, doubled so a bell fits between idle and done; a program that exited with an error ranks as
-/// an agent error, a progress report as working. The first of equally urgent panes wins.
+/// an agent error (also over a progress report it left behind), a progress report as working. The first of equally
+/// urgent panes wins.
 pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
     let rank = |state: AgentState| state.urgency() * 2;
     let mut best: Option<(u8, TabStatus)> = None;
@@ -176,22 +177,23 @@ pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
             };
             let message = record.message.clone().or_else(|| record.title.clone());
             (rank(record.state), TabStatus { state, progress: record.progress, attention: None, message })
-        } else if let Some(reported) = pane.progress {
-            let progress = match reported {
-                Reported::Percent(percent) => Some(percent),
-                Reported::Indeterminate => None,
-            };
-            (
-                rank(AgentState::Working),
-                TabStatus { state: TabState::Working, progress, attention: None, message: None },
-            )
         } else {
-            match pane.attention {
-                Some(Attention::Exit) => (
+            match (pane.attention, pane.progress) {
+                (Some(Attention::Exit), _) => (
                     rank(AgentState::Error),
                     TabStatus { state: TabState::Error, progress: None, attention: pane.attention, message: None },
                 ),
-                Some(kind) => (
+                (_, Some(reported)) => {
+                    let progress = match reported {
+                        Reported::Percent(percent) => Some(percent),
+                        Reported::Indeterminate => None,
+                    };
+                    (
+                        rank(AgentState::Working),
+                        TabStatus { state: TabState::Working, progress, attention: None, message: None },
+                    )
+                }
+                (Some(kind), None) => (
                     ATTENTION_RANK,
                     TabStatus {
                         state: TabState::Attention,
@@ -200,7 +202,7 @@ pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
                         message: pane.note.clone(),
                     },
                 ),
-                None => continue,
+                (None, None) => continue,
             }
         };
         if best.as_ref().is_none_or(|(best_rank, _)| candidate.0 > *best_rank) {
@@ -872,6 +874,25 @@ mod tests {
         assert_eq!(tab_status(&[progress, agent(AgentState::Blocked)]).state, TabState::Blocked);
         let busy = PaneSignal { progress: Some(Reported::Indeterminate), ..PaneSignal::default() };
         assert_eq!(tab_status(&[busy]), TabStatus { state: TabState::Working, ..TabStatus::default() });
+    }
+
+    #[test]
+    fn a_failed_exit_outranks_the_progress_the_program_left_behind() {
+        let left_behind = |attention| PaneSignal {
+            progress: Some(Reported::Percent(60)),
+            attention,
+            ..PaneSignal::default()
+        };
+        let failed = tab_status(&[left_behind(Some(Attention::Exit))]);
+        assert_eq!((failed.state, failed.progress, failed.attention), (TabState::Error, None, Some(Attention::Exit)));
+        // Of the other reasons for attention, progress outranks them: the program is still at work.
+        for kind in [Attention::Bell, Attention::Notification] {
+            let status = tab_status(&[left_behind(Some(kind))]);
+            assert_eq!((status.state, status.progress), (TabState::Working, Some(60)), "{kind:?}");
+        }
+        // And across panes: the failed one wins over another pane that works.
+        let other = PaneSignal { progress: Some(Reported::Indeterminate), ..PaneSignal::default() };
+        assert_eq!(tab_status(&[other, left_behind(Some(Attention::Exit))]).state, TabState::Error);
     }
 
     #[test]

@@ -19,6 +19,7 @@ use nekominal_model::{
     strings::{Lang, Text},
     themes::{self},
 };
+use nekominal_pane::host::Activity;
 use nekominal_pane::{MAX_CLIPBOARD_TEXT, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_term::LinkKind;
@@ -907,6 +908,8 @@ impl Shell {
             UiEvent::Bell => self.on_bell(tab, pane),
             UiEvent::Exit(code) => {
                 pane.exited.set(Some(code));
+                // A program that ended mid-progress never sent the report that clears it.
+                pane.progress.set(None);
                 let closes =
                     self.profile_by_id(&pane.profile_id).is_none_or(|profile| profile.kind.closes_pane_on_clean_exit());
                 if code == 0 && closes {
@@ -960,7 +963,13 @@ impl Shell {
             UiEvent::ClipboardRefused { bytes } => {
                 log(&format!("pane {} osc 52 write of {bytes} bytes refused: over {} bytes", pane.id, MAX_CLIPBOARD_TEXT));
             }
-            UiEvent::PromptMark(_) | UiEvent::Other(_) => {}
+            UiEvent::PromptMark(mark) => {
+                // A shell back at its prompt reports no progress: a command interrupted mid-progress never cleared it.
+                if Activity::after_mark(mark) == Activity::AtPrompt && pane.progress.take().is_some() {
+                    self.refresh_status(tab);
+                }
+            }
+            UiEvent::Other(_) => {}
         }
     }
 
