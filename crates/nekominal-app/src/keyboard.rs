@@ -17,6 +17,8 @@ const VK_RWIN: i32 = 0x5C;
 
 pub const VK_ESCAPE: i32 = 0x1B;
 pub const VK_RETURN: i32 = 0x0D;
+pub const VK_PAGE_UP: i32 = 0x21;
+pub const VK_PAGE_DOWN: i32 = 0x22;
 pub const VK_END: i32 = 0x23;
 pub const VK_HOME: i32 = 0x24;
 pub const VK_LEFT: i32 = 0x25;

@@ -275,6 +275,56 @@
       </Setter>
     </Style>
 
+    <!-- The slider of the drawer: a straight 4 DIP track, filled to the thumb in the accent, and a rounded square thumb of
+         the one radius (no circle). Only the horizontal parts are there. -->
+    <Style x:Key="NkSlider" TargetType="Slider">
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="Foreground" Value="{StaticResource NkPanelAccent}"/>
+      <Setter Property="UseSystemFocusVisuals" Value="True"/>
+      <Setter Property="FocusVisualMargin" Value="-3"/>
+      <Setter Property="IsThumbToolTipEnabled" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Slider">
+            <Grid x:Name="Root" Background="Transparent">
+              <Grid x:Name="HorizontalTemplate" MinHeight="32">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Rectangle x:Name="HorizontalTrackRect" Grid.ColumnSpan="3" Height="4" VerticalAlignment="Center"
+                           Fill="{StaticResource NkPanelOutline}"/>
+                <Rectangle x:Name="HorizontalDecreaseRect" Height="4" VerticalAlignment="Center"
+                           Fill="{StaticResource NkPanelAccent}"/>
+                <Thumb x:Name="HorizontalThumb" Grid.Column="1" Width="24" Height="24" VerticalAlignment="Center"
+                       AutomationProperties.AccessibilityView="Raw">
+                  <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                      <Border CornerRadius="{StaticResource NkCornerRadius}" Background="{StaticResource NkPanelAccent}"
+                              BorderBrush="{StaticResource NkInk}" BorderThickness="2"/>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Grid>
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Normal"/>
+                  <VisualState x:Name="PointerOver"/>
+                  <VisualState x:Name="Pressed"/>
+                  <VisualState x:Name="Disabled">
+                    <VisualState.Setters>
+                      <Setter Target="Root.Opacity" Value="0.4"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
     <!-- A button with a word on it (the footer of the drawer, Replace, Cancel). -->
     <Style x:Key="NkButton" TargetType="Button">
       <Setter Property="Height" Value="32"/>

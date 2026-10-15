@@ -242,10 +242,10 @@ impl Drawer {
     /// The colour scheme tile of the settings gets the focus back, which ends the preview.
     fn restore_committed_tile(&self) {
         self.end_peek();
-        let committed = self.shell.upgrade().map(|shell| shell.settings.borrow().theme.clone());
-        let tile = self.rows.borrow().iter().find_map(|row| row.committed_tile(committed.as_deref()));
-        if let Some(tile) = tile {
-            let _ = ui(&tile).and_then(|tile| tile.Focus(FocusState::Keyboard));
+        if let Some(committed) = self.shell.upgrade().map(|shell| shell.settings.borrow().theme.clone()) {
+            for row in self.rows.borrow().iter() {
+                row.focus_tile(&committed);
+            }
         }
     }
 
@@ -327,8 +327,10 @@ impl Drawer {
             }
         }
         let _ = ui(&self.empty).and_then(|empty| empty.SetVisibility(visibility(searching && count == 0)));
+        // The strip is one stop of the Tab key (the chip of the section that is chosen); the arrow keys walk it.
         for (section, chip) in &self.chips {
             let _ = chip.SetIsChecked(Some(!searching && *section == self.current.get()));
+            let _ = ui(chip).and_then(|chip| chip.SetIsTabStop(*section == self.current.get()));
         }
         // The chip of the section is brought into view, so a long row of them (English) never hides the chosen one.
         if !searching && let Some((_, chip)) = self.chips.iter().find(|(section, _)| *section == self.current.get()) {

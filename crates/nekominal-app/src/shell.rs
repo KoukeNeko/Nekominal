@@ -684,6 +684,7 @@ impl Shell {
         if effects.osc52 {
             self.apply_osc52();
         }
+        self.apply_terminal_settings(&effects);
         if !effects.glass {
             self.sync_drawer();
         }
@@ -1994,6 +1995,24 @@ impl Shell {
         }
     }
 
+    /// The cursor of a program that chose none and the lines of scrollback reach the panes that are running.
+    fn apply_terminal_settings(&self, effects: &logic::Effects) {
+        let (style, lines) = {
+            let settings = self.settings.borrow();
+            (logic::cursor_style_for(&settings.cursor), settings.scrollback as usize)
+        };
+        for tab in self.tabs.borrow().iter() {
+            for pane in tab.panes.borrow().iter() {
+                if effects.cursor {
+                    pane.pane.set_cursor_style(style);
+                }
+                if effects.scrollback {
+                    pane.pane.set_scrollback_lines(lines);
+                }
+            }
+        }
+    }
+
     /// Brings what is on screen in line with `self.settings`, which were `before`.
     fn apply_loaded_settings(self: &Rc<Self>, before: &Settings) {
         // The colours, the backdrop and the opacity: what a slider asked for and was not applied yet is dropped.
@@ -2004,6 +2023,8 @@ impl Shell {
         self.sync_appearance_controls();
         self.apply_font_settings(before);
         self.apply_osc52();
+        let now = self.settings.borrow().clone();
+        self.apply_terminal_settings(&logic::effects(before, &now));
         // The shortcuts show in tooltips and menus, and the profiles of the file may differ.
         self.set_tooltips();
         *self.pane_menu.borrow_mut() = None;

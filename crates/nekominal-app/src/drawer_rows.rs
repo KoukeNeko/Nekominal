@@ -20,7 +20,7 @@ use windows_reference::IReference;
 
 use crate::drawer::Drawer;
 use crate::i18n::{t, tf};
-use crate::keyboard::{self, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_RETURN, VK_RIGHT, VK_UP};
+use crate::keyboard::{self, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_PAGE_DOWN, VK_PAGE_UP, VK_RETURN, VK_RIGHT, VK_UP};
 use crate::logic::{self, Arrow};
 use crate::shell::Shell;
 use crate::util::*;
@@ -45,8 +45,7 @@ const ROW_XAML: &str = r#"
     <TextBlock x:Name="Label" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                Foreground="{StaticResource NkPanelText}"/>
     <Border x:Name="Slot" @SLOT@/>
-    <Button x:Name="Reset" Grid.Column="2" Style="{StaticResource NkIconButton}" Opacity="0" IsHitTestVisible="False"
-            IsTabStop="False">
+    <Button x:Name="Reset" Grid.Column="2" Style="{StaticResource NkIconButton}" Opacity="0" IsEnabled="False">
       <FontIcon Glyph="&#xE7A7;" FontSize="12"/>
     </Button>
   </Grid>
@@ -108,11 +107,13 @@ pub struct SettingRow {
 }
 
 impl SettingRow {
-    /// The tile of the colour scheme `name`, when this is the row of the colour schemes.
-    pub fn committed_tile(&self, name: Option<&str>) -> Option<ToggleButton> {
-        let Kind::Tiles(tiles) = &self.kind else { return None };
-        let at = themes::theme_names().position(|candidate| Some(candidate) == name)?;
-        tiles.get(at).cloned()
+    /// Moves the focus to the tile of the colour scheme `name`, when this is the row of the colour schemes; true when
+    /// it was.
+    pub fn focus_tile(&self, name: &str) -> bool {
+        let Kind::Tiles(tiles) = &self.kind else { return false };
+        let Some(at) = themes::theme_names().position(|candidate| candidate == name) else { return false };
+        focus_item(tiles, at);
+        true
     }
 }
 
@@ -211,17 +212,18 @@ impl Drawer {
         let _ = field.SetText(&shown);
     }
 
-    /// Arrow keys among `buttons` (one tab stop): `pick` is told where the key leads.
+    /// Arrow keys among `buttons`, which are one stop of the Tab key: the key moves the focus (and the stop) and
+    /// `pick` is told where it went. Returns the handlers, which live as long as the row.
     fn roving(
         self: &Rc<Self>,
         container: &UIElement,
         buttons: &[ToggleButton],
         columns: usize,
         pick: impl Fn(usize) + 'static,
-    ) -> Result<(Rc<Cell<usize>>, EventRevoker)> {
+    ) -> Result<Vec<EventRevoker>> {
         let focused = Rc::new(Cell::new(0usize));
-        let (count, seen) = (buttons.len(), focused.clone());
-        let revoker = container.PreviewKeyDown(cb!("drawer roving", |_, args| {
+        let (all, seen) = (buttons.to_vec(), focused.clone());
+        let mut revokers = vec![container.PreviewKeyDown(cb!("drawer roving", |_, args| {
             let Some(args) = args.as_ref() else { return };
             let Some(arrow) = arrow_of(args.Key().map_or(0, |key| key.0)) else { return };
             // Ctrl and Alt with an arrow are commands of the window (Alt+Left moves between panes).
@@ -229,15 +231,38 @@ impl Drawer {
             if held.ctrl || held.alt {
                 return;
             }
-            if let Some(target) = logic::roving_target(seen.get(), count, columns, arrow) {
+            if let Some(target) = logic::roving_target(seen.get(), all.len(), columns, arrow) {
                 let _ = args.SetHandled(true);
+                focus_item(&all, target);
                 pick(target);
             }
-        }))?;
-        Ok((focused, revoker))
+        }))?];
+        for (index, button) in buttons.iter().enumerate() {
+            let (all, focused) = (buttons.to_vec(), focused.clone());
+            revokers.push(ui(button)?.GotFocus(cb!("drawer roving focus", |_, _| {
+                focused.set(index);
+                set_tab_stop(&all, index);
+            }))?);
+        }
+        Ok(revokers)
     }
 }
 
+/// Makes `at` the one button of the group that the Tab key stops at.
+fn set_tab_stop(buttons: &[ToggleButton], at: usize) {
+    for (index, button) in buttons.iter().enumerate() {
+        let _ = ui(button).and_then(|button| button.SetIsTabStop(index == at));
+    }
+}
+
+/// Gives the focus to one button of a group that is a single stop of the Tab key. A button that is not that stop cannot
+/// take the focus, so it becomes the stop first.
+pub fn focus_item(buttons: &[ToggleButton], at: usize) {
+    set_tab_stop(buttons, at);
+    if let Some(button) = buttons.get(at) {
+        let _ = ui(button).and_then(|button| button.Focus(FocusState::Keyboard));
+    }
+}
 /// Builds every row of the table and the pages that list things.
 pub fn build(drawer: &Rc<Drawer>, shell: &Rc<Shell>) -> Result<()> {
     let mut rows = Vec::new();
@@ -269,10 +294,12 @@ fn build_row(drawer: &Rc<Drawer>, shell: &Rc<Shell>, descriptor: &'static Descri
     let mut revokers = Vec::new();
 
     let (content, focus, kind): (UIElement, UIElement, Kind) = match descriptor.control {
-        RowControl::Toggle => choices(drawer, descriptor, &[t(Text::ToggleOff), t(Text::ToggleOn)], &mut revokers)?,
+        RowControl::Toggle => {
+            choices(drawer, descriptor, label, &[t(Text::ToggleOff), t(Text::ToggleOn)], &mut revokers)?
+        }
         RowControl::Choice(options) => {
             let labels: Vec<&str> = options.iter().map(|option| t(*option)).collect();
-            choices(drawer, descriptor, &labels, &mut revokers)?
+            choices(drawer, descriptor, label, &labels, &mut revokers)?
         }
         RowControl::Slider(range) => slider(drawer, descriptor, range, label, &mut revokers)?,
         RowControl::Number(range) => number(drawer, descriptor, range, label, &mut revokers)?,
@@ -307,6 +334,7 @@ fn build_row(drawer: &Rc<Drawer>, shell: &Rc<Shell>, descriptor: &'static Descri
 fn choices(
     drawer: &Rc<Drawer>,
     descriptor: &'static Descriptor,
+    row_label: &str,
     labels: &[&str],
     revokers: &mut Vec<EventRevoker>,
 ) -> Result<(UIElement, UIElement, Kind)> {
@@ -314,16 +342,16 @@ fn choices(
     let mut buttons = Vec::new();
     for label in labels {
         let button = toggle_button("NkSegment", label)?;
+        // A reader says which row a choice belongs to ("Cursor blink: On").
+        AutomationProperties::SetName(&button, &tf(Text::LabelValue, &[&row_label, label]))?;
         panel.cast::<Panel>()?.Children()?.Append(&button)?;
         buttons.push(button);
     }
-    let focus_at = buttons.clone();
     let this = drawer.clone();
-    let (focused, key) = drawer.roving(&ui(&panel)?, &buttons, buttons.len(), move |target| {
+    let keys = drawer.roving(&ui(&panel)?, &buttons, buttons.len(), move |target| {
         this.commit(descriptor, picked(descriptor.control, target));
-        let _ = ui(&focus_at[target]).and_then(|button| button.Focus(FocusState::Keyboard));
     })?;
-    revokers.push(key);
+    revokers.extend(keys);
     for (index, button) in buttons.iter().enumerate() {
         let this = drawer.clone();
         revokers.push(button.on_click(cb!("drawer choice", |_, _| {
@@ -331,8 +359,6 @@ fn choices(
             // A click on the choice that is on has just switched it off.
             this.sync();
         }))?);
-        let focused = focused.clone();
-        revokers.push(ui(button)?.GotFocus(cb!("drawer choice focus", |_, _| focused.set(index)))?);
     }
     let first = ui(&buttons[0])?;
     Ok((ui(&panel)?, first, Kind::Choices(buttons)))
@@ -348,24 +374,8 @@ fn slider(
     let markup = format!(
         r#"<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ColumnSpacing="8">
              <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="48"/></Grid.ColumnDefinitions>
-             <Slider x:Name="Track" Minimum="{}" Maximum="{}" StepFrequency="{}" SmallChange="{}" LargeChange="{}"
-                     IsThumbToolTipEnabled="False" VerticalAlignment="Center">
-               <!-- The thumb is a rounded square of the one radius, and the colours are those of the sheet. -->
-               <Slider.Resources>
-                 <StaticResource x:Key="SliderThumbCornerRadius" ResourceKey="NkCornerRadius"/>
-                 <x:Double x:Key="SliderHorizontalThumbWidth">20</x:Double>
-                 <x:Double x:Key="SliderHorizontalThumbHeight">20</x:Double>
-                 <StaticResource x:Key="SliderTrackFill" ResourceKey="NkPanelOutline"/>
-                 <StaticResource x:Key="SliderTrackFillPointerOver" ResourceKey="NkPanelOutline"/>
-                 <StaticResource x:Key="SliderTrackFillPressed" ResourceKey="NkPanelOutline"/>
-                 <StaticResource x:Key="SliderTrackValueFill" ResourceKey="NkPanelAccent"/>
-                 <StaticResource x:Key="SliderTrackValueFillPointerOver" ResourceKey="NkPanelAccent"/>
-                 <StaticResource x:Key="SliderTrackValueFillPressed" ResourceKey="NkPanelAccent"/>
-                 <StaticResource x:Key="SliderThumbBackground" ResourceKey="NkPanelAccent"/>
-                 <StaticResource x:Key="SliderThumbBackgroundPointerOver" ResourceKey="NkPanelAccent"/>
-                 <StaticResource x:Key="SliderThumbBackgroundPressed" ResourceKey="NkPanelAccent"/>
-               </Slider.Resources>
-             </Slider>
+             <Slider x:Name="Track" Style="{{StaticResource NkSlider}}" Minimum="{}" Maximum="{}" StepFrequency="{}" SmallChange="{}"
+                     LargeChange="{}" VerticalAlignment="Center"/>
              <TextBlock x:Name="Value" Grid.Column="1" FontSize="13" FontFamily="Segoe UI Variable Text" TextAlignment="Right"
                         VerticalAlignment="Center" Foreground="{{StaticResource NkPanelText}}"/>
            </Grid>"#,
@@ -378,6 +388,20 @@ fn slider(
     revokers.push(slider.cast::<RangeBase>()?.ValueChanged(cb!("drawer slider", |_, args| {
         let Some(value) = args.as_ref().and_then(|args| args.NewValue().ok()) else { return };
         this.commit(descriptor, Value::Number(value));
+    }))?);
+    // The slider moves by one step with the arrow keys and goes to the ends with Home and End; Page Up and Page Down,
+    // which it does not know, move it by the large step.
+    let (this, track) = (drawer.clone(), slider.clone());
+    revokers.push(ui(&slider)?.PreviewKeyDown(cb!("drawer slider key", |_, args| {
+        let Some(args) = args.as_ref() else { return };
+        let direction = match args.Key().map_or(0, |key| key.0) {
+            VK_PAGE_UP => 1.0,
+            VK_PAGE_DOWN => -1.0,
+            _ => return,
+        };
+        let _ = args.SetHandled(true);
+        let now = track.cast::<RangeBase>().and_then(|range| range.Value()).unwrap_or(range.min);
+        this.commit(descriptor, Value::Number((now + direction * range.large).clamp(range.min, range.max)));
     }))?);
     let focus = ui(&slider)?;
     Ok((ui(&root)?, focus, Kind::Slider { slider, value: find(&root, "Value")? }))
@@ -442,8 +466,8 @@ fn number(
         let moved = match args.Key().map_or(0, |key| key.0) {
             VK_UP => Some(1),
             VK_DOWN => Some(-1),
-            0x21 => Some(large),
-            0x22 => Some(-large),
+            VK_PAGE_UP => Some(large),
+            VK_PAGE_DOWN => Some(-large),
             VK_RETURN => {
                 let _ = args.SetHandled(true);
                 on_enter();
@@ -521,8 +545,7 @@ fn profiles(
             if let Some(id) = state.ids.borrow().get(target).cloned() {
                 this.commit(descriptor, Value::Text(id));
             }
-            let button = state.buttons.borrow().get(target).cloned();
-            let _ = button.and_then(|button| ui(&button).and_then(|button| button.Focus(FocusState::Keyboard)).ok());
+            focus_item(&state.buttons.borrow(), target);
         }
     }))?);
     let content = ui(&list.list)?;
@@ -567,11 +590,8 @@ fn tiles(
         buttons.push(tile);
     }
 
-    let focus_at = buttons.clone();
-    let (focused, key) = drawer.roving(&ui(&grid)?, &buttons, COLUMNS, move |target| {
-        let _ = ui(&focus_at[target]).and_then(|tile| tile.Focus(FocusState::Keyboard));
-    })?;
-    revokers.push(key);
+    // The arrow keys only move the focus (which previews); keeping the scheme is a click, Enter or Space.
+    revokers.extend(drawer.roving(&ui(&grid)?, &buttons, COLUMNS, |_| {})?);
     for (index, tile) in buttons.iter().enumerate() {
         let (this, name) = (drawer.clone(), names[index]);
         revokers.push(tile.on_click(cb!("drawer tile", |_, _| {
@@ -579,11 +599,9 @@ fn tiles(
             this.commit(descriptor, Value::Text(name.to_owned()));
             this.sync();
         }))?);
-        let (this, seen) = (drawer.clone(), focused.clone());
-        revokers.push(ui(tile)?.GotFocus(cb!("drawer tile focus", |_, _| {
-            seen.set(index);
-            this.peek.borrow_mut().focused(Some(index));
-        }))?);
+        let this = drawer.clone();
+        revokers
+            .push(ui(tile)?.GotFocus(cb!("drawer tile focus", |_, _| this.peek.borrow_mut().focused(Some(index))))?);
         let this = drawer.clone();
         revokers.push(ui(tile)?.LostFocus(cb!("drawer tile blur", |_, _| this.peek.borrow_mut().focused(None)))?);
         let this = drawer.clone();
@@ -715,8 +733,8 @@ impl SettingRow {
                 let on = option_of(value);
                 for (index, button) in buttons.iter().enumerate() {
                     button.SetIsChecked(Some(Some(index) == on))?;
-                    ui(button)?.SetIsTabStop(Some(index) == on || on.is_none() && index == 0)?;
                 }
+                set_tab_stop(buttons, on.unwrap_or(0));
             }
             (Kind::Slider { slider, value: label }, Value::Number(percent)) => {
                 slider.cast::<RangeBase>()?.SetValue(*percent)?;
@@ -737,19 +755,18 @@ impl SettingRow {
                 let on = themes::theme_names().position(|candidate| candidate == name);
                 for (index, tile) in tiles.iter().enumerate() {
                     tile.SetIsChecked(Some(Some(index) == on))?;
-                    ui(tile)?.SetIsTabStop(Some(index) == on || on.is_none() && index == 0)?;
                 }
+                set_tab_stop(tiles, on.unwrap_or(0));
             }
             (Kind::Profiles(profiles), Value::Text(chosen)) => {
                 self.sync_profiles(profiles, &shown.items, chosen)?;
             }
             _ => {}
         }
+        // The reset button keeps its room while it is not needed (nothing moves); it is off, and so out of the tab order.
         ui(&self.bar)?.SetOpacity(if shown.modified { 1.0 } else { 0.0 })?;
-        let reset = ui(&self.reset)?;
-        reset.SetOpacity(if shown.modified { 1.0 } else { 0.0 })?;
-        reset.SetIsHitTestVisible(shown.modified)?;
-        ui(&self.reset)?.SetIsTabStop(shown.modified)?;
+        ui(&self.reset)?.SetOpacity(if shown.modified { 1.0 } else { 0.0 })?;
+        self.reset.cast::<Control>()?.SetIsEnabled(shown.modified)?;
         *self.last.borrow_mut() = Some(shown);
         Ok(())
     }
@@ -776,7 +793,10 @@ impl SettingRow {
                     }
                 }))?;
                 let state = profiles.clone();
-                let focus = ui(&button)?.GotFocus(cb!("drawer profile focus", |_, _| state.focused.set(index)))?;
+                let focus = ui(&button)?.GotFocus(cb!("drawer profile focus", |_, _| {
+                    state.focused.set(index);
+                    set_tab_stop(&state.buttons.borrow(), index);
+                }))?;
                 profiles.revokers.borrow_mut().extend([click, focus]);
                 children.Append(&button)?;
                 profiles.buttons.borrow_mut().push(button);

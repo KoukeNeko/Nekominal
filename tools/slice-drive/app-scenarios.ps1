@@ -1610,4 +1610,126 @@ function Scenario-Drawer {
         Assert-Results $results 'drawer-en'
     } -NoShot
 }
+# One key press of a keyboard-only task, counted in $script:Taps (a chord is one press).
+function Tap([int]$Vk, [int[]]$Mods = @()) { $script:Taps++; Press $Vk $Mods }
+# The element of a row's choice: "row: option", the name a reader says.
+function Choice-Name([string]$Row, [string]$Option) { Nk-Text 'common.labelValue' @($Row, $Option) }
+# The reset button of a row, by the name it has.
+function Reset-Button([string]$Row) { Get-Element (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), $Row)) 'Button' }
+function Field-Value([string]$Name) { (Get-Element $Name 'TextBox').GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value }
+function Saved-Settings { Get-Content (Join-Path (Join-Path (Join-Path (Split-Path $script:LogFile) ((Split-Path $script:LogFile -Leaf).Replace('.log', '') + '-appdata')) 'Nekominal') 'settings.json') -Raw | ConvertFrom-Json }
+
+# The settings drawer, second half: the colour scheme is chosen with the keyboard alone (5 presses; the study allows 8) and
+# previewed while a tile is pointed at or has the focus, and Esc or leaving the grid puts the kept scheme back; a modified
+# row has a reset button that restores the default (and the file then holds nothing for it); a font size typed into a
+# field reaches the terminal at once; a toggle of the terminal page is saved. Backdrop and opacity: the slider is reached
+# with 4 Tab presses, 60 % takes 9 key presses in all, a replay of 200 value changes never sets the backdrop and applies
+# at most once per frame, and the slider is off and reads 100 % under backdrop None while the saved value stays.
+function Scenario-DrawerRows {
+    Run-App 'drawer-rows' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        # 1. keyboard only: Ctrl+Shift+O, Tab to the strip, Tab to the tiles, Down to Nord, Enter
+        $script:Taps = 0; $watch = [Diagnostics.Stopwatch]::StartNew()
+        $mark = Log-Mark
+        Tap 0x4F @(0x11, 0x10); [void](Wait-Until { Drawer-Open })
+        Tap 0x09; Tap 0x09
+        $results.Add((Check 'two Tab presses from the search box reach the colour scheme tiles (on the kept scheme)' 'Tokyo Night' (Focused-Name)))
+        Tap 0x28; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'Down moves to Nord, one row down in the grid' 'Nord' (Focused-Name)))
+        $seen = @(Log-Since $mark | Where-Object { $_ -match "glass: scheme 'Nord'" }).Count
+        $results.Add((Check-True 'the terminals show Nord as soon as its tile has the focus' ($seen -ge 1) "$seen glass lines"))
+        $results.Add((Check 'which is only a preview: the kept scheme is still Tokyo Night' 'On|Off' ((Toggle-State 'Tokyo Night') + '|' + (Toggle-State 'Nord'))))
+        Tap 0x0D; Start-Sleep -Milliseconds 400; $watch.Stop()
+        $results.Add((Check 'Enter keeps it' 'On|Off' ((Toggle-State 'Nord') + '|' + (Toggle-State 'Tokyo Night'))))
+        $results.Add((Check-True 'the whole task took at most 8 key presses' ($script:Taps -le 8) "$($script:Taps) presses"))
+        $results.Add((Check-True 'and at most 10 s' ($watch.Elapsed.TotalSeconds -le 10) ('{0:N1} s' -f $watch.Elapsed.TotalSeconds)))
+        'colour scheme task: {0} key presses, {1:N1} s' -f $script:Taps, $watch.Elapsed.TotalSeconds
+        Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'and the file holds it' 'Nord' ((Saved-Settings).theme)))
+        # 2. preview and restore: the keyboard (Esc), the pointer (leaving the grid)
+        $mark = Log-Mark
+        Tap 0x27; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'Right moves the focus to the next tile and previews it' "Gruvbox Dark" (Focused-Name)))
+        $results.Add((Check-True 'the terminals show it' (@(Log-Since $mark | Where-Object { $_ -match "glass: scheme 'Gruvbox Dark'" }).Count -ge 1)))
+        Press 0x1B; Start-Sleep -Milliseconds 600
+        $results.Add((Check-True 'Esc puts the kept scheme back on the terminals' (@(Log-Since $mark | Where-Object { $_ -match "glass: scheme 'Nord'" }).Count -ge 1)))
+        $results.Add((Check 'and keeps the drawer open with the focus on the kept tile' 'True|Nord' ((Drawer-Open).ToString() + '|' + (Focused-Name))))
+        $mark = Log-Mark
+        $tile = Get-ElementRect 'Dracula' 'ToggleButton'
+        Move-To ($tile.X + [int]($tile.W / 2)) ($tile.Y + [int]($tile.H / 2)); Start-Sleep -Milliseconds 600
+        $results.Add((Check-True 'pointing at a tile previews its scheme' (@(Log-Since $mark | Where-Object { $_ -match "glass: scheme 'Dracula'" }).Count -ge 1)))
+        $results.Add((Check 'without keeping it' 'Off' (Toggle-State 'Dracula')))
+        $window = Win-Rect; Move-To ($window.Left + 200) ($window.Top + 500); Start-Sleep -Milliseconds 700
+        $results.Add((Check-True 'leaving the grid puts the kept scheme back' (@(Log-Since $mark | Where-Object { $_ -match "glass: scheme 'Nord'" }).Count -ge 1)))
+        $results.Add((Check 'the kept scheme is still marked' 'On' (Toggle-State 'Nord')))
+
+        # 3. a modified row: its reset button, the file, the terminal
+        $size = Nk-Text 'settings.fontSize'
+        $results.Add((Check 'an unchanged row has its reset button off' $false (Reset-Button $size).Current.IsEnabled))
+        $mark = Log-Mark
+        Click-Name $size -Class 'TextBox'; Chord @(0x11) 0x41; Type-Unicode '17' 60; Press 0x0D; Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'a font size typed into its field and entered is in effect' 17 ([int](Field-Value $size))))
+        $results.Add((Check-True 'the terminal took the new size (its grid changed)' ((Grid-Lines $mark).Count -ge 1)))
+        $results.Add((Check 'the row now has its reset button on' $true (Reset-Button $size).Current.IsEnabled))
+        $results.Add((Check 'and the file holds the size' 17 ((Saved-Settings).font.size)))
+        Click-Name (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), $size)) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'reset restores the default' '14' (Field-Value $size)))
+        $results.Add((Check 'and turns the reset button off' $false (Reset-Button $size).Current.IsEnabled))
+        $results.Add((Check 'and the file holds nothing for the size any more' $null ((Saved-Settings).font)))
+        # 4. the terminal page: a toggle is saved
+        Click-Name (Nk-Text 'settings.terminal') -Class 'ToggleButton'; Start-Sleep -Milliseconds 600
+        $row = Nk-Text 'settings.copyOnSelect'
+        $results.Add((Check 'copy on select starts off' 'On|Off' ((Toggle-State (Choice-Name $row (Nk-Text 'toggle.off'))) + '|' + (Toggle-State (Choice-Name $row (Nk-Text 'toggle.on'))))))
+        Click-Name (Choice-Name $row (Nk-Text 'toggle.on')); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'choosing On switches it' 'Off|On' ((Toggle-State (Choice-Name $row (Nk-Text 'toggle.off'))) + '|' + (Toggle-State (Choice-Name $row (Nk-Text 'toggle.on'))))))
+        $results.Add((Check 'and the file holds it' $true ((Saved-Settings).copyOnSelect)))
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Assert-Results $results 'drawer-rows'
+    } -NoShot
+    Run-App 'drawer-opacity' @{ confirmClose = $false; appearance = @{ opacity = 0.72 } } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $script:Taps = 0; $mark = Log-Mark
+        Tap 0x4F @(0x11, 0x10); [void](Wait-Until { Drawer-Open })
+        foreach ($i in 1..4) { Tap 0x09 }
+        $results.Add((Check 'four Tab presses from the search box reach the opacity slider' (Nk-Text 'settings.opacity') (Focused-Name)))
+        Tap 0x22; Tap 0x22; Tap 0x25; Tap 0x25; Start-Sleep -Milliseconds 800
+        $results.Add((Check 'two Page Down and two Left arrows make 72 % into 60 %' 60 (Slider-Value (Get-Slider 0))))
+        $results.Add((Check-True 'the task took at most 15 key presses' ($script:Taps -le 15) "$($script:Taps) presses"))
+        'opacity task: {0} key presses' -f $script:Taps
+        Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'the file holds 0.6' 0.6 ((Saved-Settings).appearance.opacity)))
+        $results.Add((Check 'the value label reads 60%' '60%' (Get-Element '60%' 'TextBlock').Current.Name))
+        $results.Add((Check 'none of it set the system backdrop' 0 (@(Log-Since $mark | Where-Object { $_ -match 'system backdrop set' }).Count)))
+        # a replay of 200 value changes through UI Automation, the same events a drag raises
+        $mark = Log-Mark
+        $range = (Get-Slider 0).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
+        for ($i = 0; $i -lt 200; $i++) { $range.SetValue(20 + [Math]::Abs((($i * 4) % 160) - 80)) }
+        Start-Sleep -Milliseconds 1800
+        $lines = @(Log-Since $mark)
+        $applies = @($lines | Where-Object { $_ -match 'opacity applied' })
+        $gaps = @(for ($i = 1; $i -lt $applies.Count; $i++) { (Log-Ms $applies[$i]) - (Log-Ms $applies[$i - 1]) })
+        $shortest = if ($gaps.Count) { ($gaps | Measure-Object -Minimum).Minimum } else { [double]::PositiveInfinity }
+        $results.Add((Check-True 'a replay of 200 value changes applies far fewer than 200 times' ($applies.Count -ge 1 -and $applies.Count -lt 100) "$($applies.Count) applies"))
+        $results.Add((Check-True 'at most once per frame' ($shortest -ge 5) "shortest gap $shortest ms"))
+        $results.Add((Check 'without setting the system backdrop' 0 (@($lines | Where-Object { $_ -match 'system backdrop set' }).Count)))
+        $results.Add((Check-True 'and saving at most once' (@($lines | Where-Object { $_ -match 'settings saved' }).Count -le 1)))
+        $results.Add((Check 'with no apply error' 0 (@($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:' }).Count)))
+        $results.Add((Check 'and no InfoBar' 0 (Count-Class 'InfoBar')))
+        # backdrop None: the slider is off and reads 100 %, the saved value stays
+        $saved = (Saved-Settings).appearance.opacity
+        Click-Name (Choice-Name (Nk-Text 'settings.backdrop') (Nk-Text 'backdrop.none')); Start-Sleep -Milliseconds 1500
+        $slider = Get-Slider 0
+        $results.Add((Check 'backdrop None turns the slider off' $false $slider.Current.IsEnabled))
+        $results.Add((Check 'and it reads 100' 100 (Slider-Value $slider)))
+        $results.Add((Check 'and its label reads 100%' '100%' (Get-Element '100%' 'TextBlock').Current.Name))
+        $results.Add((Check 'while the file keeps the opacity' $saved ((Saved-Settings).appearance.opacity)))
+        Click-Name (Choice-Name (Nk-Text 'settings.backdrop') (Nk-Text 'backdrop.acrylic')); Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'back on Acrylic the slider is on again' $true (Get-Slider 0).Current.IsEnabled))
+        $results.Add((Check 'and shows the kept opacity' ([int]($saved * 100)) (Slider-Value (Get-Slider 0))))
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Assert-Results $results 'drawer-opacity'
+    } -NoShot
+}
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer }

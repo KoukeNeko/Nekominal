@@ -4,11 +4,14 @@
 
 use nekominal_model::commands::Command;
 use nekominal_model::layout::{Axis, Rect, Splitter};
-use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, PasteSettings, Settings};
+use nekominal_model::settings::{
+    Cursor, CursorStyle as CursorShapeSetting, OPACITY_RANGE, Osc52Policy, PasteSettings, Settings,
+};
 use nekominal_model::settings_ui::Range;
 use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
 use nekominal_term::alacritty_terminal::term::Osc52;
+use nekominal_term::alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
 use nekominal_term::osc::is_control_or_bidi;
 
 /// A pixel rectangle on the physical pixel grid.
@@ -800,9 +803,25 @@ pub fn osc52_for(policy: Osc52Policy) -> Osc52 {
     }
 }
 
+/// The cursor of a program that chose none.
+pub fn cursor_style_for(cursor: &Cursor) -> CursorStyle {
+    let shape = match cursor.style {
+        CursorShapeSetting::Block => CursorShape::Block,
+        CursorShapeSetting::Bar => CursorShape::Beam,
+        CursorShapeSetting::Underline => CursorShape::Underline,
+    };
+    CursorStyle { shape, blinking: cursor.blink }
+}
+
 /// The emulator setup of a new pane.
 pub fn core_config(settings: &Settings) -> CoreConfig {
-    CoreConfig { osc52: osc52_for(settings.osc52), ..CoreConfig::default() }
+    CoreConfig {
+        osc52: osc52_for(settings.osc52),
+        cursor_style: cursor_style_for(&settings.cursor),
+        scrollback_lines: settings.scrollback as usize,
+        kitty_keyboard: settings.keyboard.kitty_protocol,
+        ..CoreConfig::default()
+    }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -818,6 +837,9 @@ pub struct Effects {
     /// The size, the family or the line height of the font.
     pub font: bool,
     pub osc52: bool,
+    /// The shape of the cursor a program that chose none gets, and how many lines of scrollback a pane keeps.
+    pub cursor: bool,
+    pub scrollback: bool,
 }
 
 /// What `now` changes of the screen compared with `before`. The opacity is not part of it: it has its own way.
@@ -828,6 +850,8 @@ pub fn effects(before: &Settings, now: &Settings) -> Effects {
             || before.font.family != now.font.family
             || before.font.line_height != now.font.line_height,
         osc52: before.osc52 != now.osc52,
+        cursor: before.cursor != now.cursor,
+        scrollback: before.scrollback != now.scrollback,
     }
 }
 
@@ -1823,6 +1847,7 @@ mod tests {
     #[test]
     fn a_change_of_the_settings_puts_in_effect_only_what_it_changes() {
         use nekominal_model::settings::{Backdrop, Osc52Policy};
+        use nekominal_model::settings::CursorStyle;
         let before = Settings::default();
         let after = |change: fn(&mut Settings)| {
             let mut now = before.clone();
@@ -1836,10 +1861,28 @@ mod tests {
         assert_eq!(after(|s| s.font.line_height = 1.3), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.font.family = vec!["Fira Code".into()]), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.osc52 = Osc52Policy::Off), Effects { osc52: true, ..Effects::default() });
+        assert_eq!(after(|s| s.cursor.style = CursorStyle::Bar), Effects { cursor: true, ..Effects::default() });
+        assert_eq!(after(|s| s.scrollback = 500), Effects { scrollback: true, ..Effects::default() });
         // The opacity has its own way (the next frame applies it), and the rest is read where it is used.
         assert_eq!(after(|s| s.appearance.opacity = 0.5), Effects::default());
         assert_eq!(after(|s| s.confirm_close = false), Effects::default());
-        assert_eq!(after(|s| s.scrollback = 500), Effects::default());
+        assert_eq!(after(|s| s.keyboard.kitty_protocol = false), Effects::default());
+    }
+
+    #[test]
+    fn a_new_pane_starts_with_the_cursor_the_scrollback_and_the_keyboard_protocol_of_the_settings() {
+        use nekominal_model::settings::Keyboard;
+        let defaults = core_config(&Settings::default());
+        assert_eq!((defaults.cursor_style.shape, defaults.cursor_style.blinking), (CursorShape::Block, true));
+        assert_eq!((defaults.scrollback_lines, defaults.kitty_keyboard), (10_000, true));
+        let mut settings = Settings::default();
+        settings.cursor = Cursor { style: CursorShapeSetting::Bar, blink: false };
+        settings.scrollback = 250;
+        settings.keyboard = Keyboard { kitty_protocol: false };
+        let config = core_config(&settings);
+        assert_eq!((config.cursor_style.shape, config.cursor_style.blinking), (CursorShape::Beam, false));
+        assert_eq!((config.scrollback_lines, config.kitty_keyboard), (250, false));
+        assert_eq!(cursor_style_for(&Cursor { style: CursorShapeSetting::Underline, blink: true }).shape, CursorShape::Underline);
     }
 
     #[test]

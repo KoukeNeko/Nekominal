@@ -298,7 +298,6 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
-    toggle!("cursor.blink", Appearance, SettingsCursorBlink, cursor.blink),
     // Terminal
     count!("scrollback", Terminal, SettingsScrollback, SCROLLBACK, scrollback),
     toggle!("copyOnSelect", Terminal, SettingsCopyOnSelect, copy_on_select),
@@ -469,6 +468,7 @@ mod tests {
         ("keybindings", "the shortcuts page edits them"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
+        ("cursor.blink", "the terminals draw a steady cursor, so a row would change nothing"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.
@@ -602,7 +602,7 @@ mod tests {
             ("theme", Value::Text("No Such Scheme".into())),
             ("appearance.backdrop", Value::Index(9)),
             ("appearance.backdrop", Value::Bool(true)),
-            ("cursor.blink", Value::Number(1.0)),
+            ("keyboard.kittyProtocol", Value::Number(1.0)),
             ("font.size", Value::Number(f64::NAN)),
             ("font.family", Value::Text(" , ".into())),
             ("osc52", Value::Text("write".into())),
