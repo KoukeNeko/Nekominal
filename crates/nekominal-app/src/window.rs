@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GetSystemMetrics, MNC_CLOSE, SM_SHOWSOUNDS,
-    SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_MENUCHAR,
+    SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_CLOSE, WM_MENUCHAR,
 };
 use windows_core::{Interface, Result};
 
@@ -21,9 +21,18 @@ const ALT_CHORD_SUBCLASS: usize = 1;
 /// The first `WM_MENUCHAR` is logged, so a run shows that the subclass sees the messages; a held key repeats it.
 static MENU_CHAR_LOGGED: AtomicBool = AtomicBool::new(false);
 
+/// The user has answered the question a close of the window asked: the `WM_CLOSE` that follows is let through.
+static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// Lets the next close of the window through without asking again.
+pub fn allow_close() {
+    CLOSE_CONFIRMED.store(true, Ordering::Relaxed);
+}
+
 /// Alt+character shortcuts (Alt+Shift+D, ...) arrive as `WM_SYSCHAR`. The window has no menu mnemonic for the
 /// character, so Windows asks `WM_MENUCHAR`, and the default answer (`MNC_IGNORE`) is a beep from the system
-/// speaker. Answering `MNC_CLOSE` keeps the shortcut silent. Everything else, `WM_SYSCHAR` and `WM_SYSCOMMAND`
+/// speaker. Answering `MNC_CLOSE` keeps the shortcut silent. A `WM_CLOSE` (Alt+F4, the caption button) is held back
+/// while the shell asks about the running sessions it would end. Everything else, `WM_SYSCHAR` and `WM_SYSCOMMAND`
 /// included, goes on to the window's own procedure, so Alt+Space still opens the system menu.
 unsafe extern "system" fn silence_menu_char(
     hwnd: HWND,
@@ -39,6 +48,12 @@ unsafe extern "system" fn silence_menu_char(
         }
         // The menu command is the high-order word of the result: MAKELRESULT(0, MNC_CLOSE).
         return LRESULT((MNC_CLOSE as isize) << 16);
+    }
+    if message == WM_CLOSE
+        && !CLOSE_CONFIRMED.load(Ordering::Relaxed)
+        && crate::shell::shell().is_some_and(|shell| shell.ask_before_closing_window())
+    {
+        return LRESULT(0);
     }
     // SAFETY: forwards the message this procedure was called with to the next one in the chain.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }

@@ -536,6 +536,35 @@ function Scenario-Close {
     } -NoShot
 }
 
+# Closing the window ends every session, so it asks like closing a tab does: with a command running the window stays and the
+# question counts the sessions, Cancel keeps everything, Close ends the window; an idle shell closes without a question.
+function Scenario-CloseWindow {
+    $failed = $false
+    Run-App 'close-window-running' @{} {
+        First-Prompt
+        Type-Line 'Start-Sleep 120'; Start-Sleep -Milliseconds 1200
+        $results = @()
+        [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 1500
+        $script:App.Refresh()
+        $results += Check 'closing the window with a command running keeps it open' $false $script:App.HasExited
+        $results += Check 'and asks about the running session' $true ([bool](Get-Element '關閉 1 個執行中的工作階段？'))
+        Press 0x1B; Start-Sleep -Milliseconds 800
+        $results += Check 'Cancel keeps the window and the command' $false $script:App.HasExited
+        [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 1200
+        Click-Name '關閉' -Class 'Button'
+        $results += Check 'Close ends the window' $true ($script:App.WaitForExit(5000))
+        $results
+        if ($results -like 'FAIL*') { throw 'close-window: a check failed' }
+    } -NoShot
+    Run-App 'close-window-idle' @{} {
+        First-Prompt
+        [void]$script:App.CloseMainWindow()
+        $result = Check 'an idle shell closes without a question' $true ($script:App.WaitForExit(5000))
+        $result
+        if ($result -like 'FAIL*') { throw 'close-window: a check failed' }
+    } -NoShot
+}
+
 # Pane markers: a tab with one pane shows no count, three panes show the count (and "Zoomed" in a corner label while one
 # is zoomed, a press on it brings the others back), and an unfocused pane that rang has a warning line over its top
 # edge until it is focused (the focus line and the warning line are never on the same pane).

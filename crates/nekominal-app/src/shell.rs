@@ -1712,24 +1712,42 @@ impl Shell {
     /// Asks before doing something. `title` is the question; the button that answers it is labelled `action`, the
     /// same label the action has everywhere else, and Cancel is the other one.
     fn confirm(self: &Rc<Self>, title: String, action: Text, on_confirm: impl Fn() + 'static) {
-        let result = (|| -> Result<()> {
-            let dialog = ContentDialog::new()?;
-            dialog.SetTitle(&IReference::from(title.as_str()))?;
-            dialog.SetPrimaryButtonText(t(action))?;
-            dialog.SetCloseButtonText(t(Text::CommonCancel))?;
-            dialog.SetDefaultButton(ContentDialogButton::Close)?;
-            ui(&dialog)?.SetXamlRoot(&self.root.xaml_root()?)?;
-            let revoker = dialog.PrimaryButtonClick(cb!("dialog confirmed", |_, _| on_confirm()))?;
-            self.revokers.borrow_mut().push(revoker);
-            let this = self.clone();
-            let revoker = dialog.Closed(cb!("dialog closed", |_, _| this.focus_active_pane()))?;
-            self.revokers.borrow_mut().push(revoker);
-            *self.dialog.borrow_mut() = Some(dialog.ShowAsync()?);
-            Ok(())
-        })();
-        if let Err(e) = result {
+        if let Err(e) = self.try_confirm(title, action, on_confirm) {
             log(&format!("confirm dialog: {e}"));
         }
+    }
+
+    fn try_confirm(self: &Rc<Self>, title: String, action: Text, on_confirm: impl Fn() + 'static) -> Result<()> {
+        let dialog = ContentDialog::new()?;
+        dialog.SetTitle(&IReference::from(title.as_str()))?;
+        dialog.SetPrimaryButtonText(t(action))?;
+        dialog.SetCloseButtonText(t(Text::CommonCancel))?;
+        dialog.SetDefaultButton(ContentDialogButton::Close)?;
+        ui(&dialog)?.SetXamlRoot(&self.root.xaml_root()?)?;
+        let revoker = dialog.PrimaryButtonClick(cb!("dialog confirmed", |_, _| on_confirm()))?;
+        self.revokers.borrow_mut().push(revoker);
+        let this = self.clone();
+        let revoker = dialog.Closed(cb!("dialog closed", |_, _| this.focus_active_pane()))?;
+        self.revokers.borrow_mut().push(revoker);
+        *self.dialog.borrow_mut() = Some(dialog.ShowAsync()?);
+        Ok(())
+    }
+
+    /// The window was asked to close (Alt+F4, the caption button). Closing ends every session, so running ones are
+    /// asked about first, as closing a tab does; the close goes on when the question is answered. True while the close
+    /// is held back for the answer.
+    pub fn ask_before_closing_window(self: &Rc<Self>) -> bool {
+        let running: u32 = self.tabs.borrow().iter().map(|tab| tab.busy_sessions()).sum();
+        if !self.settings.borrow().should_confirm_close(running) {
+            return false;
+        }
+        let this = self.clone();
+        let shown = self.try_confirm(tf(Text::DialogCloseSessions, &[&running]), Text::CommonClose, move || {
+            window::allow_close();
+            let _ = this.window.Close();
+        });
+        // A question that cannot be asked must not keep the window open.
+        shown.map_err(|e| log(&format!("close confirmation: {e}"))).is_ok()
     }
 
     fn rename_tab(self: &Rc<Self>, id: TabId) {
