@@ -4,15 +4,20 @@
 
 mod access;
 mod app;
+mod clipboard;
 mod find;
+mod glass;
 mod gpu;
 mod layout;
+#[allow(dead_code)]
+mod logic;
+mod open;
 mod popup;
 mod status;
 mod tab;
 mod win;
 
-/// What the shared modules below call to write to the log: the file named by NEKOMINAL_LOG, when there is one.
+/// What the modules call to write to the log: the file named by NEKOMINAL_LOG, when there is one.
 mod util {
     pub fn log(text: &str) {
         if let Some(path) = std::env::var_os("NEKOMINAL_LOG") {
@@ -23,18 +28,6 @@ mod util {
         }
     }
 }
-
-// The pure logic and the colours of the chrome are shared with the WinUI shell until that one is deleted; the files
-// then move here.
-#[path = "../../nekominal-app/src/clipboard.rs"]
-mod clipboard;
-#[path = "../../nekominal-app/src/open.rs"]
-mod open;
-#[path = "../../nekominal-app/src/glass.rs"]
-mod glass;
-#[path = "../../nekominal-app/src/logic.rs"]
-#[allow(dead_code)]
-mod logic;
 
 fn main() {
     if let Err(e) = win::run() {

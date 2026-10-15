@@ -1,9 +1,0 @@
-Microsoft.UI.Xaml.IApplicationOverrides
-Microsoft.UI.Xaml.IElementFactory
-Microsoft.UI.Xaml.Markup.IXamlMetadataProvider
-Microsoft.UI.Xaml.IUIElementOverrides
-Microsoft.UI.Xaml.IFrameworkElementOverrides
-Microsoft.UI.Xaml.Controls.IControlOverrides
-Microsoft.UI.Xaml.Automation.Peers.IAutomationPeerOverrides
-Microsoft.UI.Xaml.Automation.Provider.ITextProvider
-Microsoft.UI.Xaml.Automation.Provider.ITextRangeProvider

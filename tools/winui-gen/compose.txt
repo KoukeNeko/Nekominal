@@ -1,3 +1,0 @@
-Microsoft.UI.Xaml.Application
-Microsoft.UI.Xaml.Controls.UserControl
-Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer
