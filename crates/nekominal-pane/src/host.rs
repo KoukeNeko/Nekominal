@@ -31,7 +31,7 @@ use crate::pointer::{Pointer, PointerEffects};
 use nekominal_term::{
     ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, Link, TerminalCore,
     agent_status::{AgentRecord, AgentState, Report},
-    alacritty_terminal::{grid::Scroll, sync::FairMutex, term::Osc52},
+    alacritty_terminal::{grid::Scroll, sync::FairMutex, term::Osc52, vte::ansi::CursorStyle},
     osc::{Notification, Progress, PromptMark},
 };
 
@@ -472,6 +472,16 @@ impl Pane {
     /// What OSC 52 may do from now on (a settings change reaches panes that already run).
     pub fn set_osc52(&self, osc52: Osc52) {
         self.term.lock().set_osc52(osc52);
+    }
+
+    /// How many lines of scrollback the pane keeps from now on (a settings change reaches panes that already run).
+    pub fn set_scrollback_lines(&self, lines: usize) {
+        self.term.lock().set_scrollback_lines(lines);
+    }
+
+    /// The cursor a program that chose none gets from now on (a settings change reaches panes that already run).
+    pub fn set_cursor_style(&self, style: CursorStyle) {
+        self.term.lock().set_cursor_style(style);
     }
 
     /// Answers an OSC 52 read with the clipboard text. A clipboard over [`MAX_CLIPBOARD_TEXT`] is not sent: the

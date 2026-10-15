@@ -997,6 +997,23 @@ impl TerminalCore {
         self.dirty = true;
     }
 
+    /// Changes how many lines of scrollback are kept, in a terminal that already runs (the setting changed): a smaller
+    /// number drops the oldest lines at once, like a narrower terminal with a smaller budget does.
+    pub fn set_scrollback_lines(&mut self, lines: usize) {
+        self.config.scrollback_lines = lines;
+        self.history_cap = Self::scrollback_limit_for(&self.config, self.term.columns());
+        self.enforce_scrollback();
+        self.dirty = true;
+    }
+
+    /// Changes the cursor a program that chose none gets, in a terminal that already runs (the setting changed). A
+    /// cursor a program set with DECSCUSR stays as it set it until it asks for the default again.
+    pub fn set_cursor_style(&mut self, style: CursorStyle) {
+        self.config.cursor_style = style;
+        self.term.set_options(Self::term_config(&self.config, self.history_limit));
+        self.dirty = true;
+    }
+
     pub fn set_cell_size_px(&mut self, width: u16, height: u16) {
         self.config.cell_size_px = (width, height);
     }

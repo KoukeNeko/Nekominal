@@ -131,6 +131,30 @@ fn growing_wider_shrinks_the_scrollback_to_the_new_budget_and_shrinking_keeps_it
     assert_eq!(core.history_size(), wide, "history that is gone does not come back");
 }
 
+#[test]
+fn the_line_limit_of_a_running_terminal_can_change_and_line_ids_stay_exact() {
+    let mut core = core_with(30, 5, CoreConfig { scrollback_lines: 100, ..CoreConfig::default() });
+    for i in 0..400 {
+        feed(&mut core, &format!("l{i}\r\n"));
+    }
+    assert_eq!(core.history_size(), 100);
+    // A smaller limit drops the oldest lines at once; the lines that stay keep their ids.
+    core.set_scrollback_lines(40);
+    assert_eq!((core.scrollback_limit(), core.history_size()), (40, 40));
+    assert_eq!(core.oldest_line_id().map(|id| id.index), Some(356));
+    assert_eq!(line_text(&mut core, -40), "l356");
+    // A larger one lets the history grow again.
+    core.set_scrollback_lines(1000);
+    assert_eq!(core.scrollback_limit(), 1000);
+    for i in 400..600 {
+        feed(&mut core, &format!("l{i}\r\n"));
+    }
+    assert_eq!(core.history_size(), 240);
+    assert_eq!(core.oldest_line_id().map(|id| id.index), Some(356));
+    core.set_scrollback_lines(0);
+    assert_eq!(core.history_size(), 0);
+}
+
 // --- line ids ----------------------------------------------------------------------------------
 
 #[test]

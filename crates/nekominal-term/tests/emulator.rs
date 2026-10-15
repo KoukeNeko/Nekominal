@@ -1132,6 +1132,28 @@ fn title_bell_and_cursor_events() {
     assert!(core.take_events().iter().any(|e| matches!(e, CoreEvent::CursorBlinkingChange)));
 }
 
+#[test]
+fn the_default_cursor_can_change_while_the_terminal_runs_and_a_program_choice_outlasts_it() {
+    use nekominal_term::alacritty_terminal::vte::ansi::CursorStyle;
+    let bar = CursorStyle { shape: CursorShape::Beam, blinking: false };
+    let block = CursorStyle { shape: CursorShape::Block, blinking: true };
+    let mut core = TerminalCore::new(20, 3, CoreConfig { cursor_style: bar, ..CoreConfig::default() });
+    let shape = |core: &mut TerminalCore| {
+        let s = snap(core);
+        (s.cursor.shape, s.cursor.blinking)
+    };
+    assert_eq!(shape(&mut core), (CursorShape::Beam, false), "the default of the settings");
+    core.set_cursor_style(block);
+    assert_eq!(shape(&mut core), (CursorShape::Block, true), "a setting that changed reaches a running terminal");
+    // A program that sets its own cursor keeps it when the setting changes, and gets the new default back by asking.
+    feed(&mut core, "\x1b[4 q");
+    assert_eq!(shape(&mut core), (CursorShape::Underline, false));
+    core.set_cursor_style(bar);
+    assert_eq!(shape(&mut core), (CursorShape::Underline, false));
+    feed(&mut core, "\x1b[0 q");
+    assert_eq!(shape(&mut core), (CursorShape::Beam, false));
+}
+
 // --- synchronized output ----------------------------------------------------------------------
 
 #[test]
