@@ -380,6 +380,15 @@ impl Ui {
         width / self.scale
     }
 
+    /// Width in DIP of an icon glyph set at `size` DIP.
+    pub fn measure_icon(&mut self, ch: char, size: f32) -> f32 {
+        let px = size * self.scale;
+        match self.fonts.family_choice("Segoe Fluent Icons", Style::REGULAR) {
+            Some(choice) => self.glyph(choice, ch, px).advance / self.scale,
+            None => 0.0,
+        }
+    }
+
     /// Draws `text` with its line box starting at (`x`, `y`) DIP; returns its width in DIP.
     pub fn text(&mut self, x: f32, y: f32, text: &str, size: f32, color: Color, bold: bool) -> f32 {
         self.run(None, x, y, text, size, color, bold)
