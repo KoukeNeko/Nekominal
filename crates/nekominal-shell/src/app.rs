@@ -15,7 +15,7 @@ use nekominal_model::{
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, Settings},
-    strings::Lang,
+    strings::{Lang, Text},
     store,
     themes::{self, Color as SchemeColor},
 };
@@ -153,6 +153,9 @@ fn wired(command: Command) -> bool {
             | Command::AppPalette
             | Command::EditFind
             | Command::ViewFullscreen
+            | Command::AppearanceBackdropNext
+            | Command::AppearanceOpacityUp
+            | Command::AppearanceOpacityDown
     )
 }
 
@@ -820,6 +823,16 @@ impl App {
             Command::AppPalette => self.open_palette(),
             Command::EditFind => self.open_find(),
             Command::ViewFullscreen => self.toggle_fullscreen(),
+            Command::AppearanceBackdropNext => {
+                let next = Backdrop::ALL[(self.settings.appearance.backdrop.index() as usize + 1) % Backdrop::ALL.len()];
+                self.set_appearance(next, self.settings.appearance.opacity);
+            }
+            Command::AppearanceOpacityUp => {
+                self.set_appearance(self.settings.appearance.backdrop, self.settings.appearance.opacity_after(1));
+            }
+            Command::AppearanceOpacityDown => {
+                self.set_appearance(self.settings.appearance.backdrop, self.settings.appearance.opacity_after(-1));
+            }
             Command::EditCopy => {
                 self.copy_selection();
             }
@@ -1030,6 +1043,32 @@ impl App {
                     action: Some(popup::Action::Command(*command)),
                     current: false,
                 }),
+                MenuRow::Backdrop => {
+                    for backdrop in Backdrop::ALL {
+                        let name = match backdrop {
+                            Backdrop::Acrylic => Text::BackdropAcrylic,
+                            Backdrop::Mica => Text::BackdropMica,
+                            Backdrop::MicaAlt => Text::BackdropMicaAlt,
+                            Backdrop::None => Text::BackdropNone,
+                        };
+                        rows.push(popup::Row {
+                            label: format!("{}: {}", Text::SettingsBackdrop.get(lang), name.get(lang)),
+                            hint: String::new(),
+                            action: Some(popup::Action::Backdrop(backdrop)),
+                            current: backdrop == self.settings.appearance.backdrop,
+                        });
+                    }
+                }
+                MenuRow::Opacity => {
+                    for command in [Command::AppearanceOpacityUp, Command::AppearanceOpacityDown] {
+                        rows.push(popup::Row {
+                            label: command.label(lang),
+                            hint: format!("{}%", (self.settings.appearance.opacity * 100.0).round()),
+                            action: Some(popup::Action::Command(command)),
+                            current: false,
+                        });
+                    }
+                }
                 MenuRow::Separator if rows.last().is_some_and(|r| !r.is_separator()) => rows.push(popup::Row::separator()),
                 _ => {}
             }
@@ -1085,6 +1124,28 @@ impl App {
             (layout::TITLE_HEIGHT + 16.0) * self.scale,
         );
         self.open_popup(rows, popup::Kind::Palette, anchor);
+    }
+
+    /// Puts a backdrop and an opacity of the background in effect, and keeps them in the settings file.
+    fn set_appearance(&mut self, backdrop: Backdrop, opacity: f64) {
+        let appearance = &mut self.settings.appearance;
+        if (appearance.backdrop, appearance.opacity) == (backdrop, opacity) {
+            return;
+        }
+        (appearance.backdrop, appearance.opacity) = (backdrop, opacity);
+        let scheme = themes::scheme(&self.settings.theme);
+        let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::NORMAL);
+        self.theme = glass::render_theme(scheme, shown);
+        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+            entry.view.set_theme(self.theme.clone());
+        }
+        crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
+        if let Some(path) = store::settings_path()
+            && let Err(e) = store::save_keeping_original(&path, &settings::serialize(&self.settings))
+        {
+            util::log(&format!("settings: {e}"));
+        }
+        self.redraw();
     }
 
     pub fn is_fullscreen(&self) -> bool {
@@ -1335,6 +1396,7 @@ impl App {
         match action {
             Some(popup::Action::Command(command)) => self.run(command),
             Some(popup::Action::Tab(index)) => self.select(index),
+            Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
             None => {}
         }
     }

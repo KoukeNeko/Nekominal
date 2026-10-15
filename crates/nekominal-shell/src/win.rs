@@ -361,7 +361,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 /// The DWM backdrop the window shows through: 1 none, 2 Mica, 3 acrylic, 4 Mica Alt. Needs the frame extended over
 /// the whole client area.
-fn set_backdrop(hwnd: HWND, backdrop: Backdrop, dark: bool) {
+pub(crate) fn set_backdrop(hwnd: HWND, backdrop: Backdrop, dark: bool) {
     let kind = match backdrop {
         Backdrop::Acrylic => 3,
         Backdrop::Mica => 2,

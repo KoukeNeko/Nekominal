@@ -28,7 +28,9 @@ function Run-Next([scriptblock]$Body) {
     $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
     $global:NextFailures = @()
     try {
-        Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500
+        # A settings folder of its own: what the app saves must not reach the user's settings.
+        $global:NextAppData = Join-Path $env:TEMP ('nk-appdata-' + [guid]::NewGuid())
+        Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500 -Env @{ APPDATA = $global:NextAppData }
         & $Body
     } finally {
         Stop-App
@@ -165,6 +167,22 @@ function Scenario-NextFullscreen {
         Press 0x7A; Start-Sleep -Milliseconds 1200
         $back = Win-Rect
         Next-Check 'fullscreen.restores-the-window' ($back.Left -eq $before.Left -and $back.Top -eq $before.Top -and $back.Right -eq $before.Right -and $back.Bottom -eq $before.Bottom) "back at $($back.Left),$($back.Top)-$($back.Right),$($back.Bottom)"
+    }
+}
+
+function Scenario-NextAppearance {
+    Run-Next {
+        $r = Win-Rect; $s = Get-Scale
+        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $button = Next-At $menuX 24
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        $row = Next-At ($menuX - 60) (44 + 296)                  # the Mica row of the backdrop group
+        Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1200
+        $file = Join-Path $global:NextAppData 'Nekominal\settings.json'
+        $saved = if (Test-Path $file) { Get-Content $file -Raw } else { '' }
+        Next-Check 'appearance.backdrop-is-saved' ($saved -match '"backdrop":\s*"mica"') "settings.json: $($saved -replace '\s+',' ')"
+        Next-Line 'echo STILL-WORKS'
+        Next-Check 'appearance.window-still-takes-typing' ((Next-Text) -match 'STILL-WORKS') 'the pane takes the typing after the backdrop changed'
     }
 }
 

@@ -2,7 +2,7 @@
 //! backdrop, so the blur is real, not painted. This file holds the rows, their geometry and the window; the drawing
 //! and the messages go through `App`, which owns the device and the UI layer.
 
-use nekominal_model::commands::Command;
+use nekominal_model::{commands::Command, settings::Backdrop};
 use nekominal_ui::Rect;
 use windows::{
     Win32::{
@@ -48,6 +48,8 @@ pub enum Action {
     Command(Command),
     /// Select the tab with this index.
     Tab(usize),
+    /// Use this backdrop behind the window.
+    Backdrop(Backdrop),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
