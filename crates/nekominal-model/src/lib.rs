@@ -5,6 +5,7 @@ pub mod commands;
 pub mod fuzzy;
 pub mod keymap;
 pub mod layout;
+pub mod menu;
 pub mod palette;
 pub mod profiles;
 pub mod session;

@@ -109,6 +109,10 @@ texts! {
     TabCloseRight "tab.closeRight" "關閉右側分頁" "Close tabs to the right";
     TabMoveToNewWindow "tab.moveToNewWindow" "移至新視窗" "Move to new window";
     MenuTerminal "menu.terminal" "終端機功能表" "Terminal menu";
+    // The button of the top bar that opens the menu of everything the bar folds away, and the row of that menu that
+    // opens the appearance flyout (its backdrop row is `SettingsBackdrop`).
+    MenuApp "menu.app" "功能表" "Menu";
+    MenuOpacity "menu.opacity" "背景不透明度…" "Background opacity…";
     DropPastePath "drop.pastePath" "貼上路徑" "Paste path";
 
     // The position plate of the tab strip and the list of every tab (the palette in its tab mode).
