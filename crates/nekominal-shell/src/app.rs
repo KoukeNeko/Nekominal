@@ -1,7 +1,7 @@
 //! The application of one window: tabs with panes, the chrome drawn around them, and the input.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 use nekominal_input::{
@@ -46,7 +46,7 @@ use crate::{
     layout::{self, Hit, Layout},
     logic::{self, Attention, PxRect},
     open, popup, status,
-    tab::{PaneEntry, Tab},
+    tab::{PaneEntry, Tab, WakeTarget},
     util,
 };
 
@@ -67,6 +67,9 @@ pub enum Cursor {
     ResizeH,
     ResizeV,
 }
+
+/// How far below the title bar a dragged chip is let go to count as pulled out of the window, in DIP.
+const TEAR_MARGIN: f32 = 12.0;
 
 /// Corner radius of every rounded rectangle, in DIP (the same number as `design.rs` of the WinUI shell).
 pub const CORNER_RADIUS: f32 = 8.0;
@@ -103,6 +106,8 @@ pub struct App {
     over_splitter: Option<Axis>,
     /// The path of the divider being dragged.
     dragged_splitter: Option<Vec<u8>>,
+    /// A chip let go of outside the title bar, for the window code to move.
+    tear: Option<(usize, (i32, i32))>,
     /// The "…" menu while it is open.
     popup: Option<popup::Popup>,
     confirmation: Option<Confirmation>,
@@ -113,7 +118,6 @@ pub struct App {
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
-    wake_pending: Arc<AtomicBool>,
 }
 
 /// The matches of the find bar and the one the bar is on.
@@ -199,7 +203,7 @@ fn input_mods(m: Modifiers) -> Mods {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>) -> Result<App, String> {
+    pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
         let text = store::settings_path().and_then(|path| store::load(&path).ok().flatten());
         let settings = settings::parse(text.as_deref()).settings;
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
@@ -245,15 +249,17 @@ impl App {
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
+            tear: None,
             confirmation: None,
             fullscreen: None,
             find: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
-            wake_pending: Arc::new(AtomicBool::new(false)),
         };
         app.relayout();
-        app.new_tab()?;
+        if first_tab {
+            app.new_tab()?;
+        }
         Ok(app)
     }
 
@@ -329,13 +335,13 @@ impl App {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
         let view = PaneRenderer::new_sharing(&self.gpu, self.renderer_config(), self.theme.clone(), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
-        let hwnd = self.hwnd.0 as isize;
-        let wake_pending = self.wake_pending.clone();
+        let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
+        let reader_target = target.clone();
         let wake: nekominal_pane::Wake = Arc::new(move || {
-            // One posted message per burst of output: the handler clears the flag when it draws.
-            if !wake_pending.swap(true, Ordering::AcqRel) {
+            if !reader_target.pending.swap(true, Ordering::AcqRel) {
+                let hwnd = HWND(reader_target.hwnd.load(Ordering::Acquire) as *mut _);
                 // SAFETY: posting to a window handle from another thread is allowed; a dead window drops it.
-                unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
+                unsafe { PostMessageW(Some(hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
             }
         });
         let config = self.spawn_config(cols as u16, rows as u16);
@@ -352,6 +358,7 @@ impl App {
             attention: None,
             note: None,
             progress: None,
+            wake: target,
         })
     }
 
@@ -423,6 +430,56 @@ impl App {
         self.relayout();
         self.sync_focus();
         self.redraw();
+    }
+
+    /// Takes a tab out of this window with its sessions running, for another window to adopt. The window closes
+    /// when it was the last tab.
+    pub fn take_tab(&mut self, index: usize) -> Option<Tab> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(index);
+        if self.tabs.is_empty() {
+            // SAFETY: closes the window of this thread; nothing is left in it to ask about.
+            unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).ok() };
+            return Some(tab);
+        }
+        if self.selected > index || self.selected >= self.tabs.len() {
+            self.selected = self.selected.saturating_sub(1);
+        }
+        self.relayout();
+        self.sync_focus();
+        self.redraw();
+        Some(tab)
+    }
+
+    /// Shows a tab another window gave up, selected.
+    pub fn adopt_tab(&mut self, mut tab: Tab) {
+        for entry in &mut tab.panes {
+            // The reader threads now wake this window; output that came in during the move gets one message.
+            entry.wake.hwnd.store(self.hwnd.0 as isize, Ordering::Release);
+            entry.wake.pending.store(true, Ordering::Release);
+            if let Err(e) = entry.view.set_scale(self.scale) {
+                util::log(&format!("scale: {e}"));
+            }
+        }
+        // SAFETY: posting to our own window.
+        unsafe { PostMessageW(Some(self.hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
+        tab.mark_seen();
+        self.tabs.push(tab);
+        self.selected = self.tabs.len() - 1;
+        self.relayout();
+        self.sync_focus();
+        self.redraw();
+    }
+
+    /// The tab chip the user dragged out of the title bar and let go of, with the screen point it was let go at.
+    pub fn take_tear(&mut self) -> Option<(usize, (i32, i32))> {
+        self.tear.take()
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
     }
 
     fn select(&mut self, index: usize) {
@@ -513,7 +570,9 @@ impl App {
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
     pub fn on_wake(&mut self) {
-        self.wake_pending.store(false, Ordering::Release);
+        for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
+            entry.wake.pending.store(false, Ordering::Release);
+        }
         let mut ended: Vec<(usize, PaneId)> = Vec::new();
         let (selected, active) = (self.selected, self.active);
         for (t, tab) in self.tabs.iter_mut().enumerate() {
@@ -689,13 +748,23 @@ impl App {
             if down {
                 self.pressed = hit;
                 self.redraw();
-                return Capture::None;
+                // A chip keeps the pointer: letting go outside the window moves the tab.
+                return if matches!(hit, Hit::Chip(_)) { Capture::Take } else { Capture::None };
             }
             let pressed = std::mem::replace(&mut self.pressed, Hit::None);
             self.redraw();
+            if let Hit::Chip(i) = pressed {
+                let (width, _) = self.surface.size();
+                let below = (layout::TITLE_HEIGHT + TEAR_MARGIN) * self.scale;
+                if y < 0 || y as f32 >= below || x < 0 || x >= width as i32 {
+                    self.tear = Some((i, self.screen_point(x as f32, y as f32)));
+                } else if pressed == hit {
+                    self.select(i);
+                }
+                return Capture::Release;
+            }
             if pressed == hit {
                 match hit {
-                    Hit::Chip(i) => self.select(i),
                     Hit::ChipClose(i) => self.request_close_tab(i),
                     Hit::NewTab => {
                         if let Err(e) = self.new_tab() {

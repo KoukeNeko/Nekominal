@@ -278,7 +278,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             };
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
-            match with_app(hwnd, |app| app.on_button(lo(lparam), hi(lparam), button, down, time)) {
+            let capture = with_app(hwnd, |app| app.on_button(lo(lparam), hi(lparam), button, down, time));
+            if let Some((index, point)) = with_app(hwnd, App::take_tear).flatten() {
+                move_tab(hwnd, index, point);
+            }
+            match capture {
                 // The capture keeps the moves coming while a button is held outside the window (a selection drag),
                 // and a timer scrolls the view while the drag is held above or below the pane.
                 // SAFETY: calls on this window from its own thread.
@@ -389,7 +393,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_NEW_WINDOW => {
             if let Some(gpu) = with_app(hwnd, |app| app.shared_gpu()) {
-                if let Err(e) = create_window(Some(gpu)) { crate::util::log(&format!("new window: {e}")); }
+                if let Err(e) = create_window(Some(gpu), None, true) { crate::util::log(&format!("new window: {e}")); }
             }
             LRESULT(0)
         }
@@ -492,7 +496,9 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
     }
 }
 
-fn create_window(shared_gpu: Option<crate::gpu::Gpu>) -> Result<HWND, String> {
+/// A window for the application. `at` is the screen position of its top left corner (the system chooses without it);
+/// `first_tab` false leaves it without a tab, for the caller to give it one.
+fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, first_tab: bool) -> Result<HWND, String> {
     unsafe {
         let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         // No GDI surface: the window shows the DirectComposition content only.
@@ -513,8 +519,9 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>) -> Result<HWND, String> {
         .map_err(|e| e.to_string())?;
         let scale = scale_of(hwnd);
         // The window was created at 1100x700 pixels; make that DIP.
-        let _ = SetWindowPos(hwnd, None, 0, 0, (1100.0 * scale) as i32, (700.0 * scale) as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        let app = match App::new(hwnd, client_size(hwnd), scale, shared_gpu) {
+        let (x, y, keep_position) = at.map_or((0, 0, SWP_NOMOVE), |(x, y)| (x, y, SET_WINDOW_POS_FLAGS(0)));
+        let _ = SetWindowPos(hwnd, None, x, y, (1100.0 * scale) as i32, (700.0 * scale) as i32, keep_position | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        let app = match App::new(hwnd, client_size(hwnd), scale, shared_gpu, first_tab) {
             Ok(app) => app,
             Err(e) => { let _ = DestroyWindow(hwnd); return Err(e); }
         };
@@ -526,6 +533,49 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>) -> Result<HWND, String> {
         with_app(hwnd, |app| app.redraw());
 
         Ok(hwnd)
+    }
+}
+
+/// The application window whose title bar is under a screen point, other than `except`.
+fn title_bar_at(point: POINT, except: HWND) -> Option<HWND> {
+    // SAFETY: plain queries.
+    let root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
+    if root == except || !APPS.with(|apps| apps.borrow().contains_key(&(root.0 as isize))) {
+        return None;
+    }
+    let mut client = point;
+    // SAFETY: a window of this thread.
+    unsafe { let _ = ScreenToClient(root, &mut client); }
+    let on_title_bar = with_app(root, |app| !matches!(app.hit_test(client.x, client.y), Hit::Pane | Hit::None));
+    on_title_bar.unwrap_or(false).then_some(root)
+}
+
+/// A tab chip of `source` was let go of outside its title bar at the screen `point`: over the title bar of another
+/// window the tab joins it, anywhere else it becomes a window of its own there (a lone tab stays where it is).
+fn move_tab(source: HWND, index: usize, point: (i32, i32)) {
+    let point = POINT { x: point.0, y: point.1 };
+    let target = match title_bar_at(point, source) {
+        Some(target) => target,
+        None => {
+            if with_app(source, |app| app.tab_count()).unwrap_or(0) < 2 {
+                return;
+            }
+            let scale = scale_of(source);
+            let Some(gpu) = with_app(source, |app| app.shared_gpu()) else { return };
+            // The chip lands under the pointer.
+            let at = (point.x - (60.0 * scale) as i32, point.y - (24.0 * scale) as i32);
+            match create_window(Some(gpu), Some(at), false) {
+                Ok(window) => window,
+                Err(e) => {
+                    crate::util::log(&format!("new window: {e}"));
+                    return;
+                }
+            }
+        }
+    };
+    let Some(tab) = with_app(source, |app| app.take_tab(index)).flatten() else { return };
+    if with_app(target, |app| app.adopt_tab(tab)).is_none() {
+        crate::util::log("the tab could not be handed to the other window");
     }
 }
 
@@ -542,7 +592,7 @@ pub fn run() -> Result<(), String> {
             ..Default::default()
         };
         RegisterClassW(&class);
-        create_window(None)?;
+        create_window(None, None, true)?;
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {

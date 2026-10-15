@@ -11,6 +11,8 @@
 #   Scenario-NextIdle        # memory and CPU of an idle window
 #   Scenario-NextExit        # closing the last window ends the process without forced cleanup
 #   Scenario-NextWindows     # two windows in one process; only the last close ends it
+#   Scenario-NextTabMove     # pull a chip out into a window of its own, then drop it on the title bar of the other
+#   Scenario-NextAcrylic     # the menu, the palette and a confirmation show the blurred window below
 #   Scenario-NextAll
 #
 # A scenario fails (throws) when a check fails. The clipboard of the user is saved and restored.
@@ -542,6 +544,52 @@ function Scenario-NextExit {
         $exited = $app.WaitForExit(5000)
         Next-Check 'exit.process-ends' $exited 'closing the last window ends the process within 5 seconds'
         if ($exited) { Next-Check 'exit.success' ($app.ExitCode -eq 0) "exit code $($app.ExitCode)" }
+    }
+}
+
+function Scenario-NextTabMove {
+    Run-Next {
+        $app = $script:App; $first = $script:Hwnd
+        Next-Line 'echo TAB-ONE'
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Line 'echo TAB-TWO'
+        $scale = Get-Scale
+        # Tear off: the second chip (216 DIP wide, 4 apart) is let go of in the middle of the window.
+        $r = Win-Rect
+        $chip = @([int]($r.Left + 322 * $scale), [int]($r.Top + 24 * $scale))
+        Drag-To $chip[0] $chip[1] ([int]($r.Left + 500 * $scale)) ([int]($r.Top + 400 * $scale)); Start-Sleep -Milliseconds 1500
+        $windows = @([D]::AllWindows([uint32]$app.Id))
+        Next-Check 'tabmove.tear-off-makes-a-window' ($windows.Count -eq 2) "$($windows.Count) windows after pulling a chip out"
+        $second = $windows | Where-Object { $_ -ne $first } | Select-Object -First 1
+        if (-not $second) { return }
+        [D]::ForceForeground($second); Start-Sleep -Milliseconds 500
+        $text = Next-Text
+        Next-Check 'tabmove.new-window-has-the-tab' ($text -match 'TAB-TWO' -and $text -notmatch 'TAB-ONE') 'the new window shows the tab that was pulled out, with its history'
+        [D]::ForceForeground($first); Start-Sleep -Milliseconds 500
+        $text = Next-Text
+        Next-Check 'tabmove.old-window-keeps-the-other' ($text -match 'TAB-ONE' -and $text -notmatch 'TAB-TWO') 'the first window shows only its own tab'
+        # Merge: the chip of the new window is let go of on the title bar of the first one. The new window starts lower
+        # than that bar, so raising it hides none of it.
+        [D]::ForceForeground($second); Start-Sleep -Milliseconds 500
+        $script:Hwnd = $second
+        $n = Win-Rect
+        $script:Hwnd = $first
+        $r = Win-Rect
+        Drag-To ([int]($n.Left + 102 * $scale)) ([int]($n.Top + 24 * $scale)) ([int]($r.Left + 700 * $scale)) ([int]($r.Top + 24 * $scale)); Start-Sleep -Milliseconds 2000
+        $windows = @([D]::AllWindows([uint32]$app.Id))
+        Next-Check 'tabmove.merge-closes-the-emptied-window' ($windows.Count -eq 1 -and $windows[0] -eq $first) "$($windows.Count) window left"
+        [D]::ForceForeground($first); Start-Sleep -Milliseconds 500
+        $r = Win-Rect
+        $region = @(($r.Left + 4), ($r.Top + 80), 700, 300)
+        $before = Join-Path $env:TEMP 'tabmove-before.png'; $after = Join-Path $env:TEMP 'tabmove-after.png'
+        ShotRegion $before $region[0] $region[1] $region[2] $region[3] | Out-Null
+        Next-Line 'echo AFTER-MOVE'
+        ShotRegion $after $region[0] $region[1] $region[2] $region[3] | Out-Null
+        Next-Check 'tabmove.output-after-the-move-is-drawn' ((Next-DiffPixels $before $after) -gt 200) 'what the moved tab prints reaches the screen of its new window'
+        $text = Next-Text
+        Next-Check 'tabmove.merged-tab-is-selected-and-alive' ($text -match 'TAB-TWO' -and $text -match 'AFTER-MOVE') 'the merged tab is the selected one, its session still takes input'
+        Click-At ([int]($r.Left + 90 * $scale)) ([int]($r.Top + 24 * $scale)); Start-Sleep -Milliseconds 700
+        Next-Check 'tabmove.first-tab-still-there' ((Next-Text) -match 'TAB-ONE') 'the first tab is still in the window'
     }
 }
 

@@ -8,6 +8,14 @@ use crate::logic::{self, Attention, PaneSignal, PxRect, Reported, TabStatus};
 /// How far one keyboard step moves the border of a pane, as a share of the tab area.
 const RESIZE_STEP: f64 = 0.05;
 
+/// Where a pane's reader thread sends its "there is output" message: the window that shows the pane now. A tab moved
+/// to another window points its panes at that window, so the reader threads keep working through the move.
+pub struct WakeTarget {
+    pub hwnd: std::sync::atomic::AtomicIsize,
+    /// One posted message per burst of output: the handler clears it when it draws.
+    pub pending: std::sync::atomic::AtomicBool,
+}
+
 pub struct PaneEntry {
     pub id: PaneId,
     pub pane: Pane,
@@ -25,6 +33,7 @@ pub struct PaneEntry {
     pub note: Option<String>,
     /// Progress the program reports (OSC 9;4).
     pub progress: Option<Reported>,
+    pub wake: std::sync::Arc<WakeTarget>,
 }
 
 pub struct Tab {
