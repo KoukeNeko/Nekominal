@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nekominal_input::{KeyEvent, KeyInput, Mods, Utf16Assembler, vk};
+use nekominal_input::{KeyEvent, KeyInput, Mods, MouseButton, PointerEvent, PointerGrid, PointerKind, Utf16Assembler, vk};
 use nekominal_model::{
     commands::{self, Command},
     keymap::{self, Keymap, Modifiers},
@@ -14,6 +14,7 @@ use nekominal_model::{
 };
 use nekominal_pane::{Pane, PaneRenderer, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
+use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_render as r;
 use nekominal_ui::{Color, Rect, Ui};
 use windows::Win32::{
@@ -26,14 +27,23 @@ use windows::Win32::{
 };
 
 use crate::{
+    clipboard,
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
-    logic,
+    logic, open, util,
 };
 
 /// Posted by a reader thread when a pane has output to draw.
 pub const WM_WAKE: u32 = WM_APP + 1;
+
+/// What the window does with the mouse capture after a button event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capture {
+    None,
+    Take,
+    Release,
+}
 
 /// Corner radius of every rounded rectangle, in DIP (the same number as `design.rs` of the WinUI shell).
 pub const CORNER_RADIUS: f32 = 8.0;
@@ -70,6 +80,10 @@ pub struct App {
     caption: f32,
     hover: Hit,
     pressed: Hit,
+    /// Which of the left, middle and right buttons are down in the pane.
+    buttons: [bool; 3],
+    /// The pointer is over a link: the window shows the hand.
+    hand: bool,
     text: Utf16Assembler,
 }
 
@@ -141,6 +155,8 @@ impl App {
             caption: 138.0,
             hover: Hit::None,
             pressed: Hit::None,
+            buttons: [false; 3],
+            hand: false,
             text: Utf16Assembler::default(),
         };
         app.relayout();
@@ -318,6 +334,12 @@ impl App {
             while let Ok(event) = tab.pane.events.try_recv() {
                 match event {
                     UiEvent::Title(title) => tab.title = logic::clean_title(&title),
+                    UiEvent::ClipboardStore(text) => {
+                        clipboard::write_text(&text);
+                    }
+                    UiEvent::ClipboardLoad(request) => {
+                        tab.pane.answer_clipboard(&request, &clipboard::read_text().unwrap_or_default());
+                    }
                     UiEvent::Exit(code) => {
                         tab.exited = true;
                         if code == 0 {
@@ -345,12 +367,82 @@ impl App {
         self.layout.hit(x, y)
     }
 
-    pub fn on_mouse_move(&mut self, x: i32, y: i32) {
+    /// The grid of the selected pane in pixels, as the pointer wants it.
+    fn pointer_grid(&self) -> Option<PointerGrid> {
+        let tab = self.tabs.get(self.selected)?;
+        let m = tab.view.metrics();
+        Some(PointerGrid { cell_width: m.width as f32, cell_height: m.height as f32, columns: tab.grid.0, rows: tab.grid.1 })
+    }
+
+    /// Pixels between the top of the window and the top of the pane.
+    fn pane_top(&self) -> f32 {
+        (layout::TITLE_HEIGHT * self.scale).round()
+    }
+
+    fn pointer_event(&self, kind: PointerKind, x: i32, y: i32, time_ms: u32) -> PointerEvent {
+        PointerEvent::new(kind, x as f32, y as f32 - self.pane_top()).with_mods(input_mods(held())).with_time(time_ms)
+    }
+
+    /// Sends a pointer event to the selected pane and does what it asks of the shell.
+    fn pointer(&mut self, kind: PointerKind, x: i32, y: i32, time_ms: u32) {
+        let (Some(grid), Some(tab)) = (self.pointer_grid(), self.tabs.get(self.selected)) else { return };
+        let effects = tab.pane.pointer(&self.pointer_event(kind, x, y, time_ms), &grid);
+        if effects.selected && self.settings.copy_on_select {
+            self.copy_selection();
+        }
+        if let Some(uri) = effects.open_link
+            && let Err(e) = open::shell_open(&uri)
+        {
+            util::log(&format!("open link: {e}"));
+        }
+        self.redraw();
+    }
+
+    pub fn on_mouse_move(&mut self, x: i32, y: i32, time_ms: u32) {
         let hit = self.hit_test(x, y);
         if hit != self.hover {
             self.hover = hit;
             self.redraw();
         }
+        let dragging = self.buttons.contains(&true);
+        if dragging || hit == Hit::Pane {
+            self.pointer(PointerKind::Move, x, y, time_ms);
+        }
+        self.refresh_hover_link(x, y, hit == Hit::Pane && !dragging);
+    }
+
+    /// Underlines the link under the pointer (and asks for the hand cursor); removes both when there is none.
+    fn refresh_hover_link(&mut self, x: i32, y: i32, over_pane: bool) {
+        let link = over_pane
+            .then(|| {
+                let grid = self.pointer_grid()?;
+                let (px, py) = (x as f32, y as f32 - self.pane_top());
+                let inside = px >= 0.0
+                    && py >= 0.0
+                    && px < grid.cell_width * f32::from(grid.columns)
+                    && py < grid.cell_height * f32::from(grid.rows);
+                let (col, row) = inside.then(|| nekominal_input::cell_at(px, py, &grid))?;
+                self.tabs.get(self.selected)?.pane.link_at(usize::from(row), usize::from(col))
+            })
+            .flatten();
+        let hand = link.is_some();
+        let spans: Vec<r::RowSpan> = link
+            .iter()
+            .flat_map(|link| link.spans.iter())
+            .map(|&(row, start, end)| r::RowSpan { row: row as u16, start: start as u16, end: end as u16 })
+            .collect();
+        if let Some(tab) = self.tabs.get_mut(self.selected) {
+            tab.view.set_hover_link(spans);
+        }
+        if hand != self.hand {
+            self.hand = hand;
+            self.redraw();
+        }
+    }
+
+    /// Whether the pointer is over a link, so the window shows the hand.
+    pub fn hand_cursor(&self) -> bool {
+        self.hand
     }
 
     pub fn on_mouse_leave(&mut self) {
@@ -358,36 +450,101 @@ impl App {
             self.hover = Hit::None;
             self.redraw();
         }
+        self.refresh_hover_link(0, 0, false);
     }
 
-    pub fn on_button(&mut self, x: i32, y: i32, down: bool) {
+    /// A mouse button changed. The result says whether the window should take or give back the mouse capture.
+    pub fn on_button(&mut self, x: i32, y: i32, button: MouseButton, down: bool, time_ms: u32) -> Capture {
         let hit = self.hit_test(x, y);
-        if down {
-            self.pressed = hit;
+        // A left press outside the pane, and its release, are for the chrome.
+        if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
+            if down {
+                self.pressed = hit;
+                self.redraw();
+                return Capture::None;
+            }
+            let pressed = std::mem::replace(&mut self.pressed, Hit::None);
             self.redraw();
-            return;
-        }
-        let pressed = std::mem::replace(&mut self.pressed, Hit::None);
-        self.redraw();
-        if pressed != hit {
-            return;
-        }
-        match hit {
-            Hit::Chip(i) => self.select(i),
-            Hit::ChipClose(i) => self.close_tab(i),
-            Hit::NewTab => {
-                if let Err(e) = self.new_tab() {
-                    eprintln!("new tab: {e}");
+            if pressed == hit {
+                match hit {
+                    Hit::Chip(i) => self.select(i),
+                    Hit::ChipClose(i) => self.close_tab(i),
+                    Hit::NewTab => {
+                        if let Err(e) = self.new_tab() {
+                            util::log(&format!("new tab: {e}"));
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
+            return Capture::None;
+        }
+        if down && hit != Hit::Pane {
+            return Capture::None;
+        }
+        let index = match button {
+            MouseButton::Left => 0,
+            MouseButton::Middle => 1,
+            MouseButton::Right => 2,
+            // The side buttons have no use in the terminal yet.
+            MouseButton::Back | MouseButton::Forward => return Capture::None,
+        };
+        let before = self.buttons.contains(&true);
+        self.buttons[index] = down;
+        let program_has_it = self.tabs.get(self.selected).is_some_and(|t| t.pane.input_modes().program_gets_pointer(input_mods(held())));
+        if down && button == MouseButton::Right && !program_has_it {
+            // The terminal owns the right button: copy what is selected, paste when nothing is.
+            if self.tabs.get(self.selected).is_some_and(|t| t.pane.selection_text().is_some()) {
+                self.copy_selection();
+                if let Some(tab) = self.tabs.get(self.selected) {
+                    tab.pane.clear_selection();
+                }
+            } else {
+                self.paste();
+            }
+            self.redraw();
+            return Capture::None;
+        }
+        let kind = if down { PointerKind::Press(button) } else { PointerKind::Release(button) };
+        self.pointer(kind, x, y, time_ms);
+        match (before, self.buttons.contains(&true)) {
+            (false, true) => Capture::Take,
+            (true, false) => Capture::Release,
+            _ => Capture::None,
         }
     }
 
-    pub fn on_wheel(&mut self, delta: i16) {
-        if let Some(tab) = self.tabs.get(self.selected) {
-            tab.pane.scroll_lines(i32::from(delta) / 120 * 3);
+    pub fn on_wheel(&mut self, x: i32, y: i32, delta: i16, time_ms: u32) {
+        self.pointer(PointerKind::Wheel { delta: i32::from(delta), horizontal: false }, x, y, time_ms);
+    }
+
+    /// The mouse capture ended: held buttons are no longer held.
+    pub fn on_capture_lost(&mut self) {
+        self.buttons = [false; 3];
+        let (Some(grid), Some(tab)) = (self.pointer_grid(), self.tabs.get(self.selected)) else { return };
+        let effects = tab.pane.pointer_cancel(&grid);
+        if effects.selected && self.settings.copy_on_select {
+            self.copy_selection();
+        }
+        self.redraw();
+    }
+
+    /// A step of the scrolling a drag held outside the pane asks for.
+    pub fn on_drag_tick(&mut self) {
+        if self.tabs.get(self.selected).is_some_and(|t| t.pane.drag_scroll()) {
             self.redraw();
+        }
+    }
+
+    // --- clipboard ----------------------------------------------------------------------------------------------
+
+    fn copy_selection(&mut self) -> bool {
+        self.tabs.get(self.selected).and_then(|t| t.pane.selection_text()).is_some_and(|text| clipboard::write_text(&text))
+    }
+
+    fn paste(&mut self) {
+        if let (Some(text), Some(tab)) = (clipboard::read_text(), self.tabs.get(self.selected)) {
+            tab.pane.paste(&text);
         }
     }
 
@@ -397,14 +554,43 @@ impl App {
         match command {
             Command::TabNew => {
                 if let Err(e) = self.new_tab() {
-                    eprintln!("new tab: {e}");
+                    util::log(&format!("new tab: {e}"));
                 }
             }
             Command::TabClose => self.close_tab(self.selected),
             Command::TabNext => self.select((self.selected + 1) % self.tabs.len().max(1)),
             Command::TabPrevious => self.select((self.selected + self.tabs.len().max(1) - 1) % self.tabs.len().max(1)),
-            other => eprintln!("command {} is not wired yet", other.id()),
+            Command::EditCopy => {
+                self.copy_selection();
+            }
+            Command::EditSmartCopy => {
+                if self.copy_selection()
+                    && let Some(tab) = self.tabs.get(self.selected)
+                {
+                    tab.pane.clear_selection();
+                }
+            }
+            Command::EditPaste => self.paste(),
+            other => {
+                let Some(tab) = self.tabs.get(self.selected) else { return };
+                match other {
+                    Command::EditSelectAll => tab.pane.select_all(),
+                    Command::EditClear => tab.pane.clear_buffer(),
+                    Command::ScrollPageUp => tab.pane.scroll(Scroll::PageUp),
+                    Command::ScrollPageDown => tab.pane.scroll(Scroll::PageDown),
+                    Command::ScrollTop => tab.pane.scroll(Scroll::Top),
+                    Command::ScrollBottom => tab.pane.scroll(Scroll::Bottom),
+                    Command::PromptPrevious => {
+                        tab.pane.scroll_to_prompt(false);
+                    }
+                    Command::PromptNext => {
+                        tab.pane.scroll_to_prompt(true);
+                    }
+                    unwired => util::log(&format!("command {} is not wired yet", unwired.id())),
+                }
+            }
         }
+        self.redraw();
     }
 
     /// A key went down. `true` when the window handled it (a shortcut, or the terminal encoded it).
@@ -412,6 +598,7 @@ impl App {
         let held = held();
         if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
             && let Some(command) = self.keymap.find(held, name)
+            && !(command == Command::EditSmartCopy && self.tabs.get(self.selected).is_none_or(|t| t.pane.selection_text().is_none()))
         {
             if !repeat {
                 self.run(command);

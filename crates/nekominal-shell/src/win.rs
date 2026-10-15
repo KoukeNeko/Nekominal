@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+use nekominal_input::MouseButton;
 use nekominal_model::settings::Backdrop;
 use windows::{
     Win32::{
@@ -20,7 +21,7 @@ use windows::{
                 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, GetSystemMetricsForDpi,
                 SetProcessDpiAwarenessContext,
             },
-            Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
+            Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
             WindowsAndMessaging::*,
         },
     },
@@ -28,12 +29,14 @@ use windows::{
 };
 
 use crate::{
-    app::{App, WM_WAKE},
+    app::{App, Capture, WM_WAKE},
     layout::Hit,
 };
 
 /// Not in the generated bindings (it is a common-controls message).
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// The timer that scrolls the view while a selection drag is held outside the pane.
+const DRAG_TIMER: usize = 1;
 
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 
@@ -186,24 +189,66 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             // SAFETY: a valid request for this window.
             unsafe { let _ = TrackMouseEvent(&mut track); };
-            with_app(|app| app.on_mouse_move(lo(lparam), hi(lparam)));
+            // SAFETY: plain query.
+            let time = unsafe { GetMessageTime() } as u32;
+            with_app(|app| app.on_mouse_move(lo(lparam), hi(lparam), time));
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
             with_app(App::on_mouse_leave);
             LRESULT(0)
         }
-        WM_LBUTTONDOWN | WM_LBUTTONUP => {
-            let down = msg == WM_LBUTTONDOWN;
-            with_app(|app| app.on_button(lo(lparam), hi(lparam), down));
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
+            let down = matches!(msg, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN);
+            let button = match msg {
+                WM_LBUTTONDOWN | WM_LBUTTONUP => MouseButton::Left,
+                WM_MBUTTONDOWN | WM_MBUTTONUP => MouseButton::Middle,
+                _ => MouseButton::Right,
+            };
+            // SAFETY: plain query.
+            let time = unsafe { GetMessageTime() } as u32;
+            match with_app(|app| app.on_button(lo(lparam), hi(lparam), button, down, time)) {
+                // The capture keeps the moves coming while a button is held outside the window (a selection drag),
+                // and a timer scrolls the view while the drag is held above or below the pane.
+                // SAFETY: calls on this window from its own thread.
+                Some(Capture::Take) => unsafe {
+                    SetCapture(hwnd);
+                    SetTimer(Some(hwnd), DRAG_TIMER, 50, None);
+                },
+                Some(Capture::Release) => unsafe {
+                    let _ = KillTimer(Some(hwnd), DRAG_TIMER);
+                    let _ = ReleaseCapture();
+                },
+                _ => {}
+            }
             LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // SAFETY: stopping a timer of this window.
+            unsafe { let _ = KillTimer(Some(hwnd), DRAG_TIMER); }
+            with_app(App::on_capture_lost);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == DRAG_TIMER => {
+            with_app(App::on_drag_tick);
+            LRESULT(0)
+        }
+        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(|app| app.hand_cursor()).unwrap_or(false) => {
+            // SAFETY: loading and setting a system cursor.
+            unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()); }
+            LRESULT(1)
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
-            with_app(|app| app.on_wheel(delta));
+            // The wheel reports screen coordinates.
+            let mut p = POINT { x: lo(lparam), y: hi(lparam) };
+            // SAFETY: as above.
+            unsafe { let _ = ScreenToClient(hwnd, &mut p); }
+            // SAFETY: plain query.
+            let time = unsafe { GetMessageTime() } as u32;
+            with_app(|app| app.on_wheel(p.x, p.y, delta, time));
             LRESULT(0)
-        }
-        WM_KEYDOWN | WM_SYSKEYDOWN => {
+        }        WM_KEYDOWN | WM_SYSKEYDOWN => {
             let (scan, extended, repeat) = (((lparam.0 >> 16) & 0xFF) as u16, (lparam.0 >> 24) & 1 == 1, (lparam.0 >> 30) & 1 == 1);
             let handled = with_app(|app| app.on_key_down(wparam.0 as i32, scan, extended, repeat)).unwrap_or(false);
             // Alt+Space opens the system menu; every other Alt chord belongs to the terminal.

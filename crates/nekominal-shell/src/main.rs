@@ -7,8 +7,24 @@ mod gpu;
 mod layout;
 mod win;
 
+/// What the shared modules below call to write to the log: the file named by NEKOMINAL_LOG, when there is one.
+mod util {
+    pub fn log(text: &str) {
+        if let Some(path) = std::env::var_os("NEKOMINAL_LOG") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(file, "{text}");
+            }
+        }
+    }
+}
+
 // The pure logic and the colours of the chrome are shared with the WinUI shell until that one is deleted; the files
 // then move here.
+#[path = "../../nekominal-app/src/clipboard.rs"]
+mod clipboard;
+#[path = "../../nekominal-app/src/open.rs"]
+mod open;
 #[path = "../../nekominal-app/src/glass.rs"]
 mod glass;
 #[path = "../../nekominal-app/src/logic.rs"]
