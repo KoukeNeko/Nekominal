@@ -17,6 +17,8 @@ nekominal-input = { workspace = true }
 nekominal-render = { workspace = true }
 nekominal-pane = { workspace = true }
 nekominal-ui = { workspace = true }
+accesskit = { workspace = true }
+accesskit_windows = { workspace = true }
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D11",

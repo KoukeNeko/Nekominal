@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
+use accesskit_windows::{Adapter, QueuedEvents};
 use nekominal_input::{
     KeyEvent, KeyInput, Mods, MouseButton, PointerEvent, PointerGrid, PointerKind, Utf16Assembler, vk,
 };
@@ -27,7 +28,7 @@ use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_ui::{Color, Rect, Ui};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Globalization::GetUserDefaultLocaleName,
     Graphics::Gdi::{ClientToScreen, ScreenToClient, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
     UI::{
@@ -41,7 +42,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    clipboard, find,
+    access, clipboard, find,
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
@@ -121,6 +122,8 @@ pub struct App {
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
+    /// What a screen reader sees of the window; it asks through WM_GETOBJECT.
+    access: Option<Adapter>,
 }
 
 /// The matches of the find bar and the one the bar is on.
@@ -261,6 +264,7 @@ impl App {
             find: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
+            access: Some(Adapter::new(hwnd, true, access::NoActions)),
         };
         app.relayout();
         if first_tab {
@@ -1137,6 +1141,48 @@ impl App {
     }
 
     // --- drawing ------------------------------------------------------------------------------------------------
+
+    /// The window answers WM_GETOBJECT: a screen reader or another client of UI Automation looks at it.
+    pub fn access_getobject(&mut self, wparam: WPARAM, lparam: LPARAM) -> Option<impl Into<LRESULT> + use<>> {
+        // Built for every request, because the adapter does not say whether it will need it; clients ask once.
+        let mut initial = access::Initial(Some(access::tree(&self.access_view())));
+        self.access.as_mut()?.handle_wm_getobject(wparam, lparam, &mut initial)
+    }
+
+    /// Tells the clients that listen what changed; nothing is built when none does. The caller raises the events with no
+    /// borrow of the window held.
+    pub fn access_update(&mut self) -> Option<QueuedEvents> {
+        let mut adapter = self.access.take()?;
+        let events = adapter.update_if_active(|| access::tree(&self.access_view()));
+        self.access = Some(adapter);
+        events
+    }
+
+    pub fn access_focus(&mut self, focused: bool) -> Option<QueuedEvents> {
+        self.access.as_mut()?.update_window_focus_state(focused)
+    }
+
+    fn access_view(&self) -> access::View {
+        let lang = self.language();
+        let popup = self.popup.as_ref().map(|popup| access::PopupView {
+            kind: match popup.kind {
+                popup::Kind::List => access::PopupKind::Menu,
+                popup::Kind::Confirm => access::PopupKind::Dialog,
+                popup::Kind::Palette | popup::Kind::Settings | popup::Kind::Find => access::PopupKind::List,
+            },
+            heading: if popup.kind == popup::Kind::Confirm { popup.heading.clone() } else { popup.query.clone().unwrap_or_default() },
+            rows: popup.rows.iter().filter(|row| !row.is_separator()).map(|row| (row.label.clone(), row.hint.clone())).collect(),
+            focused: popup.hover.map(|at| popup.rows[..at].iter().filter(|row| !row.is_separator()).count()),
+        });
+        access::View {
+            window: "Nekominal".into(),
+            tabs_label: Text::TabAll.get(lang).into(),
+            tabs: (0..self.tabs.len()).map(|i| (self.tab_label(i), i == self.selected)).collect(),
+            terminal_label: Text::SettingsTerminal.get(lang).into(),
+            terminal_text: self.focused().map(|entry| entry.view.snapshot().text()).unwrap_or_default(),
+            popup,
+        }
+    }
 
     pub fn paint(&mut self) {
         let size = self.surface.size();

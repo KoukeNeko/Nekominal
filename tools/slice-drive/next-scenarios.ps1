@@ -726,3 +726,34 @@ function Scenario-NextSettings {
         Next-Check 'profiles.choice-opens-a-tab' ($text -match 'FROM-PROFILE' -and $text -notmatch 'AFTER') 'choosing a profile opens a new tab of its own'
     }
 }
+
+# The window as a UI Automation client (a screen reader) sees it: its tabs, the text of its terminal, an open menu.
+function Scenario-NextAccess {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        Next-Line 'echo ACCESS-MARK'
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $all = {
+            $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                ForEach-Object {
+                    $pattern = $null; $value = ''
+                    if ($_.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { $value = $pattern.Current.Value }
+                    [pscustomobject]@{ Type = $_.Current.ControlType.ProgrammaticName; Name = $_.Current.Name; Value = $value }
+                }
+        }
+        $found = @(& $all)
+        Next-Check 'access.window-has-a-name' ($root.Current.Name -eq 'Nekominal') "window name: $($root.Current.Name)"
+        Next-Check 'access.tab-is-listed' (@($found | Where-Object { $_.Type -eq 'ControlType.TabItem' }).Count -eq 1) 'one tab item for the one tab'
+        Next-Check 'access.terminal-text-is-readable' (@($found | Where-Object { $_.Type -eq 'ControlType.Document' -and $_.Value -match 'ACCESS-MARK' }).Count -eq 1) 'the terminal element holds the text on the screen'
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        $found = @(& $all)
+        Next-Check 'access.new-tab-is-listed' (@($found | Where-Object { $_.Type -eq 'ControlType.TabItem' }).Count -eq 2) 'a second tab item after a new tab'
+        Next-Check 'access.terminal-follows-the-selected-tab' (@($found | Where-Object { $_.Type -eq 'ControlType.Document' -and $_.Value -match 'ACCESS-MARK' }).Count -eq 0) 'the text of the new tab replaces the first one'
+        $r = Win-Rect; $s = Get-Scale
+        $button = Next-At (($r.Right - $r.Left) / $s - 138 - 12 - 16) 24
+        Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
+        $found = @(& $all)
+        Next-Check 'access.menu-rows-are-listed' (@($found | Where-Object { $_.Type -eq 'ControlType.MenuItem' }).Count -gt 5) "$(@($found | Where-Object { $_.Type -eq 'ControlType.MenuItem' }).Count) menu items while the menu is open"
+        Press 0x1B; Start-Sleep -Milliseconds 400
+    }
+}

@@ -63,6 +63,13 @@ fn with_app<T>(hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
     Some(f(&mut app))
 }
 
+/// Raises what a change of the window means to a screen reader, outside the borrow of the window.
+fn raise_access_events(hwnd: HWND, events: impl FnOnce(&mut App) -> Option<accesskit_windows::QueuedEvents>) {
+    if let Some(events) = with_app(hwnd, events).flatten() {
+        events.raise();
+    }
+}
+
 fn reap_closed_windows() {
     // Drop UI and PTY resources outside window callbacks, while cleanup threads can still start.
     let retired = RETIRED.with(|apps| std::mem::take(&mut *apps.borrow_mut()));
@@ -242,7 +249,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, App::paint);
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
+            raise_access_events(hwnd, App::access_update);
             LRESULT(0)
+        }
+        WM_GETOBJECT => {
+            // The result is turned into a message result with no borrow of the window held: UI Automation may send
+            // another WM_GETOBJECT while it does.
+            match with_app(hwnd, |app| app.access_getobject(wparam, lparam)).flatten() {
+                Some(result) => result.into(),
+                None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            }
         }
         WM_ERASEBKGND => LRESULT(1),
         WM_CLOSE => {
@@ -254,6 +270,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_ACTIVATE => {
             let active = (wparam.0 & 0xFFFF) != 0;
             with_app(hwnd, |app| app.on_activate(active));
+            raise_access_events(hwnd, |app| app.access_focus(active));
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -447,6 +464,7 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
             with_app(hwnd, App::popup_paint);
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
+            raise_access_events(hwnd, App::access_update);
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),

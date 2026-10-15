@@ -57,6 +57,10 @@ unicode-segmentation = "=1.13.3"
 windows = { version = "=0.62.2" }
 windows-sys = "0.61"
 
+# The accessibility tree of a window (UI Automation), built from the state of the shell.
+accesskit = "=0.25.1"
+accesskit_windows = "=0.35.1"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

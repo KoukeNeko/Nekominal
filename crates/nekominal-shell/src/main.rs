@@ -2,6 +2,7 @@
 //! visual over a DWM backdrop. The chrome is drawn by `nekominal-ui`, the terminal panes by `nekominal-pane`.
 #![windows_subsystem = "windows"]
 
+mod access;
 mod app;
 mod find;
 mod gpu;
