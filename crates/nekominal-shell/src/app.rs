@@ -28,10 +28,14 @@ use nekominal_ui::{Color, Rect, Ui};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, WPARAM},
     Globalization::GetUserDefaultLocaleName,
-    Graphics::Gdi::{ClientToScreen, InvalidateRect},
+    Graphics::Gdi::{ClientToScreen, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
-        WindowsAndMessaging::{DestroyWindow, GetForegroundWindow, PostMessageW, WM_APP, WM_CLOSE},
+        WindowsAndMessaging::{
+            DestroyWindow, GWL_STYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, PostMessageW,
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
+            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WS_OVERLAPPEDWINDOW,
+        },
     },
 };
 
@@ -103,6 +107,8 @@ pub struct App {
     dragged_splitter: Option<Vec<u8>>,
     /// The "…" menu while it is open.
     popup: Option<popup::Popup>,
+    /// The placement and style the window had before full screen, while it is full screen.
+    fullscreen: Option<(WINDOWPLACEMENT, isize)>,
     /// The search of the find bar while it is open.
     find: Option<FindState>,
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
@@ -146,6 +152,7 @@ fn wired(command: Command) -> bool {
             | Command::PromptNext
             | Command::AppPalette
             | Command::EditFind
+            | Command::ViewFullscreen
     )
 }
 
@@ -223,6 +230,7 @@ impl App {
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
+            fullscreen: None,
             find: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
@@ -811,6 +819,7 @@ impl App {
             }
             Command::AppPalette => self.open_palette(),
             Command::EditFind => self.open_find(),
+            Command::ViewFullscreen => self.toggle_fullscreen(),
             Command::EditCopy => {
                 self.copy_selection();
             }
@@ -1076,6 +1085,36 @@ impl App {
             (layout::TITLE_HEIGHT + 16.0) * self.scale,
         );
         self.open_popup(rows, popup::Kind::Palette, anchor);
+    }
+
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen.is_some()
+    }
+
+    /// Full screen is the window without its frame over the whole monitor it is on; the way back is the style and
+    /// the placement it had.
+    fn toggle_fullscreen(&mut self) {
+        // SAFETY: plain Win32 calls on our own window; the structures live through the calls.
+        unsafe {
+            if let Some((placement, style)) = self.fullscreen.take() {
+                SetWindowLongPtrW(self.hwnd, GWL_STYLE, style);
+                let _ = SetWindowPlacement(self.hwnd, &placement);
+                let _ = SetWindowPos(self.hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                return;
+            }
+            let style = GetWindowLongPtrW(self.hwnd, GWL_STYLE);
+            let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+            let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetWindowPlacement(self.hwnd, &mut placement).is_err()
+                || !GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool()
+            {
+                return;
+            }
+            self.fullscreen = Some((placement, style));
+            SetWindowLongPtrW(self.hwnd, GWL_STYLE, style & !(WS_OVERLAPPEDWINDOW.0 as isize));
+            let r = monitor.rcMonitor;
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        }
     }
 
     fn open_find(&mut self) {

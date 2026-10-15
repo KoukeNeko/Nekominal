@@ -178,7 +178,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_NCHITTEST => {
             let (x, y) = (lo(lparam), hi(lparam));
-            if let Some(edge) = edge_hit(hwnd, x, y) {
+            if !with_app(|app| app.is_fullscreen()).unwrap_or(false)
+                && let Some(edge) = edge_hit(hwnd, x, y)
+            {
                 return LRESULT(edge as isize);
             }
             let mut point = POINT { x, y };

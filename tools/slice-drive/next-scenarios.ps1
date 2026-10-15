@@ -152,6 +152,22 @@ function Scenario-NextFind {
     }
 }
 
+function Scenario-NextFullscreen {
+    Run-Next {
+        Add-Type -AssemblyName System.Windows.Forms
+        $before = Win-Rect
+        Press 0x7A; Start-Sleep -Milliseconds 1200                     # F11
+        $screen = [System.Windows.Forms.Screen]::FromHandle($script:Hwnd).Bounds
+        $full = Win-Rect
+        Next-Check 'fullscreen.covers-the-monitor' ($full.Left -le $screen.Left -and $full.Top -le $screen.Top -and ($full.Right - $full.Left) -ge $screen.Width -and ($full.Bottom - $full.Top) -ge $screen.Height) "window $($full.Left),$($full.Top)-$($full.Right),$($full.Bottom) on monitor $($screen.Width)x$($screen.Height)"
+        Next-Line 'echo IN-FULL'
+        Next-Check 'fullscreen.takes-typing' ((Next-Text) -match 'IN-FULL') 'the pane takes the typing in full screen'
+        Press 0x7A; Start-Sleep -Milliseconds 1200
+        $back = Win-Rect
+        Next-Check 'fullscreen.restores-the-window' ($back.Left -eq $before.Left -and $back.Top -eq $before.Top -and $back.Right -eq $before.Right -and $back.Bottom -eq $before.Bottom) "back at $($back.Left),$($back.Top)-$($back.Right),$($back.Bottom)"
+    }
+}
+
 function Scenario-NextMenu {
     Run-Next {
         Next-Line 'echo ONE'
