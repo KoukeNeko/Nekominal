@@ -1026,7 +1026,7 @@ impl Shell {
             return;
         }
         let Some(path) = store::settings_path() else { return };
-        match store::save(&path, &settings::serialize(&self.settings.borrow())) {
+        match store::save_keeping_original(&path, &settings::serialize(&self.settings.borrow())) {
             Ok(()) => log("settings saved"),
             Err(e) => log(&format!("settings save failed: {e}")),
         }

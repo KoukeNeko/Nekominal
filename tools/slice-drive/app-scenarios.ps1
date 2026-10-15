@@ -16,6 +16,10 @@
 #   Scenario-StatusExit       # a program that ends with an error in the middle of a progress report shows an error
 #   Scenario-Toolbar          # bar tiers at 1440/1000/700/500 DIP, the menu of the "..." button, the split rows of the tab menu
 #   Scenario-Drawer           # the settings drawer: open and close, no resize, focus, Esc steps, search in both languages
+#   Scenario-DrawerRows       # keyboard-only colour scheme and opacity tasks, preview and restore, reset, toggles, backdrop None
+#   Scenario-DrawerPages      # settings file problems, profiles, agents, advanced
+#   Scenario-DrawerKeys       # the shortcuts page: recording, conflicts, Replace, reset, restore all
+#   Scenario-FirstWrite       # the first rewrite of settings.json keeps the original as settings.json.orig
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -1920,9 +1924,35 @@ function Scenario-DrawerKeys {
         Assert-Results $results 'drawer-keys'
     } -NoShot
 }
+# The first rewrite of a settings file by the application keeps the file as it was (comments and keys of a newer version
+# included) as settings.json.orig, and no later write touches that copy.
+function Scenario-FirstWrite {
+    Run-App 'drawer-orig' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $dir = Join-Path (Join-Path (Split-Path $script:LogFile) 'drawer-orig-appdata') 'Nekominal'
+        $original = "// my own notes`r`n{ `"language`": `"zh-TW`", `"confirmClose`": false, `"futureKey`": { `"x`": 1 } } // 設定`r`n"
+        [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), $original, (New-Object Text.UTF8Encoding($false)))
+        Open-Drawer
+        Click-Name (Nk-Text 'settings.terminal') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $row = Nk-Text 'settings.copyOnSelect'
+        Click-Name (Choice-Name $row (Nk-Text 'toggle.on')); Start-Sleep -Milliseconds 1800
+        $orig = Join-Path $dir 'settings.json.orig'
+        $results.Add((Check 'the first change made in the window keeps the file that was there' $true (Test-Path $orig)))
+        $results.Add((Check 'byte for byte, notes and unknown key included' $original ([IO.File]::ReadAllText($orig))))
+        $written = [IO.File]::ReadAllText((Join-Path $dir 'settings.json'))
+        $results.Add((Check 'while the file itself is now written from the settings (no notes)' $false ($written -match 'my own notes')))
+        $results.Add((Check 'and holds the change' $true ((Saved-Settings).copyOnSelect)))
+        Click-Name (Choice-Name $row (Nk-Text 'toggle.off')); Start-Sleep -Milliseconds 1800
+        $results.Add((Check 'a later change leaves the original alone' $original ([IO.File]::ReadAllText($orig))))
+        $results.Add((Check 'and the backup is the version before the last write' $true ((Get-Content (Join-Path $dir 'settings.json.bak') -Raw) -match 'copyOnSelect')))
+        Close-Drawer
+        Assert-Results $results 'drawer-orig'
+    } -NoShot
+}
 function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite }

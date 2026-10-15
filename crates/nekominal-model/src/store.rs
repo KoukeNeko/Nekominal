@@ -1,6 +1,7 @@
 //! Where the settings and the saved session live (`%APPDATA%\Nekominal`) and how they are read and written:
-//! atomically, with the previous version kept as a `.bak`. The only part of the model that touches the file
-//! system; what the files contain is the business of `settings` and `session`.
+//! atomically, with the previous version kept as a `.bak`, and for the settings the first original kept as an `.orig`.
+//! The only part of the model that touches the file system; what the files contain is the business of `settings` and
+//! `session`.
 
 use std::{
     ffi::OsString,
@@ -79,6 +80,19 @@ pub fn save(path: &Path, text: &str) -> io::Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+/// Like [`save`] for a file that the application rewrites from what it holds, which loses what it does not hold: the
+/// comments of a hand-written `settings.json` and the keys this version does not know cannot survive the rewrite. So the
+/// first time this replaces a file that exists, that file is copied to `<name>.orig` byte for byte, and the copy is never
+/// touched again (the `.bak` of [`save`] is only the version before the last write). When the original cannot be kept
+/// nothing is written.
+pub fn save_keeping_original(path: &Path, text: &str) -> io::Result<()> {
+    let original = sibling(path, ".orig")?;
+    if path.exists() && !original.exists() {
+        fs::copy(path, &original)?;
+    }
+    save(path, text)
 }
 
 fn write_synced(path: &Path, text: &str) -> io::Result<()> {
@@ -177,6 +191,55 @@ mod tests {
             "only one generation is kept"
         );
         assert_eq!(names_in(&dir), ["settings.json", "settings.json.bak"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_first_rewrite_of_a_file_keeps_the_original_and_no_later_one_touches_it() {
+        let dir = temp_dir("orig");
+        let path = dir.join("settings.json");
+        let original = "// my notes\r\n{ \"theme\": \"Nord\", \"future\": { \"x\": 1 } } // 設定\r\n";
+        fs::write(&path, original).unwrap();
+        save_keeping_original(&path, "{}\n").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("settings.json.orig")).unwrap(), original, "byte for byte");
+        assert_eq!(fs::read_to_string(dir.join("settings.json.bak")).unwrap(), original);
+        assert_eq!(load(&path).unwrap().as_deref(), Some("{}\n"));
+        save_keeping_original(&path, "two").unwrap();
+        save_keeping_original(&path, "three").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("settings.json.orig")).unwrap(), original, "the original stays");
+        assert_eq!(fs::read_to_string(dir.join("settings.json.bak")).unwrap(), "two", "the backup is one generation");
+        assert_eq!(names_in(&dir), ["settings.json", "settings.json.bak", "settings.json.orig"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_did_not_exist_has_no_original_and_a_plain_save_never_makes_one() {
+        let dir = temp_dir("no-orig");
+        let path = dir.join("settings.json");
+        save_keeping_original(&path, "{}\n").unwrap();
+        assert_eq!(names_in(&dir), ["settings.json"], "nothing to keep");
+        // The second write is the first rewrite of a file that exists: now the file is kept.
+        save_keeping_original(&path, "{ \"a\": 1 }\n").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("settings.json.orig")).unwrap(), "{}\n");
+        let session = dir.join("session.json");
+        save(&session, "one").unwrap();
+        save(&session, "two").unwrap();
+        assert_eq!(
+            names_in(&dir),
+            ["session.json", "session.json.bak", "settings.json", "settings.json.bak", "settings.json.orig"]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn nothing_is_written_when_the_original_cannot_be_kept() {
+        let dir = temp_dir("orig-fails");
+        // Something that exists but cannot be copied as a file: a directory where the settings file should be.
+        let path = dir.join("settings.json");
+        fs::create_dir(&path).unwrap();
+        assert!(save_keeping_original(&path, "new").is_err());
+        assert_eq!(names_in(&dir), ["settings.json"], "no original, no backup, no temp file");
+        assert!(path.is_dir(), "and the thing that was there is untouched");
         fs::remove_dir_all(dir).unwrap();
     }
 

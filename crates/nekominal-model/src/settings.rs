@@ -784,6 +784,9 @@ fn tidy_numbers(value: Value) -> Value {
 }
 
 /// Serializes only what differs from the defaults, so future default changes still apply.
+///
+/// The file is written from the settings, not edited: the comments of a hand-written `settings.json` and the keys this
+/// version does not know cannot survive a rewrite. `store::save_keeping_original` keeps the first original for that.
 pub fn serialize(settings: &Settings) -> String {
     let value = serde_json::to_value(settings).expect("settings serialize");
     let base = serde_json::to_value(Settings::default()).expect("defaults serialize");
