@@ -138,6 +138,24 @@ impl Tab {
             .collect()
     }
 
+    /// The divider within `slop` pixels of a window pixel.
+    pub fn splitter_at(&self, area: PxRect, divider: i32, x: i32, y: i32, slop: i32) -> Option<Splitter> {
+        self.splitters(area, divider)
+            .into_iter()
+            .find(|(_, r)| x >= r.x - slop && x < r.x + r.w + slop && y >= r.y - slop && y < r.y + r.h + slop)
+            .map(|(s, _)| s)
+    }
+
+    /// Moves the divider at `path` to a window pixel.
+    pub fn drag_splitter(&mut self, area: PxRect, path: &[u8], x: i32, y: i32) {
+        let Some(splitter) = self.tree.splitters(UNIT).into_iter().find(|s| s.path == path) else { return };
+        let position = match splitter.axis {
+            Axis::Row => f64::from(x - area.x) / f64::from(area.w.max(1)),
+            Axis::Column => f64::from(y - area.y) / f64::from(area.h.max(1)),
+        };
+        self.tree = self.tree.set_ratio_at(path, logic::ratio_at(&splitter, position));
+    }
+
     pub fn focus(&mut self, id: PaneId) -> bool {
         let changed = self.focused != id && self.entry(id).is_some();
         if changed {

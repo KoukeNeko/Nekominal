@@ -34,7 +34,7 @@ use windows::{
 };
 
 use crate::{
-    app::{App, Capture, WM_WAKE},
+    app::{App, Capture, Cursor, WM_WAKE},
     layout::Hit,
 };
 
@@ -268,9 +268,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(App::on_drag_tick);
             LRESULT(0)
         }
-        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(|app| app.hand_cursor()).unwrap_or(false) => {
+        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(|app| app.cursor()).flatten().is_some() => {
+            let id = match with_app(|app| app.cursor()).flatten() {
+                Some(Cursor::ResizeH) => IDC_SIZEWE,
+                Some(Cursor::ResizeV) => IDC_SIZENS,
+                _ => IDC_HAND,
+            };
             // SAFETY: loading and setting a system cursor.
-            unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()); }
+            unsafe { SetCursor(LoadCursorW(None, id).ok()); }
             LRESULT(1)
         }
         WM_MOUSEWHEEL => {

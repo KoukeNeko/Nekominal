@@ -101,6 +101,20 @@ function Scenario-NextSplit {
     }
 }
 
+function Scenario-NextSplitter {
+    Run-Next {
+        Press 0x44 @(0x12, 0x10); Start-Sleep -Milliseconds 1500    # Alt+Shift+D: split right
+        $width = { Next-Line '$Host.UI.RawUI.WindowSize.Width'; $t = Next-Text; [int](($t -split "`n" | Where-Object { $_ -match '^\s*\d+\s*$' } | Select-Object -Last 1).Trim()) }
+        $before = & $width
+        $r = Win-Rect; $s = Get-Scale
+        $mid = [int](($r.Right - $r.Left) / 2); $y = [int](($r.Top + ($r.Bottom - $r.Top) * 0.6))
+        Drag-To ($r.Left + $mid) $y ($r.Left + [int](($r.Right - $r.Left) * 0.25)) $y
+        Start-Sleep -Milliseconds 800
+        $after = & $width
+        Next-Check 'splitter.drag-widens-the-right-pane' ($after -gt $before + 10) "right pane $before -> $after columns"
+    }
+}
+
 function Scenario-NextClipboard {
     Run-Next {
         Set-Clipboard -Value 'before'

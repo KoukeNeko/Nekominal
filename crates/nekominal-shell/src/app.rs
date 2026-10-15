@@ -51,6 +51,13 @@ pub enum Capture {
     Release,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cursor {
+    Hand,
+    ResizeH,
+    ResizeV,
+}
+
 /// Corner radius of every rounded rectangle, in DIP (the same number as `design.rs` of the WinUI shell).
 pub const CORNER_RADIUS: f32 = 8.0;
 const TEXT_SIZE: f32 = 13.0;
@@ -84,6 +91,10 @@ pub struct App {
     pointer_pane: Option<PaneId>,
     /// The pointer is over a link: the window shows the hand.
     hand: bool,
+    /// The axis of the divider under the pointer (the window shows a resize cursor).
+    over_splitter: Option<Axis>,
+    /// The path of the divider being dragged.
+    dragged_splitter: Option<Vec<u8>>,
     text: Utf16Assembler,
 }
 
@@ -158,6 +169,8 @@ impl App {
             buttons: [false; 3],
             pointer_pane: None,
             hand: false,
+            over_splitter: None,
+            dragged_splitter: None,
             text: Utf16Assembler::default(),
         };
         app.relayout();
@@ -473,6 +486,16 @@ impl App {
             self.hover = hit;
             self.redraw();
         }
+        if let Some(path) = self.dragged_splitter.clone() {
+            let area = self.pane_area();
+            if let Some(tab) = self.tabs.get_mut(self.selected) {
+                tab.drag_splitter(area, &path, x, y);
+            }
+            self.relayout();
+            self.redraw();
+            return;
+        }
+        self.over_splitter = self.splitter_at(x, y).map(|s| s.axis);
         let dragging = self.buttons.contains(&true);
         let under = self.tab().and_then(|t| t.pane_at(x, y));
         if dragging {
@@ -516,9 +539,18 @@ impl App {
         }
     }
 
-    /// Whether the pointer is over a link, so the window shows the hand.
-    pub fn hand_cursor(&self) -> bool {
-        self.hand
+    /// The cursor the window shows over the panes instead of the arrow.
+    pub fn cursor(&self) -> Option<Cursor> {
+        match self.over_splitter {
+            Some(Axis::Row) => Some(Cursor::ResizeH),
+            Some(Axis::Column) => Some(Cursor::ResizeV),
+            None => self.hand.then_some(Cursor::Hand),
+        }
+    }
+
+    fn splitter_at(&self, x: i32, y: i32) -> Option<nekominal_model::layout::Splitter> {
+        let slop = (3.0 * self.scale).round() as i32;
+        self.tab()?.splitter_at(self.pane_area(), logic::divider_px(f64::from(self.scale)), x, y, slop)
     }
 
     pub fn on_mouse_leave(&mut self) {
@@ -554,6 +586,15 @@ impl App {
                 }
             }
             return Capture::None;
+        }
+        if button == MouseButton::Left && !self.buttons.contains(&true) {
+            if down && let Some(splitter) = self.splitter_at(x, y) {
+                self.dragged_splitter = Some(splitter.path);
+                return Capture::Take;
+            }
+            if !down && self.dragged_splitter.take().is_some() {
+                return Capture::Release;
+            }
         }
         let index = match button {
             MouseButton::Left => 0,
@@ -616,6 +657,7 @@ impl App {
     /// The mouse capture ended: held buttons are no longer held.
     pub fn on_capture_lost(&mut self) {
         self.buttons = [false; 3];
+        self.dragged_splitter = None;
         let Some(id) = self.pointer_pane.take() else { return };
         let Some(entry) = self.tab().and_then(|t| t.entry(id)) else { return };
         let effects = entry.pane.pointer_cancel(&Self::pointer_grid(entry));
