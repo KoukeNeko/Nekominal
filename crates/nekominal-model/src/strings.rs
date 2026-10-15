@@ -147,6 +147,8 @@ texts! {
     PaletteNewTabWith "palette.newTabWith" "新增分頁：{0}" "New tab: {0}";
     PaletteColorScheme "palette.colorScheme" "色彩配置：{0}" "Color scheme: {0}";
     PaletteGotoTab "palette.gotoTab" "切換到分頁：{0}" "Go to tab: {0}";
+    // An entry that opens the settings drawer at a row.
+    PaletteSetting "palette.setting" "設定：{0}" "Settings: {0}";
 
     // Buttons shared by dialogs. A confirmation's button names the action; Paste uses `EditPaste`.
     CommonClose "common.close" "關閉" "Close";
@@ -177,7 +179,7 @@ texts! {
     InfobarWidthModel "infobar.widthModel" "未使用隨附的 ConPTY，字元寬度可能不一致" "Bundled ConPTY is not in use, so character widths may not match";
     InfobarNoColor "infobar.noColor" "已設定 NO_COLOR，PowerShell 輸出不含色彩" "NO_COLOR is set, so PowerShell output has no color";
 
-    // Settings page: sections, then one row label per setting followed by its choices.
+    // Settings drawer: sections, then one row label per setting followed by its choices.
     SettingsSearch "settings.search" "搜尋設定" "Search settings";
     SettingsEmpty "settings.empty" "沒有符合的設定" "No matching settings";
     SettingsGeneral "settings.general" "一般" "General";
@@ -186,7 +188,11 @@ texts! {
     SettingsProfiles "settings.profiles" "設定檔" "Profiles";
     SettingsAgents "settings.agents" "代理程式" "Agents";
     SettingsKeys "settings.keys" "快速鍵" "Shortcuts";
+    SettingsAdvanced "settings.advanced" "進階" "Advanced";
     SettingsAbout "settings.about" "關於" "About";
+    // The two choices of a row that is on or off (and the "off" of the clipboard row).
+    ToggleOn "toggle.on" "開" "On";
+    ToggleOff "toggle.off" "關" "Off";
 
     SettingsLanguage "settings.language" "語言" "Language";
     LanguageZhTw "language.zhTw" "繁體中文" "繁體中文";
@@ -224,9 +230,15 @@ texts! {
     SettingsWarnLarge "settings.warnLarge" "貼上大量文字前確認（KiB）" "Confirm before pasting large text (KiB)";
     SettingsBellVisual "settings.bellVisual" "鈴聲視覺提示" "Visual bell";
     SettingsBellTaskbar "settings.bellTaskbar" "工作列提示" "Taskbar alert";
+    SettingsBellSound "settings.bellSound" "鈴聲音效" "Bell sound";
+    BellSoundBackground "bellSound.background" "僅背景" "Background only";
+    BellSoundAlways "bellSound.always" "一律" "Always";
     SettingsKitty "settings.kitty" "kitty 鍵盤協定" "kitty keyboard protocol";
     SettingsAgentEnvironment "settings.agentEnvironment" "代理程式環境變數" "Agent environment variables";
     SettingsShellIntegration "settings.shellIntegration" "PowerShell 整合" "PowerShell integration";
+    SettingsOsc52 "settings.osc52" "OSC 52 剪貼簿" "OSC 52 clipboard";
+    Osc52Write "osc52.write" "僅寫入" "Write only";
+    Osc52ReadWrite "osc52.readWrite" "讀取與寫入" "Read and write";
 
     SettingsFile "settings.file" "設定 JSON" "Settings file";
     SettingsVersion "settings.version" "版本" "Version";

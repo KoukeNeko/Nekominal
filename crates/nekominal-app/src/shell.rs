@@ -2258,6 +2258,7 @@ impl Shell {
                 }
             }
             PaletteAction::SetColorScheme(name) => self.set_theme(&name),
+            PaletteAction::OpenSetting(_) => self.toggle_overlay(Overlay::Settings),
         }
     }
 

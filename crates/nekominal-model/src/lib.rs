@@ -10,6 +10,7 @@ pub mod palette;
 pub mod profiles;
 pub mod session;
 pub mod settings;
+pub mod settings_ui;
 pub mod shell_integration;
 pub mod store;
 pub mod strings;

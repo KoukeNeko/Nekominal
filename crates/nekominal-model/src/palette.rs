@@ -1,11 +1,12 @@
 //! Entries of the command palette: every command, a "go to tab" entry per open tab, a "new tab" entry per
-//! profile and one per color scheme.
+//! profile, one per color scheme and one per row of the settings drawer (`settings_ui::TABLE`).
 
 use crate::{
     commands::Command,
     fuzzy,
     keymap::Keymap,
     profiles::Profile,
+    settings_ui,
     strings::{Lang, Text},
     themes,
 };
@@ -19,11 +20,13 @@ pub enum PaletteAction {
     NewTab(String),
     /// Switch to the color scheme with this name.
     SetColorScheme(String),
+    /// Open the settings drawer at the row with this id (`settings_ui::Descriptor::id`).
+    OpenSetting(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaletteItem {
-    /// Command id, `tabs.<id>`, `profile.<id>` or `theme.<name>`.
+    /// Command id, `tabs.<id>`, `profile.<id>`, `theme.<name>` or `setting.<id>`.
     pub id: String,
     pub label: String,
     /// The command's first shortcut; empty for the other entries and for unbound commands.
@@ -38,7 +41,7 @@ pub struct PaletteTab {
     pub title: String,
 }
 
-/// All entries in display order: commands, then the open tabs, then profiles, then color schemes.
+/// All entries in display order: commands, then the open tabs, then profiles, then color schemes, then settings.
 pub fn items(
     lang: Lang,
     keymap: &Keymap,
@@ -75,10 +78,17 @@ pub fn items(
         shortcut: String::new(),
         action: PaletteAction::SetColorScheme(name.to_owned()),
     });
+    let settings = settings_ui::TABLE.iter().map(|row| PaletteItem {
+        id: format!("setting.{}", row.id),
+        label: Text::PaletteSetting.format(lang, &[&row.label(lang)]),
+        shortcut: String::new(),
+        action: PaletteAction::OpenSetting(row.id.to_owned()),
+    });
     commands
         .chain(open_tabs)
         .chain(new_tabs)
         .chain(schemes)
+        .chain(settings)
         .collect()
 }
 
@@ -128,10 +138,10 @@ mod tests {
     }
 
     #[test]
-    fn lists_commands_then_profiles_then_color_schemes() {
+    fn lists_commands_then_profiles_then_color_schemes_then_settings() {
         let entries = default_items(Lang::ZhTw);
         let commands = Command::ALL.iter().filter(|c| c.in_palette()).count();
-        assert_eq!(entries.len(), commands + 2 + themes::SCHEMES.len());
+        assert_eq!(entries.len(), commands + 2 + themes::SCHEMES.len() + settings_ui::TABLE.len());
         assert_eq!(entries[0].id, "tab.new");
         assert_eq!(entries[commands].id, "profile.pwsh");
         assert_eq!(entries[commands + 1].id, "profile.node");
@@ -225,7 +235,7 @@ mod tests {
         assert_eq!(entries[commands].shortcut, "Ctrl+Shift+1");
         assert_eq!(entries[commands + 2].shortcut, "Ctrl+Shift+3");
         assert_eq!(entries[commands + 3].id, "profile.pwsh");
-        assert_eq!(entries.len(), commands + 3 + 2 + themes::SCHEMES.len());
+        assert_eq!(entries.len(), commands + 3 + 2 + themes::SCHEMES.len() + settings_ui::TABLE.len());
         let english = items(Lang::EnUs, &keymap, &[], &tabs);
         assert_eq!(english[commands + 1].label, "Go to tab: logs");
     }
@@ -267,6 +277,20 @@ mod tests {
         let found = search(entries, "to tab: bui");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].action, PaletteAction::GotoTab(11));
+    }
+
+    #[test]
+    fn every_row_of_the_settings_drawer_has_an_entry_that_opens_it_there() {
+        let zh = default_items(Lang::ZhTw);
+        let opacity = zh.iter().find(|e| e.id == "setting.appearance.opacity").unwrap();
+        assert_eq!(opacity.label, "設定：背景不透明度");
+        assert_eq!(opacity.action, PaletteAction::OpenSetting("appearance.opacity".into()));
+        assert_eq!(opacity.shortcut, "");
+        let found = search(zh.clone(), "不透明");
+        assert!(found.iter().any(|e| e.id == "setting.appearance.opacity"));
+        assert_eq!(settings_ui::TABLE.iter().filter(|row| zh.iter().any(|e| e.id == format!("setting.{}", row.id))).count(), settings_ui::TABLE.len());
+        let en = default_items(Lang::EnUs);
+        assert_eq!(en.iter().find(|e| e.id == "setting.language").unwrap().label, "Settings: Language");
     }
 
     #[test]

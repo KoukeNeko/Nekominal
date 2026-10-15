@@ -22,6 +22,9 @@ pub enum CursorStyle {
 }
 
 impl CursorStyle {
+    /// The choices in the order every list of them shows.
+    pub const ALL: [CursorStyle; 3] = [CursorStyle::Block, CursorStyle::Bar, CursorStyle::Underline];
+
     pub fn text(self) -> Text {
         match self {
             CursorStyle::Block => Text::CursorBlock,
@@ -40,6 +43,8 @@ pub enum RightClick {
 }
 
 impl RightClick {
+    pub const ALL: [RightClick; 2] = [RightClick::Smart, RightClick::Menu];
+
     pub fn text(self) -> Text {
         match self {
             RightClick::Smart => Text::RightClickSmart,
@@ -60,6 +65,18 @@ pub enum Osc52Policy {
     ReadWrite,
 }
 
+impl Osc52Policy {
+    pub const ALL: [Osc52Policy; 3] = [Osc52Policy::Off, Osc52Policy::Write, Osc52Policy::ReadWrite];
+
+    pub fn text(self) -> Text {
+        match self {
+            Osc52Policy::Off => Text::ToggleOff,
+            Osc52Policy::Write => Text::Osc52Write,
+            Osc52Policy::ReadWrite => Text::Osc52ReadWrite,
+        }
+    }
+}
+
 /// Language of the interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Language {
@@ -73,6 +90,8 @@ pub enum Language {
 }
 
 impl Language {
+    pub const ALL: [Language; 3] = [Language::Auto, Language::ZhTw, Language::EnUs];
+
     /// `system_tag` is the locale name of the user (`zh-Hant-TW`).
     pub fn resolve(self, system_tag: &str) -> Lang {
         match self {
@@ -157,6 +176,19 @@ pub enum BellSound {
     /// Only when the pane that rang is not the one being looked at (another tab, or the window is not active).
     Background,
     Always,
+}
+
+impl BellSound {
+    pub const ALL: [BellSound; 3] = [BellSound::None, BellSound::Background, BellSound::Always];
+
+    pub fn text(self) -> Text {
+        match self {
+            // "None" is the word the backdrop row uses for nothing.
+            BellSound::None => Text::BackdropNone,
+            BellSound::Background => Text::BellSoundBackground,
+            BellSound::Always => Text::BellSoundAlways,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -433,16 +465,20 @@ fn section(source: &Map<String, Value>, key: &str, path: &str, problems: &mut Pr
     }
 }
 
+/// The family names of a comma separated list such as `"Cascadia Mono", Consolas`, without quotes or blanks.
+pub fn split_font_families(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(|name| name.trim().trim_matches(|c| c == '"' || c == '\'').trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 /// Accepts an array of family names or a comma separated string such as `"Cascadia Mono", Consolas`.
 fn font_families(source: &Map<String, Value>, fallback: &[String], problems: &mut Problems) -> Vec<String> {
     let parsed: Option<Vec<String>> = match source.get("family") {
         None => return fallback.to_vec(),
         Some(Value::Array(items)) => items.iter().map(|v| v.as_str().map(|s| s.trim().to_owned())).collect(),
-        Some(Value::String(list)) => Some(
-            list.split(',')
-                .map(|name| name.trim().trim_matches(|c| c == '"' || c == '\'').trim().to_owned())
-                .collect(),
-        ),
+        Some(Value::String(list)) => Some(split_font_families(list)),
         Some(_) => None,
     };
     match parsed.map(|names| names.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>()) {
