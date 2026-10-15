@@ -107,7 +107,8 @@ function Start-App([string]$Exe, [string]$Log, [string]$Layout, [string]$ExtraAr
     [void]$psi.Environment.Remove('NO_COLOR')
     if ($Log) { $psi.Environment['SPIKE_LOG'] = $Log }
     if ($Layout) { $psi.Environment['SPIKE_LAYOUT'] = $Layout }
-    foreach ($k in $Env.Keys) { $psi.Environment[$k] = [string]$Env[$k] }
+    # A $null value removes the variable from the child's environment.
+    foreach ($k in $Env.Keys) { if ($null -eq $Env[$k]) { [void]$psi.Environment.Remove($k) } else { $psi.Environment[$k] = [string]$Env[$k] } }
     $script:App = [Diagnostics.Process]::Start($psi)
     $script:LayoutFile = $Layout
     $script:Hwnd = [IntPtr]::Zero

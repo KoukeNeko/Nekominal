@@ -51,8 +51,8 @@ function Name-Tab([string]$Title) {
 
 # Every run is started with NEKOMINAL_NO_LAUNCH: a link or the settings file is logged where it would be opened, and no
 # browser or editor starts.
-function Run-App([string]$Name, [hashtable]$Settings = @{}, [scriptblock]$Script, [switch]$Pattern, [switch]$NoShot) {
-    $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500; Env = @{ NEKOMINAL_NO_LAUNCH = '1' } }
+function Run-App([string]$Name, [hashtable]$Settings = @{}, [scriptblock]$Script, [switch]$Pattern, [switch]$NoShot, [hashtable]$Env = @{}) {
+    $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500; Env = (@{ NEKOMINAL_NO_LAUNCH = '1' } + $Env) }
     if ($Pattern) { $params['Pattern'] = $true }
     if ($NoShot) { $params['NoShot'] = $true }
     if ($global:NkExe) { $params['Exe'] = $global:NkExe }
