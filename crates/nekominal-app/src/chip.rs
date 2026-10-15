@@ -652,18 +652,38 @@ impl Chip {
 mod tests {
     use super::*;
 
+    /// The value of `attribute` on the element of `CHIP_XAML` whose `x:Name` is `name`.
+    fn attribute(name: &str, attribute: &str) -> String {
+        let marker = format!("x:Name=\"{name}\"");
+        let start = CHIP_XAML.find(&marker).unwrap_or_else(|| panic!("the markup has no {marker}"));
+        let rest = &CHIP_XAML[start..];
+        let element = &rest[..rest.find('>').expect("the element ends")];
+        let key = format!("{attribute}=\"");
+        let at = element.find(&key).unwrap_or_else(|| panic!("{name} has no {attribute}")) + key.len();
+        element[at..].split('"').next().expect("the value ends").to_owned()
+    }
+
+    fn number(text: &str) -> f64 {
+        text.parse().unwrap_or_else(|_| panic!("{text:?} is not a number"))
+    }
+
     #[test]
-    fn the_chrome_width_adds_up_the_numbers_of_the_markup() {
-        for needle in [
-            "BorderThickness=\"1\"",
-            "Padding=\"12,0,3,0\"",
-            "ColumnSpacing=\"8\"",
-            "<Grid x:Name=\"Slot\" Width=\"12\"",
-            "Width=\"24\" Height=\"24\"",
-        ] {
-            assert!(CHIP_XAML.contains(needle), "the markup no longer has {needle}");
-        }
-        // padding 12 + 3, border 2, status slot 12, two gaps of 8, close slot 24
-        assert_eq!(CHROME_WIDTH, 69.0);
+    fn the_chrome_width_is_what_the_markup_spends_around_the_title() {
+        // Padding is left,top,right,bottom; a border thickness of one number is the same on every side.
+        let padding: Vec<f64> = attribute("Chip", "Padding").split(',').map(number).collect();
+        assert_eq!(padding.len(), 4, "left, top, right, bottom");
+        let border = number(&attribute("Chip", "BorderThickness"));
+        let columns = CHIP_XAML
+            .split("<Grid.ColumnDefinitions>")
+            .nth(1)
+            .and_then(|rest| rest.split("</Grid.ColumnDefinitions>").next())
+            .expect("the chip has columns")
+            .matches("<ColumnDefinition")
+            .count();
+        let gaps = (columns - 1) as f64 * number(&attribute("Content", "ColumnSpacing"));
+        let slot = number(&attribute("Slot", "Width"));
+        let close = number(&attribute("Close", "Width"));
+        assert_eq!(columns, 3, "status slot, title, close slot");
+        assert_eq!(CHROME_WIDTH, padding[0] + padding[2] + 2.0 * border + slot + gaps + close);
     }
 }

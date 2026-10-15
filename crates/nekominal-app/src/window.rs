@@ -1,6 +1,6 @@
 //! The top-level window: system backdrop, title bar and the window theme.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use nekominal_model::settings::Backdrop;
 use nekominal_winui_sys::*;
@@ -18,8 +18,9 @@ use crate::util::{app_window, argb, log, solid_brush, xaml_color};
 /// Identifies the window subclass of [`silence_alt_chords`] so it can be removed again.
 const ALT_CHORD_SUBCLASS: usize = 1;
 
-/// The first `WM_MENUCHAR` is logged, so a run shows that the subclass sees the messages; a held key repeats it.
-static MENU_CHAR_LOGGED: AtomicBool = AtomicBool::new(false);
+/// How many `WM_MENUCHAR` the subclass has answered. Every one is logged with its number, so a run shows that the
+/// subclass sees the messages and how many an Alt chord (or a held key) raised.
+static MENU_CHARS: AtomicU32 = AtomicU32::new(0);
 
 /// The user has answered the question a close of the window asked: the `WM_CLOSE` that follows is let through.
 static CLOSE_CONFIRMED: AtomicBool = AtomicBool::new(false);
@@ -43,9 +44,8 @@ unsafe extern "system" fn silence_menu_char(
     _data: usize,
 ) -> LRESULT {
     if message == WM_MENUCHAR {
-        if !MENU_CHAR_LOGGED.swap(true, Ordering::Relaxed) {
-            log("WM_MENUCHAR answered with MNC_CLOSE");
-        }
+        let count = MENU_CHARS.fetch_add(1, Ordering::Relaxed) + 1;
+        log(&format!("WM_MENUCHAR #{count} answered with MNC_CLOSE"));
         // The menu command is the high-order word of the result: MAKELRESULT(0, MNC_CLOSE).
         return LRESULT((MNC_CLOSE as isize) << 16);
     }
@@ -186,4 +186,39 @@ pub fn caption_insets(window: &Window, scale: f64) -> (f64, f64) {
     let right = f64::from(title_bar.RightInset().unwrap_or(0)) / scale;
     log(&format!("caption insets left={left:.1} right={right:.1} DIP at scale {scale}"));
     (left, right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a window procedure answers to `WM_MENUCHAR` for the character `c`, as (menu, command).
+    fn menu_char_answer(c: char) -> (u32, u32) {
+        // SAFETY: `WM_MENUCHAR` is answered before the next procedure of the subclass chain is reached, so no window
+        // behind the handle is touched.
+        let result = unsafe {
+            silence_menu_char(HWND::default(), WM_MENUCHAR, WPARAM(c as usize), LPARAM(0), ALT_CHORD_SUBCLASS, 0)
+        };
+        let bits = result.0 as u32;
+        (bits & 0xFFFF, bits >> 16)
+    }
+
+    #[test]
+    fn an_alt_character_is_answered_with_close_in_the_high_word_so_it_does_not_beep() {
+        // MAKELRESULT(0, MNC_CLOSE): MNC_CLOSE (1, as documented for WM_MENUCHAR) in the high-order word, menu 0 in
+        // the low one. The default answer, MNC_IGNORE (0), is the beep.
+        for c in ['d', 's', '=', '-', 'x'] {
+            assert_eq!(menu_char_answer(c), (0, 1), "{c}");
+        }
+        assert_eq!(MNC_CLOSE, 1, "the value the documentation gives MNC_CLOSE");
+    }
+
+    #[test]
+    fn every_menu_character_is_counted_in_the_log() {
+        let before = MENU_CHARS.load(Ordering::Relaxed);
+        for c in ['d', 'x', 'q'] {
+            menu_char_answer(c);
+        }
+        assert!(MENU_CHARS.load(Ordering::Relaxed) >= before + 3, "tests share the counter, and only add to it");
+    }
 }

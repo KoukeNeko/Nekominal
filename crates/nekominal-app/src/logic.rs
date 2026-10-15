@@ -372,6 +372,14 @@ impl<T: Copy + PartialEq> Mru<T> {
         self.order.first().copied()
     }
 
+    /// `closed` was closed while `selected` (if any) was the tab shown. It leaves the order, and the tab to show
+    /// next is returned: the selected one stays, and closing the selected one hands over to the tab used most
+    /// recently before it, not to a neighbour.
+    pub fn close(&mut self, closed: T, selected: Option<T>) -> Option<T> {
+        self.remove(closed);
+        if selected == Some(closed) { self.most_recent() } else { selected }
+    }
+
     /// One press of next (`step` 1) or previous (`step` -1): the tab to show, or `None` with fewer than two tabs.
     pub fn step(&mut self, step: isize) -> Option<T> {
         if self.order.len() < 2 {
@@ -1088,6 +1096,30 @@ mod tests {
         let mut single = Mru::default();
         single.touch(9);
         assert_eq!(single.step(1), None, "nothing to walk to");
+    }
+
+    #[test]
+    fn closing_the_selected_tab_shows_the_one_used_before_it_and_closing_another_keeps_the_selection() {
+        // Four tabs in strip order a b c d, used in the order a, d, b, c, d, b: b is selected, d was used before it.
+        let used = || {
+            let mut mru = Mru::default();
+            for tab in ['a', 'd', 'b', 'c', 'd', 'b'] {
+                mru.touch(tab);
+            }
+            mru
+        };
+        let mut mru = used();
+        // Closing the selected tab hands over to the one used before it, not to its neighbour in the strip (c).
+        let mut closing = used();
+        assert_eq!(closing.close('b', Some('b')), Some('d'));
+        assert_eq!(closing.most_recent(), Some('d'));
+        // Closing a tab that is not selected leaves the selection and takes the closed one out of the order.
+        assert_eq!(mru.close('c', Some('b')), Some('b'));
+        assert_eq!(mru.close('a', Some('b')), Some('b'));
+        assert_eq!(mru.close('b', Some('b')), Some('d'), "c and a are gone: d is the last one used before b");
+        assert_eq!(mru.close('d', Some('d')), None, "the last tab leaves nothing to show");
+        // A tab that was never selected is not an error, and no selection stays none.
+        assert_eq!(Mru::<char>::default().close('x', None), None);
     }
 
     #[test]

@@ -1354,7 +1354,7 @@ impl Shell {
         let Some(index) = self.tab_index(id) else { return };
         let current = self.selected_tab().map(|tab| tab.id);
         let tab = self.tabs.borrow_mut().remove(index);
-        self.mru.borrow_mut().remove(id);
+        let next = self.mru.borrow_mut().close(id, current);
         if let Ok(children) = self.ui.tab_strip.cast::<Panel>().and_then(|p| p.Children()) {
             let _ = children.RemoveAt(index as u32);
         }
@@ -1373,8 +1373,6 @@ impl Shell {
             let _ = self.window.Close();
             return;
         }
-        // The selected tab stays; closing it hands over to the tab used most recently before.
-        let next = if current == Some(id) { self.mru.borrow().most_recent() } else { current };
         self.refresh_titles();
         self.show_index(next.and_then(|next| self.tab_index(next)).unwrap_or(0));
     }
