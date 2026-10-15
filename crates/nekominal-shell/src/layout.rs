@@ -33,7 +33,9 @@ pub enum Hit {
     Chip(usize),
     ChipClose(usize),
     NewTab,
-    TabList,
+    Profiles,
+    /// The position plate: opens the list of all tabs.
+    Plate,
     Menu,
     Minimize,
     Maximize,
@@ -50,8 +52,8 @@ pub struct Layout {
     pub first: usize,
     pub shown: usize,
     pub new_tab: Rect,
-    /// Opens the list of all tabs.
-    pub tab_list: Rect,
+    /// Opens the list of shells (profiles) a new tab can start.
+    pub profiles: Rect,
     pub menu: Rect,
     /// Minimize, maximize or restore, and close: the whole height of the title bar.
     pub caption_buttons: [Rect; 3],
@@ -77,14 +79,14 @@ impl Layout {
             .collect();
         let after = STRIP_LEFT + shown as f32 * (chip_width + CHIP_GAP);
         let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON - CHIP_GAP).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
-        let tab_list = Rect::new(new_tab.x + BUTTON + CHIP_GAP, top, BUTTON, CHIP_HEIGHT);
+        let profiles = Rect::new(new_tab.x + BUTTON + CHIP_GAP, top, BUTTON, CHIP_HEIGHT);
         Layout {
             size: (width, height),
             chips,
             first,
             shown,
             new_tab,
-            tab_list,
+            profiles,
             menu,
             caption_buttons: [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * caption / 3.0, 0.0, caption / 3.0, TITLE_HEIGHT)),
             pane: Rect::new(0.0, TITLE_HEIGHT, width, (height - TITLE_HEIGHT).max(0.0)),
@@ -111,8 +113,8 @@ impl Layout {
         if self.new_tab.contains(x, y) {
             return Hit::NewTab;
         }
-        if self.tab_list.contains(x, y) {
-            return Hit::TabList;
+        if self.profiles.contains(x, y) {
+            return Hit::Profiles;
         }
         if self.menu.contains(x, y) {
             return Hit::Menu;
@@ -175,7 +177,7 @@ mod tests {
         let close = Layout::close_button(chip).expect("a wide chip has a close button");
         assert_eq!(layout.hit(close.x + 2.0, close.y + 2.0), Hit::ChipClose(1));
         assert_eq!(layout.hit(layout.new_tab.x + 4.0, layout.new_tab.y + 4.0), Hit::NewTab);
-        assert_eq!(layout.hit(layout.tab_list.x + 4.0, layout.tab_list.y + 4.0), Hit::TabList);
+        assert_eq!(layout.hit(layout.profiles.x + 4.0, layout.profiles.y + 4.0), Hit::Profiles);
         assert_eq!(layout.hit(layout.menu.x + 4.0, layout.menu.y + 4.0), Hit::Menu);
         assert_eq!(layout.hit(layout.menu.x - 20.0, 10.0), Hit::Drag);
         assert_eq!(layout.hit(chip.x + 10.0, 2.0), Hit::Drag, "above the chips is still the title bar");

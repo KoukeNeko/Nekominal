@@ -252,7 +252,7 @@ function Scenario-NextTabList {
     Run-Next {
         Next-Line 'echo MARK-1'
         foreach ($n in 2..6) { Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500; Next-Line "echo MARK-$n" }
-        $button = Next-At (Next-TabListX 6) 24
+        $button = Next-At ((Next-TabListX 6) + 36) 24    # the position plate, right of the shell button
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
         if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 120) ($button[1] - 20) 420 340 }
         $row = Next-At ((Next-TabListX 6) - 40) (44 + 6 + 32 * 1 + 16)    # the second row: tab 2
@@ -557,7 +557,24 @@ function Scenario-NextTabMove {
         # Tear off: the second chip (216 DIP wide, 4 apart) is let go of in the middle of the window.
         $r = Win-Rect
         $chip = @([int]($r.Left + 322 * $scale), [int]($r.Top + 24 * $scale))
-        Drag-To $chip[0] $chip[1] ([int]($r.Left + 500 * $scale)) ([int]($r.Top + 400 * $scale)); Start-Sleep -Milliseconds 1500
+        Move-To $chip[0] $chip[1]; Start-Sleep -Milliseconds 200
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
+        $goal = @([int]($r.Left + 500 * $scale), [int]($r.Top + 400 * $scale))
+        for ($k = 1; $k -le 30; $k++) { Move-To ([int]($chip[0] + ($goal[0] - $chip[0]) * $k / 30)) ([int]($chip[1] + ($goal[1] - $chip[1]) * $k / 30)); Start-Sleep -Milliseconds 20 }
+        Start-Sleep -Milliseconds 800
+        # The button is still down: the tab is already a window, and the pointer holds it by its chip.
+        $windows = @([D]::AllWindows([uint32]$app.Id))
+        Next-Check 'tabmove.window-exists-while-held' ($windows.Count -eq 2) "$($windows.Count) windows while the chip is still held"
+        $held = $windows | Where-Object { $_ -ne $first } | Select-Object -First 1
+        if ($held) {
+            $h1 = New-Object D+RECT; [void][D]::GetWindowRect($held, [ref]$h1)
+            $onBar = $goal[0] -ge $h1.Left -and $goal[0] -le $h1.Right -and $goal[1] -ge $h1.Top -and $goal[1] -le ($h1.Top + 48 * $scale)
+            Next-Check 'tabmove.window-follows-the-pointer' $onBar "the pointer ($($goal[0]),$($goal[1])) is on the title bar of the new window ($($h1.Left),$($h1.Top))-($($h1.Right),$($h1.Bottom))"
+            Move-To ($goal[0] + 150) $goal[1]; Start-Sleep -Milliseconds 300
+            $h2 = New-Object D+RECT; [void][D]::GetWindowRect($held, [ref]$h2)
+            Next-Check 'tabmove.window-keeps-following' ([Math]::Abs(($h2.Left - $h1.Left) - 150) -le 3) "the window moved $($h2.Left - $h1.Left) px for 150 px of the pointer"
+        }
+        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 1200
         $windows = @([D]::AllWindows([uint32]$app.Id))
         Next-Check 'tabmove.tear-off-makes-a-window' ($windows.Count -eq 2) "$($windows.Count) windows after pulling a chip out"
         $second = $windows | Where-Object { $_ -ne $first } | Select-Object -First 1
@@ -575,7 +592,15 @@ function Scenario-NextTabMove {
         $n = Win-Rect
         $script:Hwnd = $first
         $r = Win-Rect
-        Drag-To ([int]($n.Left + 102 * $scale)) ([int]($n.Top + 24 * $scale)) ([int]($r.Left + 700 * $scale)) ([int]($r.Top + 24 * $scale)); Start-Sleep -Milliseconds 2000
+        $from = @([int]($n.Left + 102 * $scale), [int]($n.Top + 24 * $scale)); $to = @([int]($r.Left + 700 * $scale), [int]($r.Top + 24 * $scale))
+        Move-To $from[0] $from[1]; Start-Sleep -Milliseconds 200
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
+        for ($k = 1; $k -le 30; $k++) { Move-To ([int]($from[0] + ($to[0] - $from[0]) * $k / 30)) ([int]($from[1] + ($to[1] - $from[1]) * $k / 30)); Start-Sleep -Milliseconds 20 }
+        Start-Sleep -Milliseconds 900
+        # Held over the strip of the first window, the tab is in it already and the pointer goes on holding it.
+        $windows = @([D]::AllWindows([uint32]$app.Id))
+        Next-Check 'tabmove.joins-while-held' ($windows.Count -eq 1) "$($windows.Count) windows while the chip is held over the other strip"
+        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 1200
         $windows = @([D]::AllWindows([uint32]$app.Id))
         Next-Check 'tabmove.merge-closes-the-emptied-window' ($windows.Count -eq 1 -and $windows[0] -eq $first) "$($windows.Count) window left"
         [D]::ForceForeground($first); Start-Sleep -Milliseconds 500
@@ -902,5 +927,81 @@ function Scenario-NextBehavior {
         if (Move-PatternAway 320 220) { [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 1200 }
         Next-Check 'behavior.title-counts-the-tabs-that-wait' ((Next-WindowTitle) -eq '!1 Nekominal') "title: $(Next-WindowTitle)"
         Stop-Pattern
+    }
+}
+
+# The tab strip: the shell button lists the shells and does not light the menu button, a chip dragged over its neighbour changes the order and
+# follows the pointer on the way, a closed tab makes the others slide over several frames instead of jumping, and the
+# strip comes to rest. The places of the chips are read from the tree a screen reader gets, which carries what is drawn.
+function Scenario-NextBar {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+    Run-Next {
+        $r = Win-Rect; $s = Get-Scale
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $isTab = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
+        $chips = { @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isTab) | ForEach-Object { [pscustomobject]@{ Name = $_.Current.Name; Rect = $_.Current.BoundingRectangle } }) }
+        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $plate = { param($path) $b = [System.Drawing.Bitmap]::FromFile($path); try { $at = Next-At ($menuX - 12) 24; $c = $b.GetPixel($at[0] - $r.Left, $at[1] - $r.Top); $c.R + $c.G + $c.B } finally { $b.Dispose() } }
+        $bar = [int](60 * $s)
+        Move-To ([int]($r.Left + 300)) ([int]($r.Top + 400)); Start-Sleep -Milliseconds 600
+        $idle = Join-Path $env:TEMP 'bar-idle.png'; $open = Join-Path $env:TEMP 'bar-open.png'
+        [void](ShotRegion $idle $r.Left $r.Top ($r.Right - $r.Left) $bar)
+        $list = Next-At 296 24
+        Click-At $list[0] $list[1]; Start-Sleep -Milliseconds 900
+        [void](ShotRegion $open $r.Left $r.Top ($r.Right - $r.Left) $bar)
+        Next-Check 'bar.shell-button-opens-the-list-of-shells' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'the button right of + lists the shells a new tab can start'
+        Next-Check 'bar.shell-button-does-not-light-the-menu-button' ([Math]::Abs((& $plate $open) - (& $plate $idle)) -le 3) "menu plate sum idle $(& $plate $idle), list open $(& $plate $open)"
+        Press 0x1B; Start-Sleep -Milliseconds 500
+
+        Next-Line 'echo AAA'
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Line 'echo BBB'
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Line 'echo CCC'
+        Start-Sleep -Milliseconds 600
+        $centre = { param($c) @([int](($c.Rect.Left + $c.Rect.Right) / 2), [int](($c.Rect.Top + $c.Rect.Bottom) / 2)) }
+        # What each chip, from the left, shows when it is chosen: the tabs by what was typed in them.
+        $order = {
+            $letters = foreach ($c in (& $chips)) {
+                $at = & $centre $c
+                Click-At $at[0] $at[1]; Start-Sleep -Milliseconds 500
+                $text = Next-Text
+                foreach ($name in 'AAA', 'BBB', 'CCC') { if ($text -match "echo $name") { $name } }
+            }
+            ($letters -join ',')
+        }
+        $now = & $chips
+        $got = & $order; Next-Check "bar.tabs-in-order" ($got -eq "AAA,BBB,CCC") "the chips from the left show: $got"
+
+        # Hold the third chip, move it over the first, and look at the chips on the way, then let go.
+        $now = & $chips
+        $third = & $centre $now[2]; $first = & $centre $now[0]
+        Move-To $third[0] $third[1]; Start-Sleep -Milliseconds 200
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
+        $steps = 20
+        for ($k = 1; $k -le $steps; $k++) { Move-To ([int]($third[0] + ($first[0] - 10 * $s - $third[0]) * $k / $steps)) $third[1]; Start-Sleep -Milliseconds 25 }
+        Start-Sleep -Milliseconds 700
+        $during = & $chips
+        $held = $during[2]
+        Next-Check 'bar.held-chip-follows-the-pointer' ([Math]::Abs((($held.Rect.Left + $held.Rect.Right) / 2) - ($first[0] - 10 * $s)) -lt 12 * $s) "the chip is at $([int](($held.Rect.Left + $held.Rect.Right) / 2)), the pointer at $([int]($first[0] - 10 * $s)) (the chip stops at the start of the strip)"
+        Next-Check 'bar.other-chips-make-way' ($during[0].Rect.Left -gt $now[0].Rect.Left + 20 * $s) "the first chip moved from $([int]$now[0].Rect.Left) to $([int]$during[0].Rect.Left)"
+        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 900
+        $got = & $order; Next-Check "bar.dragging-a-chip-reorders-the-tabs" ($got -eq "CCC,AAA,BBB") "the chips from the left show: $got"
+        $after = & $chips
+        Next-Check 'bar.dropped-chip-settles-in-its-slot' ([Math]::Abs($after[0].Rect.Left - $now[0].Rect.Left) -lt 2 * $s) "first chip at $([int]$after[0].Rect.Left), the first slot at $([int]$now[0].Rect.Left)"
+
+        # Close the first tab: the others slide into its place over several frames.
+        $first = & $centre $after[0]
+        Click-At $first[0] $first[1]; Start-Sleep -Milliseconds 600
+        Press 0x57 @(0x11, 0x10) 40 0    # Ctrl+Shift+W closes the selected tab, the first one; no wait: the slide has begun
+        $seen = [Collections.Generic.List[double]]::new()
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        while ($clock.ElapsedMilliseconds -lt 700) {
+            $now2 = & $chips
+            if ($now2.Count -eq 2) { $seen.Add([Math]::Round($now2[1].Rect.Left)) }
+        }
+        $distinct = @($seen | Select-Object -Unique)
+        Next-Check 'bar.closing-a-tab-slides-the-others' ($distinct.Count -ge 4) "the second chip was seen at $($distinct.Count) places on its way: $(($distinct | Select-Object -First 8) -join ' ')"
+        Next-Check 'bar.strip-comes-to-rest' (@($seen | Select-Object -Last 5 | Select-Object -Unique).Count -eq 1) 'the chip stands still at the end'
     }
 }

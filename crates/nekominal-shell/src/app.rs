@@ -1,5 +1,6 @@
 //! The application of one window: tabs with panes, the chrome drawn around them, and the input.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
@@ -45,7 +46,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, clipboard, find,
+    access, clipboard, find, motion,
     settings_page::{self, Page, Part},
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
@@ -105,6 +106,19 @@ pub struct App {
     last_alert: Option<Instant>,
     /// The right button opened the menu and is still down: letting go of it must not close the menu.
     context_release: bool,
+    /// The button of the bar that opened the pop-up that is open: it stays lit while the pop-up hangs from it.
+    popup_from: Option<Hit>,
+    /// Where each tab chip is drawn now, by the number of its tab, while it slides to the place the layout gives it.
+    chip_view: HashMap<u64, Rect>,
+    /// The same, in the order of the tabs, for the frame being drawn.
+    chip_rects: Vec<Rect>,
+    /// When the last frame of a slide was drawn; None while every chip is in its place.
+    chip_clock: Option<Instant>,
+    chip_size: (u32, u32),
+    /// A chip held by the pointer.
+    drag: Option<ChipDrag>,
+    /// Where the position plate of the tab strip is drawn, when it is: it opens the list of all tabs.
+    plate_rect: Option<Rect>,
     /// The title of the window as it was last set.
     window_title: String,
     tabs: Vec<Tab>,
@@ -123,7 +137,7 @@ pub struct App {
     /// The path of the divider being dragged.
     dragged_splitter: Option<Vec<u8>>,
     /// A chip let go of outside the title bar, for the window code to move.
-    tear: Option<(usize, (i32, i32))>,
+    detach: Option<Detach>,
     /// The "…" menu while it is open.
     popup: Option<popup::Popup>,
     confirmation: Option<Confirmation>,
@@ -137,6 +151,30 @@ pub struct App {
     /// What a screen reader sees of the window; it asks through WM_GETOBJECT.
     access: Option<Adapter>,
 }
+
+/// A tab chip pressed with the left button; it follows the pointer once the pointer has moved a little.
+#[derive(Clone, Copy, Debug)]
+struct ChipDrag {
+    tab: usize,
+    /// Where the pointer is in the chip, in DIP.
+    grab: f32,
+    start: f32,
+    /// The pointer, in DIP.
+    x: f32,
+    active: bool,
+}
+
+/// A chip dragged out of the bar: which tab, where the pointer is on the screen (pixels) and how far from the left of the
+/// chip it took hold (pixels).
+#[derive(Clone, Copy, Debug)]
+pub struct Detach {
+    pub tab: usize,
+    pub pointer: (i32, i32),
+    pub grab: f32,
+}
+
+/// How far the pointer goes before a pressed chip is dragged, in DIP.
+const DRAG_START: f32 = 4.0;
 
 /// The matches of the find bar and the one the bar is on.
 struct FindState {
@@ -263,6 +301,13 @@ impl App {
             page: None,
             last_alert: None,
             context_release: false,
+            popup_from: None,
+            chip_view: HashMap::new(),
+            chip_rects: Vec::new(),
+            chip_clock: None,
+            chip_size: (0, 0),
+            drag: None,
+            plate_rect: None,
             window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
@@ -275,7 +320,7 @@ impl App {
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
-            tear: None,
+            detach: None,
             confirmation: None,
             fullscreen: None,
             find: None,
@@ -504,9 +549,31 @@ impl App {
         self.redraw();
     }
 
-    /// The tab chip the user dragged out of the title bar and let go of, with the screen point it was let go at.
-    pub fn take_tear(&mut self) -> Option<(usize, (i32, i32))> {
-        self.tear.take()
+    /// The chip the user dragged out of the title bar: the window code makes it a window that follows the pointer.
+    pub fn take_detach(&mut self) -> Option<Detach> {
+        self.detach.take()
+    }
+
+    /// The drag of a chip ends without a place for it (it became a window of its own).
+    pub fn cancel_drag(&mut self) {
+        self.drag = None;
+        self.pressed = Hit::None;
+        self.redraw();
+    }
+
+    /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
+    pub fn over_strip(&self, x: i32, y: i32) -> bool {
+        !matches!(self.hit_test(x, y), Hit::Pane | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+    }
+
+    /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
+    /// and the drag goes on in this window.
+    pub fn begin_chip_drag(&mut self, x: i32, y: i32, grab: f32) {
+        let Some(tab) = self.tabs.len().checked_sub(1) else { return };
+        let (pointer, _) = self.point(x, y);
+        self.pressed = Hit::Chip(tab);
+        self.drag = Some(ChipDrag { tab, grab, start: pointer, x: pointer, active: true });
+        self.redraw();
     }
 
     pub fn tab_count(&self) -> usize {
@@ -728,6 +795,9 @@ impl App {
 
     pub fn hit_test(&self, x: i32, y: i32) -> Hit {
         let (x, y) = self.point(x, y);
+        if self.plate_rect.is_some_and(|plate| plate.contains(x, y)) {
+            return Hit::Plate;
+        }
         self.layout.hit(x, y)
     }
 
@@ -760,6 +830,20 @@ impl App {
         if hit != self.hover {
             self.hover = hit;
             self.redraw();
+        }
+        if let Some(drag) = self.drag.as_mut() {
+            let pointer = x as f32 / self.scale;
+            drag.x = pointer;
+            drag.active |= (pointer - drag.start).abs() > DRAG_START;
+            // Out of the bar, up, down or aside, the chip does not stay in it: it follows the pointer as a window.
+            let (height, width) = (y as f32 / self.scale, self.layout.size.0);
+            let outside = drag.active && (height < -TEAR_MARGIN || height > layout::TITLE_HEIGHT + TEAR_MARGIN || pointer < 0.0 || pointer > width);
+            let held = (drag.tab, drag.grab * self.scale);
+            if outside && self.detach.is_none() {
+                self.detach = Some(Detach { tab: held.0, pointer: self.screen_point(x as f32, y as f32), grab: held.1 });
+            }
+            self.redraw();
+            return;
         }
         if self.page.is_some() {
             self.page_hover(x, y);
@@ -860,6 +944,11 @@ impl App {
         if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
             if down {
                 self.pressed = hit;
+                if let Hit::Chip(i) = hit {
+                    let (pointer, _) = self.point(x, y);
+                    let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
+                    self.drag = Some(ChipDrag { tab: i, grab: pointer - chip.x, start: pointer, x: pointer, active: false });
+                }
                 self.redraw();
                 // A chip keeps the pointer: letting go outside the window moves the tab.
                 return if matches!(hit, Hit::Chip(_)) { Capture::Take } else { Capture::None };
@@ -867,10 +956,11 @@ impl App {
             let pressed = std::mem::replace(&mut self.pressed, Hit::None);
             self.redraw();
             if let Hit::Chip(i) = pressed {
-                let (width, _) = self.surface.size();
-                let below = (layout::TITLE_HEIGHT + TEAR_MARGIN) * self.scale;
-                if y < 0 || y as f32 >= below || x < 0 || x >= width as i32 {
-                    self.tear = Some((i, self.screen_point(x as f32, y as f32)));
+                let drag = self.drag.take().filter(|drag| drag.active);
+                if let Some(drag) = drag {
+                    let to = self.drag_target(&drag);
+                    self.move_tab_to(drag.tab, to);
+                    self.select(to);
                 } else if pressed == hit {
                     self.select(i);
                 }
@@ -884,7 +974,8 @@ impl App {
                             util::log(&format!("new tab: {e}"));
                         }
                     }
-                    Hit::TabList => self.open_tab_list(),
+                    Hit::Profiles => self.open_profiles(),
+                    Hit::Plate => self.open_tab_list(),
                     Hit::Menu => self.open_menu(),
                     _ => {}
                 }
@@ -975,6 +1066,9 @@ impl App {
         if let Some(page) = self.page.as_mut() {
             page.drag = None;
         }
+        self.drag = None;
+        self.pressed = Hit::None;
+        self.redraw();
         self.dragged_splitter = None;
         let Some(id) = self.pointer_pane.take() else { return };
         let Some(entry) = self.tab().and_then(|t| t.entry(id)) else { return };
@@ -1325,18 +1419,25 @@ impl App {
         access::View {
             window: "Nekominal".into(),
             tabs_label: Text::TabAll.get(lang).into(),
-            tabs: (0..self.tabs.len()).map(|i| (self.tab_label(i), i == self.selected)).collect(),
+            tabs: (0..self.tabs.len())
+                .map(|i| {
+                    let chip = self.chip_rects.get(i).copied().or_else(|| self.layout.chips.get(i).copied()).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+                    let s = f64::from(self.scale);
+                    (self.tab_label(i), i == self.selected, [f64::from(chip.x) * s, f64::from(chip.y) * s, f64::from(chip.x + chip.w) * s, f64::from(chip.y + chip.h) * s])
+                })
+                .collect(),
             terminal_label: Text::SettingsTerminal.get(lang).into(),
             terminal_text: self.focused().map(|entry| entry.view.snapshot().text()).unwrap_or_default(),
             popup: popup.or(page),
         }
     }
 
-    pub fn paint(&mut self) {
+    /// Draws a frame. True when another one is due at once: a tab chip is still sliding to its place.
+    pub fn paint(&mut self) -> bool {
         let size = self.surface.size();
         let Some(view) = self.surface.acquire() else {
             self.redraw();
-            return;
+            return false;
         };
 
         let highlights = self.find_highlights();
@@ -1360,10 +1461,12 @@ impl App {
         }
 
         self.ui.begin_frame(size, self.scale);
+        let sliding = self.advance_chips();
         self.paint_chrome();
         self.paint_page();
         self.ui.end_frame(&view);
         self.surface.present();
+        sliding
     }
 
     /// The settings page over the area of the panes.
@@ -1496,9 +1599,16 @@ impl App {
         }
 
         let line = self.ui.line_height(TEXT_SIZE);
-        for (i, chip) in self.layout.chips.clone().into_iter().enumerate() {
-            if !self.layout.is_shown(i) {
+        let dragged = self.drag.filter(|drag| drag.active).map(|drag| drag.tab);
+        // The dragged chip last, over the others.
+        let order: Vec<usize> = (0..self.layout.chips.len()).filter(|i| Some(*i) != dragged).chain(dragged).collect();
+        for i in order {
+            if !self.layout.is_shown(i) && Some(i) != dragged {
                 continue;
+            }
+            let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
+            if Some(i) == dragged {
+                self.ui.shadow(chip, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
             }
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
@@ -1542,13 +1652,13 @@ impl App {
             self.ui.rrect(plus, CORNER_RADIUS, col(g.hover()), None);
         }
         self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
-        let list = self.layout.tab_list;
-        if self.hover == Hit::TabList || self.popup.as_ref().is_some_and(|p| p.rows.iter().any(|r| matches!(r.action, Some(popup::Action::Tab(_))))) {
+        let list = self.layout.profiles;
+        if self.hover == Hit::Profiles || self.popup_from == Some(Hit::Profiles) {
             self.ui.rrect(list, CORNER_RADIUS, col(g.hover()), None);
         }
         self.icon_centered(list, '\u{E70D}', 12.0, col(g.text()));
         // The position plate: where the selected tab is among all of them, which a strip of narrow chips cannot say.
-        let strip = self.layout.tab_list.x;
+        let strip = self.layout.profiles.x;
         let tier = if self.layout.size.0 < logic::MEDIUM_FROM as f32 { logic::BarTier::Narrow } else { logic::BarTier::Wide };
         if let Some(plate) = logic::plate(self.selected, self.tabs.len(), f64::from(strip), tier) {
             let text = match plate {
@@ -1557,12 +1667,20 @@ impl App {
             };
             let (x, room) = (list.x + list.w + 8.0, self.layout.menu.x - list.x - list.w - 12.0);
             let line = self.ui.line_height(TEXT_SIZE);
+            let width = self.ui.measure(&text, TEXT_SIZE, false).min(room.max(0.0));
+            let plate = Rect::new(x - 8.0, list.y, width + 16.0, list.h);
+            self.plate_rect = Some(plate);
+            if self.hover == Hit::Plate || self.popup_from == Some(Hit::Plate) {
+                self.ui.rrect(plate, CORNER_RADIUS, col(g.hover()), None);
+            }
             self.ui.push_clip(Rect::new(x, list.y, room.max(0.0), list.h));
             self.ui.text(x, list.y + (list.h - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
             self.ui.pop_clip();
+        } else {
+            self.plate_rect = None;
         }
         let menu = self.layout.menu;
-        if self.hover == Hit::Menu || self.popup.is_some() {
+        if self.hover == Hit::Menu || self.popup_from == Some(Hit::Menu) {
             self.ui.rrect(menu, CORNER_RADIUS, col(g.hover()), None);
         }
         self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
@@ -1644,6 +1762,7 @@ impl App {
         let rows = self.menu_rows();
         let anchor = self.button_anchor(self.layout.menu);
         self.open_popup(rows, popup::Kind::List, anchor);
+        self.popup_from = self.popup.as_ref().map(|_| Hit::Menu);
     }
 
     /// The command palette: what matches `query` of the commands the shell can run and the open tabs.
@@ -2088,8 +2207,9 @@ impl App {
                 current: profile.id == self.profile.id,
             })
             .collect();
-        let anchor = self.button_anchor(self.layout.tab_list);
+        let anchor = self.button_anchor(self.layout.profiles);
         self.open_popup(rows, popup::Kind::List, anchor);
+        self.popup_from = self.popup.as_ref().map(|_| Hit::Profiles);
     }
 
     /// A tab with the profile at `index`; the tabs and panes made later still use the default profile.
@@ -2238,8 +2358,9 @@ impl App {
                 current: i == self.selected,
             })
             .collect();
-        let anchor = self.button_anchor(self.layout.tab_list);
+        let anchor = self.button_anchor(self.plate_rect.unwrap_or(self.layout.profiles));
         self.open_popup(rows, popup::Kind::List, anchor);
+        self.popup_from = self.popup.as_ref().map(|_| Hit::Plate);
         let selected = self.selected;
         if let Some(popup) = self.popup.as_mut() {
             popup.hover = Some(selected);
@@ -2266,6 +2387,7 @@ impl App {
 
     pub fn close_popup(&mut self) {
         let Some(popup) = self.popup.take() else { return };
+        self.popup_from = None;
         self.confirmation = None;
         self.text = Utf16Assembler::default();
         self.find = None;
@@ -2401,6 +2523,80 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// The place a chip let go of now takes in the order of the tabs.
+    fn drag_target(&self, drag: &ChipDrag) -> usize {
+        let Some(first) = self.layout.chips.first() else { return drag.tab };
+        let widths: Vec<f64> = self.layout.chips.iter().map(|chip| f64::from(chip.w)).collect();
+        let centre = drag.x - drag.grab + self.layout.chips[drag.tab].w / 2.0;
+        logic::reorder_target(&widths, f64::from(layout::CHIP_GAP), drag.tab, f64::from(centre - first.x))
+    }
+
+    /// Puts tab `from` at the place `to`; the selection stays with the tab it was on.
+    fn move_tab_to(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.selected = if self.selected == from {
+            to
+        } else if from < self.selected && self.selected <= to {
+            self.selected - 1
+        } else if to <= self.selected && self.selected < from {
+            self.selected + 1
+        } else {
+            self.selected
+        };
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Moves the chips a frame of their slide toward their places: those the layout gives, with the dragged chip
+    /// following the pointer and the others making way for it. True while a chip is not in its place yet.
+    fn advance_chips(&mut self) -> bool {
+        let now = Instant::now();
+        let seconds = self.chip_clock.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        // A window that changes its size (a drag of its edge) has the chips follow at once.
+        let size = self.surface.size();
+        let snap = size != self.chip_size;
+        let active = self.drag.filter(|drag| drag.active);
+        let to = active.map(|drag| self.drag_target(&drag));
+        let mut moving = false;
+        let mut view = HashMap::new();
+        let mut rects = Vec::with_capacity(self.tabs.len());
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let slot = match (active, to) {
+                (Some(drag), Some(to)) => motion::slot_of(i, drag.tab, to),
+                _ => i,
+            };
+            let Some(target) = self.layout.chips.get(slot).copied() else {
+                rects.push(Rect::new(0.0, 0.0, 0.0, 0.0));
+                continue;
+            };
+            let shown = match active {
+                Some(drag) if drag.tab == i => {
+                    let left = (drag.x - drag.grab).clamp(layout::STRIP_LEFT, (self.layout.menu.x - target.w).max(layout::STRIP_LEFT));
+                    Rect::new(left, target.y, target.w, target.h)
+                }
+                _ => {
+                    // A new tab grows from nothing in its place.
+                    let from = self.chip_view.get(&tab.uid).copied().unwrap_or(Rect::new(target.x, target.y, 0.0, target.h));
+                    let next = if snap { target } else { motion::approach(from, target, seconds) };
+                    moving |= !motion::at_rest(next, target);
+                    next
+                }
+            };
+            view.insert(tab.uid, shown);
+            rects.push(shown);
+        }
+        moving |= active.is_some();
+        self.chip_view = view;
+        self.chip_rects = rects;
+        self.chip_size = size;
+        self.chip_clock = moving.then_some(now);
+        moving
     }
 
     /// What tab `i` shows: what the title format of the settings makes of the focused pane.

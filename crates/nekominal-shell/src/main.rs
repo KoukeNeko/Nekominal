@@ -11,6 +11,7 @@ mod gpu;
 mod layout;
 #[allow(dead_code)]
 mod logic;
+mod motion;
 mod open;
 mod popup;
 mod settings_page;

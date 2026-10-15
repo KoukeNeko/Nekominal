@@ -1,6 +1,6 @@
 //! The Win32 side: the window class, the custom frame (the title bar is ours), and the messages handed to `App`.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::HashMap, rc::Rc};
 
 use nekominal_input::MouseButton;
 use nekominal_model::settings::Backdrop;
@@ -12,7 +12,7 @@ use windows::{
                 DWM_SYSTEMBACKDROP_TYPE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
                 DwmSetWindowAttribute,
             },
-            Gdi::{ScreenToClient, ValidateRect},
+            Gdi::{ClientToScreen, ScreenToClient, ValidateRect},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -34,8 +34,8 @@ use windows::{
 };
 
 use crate::{
-    app::{App, Capture, Cursor, WM_WAKE},
-    layout::Hit,
+    app::{App, Capture, Cursor, Detach, WM_WAKE},
+    layout::{Hit, STRIP_LEFT},
 };
 
 /// Not in the generated bindings (it is a common-controls message).
@@ -268,9 +268,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_PAINT => {
-            with_app(hwnd, App::paint);
+            let next_frame = with_app(hwnd, App::paint).unwrap_or(false);
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
+            // After the validation, which would take it back: a slide of the tab chips asks for its next frame, and a
+            // window with every chip in its place asks for none.
+            if next_frame {
+                with_app(hwnd, |app| app.redraw());
+            }
             raise_access_events(hwnd, App::access_update);
             LRESULT(0)
         }
@@ -296,12 +301,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
+            if follow_move(hwnd, lparam) {
+                return LRESULT(0);
+            }
             let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             // SAFETY: a valid request for this window.
             unsafe { let _ = TrackMouseEvent(&mut track); };
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
             with_app(hwnd, |app| app.on_mouse_move(lo(lparam), hi(lparam), time));
+            if let Some(detach) = with_app(hwnd, App::take_detach).flatten() {
+                start_detach(hwnd, detach);
+            }
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
@@ -309,6 +320,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
+            if msg == WM_LBUTTONUP && end_follow(hwnd) {
+                return LRESULT(0);
+            }
             let down = matches!(msg, WM_LBUTTONDOWN | WM_MBUTTONDOWN | WM_RBUTTONDOWN);
             let button = match msg {
                 WM_LBUTTONDOWN | WM_LBUTTONUP => MouseButton::Left,
@@ -318,9 +332,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
             let capture = with_app(hwnd, |app| app.on_button(lo(lparam), hi(lparam), button, down, time));
-            if let Some((index, point)) = with_app(hwnd, App::take_tear).flatten() {
-                move_tab(hwnd, index, point);
-            }
             match capture {
                 // The capture keeps the moves coming while a button is held outside the window (a selection drag),
                 // and a timer scrolls the view while the drag is held above or below the pane.
@@ -575,49 +586,118 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
     }
 }
 
-/// The application window whose title bar is under a screen point, other than `except`.
-fn title_bar_at(point: POINT, except: HWND) -> Option<HWND> {
-    // SAFETY: plain queries.
-    let root = unsafe { GetAncestor(WindowFromPoint(point), GA_ROOT) };
-    if root == except || !APPS.with(|apps| apps.borrow().contains_key(&(root.0 as isize))) {
-        return None;
-    }
-    let mut client = point;
-    // SAFETY: a window of this thread.
-    unsafe { let _ = ScreenToClient(root, &mut client); }
-    let on_title_bar = with_app(root, |app| !matches!(app.hit_test(client.x, client.y), Hit::Pane | Hit::None));
-    on_title_bar.unwrap_or(false).then_some(root)
+/// A window that follows the pointer while the left button is held: a tab pulled out of a window, or a window of one tab
+/// pulled by its chip. The pointer holds it `grab` pixels from its top left corner.
+#[derive(Clone, Copy)]
+struct Follow {
+    host: HWND,
+    grab: (i32, i32),
 }
 
-/// A tab chip of `source` was let go of outside its title bar at the screen `point`: over the title bar of another
-/// window the tab joins it, anywhere else it becomes a window of its own there (a lone tab stays where it is).
-fn move_tab(source: HWND, index: usize, point: (i32, i32)) {
-    let point = POINT { x: point.0, y: point.1 };
-    let target = match title_bar_at(point, source) {
-        Some(target) => target,
-        None => {
-            if with_app(source, |app| app.tab_count()).unwrap_or(0) < 2 {
-                return;
+thread_local! {
+    static FOLLOW: Cell<Option<Follow>> = const { Cell::new(None) };
+}
+
+/// The window that follows the pointer takes the pointer along; over the strip of tabs of another window it joins that
+/// window and the drag goes on there. True when the message was for the window that follows.
+fn follow_move(hwnd: HWND, lparam: LPARAM) -> bool {
+    let Some(follow) = FOLLOW.with(Cell::get).filter(|follow| follow.host == hwnd) else { return false };
+    let mut at = POINT { x: lo(lparam), y: hi(lparam) };
+    // SAFETY: a window of this thread.
+    unsafe {
+        let _ = ClientToScreen(hwnd, &mut at);
+        let _ = SetWindowPos(hwnd, None, at.x - follow.grab.0, at.y - follow.grab.1, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if let Some(target) = strip_under(at, hwnd) {
+        join(hwnd, target, at, follow);
+    }
+    true
+}
+
+/// The button was let go of while a window follows the pointer: it stays where it is.
+fn end_follow(hwnd: HWND) -> bool {
+    if FOLLOW.with(Cell::get).is_none_or(|follow| follow.host != hwnd) {
+        return false;
+    }
+    FOLLOW.with(|follow| follow.set(None));
+    // SAFETY: releases the capture of this thread.
+    unsafe { let _ = ReleaseCapture(); }
+    true
+}
+
+/// The window other than `except` whose strip of tabs is under a screen point.
+fn strip_under(point: POINT, except: HWND) -> Option<HWND> {
+    let windows: Vec<HWND> = APPS.with(|apps| apps.borrow().keys().map(|key| HWND(*key as *mut _)).collect());
+    windows.into_iter().find(|&candidate| {
+        // SAFETY: windows of this thread.
+        unsafe {
+            if candidate == except || IsIconic(candidate).as_bool() {
+                return false;
             }
-            let scale = scale_of(source);
-            let Some(gpu) = with_app(source, |app| app.shared_gpu()) else { return };
-            // The chip lands under the pointer.
-            let at = (point.x - (60.0 * scale) as i32, point.y - (24.0 * scale) as i32);
-            match create_window(Some(gpu), Some(at), false) {
-                Ok(window) => window,
-                Err(e) => {
-                    crate::util::log(&format!("new window: {e}"));
-                    return;
-                }
-            }
+            let mut client = point;
+            let _ = ScreenToClient(candidate, &mut client);
+            let mut area = RECT::default();
+            let _ = GetClientRect(candidate, &mut area);
+            client.x >= 0 && client.x < area.right && with_app(candidate, |app| app.over_strip(client.x, client.y)).unwrap_or(false)
         }
-    };
-    let Some(tab) = with_app(source, |app| app.take_tab(index)).flatten() else { return };
+    })
+}
+
+/// The tab of the window that follows the pointer moves into the window whose strip is under it, held by the pointer.
+fn join(host: HWND, target: HWND, at: POINT, follow: Follow) {
+    let scale = scale_of(host);
+    let grab = (follow.grab.0 as f32 - STRIP_LEFT * scale).max(0.0) / scale;
+    let Some(tab) = with_app(host, |app| app.take_tab(0)).flatten() else { return };
     if with_app(target, |app| app.adopt_tab(tab)).is_none() {
         crate::util::log("the tab could not be handed to the other window");
+        return;
+    }
+    let mut client = at;
+    // SAFETY: windows of this thread. The capture moves to the window that has the tab now; the one that gave it up is
+    // closing (it has no tab left).
+    unsafe {
+        let _ = ScreenToClient(target, &mut client);
+        with_app(target, |app| app.begin_chip_drag(client.x, client.y, grab));
+        FOLLOW.with(|follow| follow.set(None));
+        SetCapture(target);
+        let _ = SetForegroundWindow(target);
     }
 }
 
+/// A chip was dragged out of the strip of `source`: a window of one tab follows the pointer as it is, and a tab of
+/// several becomes a window of its own that follows it.
+fn start_detach(source: HWND, detach: Detach) {
+    let scale = scale_of(source);
+    let point = POINT { x: detach.pointer.0, y: detach.pointer.1 };
+    // The pointer holds the window by its chip.
+    let grab = ((STRIP_LEFT * scale + detach.grab) as i32, (24.0 * scale) as i32);
+    let at = (point.x - grab.0, point.y - grab.1);
+    if with_app(source, |app| app.tab_count()).unwrap_or(0) < 2 {
+        // SAFETY: a window of this thread.
+        unsafe {
+            if is_maximized(source) {
+                let _ = ShowWindow(source, SW_RESTORE);
+            }
+            let _ = SetWindowPos(source, None, at.0, at.1, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        FOLLOW.with(|follow| follow.set(Some(Follow { host: source, grab })));
+        with_app(source, App::cancel_drag);
+        return;
+    }
+    let Some(gpu) = with_app(source, |app| app.shared_gpu()) else { return };
+    let window = match create_window(Some(gpu), Some(at), false) {
+        Ok(window) => window,
+        Err(e) => {
+            crate::util::log(&format!("new window: {e}"));
+            return;
+        }
+    };
+    let Some(tab) = with_app(source, |app| app.take_tab(detach.tab)).flatten() else { return };
+    with_app(window, |app| app.adopt_tab(tab));
+    FOLLOW.with(|follow| follow.set(Some(Follow { host: window, grab })));
+    // SAFETY: the button is held; the new window takes the pointer from the one the chip came out of.
+    unsafe { SetCapture(window) };
+}
 pub fn run() -> Result<(), String> {
     // SAFETY: plain Win32 calls on the thread that owns the window.
     unsafe {

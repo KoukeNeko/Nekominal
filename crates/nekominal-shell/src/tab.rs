@@ -41,7 +41,12 @@ pub struct PaneEntry {
     pub wake: std::sync::Arc<WakeTarget>,
 }
 
+/// Hands out the number that tells one tab from another for as long as the process lives, whichever window shows it.
+static NEXT_TAB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub struct Tab {
+    /// Stays with the tab when it moves to another window.
+    pub uid: u64,
     pub tree: Node,
     pub panes: Vec<PaneEntry>,
     pub focused: PaneId,
@@ -54,7 +59,7 @@ impl Tab {
     /// A tab with one pane; its id is the first one this tab hands out.
     pub fn new(make: impl FnOnce(PaneId) -> Result<PaneEntry, String>) -> Result<Tab, String> {
         let entry = make(1)?;
-        Ok(Tab { tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, next: 2 })
+        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, next: 2 })
     }
 
     pub fn next_id(&mut self) -> PaneId {
