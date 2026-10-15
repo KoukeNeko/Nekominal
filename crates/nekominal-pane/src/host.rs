@@ -196,8 +196,12 @@ pub struct Pane {
     generation: Arc<AtomicU32>,
     /// An [`Activity`] as its code: the reader thread writes it, the UI thread reads it.
     activity: Arc<AtomicU8>,
+    wake: Wake,
     pointer: RefCell<Pointer>,
 }
+
+/// Called from the reader thread when the pane has something new to show.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// Starts `config` as the session of generation `mine`: its output feeds `term`, what the emulator reports goes to
 /// `ui` and its replies to the program. Output of a session whose generation is no longer the pane's is dropped.
@@ -207,6 +211,7 @@ fn start_session(
     ui: &Sender<UiEvent>,
     activity: &Arc<AtomicU8>,
     generation: &Arc<AtomicU32>,
+    wake: &Wake,
     mine: u32,
 ) -> std::io::Result<Live> {
     let (input_tx, input_rx) = channel::<Vec<u8>>();
@@ -214,7 +219,7 @@ fn start_session(
     let pending_ack = Arc::new(AtomicUsize::new(0));
 
     let sink: Sink = {
-        let (term, ui_tx, input_tx, session_cell, pending_ack, activity, generation) = (
+        let (term, ui_tx, input_tx, session_cell, pending_ack, activity, generation, wake) = (
             term.clone(),
             ui.clone(),
             input_tx.clone(),
@@ -222,6 +227,7 @@ fn start_session(
             pending_ack.clone(),
             activity.clone(),
             generation.clone(),
+            wake.clone(),
         );
         Box::new(move |event| {
             if generation.load(Ordering::Relaxed) != mine {
@@ -256,11 +262,13 @@ fn start_session(
                             pending_ack.fetch_add(bytes.len(), Ordering::Relaxed);
                         }
                     }
+                    wake();
                     true
                 }
                 Event::Exit(code) => {
                     term.lock().on_child_exit();
                     let _ = ui_tx.send(UiEvent::Exit(code));
+                    wake();
                     true
                 }
             }
@@ -300,12 +308,18 @@ impl Pane {
     /// Starts the session described by `config` (a profile's program, arguments, directory and environment) with
     /// an emulator set up by `core`.
     pub fn spawn_with(config: SpawnConfig, core: CoreConfig) -> std::io::Result<Pane> {
+        Pane::spawn_woken(config, core, Arc::new(|| {}))
+    }
+
+    /// Like [`Pane::spawn_with`], and `wake` is called from the reader thread after every frame of output and when
+    /// the program ends, so a shell that draws on demand knows when there is something new to draw.
+    pub fn spawn_woken(config: SpawnConfig, core: CoreConfig, wake: Wake) -> std::io::Result<Pane> {
         let (cols, rows) = (usize::from(config.cols), usize::from(config.rows));
         let term = Arc::new(FairMutex::new(TerminalCore::new(cols, rows, core)));
         let (ui_tx, ui_rx) = channel::<UiEvent>();
         let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
         let generation = Arc::new(AtomicU32::new(0));
-        let live = start_session(&config, &term, &ui_tx, &activity, &generation, 0)?;
+        let live = start_session(&config, &term, &ui_tx, &activity, &generation, &wake, 0)?;
         Ok(Pane {
             term,
             events: ui_rx,
@@ -313,6 +327,7 @@ impl Pane {
             ui: ui_tx,
             generation,
             activity,
+            wake,
             pointer: RefCell::default(),
         })
     }
@@ -333,7 +348,7 @@ impl Pane {
             config.rows = u16::try_from(core.rows()).unwrap_or(config.rows);
         }
         self.activity.store(Activity::Unknown.code(), Ordering::Relaxed);
-        let live = start_session(&config, &self.term, &self.ui, &self.activity, &self.generation, mine)?;
+        let live = start_session(&config, &self.term, &self.ui, &self.activity, &self.generation, &self.wake, mine)?;
         *self.live.borrow_mut() = live;
         Ok(())
     }

@@ -178,6 +178,13 @@ impl PaneRenderer {
         }
     }
 
+    /// Records the pane into the `rect` (x, y, width, height in pixels) of a window-sized `target` that is cleared to
+    /// transparent first: the pane paints its own background, and what the shell draws around it shows the backdrop.
+    pub fn draw_in(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, rect: [u32; 4]) {
+        self.renderer.draw(encoder, target, Some(wgpu::Color::TRANSPARENT), &[r::PaneDraw { pane: &self.state, rect }], None);
+        self.force_draw = false;
+    }
+
     /// Records the pane into `target` (`size_px` is the texture size). Call after a `prepare` that asked for it.
     pub fn draw(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, size_px: (u32, u32)) {
         let bg = self.theme.background;

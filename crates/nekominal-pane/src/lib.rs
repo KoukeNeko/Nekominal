@@ -12,5 +12,5 @@ pub mod pointer;
 pub mod view;
 
 pub use draw::PaneRenderer;
-pub use host::{ClipboardRequest, MAX_CLIPBOARD_TEXT, Pane, UiEvent, input_modes_of};
+pub use host::{ClipboardRequest, MAX_CLIPBOARD_TEXT, Pane, UiEvent, Wake, input_modes_of};
 pub use pointer::{Pointer, PointerEffects};
