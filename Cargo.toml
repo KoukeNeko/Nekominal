@@ -9,6 +9,7 @@ members = [
     "crates/nekominal-input",
     "crates/nekominal-render",
     "crates/nekominal-ui",
+    "crates/nekominal-shell",
     "tools/winprobe",
     "tools/agent-probe",
     "tools/ui-spike",

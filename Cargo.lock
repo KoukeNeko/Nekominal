@@ -609,6 +609,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nekominal-shell"
+version = "0.1.0"
+dependencies = [
+ "nekominal-input",
+ "nekominal-model",
+ "nekominal-pane",
+ "nekominal-pty",
+ "nekominal-render",
+ "nekominal-term",
+ "nekominal-ui",
+ "pollster",
+ "wgpu",
+ "windows",
+]
+
+[[package]]
 name = "nekominal-slice"
 version = "0.1.0"
 dependencies = [

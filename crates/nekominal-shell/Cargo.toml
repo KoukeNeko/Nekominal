@@ -1,0 +1,33 @@
+[package]
+name = "nekominal-shell"
+description = "Nekominal with a self-drawn shell: a Win32 window, DirectComposition, wgpu and nekominal-ui, no WinUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nekominal-next"
+path = "src/main.rs"
+
+[dependencies]
+nekominal-model = { workspace = true }
+nekominal-pty = { workspace = true }
+nekominal-term = { workspace = true }
+nekominal-input = { workspace = true }
+nekominal-render = { workspace = true }
+nekominal-pane = { workspace = true }
+nekominal-ui = { workspace = true }
+pollster = { workspace = true }
+wgpu = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectComposition",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
