@@ -1086,6 +1086,12 @@ function Scenario-ClaudeClassic {
             Claude-Check 'storm.one-banner-in-the-history' ($banners -eq 1) "the buffer (scrollback and screen, $(($buffer -split "`n").Count) lines) holds $banners copies of the banner and $warnings of the safe-mode line after $($global:StormSizes.Count) resizes"
             $bufferLines = @($buffer -split "`n")
             $lead = [Math]::Max(0, @($bufferLines | ForEach-Object { $_ -match 'Claude Code v' }).IndexOf($true))
+            # nothing was pushed into the scrollback either: the top of the history is the screen
+            $live = (Get-ScreenLines) -join "`n"
+            Chord @(0x11, 0x10) 0x24; Start-Sleep -Milliseconds 500
+            $top = (Get-ScreenLines) -join "`n"
+            Chord @(0x11, 0x10) 0x23; Start-Sleep -Milliseconds 500
+            Claude-Check 'storm.no-scrollback' ($live -ceq $top) 'Ctrl+Shift+Home shows the same screen: no line of the old frames was pushed into the scrollback'
             Claude-Info 'storm.history' "the buffer has $lead lines before the banner: the shell's own prompt line above it, which a fresh run has, is not in the buffer after the storm"
 
             # a fresh run at this size
