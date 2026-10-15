@@ -5,6 +5,7 @@
 #   Scenario-NextTabs        # a new tab from the button and from the keyboard, switching, closing: each tab keeps its own text
 #   Scenario-NextClipboard   # select by dragging, copy, paste, and a program copying through OSC 52
 #   Scenario-NextKeys        # Ctrl+U, Ctrl+C, Backspace and CJK text reach the shell
+#   Scenario-NextClaude [fullscreen|classic]   # Claude Code starts, takes text and exits, no model call
 #   Scenario-NextIdle        # memory and CPU of an idle window
 #   Scenario-NextAll
 #
@@ -117,6 +118,44 @@ function Scenario-NextKeys {
     }
 }
 
+# Claude Code in the shell, started the way the WinUI scenarios start it (see claude-scenarios.ps1 for the rules): the
+# environment of this session never reaches the app, auto-update and the user's customizations are off, nothing is ever
+# sent to the model, and Enter goes to the CLI only when the input box holds exactly /exit. The screen text is not
+# printed: it shows account and folder names.
+function Scenario-NextClaude([ValidateSet('fullscreen', 'classic')][string]$Mode = 'fullscreen') {
+    $claude = if ($env:NEKOMINAL_CLAUDE_EXE) { $env:NEKOMINAL_CLAUDE_EXE } else { Join-Path $env:USERPROFILE '.local\bin\claude.exe' }
+    $cwd = Join-Path $PSScriptRoot '..\..\target\agent-probe\cwd'
+    New-Item -ItemType Directory -Force $cwd | Out-Null
+    $cwd = (Resolve-Path $cwd).Path
+    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1' }
+    if ($Mode -eq 'fullscreen') { $envTable['CLAUDE_CODE_NO_FLICKER'] = '1' } else { $envTable['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1' }
+    $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+    $global:NextFailures = @()
+    try {
+        Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500 -Env $envTable
+        Next-Line "Set-Location '$cwd'"
+        Next-Line "& '$claude'"
+        Start-Sleep -Seconds 9
+        $text = Next-Text
+        Next-Check "claude.$Mode.ui" ($text -match 'Claude Code' -and $text -match '[─]{10}') 'the banner and the rules of the input box are on the screen'
+        $middle = Next-At 500 300
+        Move-To $middle[0] $middle[1]
+        [D]::Mouse(0x0800, 120); Start-Sleep -Milliseconds 300
+        [D]::Mouse(0x0800, [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]-120), 0)); Start-Sleep -Milliseconds 300
+        Type-Unicode 'ab你好' 60; Start-Sleep -Milliseconds 800
+        Next-Check "claude.$Mode.typing" ((Next-Text) -match 'ab你好') 'typed text, CJK included, reaches the input box after the wheel moved over it'
+        Press 0x55 @(0x11)
+        Type-Unicode '/exit' 60; Start-Sleep -Milliseconds 500
+        $guard = Next-Text
+        if ($guard -match 'ab你好' -or $guard -notmatch '/exit') { throw 'the input box does not hold exactly /exit: Enter not sent' }
+        Press 0x0D; Start-Sleep -Seconds 4
+        Next-Check "claude.$Mode.exit" ((Next-Text) -match 'PS .*>\s*$') 'after /exit the prompt of the shell is back'
+    } finally {
+        Stop-App
+        if ($null -ne $saved) { Set-Clipboard -Value $saved }
+    }
+    if ($global:NextFailures.Count -gt 0) { throw "failed: $($global:NextFailures -join ', ')" }
+}
 function Scenario-NextIdle {
     Run-Next {
         Start-Sleep -Seconds 3
@@ -129,4 +168,4 @@ function Scenario-NextIdle {
     }
 }
 
-function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIdle }
+function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }
