@@ -1,0 +1,134 @@
+name: Release
+
+# Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds and tests the Windows archive, publishes
+# it as a release, and then writes the Scoop manifest into KoukeNeko/scoop-bucket. Run by hand it does everything up to
+# publishing and keeps the archive as an artifact, which is how to try the pipeline.
+#
+# This repository is private and Scoop downloads without credentials, so the archive is attached to a release of the bucket
+# (a public repository), tagged nekominal-vX.Y.Z, as well as to the release of this repository. SCOOP_BUCKET_TOKEN is a token
+# that can write to the bucket.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A release in progress is not abandoned for a newer one: its files are half made and its tag exists.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  BUCKET: KoukeNeko/scoop-bucket
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the version
+        id: version
+        run: |
+          $manifest = Get-Content Cargo.toml -Raw
+          if ($manifest -notmatch '(?ms)\[workspace\.package\].*?^version\s*=\s*"([^"]+)"') { throw 'No workspace version in Cargo.toml.' }
+          $version = $Matches[1]
+          # Before the long build, not after it.
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "The tag $env:GITHUB_REF_NAME does not match the version $version of Cargo.toml."
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch ConPTY
+        run: scripts\fetch-conpty.ps1
+      - name: Test
+        run: >
+          cargo test --locked
+          -p nekominal-model -p nekominal-input -p nekominal-term
+          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell
+      - name: Package
+        run: scripts\package.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows
+          path: dist
+      - name: Check the token
+        env:
+          TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::the secret SCOOP_BUCKET_TOKEN is not set" >&2; exit 1; }
+      # Runs again without harm when a step after it failed: the files of a release that exists are replaced.
+      - name: Publish the release of this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --title "Nekominal $VERSION" --generate-notes
+          fi
+      - name: Publish the archive on the bucket
+        env:
+          GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          tag="nekominal-v$VERSION"
+          if gh release view "$tag" -R "$BUCKET" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* -R "$BUCKET" --clobber
+          else
+            gh release create "$tag" dist/* -R "$BUCKET" --title "Nekominal $VERSION" \
+              --notes "The Windows archive of Nekominal $VERSION for the Scoop manifest." --latest=false
+          fi
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.BUCKET }}
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          ref: main
+          path: bucket
+      - name: Write the manifest
+        shell: pwsh
+        run: |
+          $name = "Nekominal-$env:VERSION-windows-x64.zip"
+          $hash = ((Get-Content "dist/$name.sha256" -Raw).Trim() -split '\s+')[0]
+          ./scripts/render-scoop-manifest.ps1 -Version $env:VERSION -Sha256 $hash `
+            -Url "https://github.com/$env:BUCKET/releases/download/nekominal-v$env:VERSION/$name" `
+            -Output bucket/bucket/nekominal.json
+      - name: Commit the manifest to the bucket
+        run: |
+          cd bucket
+          if git diff --quiet -- bucket/nekominal.json && git ls-files --error-unmatch bucket/nekominal.json >/dev/null 2>&1; then
+            echo "The manifest of $VERSION is already in the bucket."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/nekominal.json
+          git commit -m "nekominal $VERSION"
+          git push origin HEAD:main

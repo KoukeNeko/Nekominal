@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**.md', LICENSE]
+  pull_request:
+    paths-ignore: ['**.md', LICENSE]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request makes the run before it pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      # The workspace needs a newer Rust than the image may carry (rust-version in Cargo.toml).
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      # The conpty.dll and OpenConsole.exe pair the sessions run on, checked against a pinned hash and signature.
+      - name: Fetch ConPTY
+        run: scripts\fetch-conpty.ps1
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      # The render tests draw on the software adapter (WARP), so they need no GPU.
+      - name: Test
+        run: >
+          cargo test --locked
+          -p nekominal-model -p nekominal-input -p nekominal-term
+          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell
+      # One test of the ConPTY host counts the bytes a shell delivers in four seconds, which depends on the speed of the
+      # machine rather than on the code.
+      - name: Test the ConPTY host
+        run: cargo test --locked -p nekominal-pty -- --skip unacknowledged_output_pauses_the_reader
+
+  # The archive a release ships, built and kept as an artifact so that a change that breaks packaging shows before a tag does.
+  package:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Package
+        run: scripts\package.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
