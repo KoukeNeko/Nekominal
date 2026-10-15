@@ -7,7 +7,7 @@ use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, PasteSettings, Setti
 use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
 use nekominal_term::alacritty_terminal::term::Osc52;
-use nekominal_term::osc::strip_control;
+use nekominal_term::osc::is_control_or_bidi;
 
 /// A pixel rectangle on the physical pixel grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,7 +395,8 @@ impl<T: Copy + PartialEq> Mru<T> {
 }
 
 /// The last segment of a working directory as a tab shows it: `~` for the home folder, the drive (`C:`) for the
-/// root of a drive, `/` for the root of a POSIX path (a WSL shell reports those), otherwise the folder name.
+/// root of a drive, `/` for the root of a POSIX path (a WSL shell reports those), otherwise the folder name, cleaned
+/// like any title (a shell reports whatever the path holds).
 pub fn folder_label(path: &str, home: Option<&str>) -> String {
     let normal = |text: &str| text.trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase();
     let trimmed = path.trim_end_matches(['\\', '/']);
@@ -405,13 +406,20 @@ pub fn folder_label(path: &str, home: Option<&str>) -> String {
     if trimmed.is_empty() {
         return if path.is_empty() { String::new() } else { "/".to_owned() };
     }
-    trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed).to_owned()
+    clean_title(trimmed.rsplit(['\\', '/']).next().unwrap_or(trimmed))
 }
 
-/// Text a program or the user chose for a title, without control and bidirectional characters (a title is never
-/// markup and never reorders what is around it), trimmed.
+/// The most characters a title shows. A program may set a title of megabytes, and every chip is measured on every
+/// layout of the strip.
+pub const MAX_TITLE_CHARS: usize = 120;
+
+/// The one cleaning of every title a tab shows, whatever it came from (a program, an agent, the user, a folder name):
+/// no control, directional or noncharacter code points (a title is never markup and never reorders what is around
+/// it), no blanks at either end, at most [`MAX_TITLE_CHARS`] characters, cut between two characters.
 pub fn clean_title(raw: &str) -> String {
-    strip_control(raw).trim().to_owned()
+    let kept: String =
+        raw.chars().filter(|c| !is_control_or_bidi(*c)).skip_while(|c| c.is_whitespace()).take(MAX_TITLE_CHARS).collect();
+    kept.trim_end().to_owned()
 }
 
 /// The last segment of a working directory and the one before it as `parent/last`, for the tabs whose last
@@ -425,7 +433,7 @@ pub fn folder_label_with_parent(path: &str, home: Option<&str>) -> Option<String
     let parent_path = &trimmed[..trimmed.rfind(['\\', '/']).unwrap_or(0)];
     let parent = folder_label(parent_path, home);
     // A parent that is a root says nothing a folder name does not; a drive still tells where the folder is.
-    (!parent.is_empty() && parent != "/").then(|| format!("{parent}/{last}"))
+    (!parent.is_empty() && parent != "/").then(|| clean_title(&format!("{parent}/{last}")))
 }
 
 /// Where the default title of a tab comes from.
@@ -1124,6 +1132,46 @@ mod tests {
             default_title(&TitleParts { agent_title: Some("x\u{202e}y".into()), ..parts("", None) }, false).0,
             "xy"
         );
+    }
+
+    #[test]
+    fn a_title_is_cut_between_characters_at_a_fixed_length_whatever_its_size() {
+        let cjk = "終".repeat(500);
+        let cut = clean_title(&cjk);
+        assert_eq!(cut.chars().count(), MAX_TITLE_CHARS);
+        assert!(cut.chars().all(|c| c == '終'), "no character is split");
+        assert_eq!(clean_title(&"😀".repeat(MAX_TITLE_CHARS + 1)).chars().count(), MAX_TITLE_CHARS);
+        let exact = "x".repeat(MAX_TITLE_CHARS);
+        assert_eq!(clean_title(&exact), exact, "a title that fits is kept whole");
+        // A title of 4 MiB, the most an OSC payload may carry, ends up as short as any other.
+        assert_eq!(clean_title(&"y".repeat(4 * 1024 * 1024)).len(), MAX_TITLE_CHARS);
+        // Blanks and invisible characters at the start do not use up the length.
+        let padded = format!("{}\u{200e}\u{7}{}", " ".repeat(300), "z".repeat(300));
+        assert_eq!(clean_title(&padded), "z".repeat(MAX_TITLE_CHARS));
+        assert_eq!(clean_title(&format!("name{}", " ".repeat(300))), "name", "and the end is trimmed");
+    }
+
+    #[test]
+    fn directional_marks_separators_and_noncharacters_are_cleaned_out_of_titles() {
+        assert_eq!(clean_title("a\u{200e}b\u{200f}c\u{61c}d\u{2028}e\u{2029}f\u{fffe}g\u{ffff}h\u{fdd0}i"), "abcdefghi");
+        assert_eq!(clean_title("終端\u{200d}機"), "終端\u{200d}機", "a joiner is part of real text");
+    }
+
+    #[test]
+    fn the_folder_of_a_working_directory_is_cleaned_like_any_title() {
+        // A shell reports whatever the path holds: its last segment never reaches a chip raw.
+        assert_eq!(folder_label("C:\\work\\pay\u{202e}load", None), "payload");
+        assert_eq!(folder_label("C:\\work\\a\u{7}b\u{1b}[31m", None), "ab[31m");
+        assert_eq!(folder_label("/home/me/x\u{2028}y\u{fffe}", None), "xy");
+        let long = format!("C:\\work\\{}", "d".repeat(400));
+        assert_eq!(folder_label(&long, None).chars().count(), MAX_TITLE_CHARS);
+        assert_eq!(folder_label("C:\\work\\\u{202e}\u{7}", None), "", "a folder of invisible characters has no name");
+        // The same cleaning reaches the title of a tab, with a parent or not.
+        let at = |cwd: &str, with_parent| default_title(&parts("", Some(cwd)), with_parent).0;
+        assert_eq!(at("C:\\Users\\me\\src\\pay\u{202e}load", false), "payload");
+        assert_eq!(at("C:\\Users\\me\\sr\u{7}c\\pay\u{202e}load", true), "src/payload");
+        assert_eq!(default_title(&parts("", Some("C:\\a\\\u{202e}\u{7}")), false).1, TitleSource::Profile);
+        assert!(at(&long, true).chars().count() <= MAX_TITLE_CHARS);
     }
 
     #[test]

@@ -178,14 +178,47 @@ pub fn strip_control(text: &str) -> String {
     text.chars().filter(|c| !is_control_or_bidi(*c)).collect()
 }
 
-/// Mirrors the legacy `CONTROL_OR_BIDI` regex: C0, DEL, C1, U+202A..202E and U+2066..2069.
+/// What text from a program must not carry into the interface: C0, DEL and C1 controls, the directional marks
+/// (ALM, LRM, RLM) and the embeddings, overrides and isolates (U+202A..202E, U+2066..2069), the line and paragraph
+/// separators, and the noncharacters (U+FDD0..FDEF and the last two code points of every plane). The joiners that
+/// real text and emoji need (U+200B..200D) stay.
 pub fn is_control_or_bidi(c: char) -> bool {
-    matches!(c, '\u{0}'..='\u{1f}' | '\u{7f}'..='\u{9f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(
+        c,
+        '\u{0}'..='\u{1f}'
+            | '\u{7f}'..='\u{9f}'
+            | '\u{61c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{fdd0}'..='\u{fdef}'
+    ) || (u32::from(c) & 0xFFFE) == 0xFFFE
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_from_a_program_loses_controls_directional_marks_separators_and_noncharacters() {
+        for c in [
+            '\u{0}', '\u{1b}', '\u{7f}', '\u{9b}', '\u{61c}', '\u{200e}', '\u{200f}', '\u{2028}', '\u{2029}', '\u{202a}',
+            '\u{202e}', '\u{2066}', '\u{2069}', '\u{fdd0}', '\u{fdef}', '\u{fffe}', '\u{ffff}', '\u{1fffe}', '\u{10ffff}',
+        ] {
+            assert!(is_control_or_bidi(c), "U+{:04X} is removed", u32::from(c));
+        }
+        // Text, the joiners of emoji and the neighbours of every removed range stay.
+        for c in [
+            'a', ' ', '終', '\u{a0}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2027}', '\u{202f}', '\u{2060}', '\u{fdcf}',
+            '\u{fdf0}', '\u{fffd}', '\u{1f600}', '\u{10fffd}',
+        ] {
+            assert!(!is_control_or_bidi(c), "U+{:04X} stays", u32::from(c));
+        }
+        assert_eq!(strip_control("a\u{200e}b\u{2028}c\u{fffe}d\u{202e}e"), "abcde");
+    }
 
     #[test]
     fn osc7_converts_windows_file_uri() {
