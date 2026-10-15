@@ -1018,6 +1018,24 @@ function Scenario-Panes {
         $focused = & $sample $ringing (Shot-Path 'panes-focused')
         'top rows of it once focused: ' + (& $show $focused)
         $results.Add((Check-True 'focusing it takes the warning line away and puts the focus (accent) line there' ($focused[0][2] - $focused[0][0] -gt 40) (& $show $focused)))
+        # the same bell while a zoom hides the pane that rang: the corner label of the zoomed pane warns, with the glyph
+        # and the word of the state, and goes back to its plain look when the pane has been seen
+        Type-Line ($esc + 'Start-Sleep 4; Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 300
+        Chord @(0x12) 0x25; Start-Sleep -Milliseconds 400
+        Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 6500
+        $warned = Get-Element (Nk-Text 'tab.nameStatus' @((Nk-Text 'tab.zoomed'), (Nk-Text 'agent.bell')))
+        $glyphs = if ($warned) { @($warned.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond) | ForEach-Object { $_.Current.Name }) } else { @() }
+        'zoomed, the hidden pane rang: label "{0}", texts "{1}"' -f [bool]$warned, ($glyphs -join '|')
+        $results.Add((Check 'a pane hidden by the zoom that rang is named by the corner label with the word of its state' $true ([bool]$warned)))
+        $results.Add((Check 'and the label shows the glyph of that state' 1 @($glyphs | Where-Object { $_ -eq [string][char]0xEA8F }).Count))
+        Shot-Safe (Shot-Path 'panes-zoomed-warning') | Out-Null
+        if ($warned) { $b = $warned.Current.BoundingRectangle; Click-At ([int]($b.X + $b.Width / 2)) ([int]($b.Y + $b.Height / 2)) 'left' 900 }
+        $rects = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond) | ForEach-Object { $_.Current.BoundingRectangle })
+        $ringing = $rects | Sort-Object { $_.Y * 10000 + $_.X } | Select-Object -Last 1
+        Click-At ([int]($ringing.X + $ringing.Width / 2)) ([int]($ringing.Y + $ringing.Height / 2)) 'left' 900
+        Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 900
+        $plain = [bool](Get-Element (Nk-Text 'tab.zoomed')); $still = [bool](Get-Element (Nk-Text 'tab.nameStatus' @((Nk-Text 'tab.zoomed'), (Nk-Text 'agent.bell'))))
+        $results.Add((Check 'once the pane that rang has been looked at, the corner label is plain again' 'True False' ('{0} {1}' -f $plain, $still)))
         Assert-Results $results 'panes'
     } -NoShot
 }

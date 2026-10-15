@@ -12,10 +12,10 @@ use nekominal_model::strings::Text;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 
-use crate::chip::{Chip, TabId};
+use crate::chip::{ATTENTION_GLYPH, Chip, TabId, status_glyph, status_text};
 use crate::glass::Glass;
 use crate::i18n::{t, tf};
-use crate::logic::{PxRect, divider_px, pane_px_rect, ratio_at, splitter_px_rect};
+use crate::logic::{PxRect, TabStatus, divider_px, pane_px_rect, ratio_at, splitter_px_rect};
 use crate::pane_view::PaneView;
 use crate::util::{Ext as _, find, load_xaml, solid_brush, ui, visibility};
 
@@ -26,11 +26,17 @@ const FOCUS_LINE: f64 = 2.0;
 /// One step of the resize-pane command, as a fraction of the tab area.
 pub const RESIZE_STEP: f64 = 0.05;
 
-/// The label in the corner of a zoomed pane: which pane of how many, a press brings the others back.
+/// The label in the corner of a zoomed pane: which pane of how many, a press brings the others back. A pane that the
+/// zoom hides and that waits for the user adds the glyph of its state (Segoe Fluent Icons, so it differs without its
+/// colour) and the colour of a warning.
 const BADGE_XAML: &str = r#"
-<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" CornerRadius="{StaticResource NkCornerRadius}"
-        BorderThickness="1" Padding="8,3" Visibility="Collapsed">
-  <TextBlock x:Name="BadgeText" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" FontFamily="Segoe UI Variable Text" FontSize="12"/>
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        CornerRadius="{StaticResource NkCornerRadius}" BorderThickness="1" Padding="8,3" Visibility="Collapsed">
+  <StackPanel Orientation="Horizontal" Spacing="6">
+    <TextBlock x:Name="BadgeGlyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+               VerticalAlignment="Center"/>
+    <TextBlock x:Name="BadgeText" FontFamily="Segoe UI Variable Text" FontSize="12"/>
+  </StackPanel>
 </Border>"#;
 
 /// Margin between the corner label and the edges of the tab area, in DIP.
@@ -71,7 +77,10 @@ pub struct Tab {
     focus_line: Border,
     /// The corner label of a zoomed pane.
     badge: Border,
+    badge_glyph: TextBlock,
     badge_text: TextBlock,
+    /// What the panes the zoom hides ask for (None: nothing is zoomed, or none of them waits for the user).
+    badge_alert: RefCell<Option<TabStatus>>,
     /// A warning line over the top of each unfocused pane that waits for the user; reused between layouts.
     attention_lines: RefCell<Vec<Border>>,
     /// Where the last layout put every shown pane, and at what scale.
@@ -119,7 +128,9 @@ impl Tab {
             dividers: RefCell::new(Vec::new()),
             focus_line,
             badge: badge_element.cast()?,
+            badge_glyph: find(&badge_element, "BadgeGlyph")?,
             badge_text: find(&badge_element, "BadgeText")?,
+            badge_alert: RefCell::new(None),
             attention_lines: RefCell::new(Vec::new()),
             pane_rects: RefCell::new(Vec::new()),
             scale: Cell::new(1.0),
@@ -197,13 +208,30 @@ impl Tab {
     }
 
     fn restyle_badge(&self, glass: Glass) {
-        if let (Ok(fill), Ok(border), Ok(ink)) =
-            (solid_brush(glass.panel()), solid_brush(glass.panel_border()), solid_brush(glass.text()))
-        {
+        let alerting = self.badge_alert.borrow().is_some();
+        let edge = if alerting { glass.mark(glass.warning) } else { glass.panel_border() };
+        if let (Ok(fill), Ok(border), Ok(ink), Ok(mark)) = (
+            solid_brush(glass.panel()),
+            solid_brush(edge),
+            solid_brush(glass.text()),
+            solid_brush(glass.mark(glass.warning)),
+        ) {
             let _ = self.badge.SetBackground(&fill);
             let _ = self.badge.SetBorderBrush(&border);
             let _ = self.badge_text.SetForeground(&ink);
+            let _ = self.badge_glyph.SetForeground(&mark);
         }
+    }
+
+    /// What the panes hidden by the zoom ask for, from `refresh_status`: while one waits for the user the corner label
+    /// of the zoomed pane shows the glyph and the word of its state, in the warning colour.
+    pub fn set_badge_alert(self: &Rc<Self>, alert: Option<TabStatus>) {
+        if *self.badge_alert.borrow() == alert {
+            return;
+        }
+        *self.badge_alert.borrow_mut() = alert;
+        self.restyle_badge(self.glass.get());
+        self.relayout();
     }
 
     /// Tells the chip how many panes the tab has and whether one is zoomed.
@@ -341,13 +369,25 @@ impl Tab {
     fn place_badge(&self, area_width: f64) {
         let zoomed = self.zoomed.get();
         let _ = ui(&self.badge).and_then(|badge| badge.SetVisibility(visibility(zoomed.is_some())));
-        let Some(id) = zoomed else { return };
+        let Some(id) = zoomed else {
+            // A tooltip that was open when the label went away would stay over the terminal.
+            let _ = ToolTipService::SetToolTip(&self.badge, None::<&windows_core::IInspectable>);
+            return;
+        };
         let order = self.layout.borrow().pane_ids();
         let position = order.iter().position(|pane| *pane == id).map_or(1, |index| index + 1);
         let _ = self.badge_text.SetText(&tf(Text::FindCount, &[&position, &order.len()]));
-        let name = t(Text::TabZoomed);
-        let _ = AutomationProperties::SetName(&self.badge, name);
-        let _ = ToolTipService::SetToolTip(&self.badge, &windows_reference::IReference::from(name));
+        // The state of a pane that waits: its glyph, and its word after the name like in the name of a chip.
+        let alert = self.badge_alert.borrow().clone();
+        let glyph = alert.as_ref().map(|status| status_glyph(status.state).unwrap_or(ATTENTION_GLYPH));
+        let _ = ui(&self.badge_glyph).and_then(|mark| mark.SetVisibility(visibility(glyph.is_some())));
+        let _ = self.badge_glyph.SetText(glyph.unwrap_or_default());
+        let name = match alert.as_ref().and_then(status_text) {
+            Some(word) => tf(Text::TabNameStatus, &[&t(Text::TabZoomed), &word]),
+            None => t(Text::TabZoomed).to_owned(),
+        };
+        let _ = AutomationProperties::SetName(&self.badge, &name);
+        let _ = ToolTipService::SetToolTip(&self.badge, &windows_reference::IReference::from(name.as_str()));
         let size = ui(&self.badge).and_then(|badge| {
             badge.Measure(Size { width: f32::INFINITY, height: f32::INFINITY })?;
             badge.DesiredSize()

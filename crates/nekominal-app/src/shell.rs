@@ -1160,6 +1160,10 @@ impl Shell {
             pane.needs_response.set(logic::needs_response(signal));
         }
         tab.update_attention_lines();
+        // A zoom hides the other panes and their warning lines: the corner label of the zoomed pane shows what the
+        // ones that wait for the user ask for.
+        let zoomed = tab.zoomed.get().and_then(|zoomed| panes.iter().position(|pane| pane.id == zoomed));
+        tab.set_badge_alert(logic::hidden_alert(&signals, zoomed));
         let status = logic::tab_status(&signals);
         if tab.chip.state() != status.state {
             log(&format!("tab {} status {:?}", tab.id, status.state));
@@ -2114,6 +2118,7 @@ impl Shell {
                 Command::PaneZoom => {
                     if let Some(tab) = &tab {
                         tab.toggle_zoom();
+                        self.refresh_status(tab);
                         self.layout_tabs(false);
                         self.focus_active_pane();
                     }

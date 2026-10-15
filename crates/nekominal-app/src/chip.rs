@@ -154,9 +154,12 @@ pub fn status_glyph(state: TabState) -> Option<&'static str> {
         TabState::Blocked => Some("\u{E897}"),
         TabState::Done => Some("\u{E73E}"),
         TabState::Error => Some("\u{E7BA}"),
-        TabState::Attention => Some("\u{EA8F}"),
+        TabState::Attention => Some(ATTENTION_GLYPH),
     }
 }
+
+/// The glyph of a bell or a notification that rang out of sight.
+pub const ATTENTION_GLYPH: &str = "\u{EA8F}";
 
 /// The colour of a tab's status mark: the accent while the tab is selected and quiet or works, amber for what
 /// waits for the user, green for done and red for an error, all kept legible against the scheme.

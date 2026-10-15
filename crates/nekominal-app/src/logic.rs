@@ -213,6 +213,20 @@ pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
     best.map(|(_, status)| status).unwrap_or_default()
 }
 
+/// What the panes hidden by a zoom ask for: the status of those that wait for the user (`needs_response`), or `None`
+/// when nothing is zoomed or none of the hidden panes waits. `zoomed` is the index in `panes` of the zoomed pane, which
+/// is on screen and needs no such mark. The corner label of the zoomed pane shows it.
+pub fn hidden_alert(panes: &[PaneSignal], zoomed: Option<usize>) -> Option<TabStatus> {
+    let zoomed = zoomed?;
+    let waiting: Vec<PaneSignal> = panes
+        .iter()
+        .enumerate()
+        .filter(|(index, pane)| *index != zoomed && needs_response(pane))
+        .map(|(_, pane)| pane.clone())
+        .collect();
+    (!waiting.is_empty()).then(|| tab_status(&waiting))
+}
+
 /// An unselected chip is never narrower than this, in DIP.
 pub const CHIP_MIN_WIDTH: f64 = 48.0;
 /// No chip is wider than this.
@@ -1037,6 +1051,25 @@ mod tests {
             assert!(!needs_response(&agent(state)), "{state:?}");
         }
         assert!(!needs_response(&PaneSignal { progress: Some(Reported::Percent(10)), ..PaneSignal::default() }));
+    }
+
+    #[test]
+    fn a_zoom_warns_about_the_hidden_panes_that_wait_and_only_those() {
+        let bell = PaneSignal { attention: Some(Attention::Bell), ..PaneSignal::default() };
+        let quiet = PaneSignal::default();
+        // Nothing is zoomed: the warning lines of the panes say it, not the label.
+        assert_eq!(hidden_alert(&[quiet.clone(), bell.clone()], None), None);
+        // The pane that rang is hidden: the label warns with the state of a bell.
+        let alert = hidden_alert(&[quiet.clone(), bell.clone(), quiet.clone()], Some(0)).expect("a hidden pane rang");
+        assert_eq!((alert.state, alert.attention), (TabState::Attention, Some(Attention::Bell)));
+        // The pane that rang is the zoomed one: it is on screen, nothing is hidden from the user.
+        assert_eq!(hidden_alert(&[quiet.clone(), bell.clone()], Some(1)), None);
+        // A hidden pane that only works, or finished, does not wait for anybody.
+        assert_eq!(hidden_alert(&[quiet.clone(), agent(AgentState::Working), agent(AgentState::Done)], Some(0)), None);
+        // Of several that wait the most urgent state shows: a blocked agent over a bell.
+        let both = hidden_alert(&[quiet.clone(), bell, agent(AgentState::Blocked)], Some(0)).expect("two wait");
+        assert_eq!(both.state, TabState::Blocked);
+        assert_eq!(hidden_alert(&[], Some(0)), None);
     }
 
     #[test]
