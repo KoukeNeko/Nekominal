@@ -135,6 +135,8 @@ pub struct Shell {
     next_pane: Cell<PaneId>,
     pub overlay: Cell<Overlay>,
     terminal_focus: Cell<bool>,
+    /// The shortcuts page of the drawer is waiting for a chord: the keyboard layer does not run commands meanwhile.
+    pub recording_keys: Cell<bool>,
     zoom_steps: Cell<i32>,
     save_due: Cell<Option<Instant>>,
     /// The backdrop the window has now: it is replaced only when the kind changes.
@@ -372,6 +374,7 @@ pub fn launch() -> Result<()> {
         next_pane: Cell::new(1),
         overlay: Cell::new(Overlay::None),
         terminal_focus: Cell::new(false),
+        recording_keys: Cell::new(false),
         zoom_steps: Cell::new(0),
         save_due: Cell::new(None),
         backdrop_applied: Cell::new(None),
@@ -2053,6 +2056,21 @@ impl Shell {
         let _ = bar.SetIsOpen(true);
     }
 
+    /// The shortcuts changed in the drawer: `edit` changes the bindings of the settings and is given the keymap that was
+    /// in effect; the keymap is built again, tooltips and menus show the new shortcuts, and the save is scheduled.
+    pub fn change_keybindings(self: &Rc<Self>, edit: impl FnOnce(&mut std::collections::BTreeMap<String, Vec<String>>, &Keymap)) {
+        {
+            let in_effect = self.keymap.borrow();
+            edit(&mut self.settings.borrow_mut().keybindings, &in_effect);
+        }
+        let built = keymap::build_keymap(commands::default_bindings(), &self.settings.borrow().keybindings);
+        *self.keymap.borrow_mut() = built.keymap;
+        self.set_tooltips();
+        *self.pane_menu.borrow_mut() = None;
+        self.save_due.set(Some(Instant::now() + SAVE_DELAY));
+        self.sync_drawer();
+    }
+
     /// Keeps the message bar clear of the drawer: `width` DIP at the right of the body are not its to use.
     pub fn reserve_at_right(&self, width: f64) {
         let margin = Thickness { left: 16.0, top: 12.0, right: 16.0 + width, bottom: 0.0 };
@@ -2077,7 +2095,7 @@ impl Shell {
 
     /// Asks before doing something. `title` is the question; the button that answers it is labelled `action`, the
     /// same label the action has everywhere else, and Cancel is the other one.
-    fn confirm(self: &Rc<Self>, title: String, action: Text, on_confirm: impl Fn() + 'static) {
+    pub fn confirm(self: &Rc<Self>, title: String, action: Text, on_confirm: impl Fn() + 'static) {
         if let Err(e) = self.try_confirm(title, action, on_confirm) {
             log(&format!("confirm dialog: {e}"));
         }
@@ -2421,6 +2439,10 @@ impl Shell {
         let this = self.clone();
         let revoker = ui(&self.root)?.PreviewKeyDown(cb!("shortcut", |_, args| {
             let Some(args) = args.as_ref() else { return };
+            // The shortcuts page is waiting for a chord to give to a command: the chord is not a command now.
+            if this.recording_keys.get() {
+                return;
+            }
             let code = args.Key().map_or(0, |key| key.0);
             let status = args.KeyStatus().unwrap_or_default();
             let held = keyboard::held_modifiers();
@@ -2428,8 +2450,7 @@ impl Shell {
             let command = physical.and_then(|physical| this.keymap.borrow().find(held, physical));
             let Some(command) = command else {
                 // Bare modifier presses are not chords; everything else that matched nothing is worth a line.
-                let is_modifier = matches!(code, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5);
-                if (held.ctrl || held.alt) && !is_modifier {
+                if (held.ctrl || held.alt) && !keyboard::is_modifier_key(code) {
                     log(&format!(
                         "chord vk=0x{code:02X} scan=0x{:02X} key={physical:?} {held:?}: no command",
                         status.scan_code
@@ -2458,8 +2479,7 @@ impl Shell {
         let this = self.clone();
         let revoker = ui(&self.root)?.PreviewKeyUp(cb!("shortcut released", |_, args| {
             let code = args.as_ref().and_then(|args| args.Key().ok()).map_or(0, |key| key.0);
-            let is_modifier = matches!(code, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5);
-            if is_modifier && keyboard::held_modifiers() == Default::default() {
+            if keyboard::is_modifier_key(code) && keyboard::held_modifiers() == Default::default() {
                 this.mru.borrow_mut().commit();
             }
         }))?;

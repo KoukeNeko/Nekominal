@@ -7,12 +7,13 @@ use std::rc::{Rc, Weak};
 
 use nekominal_model::commands::Command;
 use nekominal_model::settings::Problem;
-use nekominal_model::settings_ui::{self, Section};
+use nekominal_model::settings_ui::Section;
 use nekominal_model::strings::Text;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
+use crate::drawer_keys::KeysPage;
 use crate::drawer_rows::{row_frame, stack};
 use crate::i18n::{t, tf};
 use crate::shell::Shell;
@@ -21,7 +22,7 @@ use crate::util::*;
 /// The shortcuts and the advanced page.
 #[derive(Default)]
 pub struct Extras {
-    keys: Vec<(Command, FrameworkElement)>,
+    keys: KeysPage,
     advanced: Vec<FrameworkElement>,
     problems: Option<ProblemList>,
 }
@@ -40,21 +41,7 @@ impl Extras {
     /// Builds the pages that list things.
     pub fn build(shell: &Rc<Shell>) -> Extras {
         let mut extras = Extras::default();
-        let lang = shell.lang();
-        for command in settings_ui::key_rows() {
-            let shortcuts = shell
-                .keymap
-                .borrow()
-                .shortcuts(command)
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("   ");
-            match info_row(&command.label(lang), &shortcuts, false) {
-                Ok(row) => extras.keys.push((command, row)),
-                Err(e) => log(&format!("drawer key row {}: {e}", command.id())),
-            }
-        }
+        extras.keys = KeysPage::build(shell);
         let mut about: Vec<(&str, String, bool)> =
             vec![(t(Text::SettingsVersion), env!("CARGO_PKG_VERSION").to_owned(), false)];
         if let Ok(backend) = nekominal_pty::conpty::backend() {
@@ -92,13 +79,13 @@ impl Extras {
     }
 
     pub fn key_row(&self, command: Command) -> Option<FrameworkElement> {
-        self.keys.iter().find(|(known, _)| *known == command).map(|(_, row)| row.clone())
+        self.keys.row(command)
     }
 
     /// The rows a section has besides the ones of the table.
     pub fn section_rows(&self, section: Section) -> Vec<FrameworkElement> {
         match section {
-            Section::Keys => self.keys.iter().map(|(_, row)| row.clone()).collect(),
+            Section::Keys => self.keys.elements(),
             Section::Advanced => self.advanced.clone(),
             _ => Vec::new(),
         }
@@ -106,11 +93,17 @@ impl Extras {
 
     /// Lets go of a shortcut that is being recorded; true when there was one.
     pub fn stop_recording(&self) -> bool {
-        false
+        self.keys.stop_recording()
+    }
+
+    /// Once per frame while the drawer is open.
+    pub fn tick(&self) {
+        self.keys.tick();
     }
 
     /// Brings the list of problems in line with the settings file.
     pub fn sync(&self, shell: &Rc<Shell>) {
+        self.keys.sync(shell);
         let Some(list) = &self.problems else { return };
         if *list.shown.borrow() != *shell.problems.borrow() {
             if let Err(e) = list.rebuild(shell) {

@@ -15,6 +15,7 @@ mod clipboard;
 mod cursor;
 mod design;
 mod drawer;
+mod drawer_keys;
 mod drawer_pages;
 mod drawer_rows;
 mod findbar;

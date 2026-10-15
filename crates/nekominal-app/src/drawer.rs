@@ -280,6 +280,7 @@ impl Drawer {
         if !self.open.get() {
             return;
         }
+        self.extras.borrow().tick();
         let Some(shell) = self.shell.upgrade() else { return };
         let committed = shell.settings.borrow().theme.clone();
         let wanted = self

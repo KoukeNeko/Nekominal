@@ -15,6 +15,7 @@ const VK_MENU: i32 = 0x12;
 const VK_LWIN: i32 = 0x5B;
 const VK_RWIN: i32 = 0x5C;
 
+pub const VK_BACK: i32 = 0x08;
 pub const VK_ESCAPE: i32 = 0x1B;
 pub const VK_RETURN: i32 = 0x0D;
 pub const VK_PAGE_UP: i32 = 0x21;
@@ -25,9 +26,15 @@ pub const VK_LEFT: i32 = 0x25;
 pub const VK_UP: i32 = 0x26;
 pub const VK_RIGHT: i32 = 0x27;
 pub const VK_DOWN: i32 = 0x28;
+pub const VK_DELETE: i32 = 0x2E;
 
 fn is_down(code: i32) -> bool {
     InputKeyboardSource::GetKeyStateForCurrentThread(VirtualKey(code)).map(|state| (state.0 & 1) != 0).unwrap_or(false)
+}
+
+/// A key event of Shift, Ctrl, Alt or a Windows key on its own: not a chord yet.
+pub fn is_modifier_key(code: i32) -> bool {
+    matches!(code, VK_SHIFT | VK_CONTROL | VK_MENU | VK_LWIN | VK_RWIN | 0xA0..=0xA5)
 }
 
 /// The modifier keys held right now, as the model's shortcut matcher wants them.

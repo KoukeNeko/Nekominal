@@ -1829,6 +1829,97 @@ function Scenario-DrawerPages {
         Assert-Results $results 'drawer-pages-rows'
     } -NoShot
 }
+# The settings drawer, fourth part: the shortcuts page. A chord is recorded for a command (the key that is pressed does not
+# run the command meanwhile); a chord that another command has says so and is taken only by Replace, Cancel leaves
+# everything as it was; the chords programs need (Ctrl+C, Ctrl+D) ask the same; Backspace removes a binding; Esc lets go of
+# a recording and keeps the drawer; a row has a reset button, everything has the confirmation "restore all"; the file
+# holds only the difference and the menus and tooltips show the new chord.
+function Key-Chip([string]$Command, [string]$Chord) { Nk-Text 'common.labelValue' @((Nk-Text $Command), $Chord) }
+function Key-Button([string]$Command, [string]$Action) { Nk-Text 'common.labelValue' @((Nk-Text $Command), $Action) }
+function Scenario-DrawerKeys {
+    Run-App 'drawer-keys' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Open-Drawer
+        Click-Name (Nk-Text 'settings.keys') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $newTab = Key-Chip 'tab.new' 'Ctrl+Shift+T'
+        $results.Add((Check 'the page lists the shortcuts of the commands as buttons' $true ([bool](Get-Element $newTab 'Button'))))
+        $results.Add((Check 'a command with two shortcuts has both' $true ([bool]((Get-Element (Key-Chip 'pane.splitRight' 'Alt+Shift+D') 'Button') -and (Get-Element (Key-Chip 'pane.splitRight' 'Alt+Shift+=') 'Button')))))
+        $results.Add((Check 'a command without one has the button that adds one' $true ([bool](Get-Element (Key-Button 'tab.close' (Nk-Text 'keys.add')) 'Button'))))
+        $results.Add((Check 'no row is modified: the restore button is off' $false (Get-Element (Nk-Text 'common.restoreDefault') 'Button').Current.IsEnabled))
+        # a chord that is another command's: Cancel leaves everything as it was
+        $chips0 = @(Get-Chips).Count
+        Click-Name $newTab -Class 'Button'; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'a click on a shortcut waits for a key' $true ([bool](Get-Element (Key-Button 'tab.new' (Nk-Text 'keys.record')) 'Button'))))
+        Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Ctrl+Shift+W, which closes a pane, says so' $true ([bool](Get-Element (Nk-Text 'keys.conflict' @((Nk-Text 'pane.close'))) 'TextBlock'))))
+        $results.Add((Check 'and offers Replace and Cancel' $true ([bool]((Get-Element (Key-Button 'tab.new' (Nk-Text 'keys.replace')) 'Button') -and (Get-Element (Key-Button 'tab.new' (Nk-Text 'common.cancel')) 'Button')))))
+        $results.Add((Check 'the focus is on Cancel' (Key-Button 'tab.new' (Nk-Text 'common.cancel')) (Focused-Name)))
+        $results.Add((Check 'the chord did not close the pane' 1 (Count-Panes)))
+        Click-Name (Key-Button 'tab.new' (Nk-Text 'common.cancel')) -Class 'Button'; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Cancel brings the old shortcut back' $true ([bool](Get-Element $newTab 'Button'))))
+        $results.Add((Check 'and the close shortcut is still the pane command' $true ([bool](Get-Element (Key-Chip 'pane.close' 'Ctrl+Shift+W') 'Button'))))
+        # the key that is pressed while a chord is waited for is not a command
+        Click-Name $newTab -Class 'Button'; Start-Sleep -Milliseconds 400
+        Chord @(0x11, 0x10) 0x54; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'Ctrl+Shift+T, pressed while waiting, opens no tab (it is the chord of the row itself, so no conflict)' $chips0 @(Get-Chips).Count))
+        $results.Add((Check 'and the row has it again' $true ([bool](Get-Element $newTab 'Button'))))
+        # Replace takes it
+        Click-Name $newTab -Class 'Button'; Start-Sleep -Milliseconds 400
+        Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 600
+        Click-Name (Key-Button 'tab.new' (Nk-Text 'keys.replace')) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'Replace gives the new tab command the chord' $true ([bool](Get-Element (Key-Chip 'tab.new' 'Ctrl+Shift+W') 'Button'))))
+        $results.Add((Check 'and leaves the close command without it' $false ([bool](Get-Element (Key-Chip 'pane.close' 'Ctrl+Shift+W') 'Button'))))
+        $keys = (Saved-Settings).keybindings
+        $results.Add((Check 'the file holds the new chord of the new tab command' 'Ctrl+Shift+W' ([string]($keys.'tab.new'))))
+        $results.Add((Check 'and that the close command has none' 0 @($keys.'pane.close').Count))
+        $results.Add((Check 'the tooltip of the new tab button shows the chord' $true ([bool](Get-Element (Nk-Tip 'tab.new' 'Ctrl+Shift+W') 'Button'))))
+        $results.Add((Check 'and the rows that changed have their reset buttons on' $true ([bool]((Reset-Button (Nk-Text 'tab.new')).Current.IsEnabled -and (Reset-Button (Nk-Text 'pane.close')).Current.IsEnabled))))
+        Close-Drawer
+        Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'the chord now opens a tab' ($chips0 + 1) @(Get-Chips).Count))
+        # reset of one row and the confirmation of "restore all"
+        Open-Drawer; Click-Name (Nk-Text 'settings.keys') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        Click-Name (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), (Nk-Text 'tab.new'))) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'reset gives the new tab command its default back' $true ([bool](Get-Element $newTab 'Button'))))
+        $results.Add((Check 'and takes it out of the file' $null ((Saved-Settings).keybindings.'tab.new')))
+        $results.Add((Check 'the other row is still modified, so the restore button is on' $true (Get-Element (Nk-Text 'common.restoreDefault') 'Button').Current.IsEnabled))
+        Click-Name (Nk-Text 'common.restoreDefault') -Class 'Button'; Start-Sleep -Milliseconds 800
+        $results.Add((Check 'restore all asks first' $true ([bool](Get-Element (Nk-Text 'dialog.restoreKeys')))))
+        Click-Name (Nk-Text 'common.cancel') -Class 'Button'; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'Cancel changes nothing' $false ([bool](Get-Element (Key-Chip 'pane.close' 'Ctrl+Shift+W') 'Button'))))
+        Click-Name (Nk-Text 'common.restoreDefault') -Class 'Button'; Start-Sleep -Milliseconds 800
+        Click-Name (Nk-Text 'common.restore') -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'Restore brings back every default' $true ([bool](Get-Element (Key-Chip 'pane.close' 'Ctrl+Shift+W') 'Button'))))
+        $results.Add((Check 'and the file holds no keybindings' $null ((Saved-Settings).keybindings)))
+        # what programs need: Ctrl+D and Ctrl+C ask like a command does
+        $add = Key-Button 'tab.close' (Nk-Text 'keys.add')
+        Click-Name $add -Class 'Button'; Start-Sleep -Milliseconds 400
+        Chord @(0x11) 0x44; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Ctrl+D, which a shell needs, says so' $true ([bool](Get-Element (Nk-Text 'keys.reserved') 'TextBlock'))))
+        Click-Name (Key-Button 'tab.close' (Nk-Text 'common.cancel')) -Class 'Button'; Start-Sleep -Milliseconds 500
+        Click-Name $add -Class 'Button'; Start-Sleep -Milliseconds 400
+        Chord @(0x11) 0x43; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Ctrl+C is the copy command and says so' $true ([bool](Get-Element (Nk-Text 'keys.conflict' @((Nk-Text 'edit.copy'))) 'TextBlock'))))
+        Click-Name (Key-Button 'tab.close' (Nk-Text 'common.cancel')) -Class 'Button'; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'the file holds nothing yet' $null ((Saved-Settings).keybindings)))
+        # Esc lets go of a recording and keeps the drawer
+        Click-Name $add -Class 'Button'; Start-Sleep -Milliseconds 400
+        Press 0x1B; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'Esc lets go of the recording and the drawer stays' 'True|True' ((Drawer-Open).ToString() + '|' + [bool](Get-Element $add 'Button'))))
+        # a chord is added with the plus, taken away with Backspace
+        Click-Name $add -Class 'Button'; Start-Sleep -Milliseconds 400
+        Chord @(0x11, 0x10) 0x51; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'a free chord is taken at once' $true ([bool](Get-Element (Key-Chip 'tab.close' 'Ctrl+Shift+Q') 'Button'))))
+        $results.Add((Check 'and written to the file' 'Ctrl+Shift+Q' ([string](Saved-Settings).keybindings.'tab.close')))
+        Click-Name (Key-Chip 'tab.close' 'Ctrl+Shift+Q') -Class 'Button'; Start-Sleep -Milliseconds 400
+        Press 0x08; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'Backspace on a waiting shortcut removes it' $false ([bool](Get-Element (Key-Chip 'tab.close' 'Ctrl+Shift+Q') 'Button'))))
+        $results.Add((Check 'and the file holds nothing again' $null ((Saved-Settings).keybindings)))
+        Close-Drawer
+        Assert-Results $results 'drawer-keys'
+    } -NoShot
+}
 function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
