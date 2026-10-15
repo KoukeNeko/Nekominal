@@ -1,6 +1,6 @@
 //! Where things are, in DIP: the title bar with its tab chips and the new-tab button, and the area below it that belongs
-//! to the terminal. The caption buttons are the system's: DWM draws them at the top right, so the layout only keeps
-//! the room they take. Pure: the window code gives the size and the number of tabs and gets rectangles and hit tests
+//! to the terminal. The caption buttons (minimize, maximize, close) are drawn by the window at the top right, each as
+//! tall as the bar so that their glyphs sit in its middle. Pure: the window code gives the size and the number of tabs and gets rectangles and hit tests
 //! back.
 
 use nekominal_ui::Rect;
@@ -13,6 +13,8 @@ pub const CHIP_HEIGHT: f32 = 32.0;
 pub const CHIP_GAP: f32 = 4.0;
 /// Space left of the first chip.
 pub const STRIP_LEFT: f32 = 12.0;
+/// Width of the three caption buttons together.
+pub const CAPTION: f32 = 3.0 * 46.0;
 /// Width and height of the new-tab and menu buttons.
 pub const BUTTON: f32 = 32.0;
 /// Space between the menu button and the caption buttons.
@@ -33,6 +35,9 @@ pub enum Hit {
     NewTab,
     TabList,
     Menu,
+    Minimize,
+    Maximize,
+    Close,
     Pane,
 }
 
@@ -48,6 +53,8 @@ pub struct Layout {
     /// Opens the list of all tabs.
     pub tab_list: Rect,
     pub menu: Rect,
+    /// Minimize, maximize or restore, and close: the whole height of the title bar.
+    pub caption_buttons: [Rect; 3],
     pub pane: Rect,
 }
 
@@ -79,6 +86,7 @@ impl Layout {
             new_tab,
             tab_list,
             menu,
+            caption_buttons: [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * caption / 3.0, 0.0, caption / 3.0, TITLE_HEIGHT)),
             pane: Rect::new(0.0, TITLE_HEIGHT, width, (height - TITLE_HEIGHT).max(0.0)),
         }
     }
@@ -95,6 +103,11 @@ impl Layout {
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Hit {
+        for (hit, button) in [Hit::Minimize, Hit::Maximize, Hit::Close].into_iter().zip(self.caption_buttons) {
+            if button.contains(x, y) {
+                return hit;
+            }
+        }
         if self.new_tab.contains(x, y) {
             return Hit::NewTab;
         }
@@ -127,7 +140,7 @@ impl Layout {
 mod tests {
     use super::*;
 
-    const CAPTION: f32 = 138.0;
+    const CAPTION: f32 = super::CAPTION;
 
     #[test]
     fn every_chip_has_the_same_width_and_the_strip_leaves_room_to_drag() {
@@ -141,6 +154,17 @@ mod tests {
                 assert!(strip_end + 2.0 * (BUTTON + CHIP_GAP) + DRAG_MIN <= 1200.0 - CAPTION + 0.01, "{tabs} tabs");
             }
         }
+    }
+
+    #[test]
+    fn the_caption_buttons_fill_the_corner_in_the_full_height_of_the_bar() {
+        let layout = Layout::new(1000.0, 600.0, 3, CAPTION, 0);
+        let [minimize, maximize, close] = layout.caption_buttons;
+        assert_eq!((minimize.x, close.x + close.w), (1000.0 - CAPTION, 1000.0));
+        assert!(layout.caption_buttons.iter().all(|b| b.y == 0.0 && b.h == TITLE_HEIGHT && b.w == CAPTION / 3.0));
+        assert_eq!(layout.hit(minimize.x + 1.0, 1.0), Hit::Minimize);
+        assert_eq!(layout.hit(maximize.x + 1.0, TITLE_HEIGHT - 1.0), Hit::Maximize);
+        assert_eq!(layout.hit(999.0, 24.0), Hit::Close);
     }
 
     #[test]

@@ -77,6 +77,8 @@ const TEAR_MARGIN: f32 = 12.0;
 pub const CORNER_RADIUS: f32 = 8.0;
 const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
+/// How far the caption glyphs move down so that they sit in the middle of the title bar, in DIP.
+const CAPTION_GLYPH_NUDGE: f32 = 1.5;
 
 pub struct App {
     hwnd: HWND,
@@ -96,8 +98,6 @@ pub struct App {
     tabs: Vec<Tab>,
     selected: usize,
     layout: Layout,
-    /// Width in DIP of the caption buttons DWM draws at the top right.
-    caption: f32,
     hover: Hit,
     pressed: Hit,
     /// Which of the left, middle and right buttons are down in a pane.
@@ -249,7 +249,6 @@ impl App {
             tabs: Vec::new(),
             selected: 0,
             layout: Layout::new(1.0, 1.0, 0, 0.0, 0),
-            caption: 138.0,
             hover: Hit::None,
             pressed: Hit::None,
             buttons: [false; 3],
@@ -537,11 +536,24 @@ impl App {
         self.redraw();
     }
 
-    /// The system caption buttons are `width_px` wide: the chips keep clear of them.
-    pub fn on_caption(&mut self, width_px: f32) {
-        self.caption = width_px / self.scale;
-        self.relayout();
+    /// The pointer is over a caption button (or over none): the window gets these as non-client messages.
+    pub fn on_caption_hover(&mut self, hit: Hit) {
+        if self.hover != hit {
+            self.hover = hit;
+            self.redraw();
+        }
+    }
+
+    pub fn on_caption_press(&mut self, hit: Hit) {
+        self.pressed = hit;
         self.redraw();
+    }
+
+    /// A caption button was let go of: whether it is the one that was pressed.
+    pub fn on_caption_release(&mut self, hit: Hit) -> bool {
+        let pressed = std::mem::replace(&mut self.pressed, Hit::None);
+        self.redraw();
+        pressed == hit
     }
 
     pub fn on_activate(&mut self, active: bool) {
@@ -557,7 +569,7 @@ impl App {
     /// Chips, panes and the cells each shown pane has.
     fn relayout(&mut self) {
         let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), self.caption, self.selected);
+        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected);
         let area = self.pane_area();
         let divider = logic::divider_px(f64::from(self.scale));
         let Some(tab) = self.tabs.get_mut(self.selected) else { return };
@@ -738,7 +750,8 @@ impl App {
     }
 
     pub fn on_mouse_leave(&mut self) {
-        if self.hover != Hit::None {
+        // Leaving the client area for a caption button arrives after the button was entered: the hover is the button's.
+        if self.hover != Hit::None && !matches!(self.hover, Hit::Minimize | Hit::Maximize | Hit::Close) {
             self.hover = Hit::None;
             self.redraw();
         }
@@ -1225,6 +1238,20 @@ impl App {
         };
         self.ui.fill(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT), tint);
         self.ui.fill(Rect::new(0.0, layout::TITLE_HEIGHT - 1.0, width, 1.0), col(g.divider()));
+
+        // The caption buttons: a plate as tall as the chips in the middle of the bar, the glyph in the middle of the plate.
+        let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if self.maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
+        for (cell, (hit, glyph)) in self.layout.caption_buttons.into_iter().zip(glyphs) {
+            let plate = Rect::new(cell.x + 4.0, (layout::TITLE_HEIGHT - layout::CHIP_HEIGHT) / 2.0, cell.w - 8.0, layout::CHIP_HEIGHT);
+            let pressed = self.pressed == hit;
+            let color = if self.active { col(g.text()) } else { col(g.text_secondary()) };
+            // The same plate as the other buttons of the bar, in the colours of the scheme.
+            if self.hover == hit || pressed {
+                self.ui.rrect(plate, CORNER_RADIUS, if pressed { col(g.pressed()) } else { col(g.hover()) }, None);
+            }
+            // The glyphs of the icon font sit a little above the middle of their line; the nudge brings them to it.
+            self.icon_centered(Rect::new(plate.x, plate.y + CAPTION_GLYPH_NUDGE, plate.w, plate.h), glyph, ICON_SIZE, color);
+        }
 
         // The dividers between panes.
         let area = self.pane_area();

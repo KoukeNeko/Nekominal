@@ -757,3 +757,66 @@ function Scenario-NextAccess {
         Press 0x1B; Start-Sleep -Milliseconds 400
     }
 }
+
+# The rows of the title bar in which a cell of the top right corner has light pixels (the glyph of a caption button).
+function Next-GlyphRows([string]$Path, [int]$X, [int]$W, [int]$H) {
+    Add-Type -AssemblyName System.Drawing
+    $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+    try {
+        $rows = @()
+        for ($py = 0; $py -lt $H; $py++) {
+            for ($px = $X; $px -lt $X + $W; $px++) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt 0.7) { $rows += $py; break } }
+        }
+        $rows
+    } finally { $bitmap.Dispose() }
+}
+
+# The minimize, maximize and close buttons: their glyphs in the middle of the title bar, and what each does.
+function Scenario-NextCaption {
+    Run-Next {
+        $r = Win-Rect; $s = Get-Scale
+        $bar = [int](48 * $s); $cell = [int](46 * $s)
+        $shot = Join-Path $env:TEMP 'next-caption.png'
+        [void](ShotRegion $shot ($r.Right - 3 * $cell - 8) $r.Top (3 * $cell + 8) $bar)
+        $names = 'minimize', 'maximize', 'close'
+        for ($i = 0; $i -lt 3; $i++) {
+            $rows = @(Next-GlyphRows $shot (8 + $i * $cell + 6) ($cell - 12) $bar)
+            $middle = if ($rows.Count) { ($rows[0] + $rows[-1]) / 2 } else { -1 }
+            Next-Check "caption.$($names[$i])-glyph-is-centred" ($rows.Count -gt 0 -and [Math]::Abs($middle - $bar / 2) -le 2) "glyph rows $($rows[0])..$($rows[-1]), middle $middle of a bar $bar px tall"
+        }
+        # Hovering a button lays the plate of the bar's buttons under its glyph, in the colours of the scheme.
+        Add-Type -AssemblyName System.Drawing
+        $plate = {
+            param($path, $i)
+            $bitmap = [System.Drawing.Bitmap]::FromFile($path)
+            try { $c = $bitmap.GetPixel([int](8 + $i * $cell + 8 * $s), [int]($bar / 2)); $c.R + $c.G + $c.B } finally { $bitmap.Dispose() }
+        }
+        Move-To ([int]($r.Left + 300)) ([int]($r.Top + 300)); Start-Sleep -Milliseconds 700
+        [void](ShotRegion $shot ($r.Right - 3 * $cell - 8) $r.Top (3 * $cell + 8) $bar)
+        $idle = 0..2 | ForEach-Object { & $plate $shot $_ }
+        for ($i = 0; $i -lt 3; $i++) {
+            Move-To ([int]($r.Right - (3 - $i) * $cell + $cell / 2)) ([int]($r.Top + $bar / 2)); Start-Sleep -Milliseconds 700
+            [void](ShotRegion $shot ($r.Right - 3 * $cell - 8) $r.Top (3 * $cell + 8) $bar)
+            $lit = & $plate $shot $i
+            Next-Check "caption.$($names[$i])-hover-plate" ($lit - $idle[$i] -gt 12) "the plate lifts the sum of the colour channels by $($lit - $idle[$i])"
+        }
+        $button = { param($i) @([int]($r.Right - (3 - $i) * $cell + $cell / 2), [int]($r.Top + $bar / 2)) }
+        $max = & $button 1
+        Click-At $max[0] $max[1]; Start-Sleep -Milliseconds 900
+        Next-Check 'caption.maximize' ([D]::IsZoomed($script:Hwnd)) 'the middle button maximizes the window'
+        $r = Win-Rect
+        $max = @([int]($r.Right - 2 * $cell + $cell / 2), [int]($r.Top + $bar / 2))
+        Click-At $max[0] $max[1]; Start-Sleep -Milliseconds 900
+        Next-Check 'caption.restore' (-not [D]::IsZoomed($script:Hwnd)) 'the same button restores it'
+        $r = Win-Rect
+        $min = @([int]($r.Right - 3 * $cell + $cell / 2), [int]($r.Top + $bar / 2))
+        Click-At $min[0] $min[1]; Start-Sleep -Milliseconds 900
+        Next-Check 'caption.minimize' ([D]::IsIconic($script:Hwnd)) 'the left button minimizes the window'
+        [void][D]::ShowWindow($script:Hwnd, 9); Start-Sleep -Milliseconds 600
+        $r = Win-Rect
+        $close = @([int]($r.Right - $cell / 2), [int]($r.Top + $bar / 2))
+        Click-At $close[0] $close[1]; Start-Sleep -Milliseconds 1500
+        $script:App.Refresh()
+        Next-Check 'caption.close' ($script:App.HasExited) 'the right button closes the window and the process ends'
+    }
+}

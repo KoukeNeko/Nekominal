@@ -9,10 +9,10 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             Dwm::{
-                DWM_SYSTEMBACKDROP_TYPE, DWMWA_CAPTION_BUTTON_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                DwmDefWindowProc, DwmExtendFrameIntoClientArea, DwmGetWindowAttribute, DwmSetWindowAttribute,
+                DWM_SYSTEMBACKDROP_TYPE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
+                DwmSetWindowAttribute,
             },
-            Gdi::{ClientToScreen, ScreenToClient, ValidateRect},
+            Gdi::{ScreenToClient, ValidateRect},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -26,7 +26,7 @@ use windows::{
                 IME_COMPOSITION_STRING, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
                 ImmSetCompositionWindow,
             },
-            Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
+            Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, ReleaseCapture, SetCapture, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent},
             WindowsAndMessaging::*,
         },
     },
@@ -110,22 +110,14 @@ fn is_maximized(hwnd: HWND) -> bool {
     unsafe { IsZoomed(hwnd).as_bool() }
 }
 
-/// Width in pixels of the caption buttons DWM draws at the top right, measured from the client area's right edge.
-fn caption_px(hwnd: HWND) -> f32 {
-    let mut bounds = RECT::default();
-    let mut window = RECT::default();
-    let mut origin = POINT::default();
-    // SAFETY: attribute and rectangles of the sizes the calls document, on a window of this thread.
-    unsafe {
-        if DwmGetWindowAttribute(hwnd, DWMWA_CAPTION_BUTTON_BOUNDS, (&mut bounds as *mut RECT).cast(), std::mem::size_of::<RECT>() as u32).is_err() {
-            return 138.0 * scale_of(hwnd);
-        }
-        let _ = GetWindowRect(hwnd, &mut window);
-        let _ = ClientToScreen(hwnd, &mut origin);
+/// The caption button a non-client hit test code names.
+fn caption_hit(code: u32) -> Option<Hit> {
+    match code {
+        HTMINBUTTON => Some(Hit::Minimize),
+        HTMAXBUTTON => Some(Hit::Maximize),
+        HTCLOSE => Some(Hit::Close),
+        _ => None,
     }
-    // The bounds are in window coordinates: from their left edge to the right edge of the client area.
-    let client_right = client_size(hwnd).0 as i32;
-    (client_right - (bounds.left - (origin.x - window.left))).max(0) as f32
 }
 
 /// Width in pixels of the resize border around the window.
@@ -190,14 +182,6 @@ fn place_ime(hwnd: HWND) {
     }
 }
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // The caption buttons are DWM's: it answers the hit tests, the hovering and the clicks on them first.
-    if matches!(msg, WM_NCHITTEST | WM_NCMOUSEMOVE | WM_NCLBUTTONDOWN | WM_NCLBUTTONUP | WM_NCMOUSELEAVE) {
-        let mut result = LRESULT(0);
-        // SAFETY: the arguments are those of this message.
-        if unsafe { DwmDefWindowProc(hwnd, msg, wparam, lparam, &mut result) }.as_bool() {
-            return result;
-        }
-    }
     match msg {
         // The client area is the whole window except the frame the system draws left, right and below; the title
         // bar is ours. When maximized the window overhangs the screen by the frame: keep the top inside it.
@@ -223,16 +207,54 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { let _ = ScreenToClient(hwnd, &mut point); };
             match with_app(hwnd, |app| app.hit_test(point.x, point.y)) {
                 Some(Hit::Drag) => LRESULT(HTCAPTION as isize),
+                // The window answers for its own caption buttons; the maximize one is what shows the snap layouts.
+                Some(Hit::Minimize) => LRESULT(HTMINBUTTON as isize),
+                Some(Hit::Maximize) => LRESULT(HTMAXBUTTON as isize),
+                Some(Hit::Close) => LRESULT(HTCLOSE as isize),
                 _ => LRESULT(HTCLIENT as isize),
             }
         }
+        WM_NCMOUSEMOVE => {
+            let hit = caption_hit(wparam.0 as u32);
+            if hit.is_some() {
+                let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+                // SAFETY: a valid request for this window.
+                unsafe { let _ = TrackMouseEvent(&mut track); };
+            }
+            with_app(hwnd, |app| app.on_caption_hover(hit.unwrap_or(Hit::None)));
+            if hit.is_some() { LRESULT(0) } else { unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } }
+        }
+        WM_NCMOUSELEAVE => {
+            with_app(hwnd, |app| {
+                app.on_caption_hover(Hit::None);
+                app.on_caption_press(Hit::None);
+            });
+            LRESULT(0)
+        }
+        // Without the default handling there is no modal loop: the button is pressed here and acts when let go of over
+        // the same button.
+        WM_NCLBUTTONDOWN if caption_hit(wparam.0 as u32).is_some() => {
+            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
+            with_app(hwnd, |app| app.on_caption_press(hit));
+            LRESULT(0)
+        }
+        WM_NCLBUTTONUP if caption_hit(wparam.0 as u32).is_some() => {
+            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
+            if with_app(hwnd, |app| app.on_caption_release(hit)) == Some(true) {
+                let command = match hit {
+                    Hit::Minimize => SC_MINIMIZE,
+                    Hit::Maximize if is_maximized(hwnd) => SC_RESTORE,
+                    Hit::Maximize => SC_MAXIMIZE,
+                    _ => SC_CLOSE,
+                };
+                // SAFETY: posting to our own window.
+                unsafe { let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); }
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let size = client_size(hwnd);
-            let caption = caption_px(hwnd);
-            with_app(hwnd, |app| {
-                app.on_caption(caption);
-                app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize)
-            });
+            with_app(hwnd, |app| app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
             LRESULT(0)
         }
         WM_DPICHANGED => {
@@ -524,7 +546,8 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
             WS_EX_NOREDIRECTIONBITMAP,
             w!("NekominalShell"),
             w!("Nekominal"),
-            WS_OVERLAPPEDWINDOW,
+            // Without WS_SYSMENU DWM draws no caption buttons of its own (they would sit at the top, over ours).
+            WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 & !WS_SYSMENU.0),
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1100,
@@ -546,8 +569,6 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
         set_backdrop(hwnd, app.backdrop(), app.dark());
         APPS.with(|apps| apps.borrow_mut().insert(hwnd.0 as isize, Rc::new(RefCell::new(app))));
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let caption = caption_px(hwnd);
-        with_app(hwnd, |app| app.on_caption(caption));
         with_app(hwnd, |app| app.redraw());
 
         Ok(hwnd)
