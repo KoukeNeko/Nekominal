@@ -28,7 +28,7 @@
     <ScrollViewer x:Name="SectionScroll" Grid.Row="2" Margin="16,8,16,0" HorizontalScrollBarVisibility="Hidden"
                   VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Auto" VerticalScrollMode="Disabled"
                   IsTabStop="False">
-      <StackPanel x:Name="DrawerSections" Orientation="Horizontal" Spacing="4" Padding="2"/>
+      <StackPanel x:Name="DrawerSections" Orientation="Horizontal" Spacing="2" Padding="2"/>
     </ScrollViewer>
 
     <ScrollViewer x:Name="DrawerScroll" Grid.Row="3" Margin="0,8,0,0" IsTabStop="False" VerticalScrollBarVisibility="Auto">
