@@ -512,6 +512,13 @@ pub fn colliding_folders(labels: &[Option<String>]) -> Vec<bool> {
         .collect()
 }
 
+/// The entries of a list for which `add` put a row into it, in order. `add` leaves the list as it was when it
+/// returns false, so the row at an index of the list is always the row of the entry at that index: what Enter picks
+/// is what the row says, however many rows could not be built.
+pub fn keep_built<T>(entries: Vec<T>, mut add: impl FnMut(&T) -> bool) -> Vec<T> {
+    entries.into_iter().filter(|entry| add(entry)).collect()
+}
+
 /// The background opacity the sliders and commands asked for, kept until the next frame: a drag raises many value
 /// changes per frame and only the last of them is worth applying.
 #[derive(Debug, Default)]
@@ -1155,6 +1162,26 @@ mod tests {
             [false, true, false, true]
         );
         assert_eq!(colliding_folders(&[]), Vec::<bool>::new());
+    }
+
+    #[test]
+    fn a_row_that_cannot_be_built_leaves_the_rows_and_the_entries_of_a_list_in_step() {
+        let entries = vec!["build", "{0}", "logs", "bad\u{fffe}", "claude"];
+        let mut rows: Vec<String> = Vec::new();
+        let kept = keep_built(entries, |entry| {
+            if entry.starts_with('{') || entry.contains('\u{fffe}') {
+                return false;
+            }
+            rows.push(format!("row of {entry}"));
+            true
+        });
+        assert_eq!(kept, ["build", "logs", "claude"]);
+        assert_eq!(rows.len(), kept.len());
+        for (row, entry) in rows.iter().zip(&kept) {
+            assert_eq!(*row, format!("row of {entry}"), "the row at an index is the one of the entry at that index");
+        }
+        assert_eq!(keep_built(vec![1, 2, 3], |_| true), [1, 2, 3]);
+        assert_eq!(keep_built(Vec::<u8>::new(), |_| false), Vec::<u8>::new());
     }
 
     #[test]

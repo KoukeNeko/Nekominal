@@ -17,13 +17,96 @@ use windows_core::{EventRevoker, Interface, Result};
 use nekominal_winui_sys::*;
 
 use crate::chip::{TabId, status_color, status_glyph};
+use crate::glass::Glass;
 use crate::i18n::{localize, t, tf};
 use crate::keyboard::{VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
-use crate::logic::TabState;
+use crate::logic::{self, TabState};
 use crate::shell::{Overlay, Shell};
 use crate::util::*;
 
 const PALETTE_XAML: &str = include_str!("xaml/palette.xaml");
+
+/// A row of the palette: the label of a command and its shortcut. The text of a row is set with `SetText`, never
+/// written into the markup, so what a title or a folder contains cannot change how a row loads.
+const COMMAND_ROW_XAML: &str = r#"
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      HorizontalAlignment="Stretch" ColumnSpacing="16">
+  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+  <TextBlock x:Name="Label" TextTrimming="CharacterEllipsis"/>
+  <TextBlock x:Name="Shortcut" Grid.Column="1" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+</Grid>"#;
+
+/// A row of the list of every tab: status mark, number, title, folder, pane count and shortcut.
+const TAB_ROW_XAML: &str = r#"
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      HorizontalAlignment="Stretch" ColumnSpacing="12">
+  <Grid.ColumnDefinitions>
+    <ColumnDefinition Width="12"/><ColumnDefinition Width="Auto" MinWidth="20"/><ColumnDefinition Width="*"/>
+    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
+  </Grid.ColumnDefinitions>
+  <Grid VerticalAlignment="Center">
+    <Ellipse x:Name="Dot" Width="8" Height="8" HorizontalAlignment="Center"/>
+    <TextBlock x:Name="Glyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
+               HorizontalAlignment="Center"/>
+  </Grid>
+  <TextBlock x:Name="Ordinal" Grid.Column="1" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Title" Grid.Column="2" TextTrimming="CharacterEllipsis"/>
+  <TextBlock x:Name="Folder" Grid.Column="3" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Panes" Grid.Column="4" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Shortcut" Grid.Column="5" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+</Grid>"#;
+
+/// The list item for a row, stretched over the width of the list.
+fn list_item(content: &FrameworkElement) -> Result<ListViewItem> {
+    let item = ListViewItem::new()?;
+    item.cast::<ContentControl>()?.SetContent(content)?;
+    item.cast::<Control>()?.SetHorizontalContentAlignment(HorizontalAlignment::Stretch)?;
+    Ok(item)
+}
+
+fn command_item(entry: &PaletteItem) -> Result<ListViewItem> {
+    let row = load_xaml(COMMAND_ROW_XAML)?;
+    find::<TextBlock>(&row, "Label")?.SetText(&entry.label)?;
+    find::<TextBlock>(&row, "Shortcut")?.SetText(&entry.shortcut)?;
+    list_item(&row)
+}
+
+fn tab_item(entry: &TabRow, glass: Option<Glass>) -> Result<ListViewItem> {
+    let row = load_xaml(TAB_ROW_XAML)?;
+    let panes = if entry.panes > 1 { tf(Text::TabPaneCount, &[&entry.panes]) } else { String::new() };
+    for (name, text) in [
+        ("Ordinal", entry.ordinal.to_string()),
+        ("Title", entry.title.clone()),
+        ("Folder", entry.folder.clone()),
+        ("Panes", panes),
+        ("Shortcut", entry.shortcut.clone()),
+    ] {
+        find::<TextBlock>(&row, name)?.SetText(&text)?;
+    }
+    if let Some(glass) = glass
+        && let Err(e) = paint_state(&row, glass, entry.state)
+    {
+        log(&format!("tab row mark: {e}"));
+    }
+    list_item(&row)
+}
+
+/// The state of the tab: a glyph that differs from the others without its colour, or the dot.
+fn paint_state(row: &FrameworkElement, glass: Glass, state: TabState) -> Result<()> {
+    let brush = solid_brush(status_color(glass, state, false))?;
+    let dot = find::<Shape>(row, "Dot")?;
+    match status_glyph(state) {
+        Some(glyph) => {
+            let mark = find::<TextBlock>(row, "Glyph")?;
+            mark.SetText(glyph)?;
+            mark.SetForeground(&brush)?;
+            ui(&mark)?.SetVisibility(Visibility::Visible)?;
+            ui(&dot)?.SetVisibility(Visibility::Collapsed)?;
+        }
+        None => dot.SetFill(&brush)?,
+    }
+    Ok(())
+}
 
 /// A tab as the list of every tab shows it.
 #[derive(Clone, Debug)]
@@ -215,23 +298,11 @@ impl Palette {
         let matches = model::search(self.all.borrow().clone(), query);
         let Ok(items) = self.list.items() else { return 0 };
         let _ = items.Clear();
-        for entry in &matches {
-            let row = format!(
-                r#"<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" HorizontalAlignment="Stretch" ColumnSpacing="16">
-                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                     <TextBlock Text="{}" TextTrimming="CharacterEllipsis"/>
-                     <TextBlock Grid.Column="1" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-                   </Grid>"#,
-                xml_escape(&entry.label),
-                xml_escape(&entry.shortcut)
-            );
-            let (Ok(content), Ok(item)) = (load_xaml(&row), ListViewItem::new()) else { continue };
-            let _ = item.cast::<ContentControl>().and_then(|c| c.SetContent(&content));
-            let _ = item.cast::<Control>().and_then(|c| c.SetHorizontalContentAlignment(HorizontalAlignment::Stretch));
-            let _ = items.Append(&item);
-        }
-        let count = matches.len();
-        *self.shown.borrow_mut() = matches;
+        let kept = logic::keep_built(matches, |entry| {
+            command_item(entry).and_then(|item| items.Append(&item)).map_err(|e| log(&format!("palette row: {e}"))).is_ok()
+        });
+        let count = kept.len();
+        *self.shown.borrow_mut() = kept;
         count
     }
 
@@ -240,58 +311,11 @@ impl Palette {
         let Ok(items) = self.list.items() else { return 0 };
         let _ = items.Clear();
         let glass = self.shell.upgrade().map(|shell| shell.glass.get());
-        for entry in &matches {
-            let panes = if entry.panes > 1 { tf(Text::TabPaneCount, &[&entry.panes]) } else { String::new() };
-            let row = format!(
-                r#"<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                         HorizontalAlignment="Stretch" ColumnSpacing="12">
-                     <Grid.ColumnDefinitions>
-                       <ColumnDefinition Width="12"/><ColumnDefinition Width="Auto" MinWidth="20"/><ColumnDefinition Width="*"/>
-                       <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
-                     </Grid.ColumnDefinitions>
-                     <Grid VerticalAlignment="Center">
-                       <Ellipse x:Name="Dot" Width="8" Height="8" HorizontalAlignment="Center"/>
-                       <TextBlock x:Name="Glyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
-                                  HorizontalAlignment="Center"/>
-                     </Grid>
-                     <TextBlock Grid.Column="1" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-                     <TextBlock Grid.Column="2" Text="{}" TextTrimming="CharacterEllipsis"/>
-                     <TextBlock Grid.Column="3" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-                     <TextBlock Grid.Column="4" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-                     <TextBlock Grid.Column="5" Text="{}" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-                   </Grid>"#,
-                entry.ordinal,
-                xml_escape(&entry.title),
-                xml_escape(&entry.folder),
-                xml_escape(&panes),
-                xml_escape(&entry.shortcut)
-            );
-            let (Ok(content), Ok(item)) = (load_xaml(&row), ListViewItem::new()) else { continue };
-            // The state of the tab: a glyph that differs from the others without its colour, or the dot.
-            if let Some(glass) = glass
-                && let Ok(brush) = solid_brush(status_color(glass, entry.state, false))
-            {
-                match (status_glyph(entry.state), find::<TextBlock>(&content, "Glyph"), find::<Shape>(&content, "Dot"))
-                {
-                    (Some(glyph), Ok(mark), Ok(dot)) => {
-                        let _ = (mark.SetText(glyph), mark.SetForeground(&brush));
-                        let _ = (
-                            ui(&mark).and_then(|m| m.SetVisibility(Visibility::Visible)),
-                            ui(&dot).and_then(|d| d.SetVisibility(Visibility::Collapsed)),
-                        );
-                    }
-                    (_, _, Ok(dot)) => {
-                        let _ = dot.SetFill(&brush);
-                    }
-                    _ => {}
-                }
-            }
-            let _ = item.cast::<ContentControl>().and_then(|c| c.SetContent(&content));
-            let _ = item.cast::<Control>().and_then(|c| c.SetHorizontalContentAlignment(HorizontalAlignment::Stretch));
-            let _ = items.Append(&item);
-        }
-        let count = matches.len();
-        *self.shown_tabs.borrow_mut() = matches;
+        let kept = logic::keep_built(matches, |entry| {
+            tab_item(entry, glass).and_then(|item| items.Append(&item)).map_err(|e| log(&format!("tab row: {e}"))).is_ok()
+        });
+        let count = kept.len();
+        *self.shown_tabs.borrow_mut() = kept;
         count
     }
 
@@ -327,6 +351,19 @@ impl Palette {
         self.close();
         if let (Some(action), Some(shell)) = (action, self.shell.upgrade()) {
             shell.run_palette_action(action);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_markup_of_a_row_carries_no_text_of_its_own() {
+        for markup in [COMMAND_ROW_XAML, TAB_ROW_XAML] {
+            assert!(!markup.contains(" Text="), "the text of a row is set with SetText");
+            assert!(!markup.contains("{}"), "the markup is not a format string");
         }
     }
 }
