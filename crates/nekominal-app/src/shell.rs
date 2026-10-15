@@ -23,6 +23,7 @@ use nekominal_pane::host::Activity;
 use nekominal_pane::{MAX_CLIPBOARD_TEXT, UiEvent};
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_term::LinkKind;
+use nekominal_term::agent_status::Report;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_term::osc::Progress;
 use nekominal_winui_sys::*;
@@ -35,7 +36,8 @@ use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
 use crate::logic::{
-    self, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts, TitleSource,
+    self, AgentLabel, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts,
+    TitleSource,
 };
 use crate::palette::TabRow;
 use crate::pane_view::{Look, PaneRequest, PaneView};
@@ -925,15 +927,13 @@ impl Shell {
                 }
                 self.refresh_status(tab);
             }
-            UiEvent::Agent(_) | UiEvent::AgentRecordsDropped => {
-                // What a report says is not latched: the chip shows what the emulator holds now. A report in the
-                // pane the user is looking at is seen at once.
-                if self.in_view(tab, pane) {
-                    pane.pane.dismiss_finished();
+            UiEvent::Agent(report) => {
+                if let Report::Set(record) = &report {
+                    pane.agent_label.borrow_mut().remember(record);
                 }
-                self.refresh_status(tab);
-                self.refresh_titles();
+                self.on_agent_change(tab, pane);
             }
+            UiEvent::AgentRecordsDropped => self.on_agent_change(tab, pane),
             UiEvent::Notification(notification) => {
                 if !self.in_view(tab, pane) {
                     pane.attention.set(Some(Attention::Notification));
@@ -963,14 +963,30 @@ impl Shell {
             UiEvent::ClipboardRefused { bytes } => {
                 log(&format!("pane {} osc 52 write of {bytes} bytes refused: over {} bytes", pane.id, MAX_CLIPBOARD_TEXT));
             }
-            UiEvent::PromptMark(mark) => {
-                // A shell back at its prompt reports no progress: a command interrupted mid-progress never cleared it.
-                if Activity::after_mark(mark) == Activity::AtPrompt && pane.progress.take().is_some() {
+            UiEvent::PromptMark(mark) if Activity::after_mark(mark) == Activity::AtPrompt => {
+                // A shell back at its prompt has no program at work: a command interrupted mid-progress never
+                // cleared its progress, and an agent that ended takes the name it gave the tab with it.
+                let was_working = pane.progress.take().is_some();
+                let was_named = std::mem::take(&mut *pane.agent_label.borrow_mut()) != AgentLabel::default();
+                if was_working {
                     self.refresh_status(tab);
                 }
+                if was_named {
+                    self.refresh_titles();
+                }
             }
-            UiEvent::Other(_) => {}
+            UiEvent::PromptMark(_) | UiEvent::Other(_) => {}
         }
+    }
+
+    /// The agent records of a pane changed. What a report says is not latched: the chip shows what the emulator holds
+    /// now. A report in the pane the user is looking at is seen at once.
+    fn on_agent_change(&self, tab: &Rc<Tab>, pane: &Rc<PaneView>) {
+        if self.in_view(tab, pane) {
+            pane.pane.dismiss_finished();
+        }
+        self.refresh_status(tab);
+        self.refresh_titles();
     }
 
     /// Gives every tab the title its rules make (`logic::default_title`): what a program or an agent set in the
@@ -983,12 +999,12 @@ impl Shell {
             .iter()
             .map(|tab| {
                 let pane = tab.focused_pane();
-                let record = pane.as_ref().and_then(|pane| pane.pane.agent_summary());
+                let label = pane.as_ref().map(|pane| pane.agent_label.borrow().clone()).unwrap_or_default();
                 TitleParts {
                     user: tab.renamed.get().then(|| tab.title.borrow().clone()),
                     program: pane.as_ref().map(|pane| pane.title.borrow().clone()).unwrap_or_default(),
-                    agent_title: record.as_ref().and_then(|record| record.title.clone()),
-                    agent_app: record.as_ref().and_then(|record| record.app.clone()),
+                    agent_title: label.title,
+                    agent_app: label.app,
                     cwd: pane
                         .as_ref()
                         .and_then(|pane| pane.cwd.borrow().as_ref().map(|cwd| cwd.to_string_lossy().into_owned())),
@@ -1639,6 +1655,7 @@ impl Shell {
                 pane.progress.set(None);
                 *pane.note.borrow_mut() = None;
                 *pane.title.borrow_mut() = String::new();
+                *pane.agent_label.borrow_mut() = AgentLabel::default();
                 log(&format!("pane {id} restarted as '{}'", profile.name));
                 self.refresh_status(&tab);
                 self.refresh_titles();

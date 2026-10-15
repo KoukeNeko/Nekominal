@@ -477,6 +477,29 @@ impl TitleParts {
     }
 }
 
+/// What the agent of a pane called its session and itself, kept after its record is gone. Seeing a finished agent
+/// dismisses its record, and a tab must not change its name for that; the label ends with the agent, when the shell
+/// is at its prompt again or the pane restarts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentLabel {
+    /// The session title of the last report that had one, cleaned like any title.
+    pub title: Option<String>,
+    /// The app id of the last report that had one.
+    pub app: Option<String>,
+}
+
+impl AgentLabel {
+    /// A report was set: what it names replaces the old name; what it leaves out keeps it.
+    pub fn remember(&mut self, record: &AgentRecord) {
+        if let Some(title) = record.title.as_deref().map(clean_title).filter(|title| !title.is_empty()) {
+            self.title = Some(title);
+        }
+        if let Some(app) = &record.app {
+            self.app = Some(app.clone());
+        }
+    }
+}
+
 /// The title of a tab: the name the user gave it; else what a program set (an agent's title, then the terminal
 /// title) unless that is generic; else the working directory (`with_parent` adds the folder above it, for tabs
 /// whose last segments collide); else the name of the profile; else `untitled`.
@@ -1153,6 +1176,30 @@ mod tests {
             default_title(&TitleParts { agent_title: Some("x\u{202e}y".into()), ..parts("", None) }, false).0,
             "xy"
         );
+    }
+
+    #[test]
+    fn the_label_of_an_agent_outlives_its_record_and_follows_the_latest_report() {
+        let report = |title: Option<&str>, app: Option<&str>| AgentRecord {
+            id: String::new(),
+            state: AgentState::Done,
+            kind: None,
+            progress: None,
+            app: app.map(Into::into),
+            title: title.map(Into::into),
+            message: None,
+        };
+        let mut label = AgentLabel::default();
+        label.remember(&report(Some("Fix the build"), Some("claude")));
+        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Fix the build"), Some("claude")));
+        // A report that names neither leaves both: the record that carried them may be gone by now.
+        label.remember(&report(None, None));
+        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Fix the build"), Some("claude")));
+        label.remember(&report(Some("  Write\u{202e}the docs "), None));
+        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Writethe docs"), Some("claude")));
+        // A title of nothing visible is no title.
+        label.remember(&report(Some("\u{7}  "), None));
+        assert_eq!(label.title.as_deref(), Some("Writethe docs"));
     }
 
     #[test]

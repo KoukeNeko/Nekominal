@@ -27,7 +27,7 @@ use windows_core::{EventRevoker, Interface, Result};
 
 use crate::i18n::t;
 use crate::keyboard;
-use crate::logic::{Attention, Reported};
+use crate::logic::{AgentLabel, Attention, Reported};
 use crate::terminal_control::{self, TextModel};
 use crate::util::{fe, log, ui};
 
@@ -127,6 +127,8 @@ pub struct PaneView {
     pub needs_response: Cell<bool>,
     /// Progress the program reports with OSC 9;4.
     pub progress: Cell<Option<Reported>>,
+    /// What the agent of the pane called its session and itself; the title of the tab follows it.
+    pub agent_label: RefCell<AgentLabel>,
     look: Rc<Look>,
     render: RefCell<Render>,
     on_request: Rc<dyn Fn(PaneId, PaneRequest)>,
@@ -229,6 +231,7 @@ impl PaneView {
                 note: RefCell::new(None),
                 needs_response: Cell::new(false),
                 progress: Cell::new(None),
+                agent_label: RefCell::new(AgentLabel::default()),
                 look,
                 render: RefCell::new(Render {
                     surface,
