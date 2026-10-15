@@ -41,7 +41,19 @@ impl PaneRenderer {
         config: r::RendererConfig,
         theme: r::Theme,
     ) -> Result<Self, String> {
-        let mut renderer = r::Renderer::new(device, queue, format, config)?;
+        Self::new_sharing(device, queue, format, config, theme, None)
+    }
+
+    /// Like [`PaneRenderer::new`], reusing the compiled pipelines of other (same device and format).
+    pub fn new_sharing(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        config: r::RendererConfig,
+        theme: r::Theme,
+        other: Option<&PaneRenderer>,
+    ) -> Result<Self, String> {
+        let mut renderer = r::Renderer::new_sharing(device, queue, format, config, other.map(|o| o.renderer.pipelines()))?;
         renderer.set_theme(&theme);
         Ok(Self {
             renderer,

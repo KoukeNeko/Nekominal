@@ -238,13 +238,15 @@ impl App {
             scale: self.scale,
             line_height: self.settings.font.line_height as f32,
             lcd: self.theme.background_opacity >= 1.0,
+            atlas_initial: 512,
             ..Default::default()
         }
     }
 
     /// A pane that will have about `size_px` pixels: its renderer and the session of the profile.
     fn make_entry(&self, id: PaneId, size_px: (u32, u32)) -> Result<PaneEntry, String> {
-        let view = PaneRenderer::new(&self.gpu.device, &self.gpu.queue, gpu::FORMAT, self.renderer_config(), self.theme.clone())?;
+        let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
+        let view = PaneRenderer::new_sharing(&self.gpu.device, &self.gpu.queue, gpu::FORMAT, self.renderer_config(), self.theme.clone(), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
         let hwnd = self.hwnd.0 as isize;
         let wake: nekominal_pane::Wake = Arc::new(move || {

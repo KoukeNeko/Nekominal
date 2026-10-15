@@ -242,7 +242,7 @@ pub struct Renderer {
     pub(crate) format: wgpu::TextureFormat,
     pub cfg: RendererConfig,
     pub(crate) theme: Arc<Theme>,
-    pub(crate) pipelines: Pipelines,
+    pub(crate) pipelines: Arc<Pipelines>,
     pub(crate) atlas_gray: AtlasTexture,
     pub(crate) atlas_rgba: AtlasTexture,
     atlas_bind_group: Option<(wgpu::BindGroup, u32, u32)>,
@@ -276,10 +276,26 @@ impl Renderer {
         format: wgpu::TextureFormat,
         cfg: RendererConfig,
     ) -> Result<Self, String> {
+        Self::new_sharing(device, queue, format, cfg, None)
+    }
+
+    /// The compiled pipelines, to give to the next renderer of the same device and format.
+    pub fn pipelines(&self) -> Arc<Pipelines> {
+        self.pipelines.clone()
+    }
+
+    /// Like [`Renderer::new`], reusing the pipelines of another renderer instead of compiling them again.
+    pub fn new_sharing(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        cfg: RendererConfig,
+        shared: Option<Arc<Pipelines>>,
+    ) -> Result<Self, String> {
         let mut init_timings = Vec::new();
         let lcd_supported = device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
         let t = std::time::Instant::now();
-        let pipelines = Pipelines::new(device, format, lcd_supported);
+        let pipelines = shared.unwrap_or_else(|| Arc::new(Pipelines::new(device, format, lcd_supported)));
         init_timings.push(("pipelines (WGSL -> DXIL/FXC, 3 pipelines)", t.elapsed()));
         let t = std::time::Instant::now();
         let max_dim = device.limits().max_texture_dimension_2d.min(cfg.atlas_max);
@@ -418,7 +434,7 @@ impl Renderer {
         self.device = device.clone();
         self.queue = queue.clone();
         self.lcd_supported = device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
-        self.pipelines = Pipelines::new(device, self.format, self.lcd_supported);
+        self.pipelines = Arc::new(Pipelines::new(device, self.format, self.lcd_supported));
         let max_dim = device.limits().max_texture_dimension_2d.min(self.cfg.atlas_max);
         self.atlas_gray =
             AtlasTexture::new(device, wgpu::TextureFormat::R8Unorm, 1, self.cfg.atlas_initial, max_dim, "nk atlas r8");
