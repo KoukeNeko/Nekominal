@@ -56,6 +56,14 @@ pub enum Action {
     Tab(usize),
     /// Use this backdrop behind the window.
     Backdrop(Backdrop),
+    /// Change the setting with this id of settings_ui::TABLE to its next value and stay open.
+    Setting(&'static str),
+    /// Open the settings at the row with this id.
+    ShowSetting(&'static str),
+    /// Open a tab with the profile at this index.
+    NewTab(usize),
+    /// Use the color scheme with this name.
+    ColorScheme(&'static str),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
@@ -234,6 +242,8 @@ pub enum Kind {
     List,
     /// The command palette: a query line above a fixed number of rows.
     Palette,
+    /// The settings: a query line and one row per setting, the value of each at its right.
+    Settings,
     /// The find bar: only the query line, with the count of matches at its right.
     Find,
 }
@@ -290,7 +300,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
     let (width, header, fixed_height, query) = match kind {
         Kind::Confirm => (DIALOG_WIDTH, DIALOG_HEADER, Some(DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING), None),
         Kind::List => (WIDTH, 0.0, None, None),
-        Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
+        Kind::Palette | Kind::Settings => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
         Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
     };
     let (rects, rows_size) = if kind == Kind::Confirm { dialog_buttons(width) } else { layout(&rows, width) };

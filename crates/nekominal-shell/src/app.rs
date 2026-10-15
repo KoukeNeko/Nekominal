@@ -15,6 +15,7 @@ use nekominal_model::{
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, Settings},
+    settings_ui::{self, Control, Descriptor, Value},
     strings::{Lang, Text},
     store,
     themes::{self, Color as SchemeColor},
@@ -89,6 +90,8 @@ pub struct App {
     glass: Glass,
     theme: r::Theme,
     profile: Profile,
+    /// Every profile a tab can open, the default among them.
+    profiles: Vec<Profile>,
     tabs: Vec<Tab>,
     selected: usize,
     layout: Layout,
@@ -163,6 +166,8 @@ fn wired(command: Command) -> bool {
             | Command::PromptPrevious
             | Command::PromptNext
             | Command::AppPalette
+            | Command::AppSettings
+            | Command::TabProfiles
             | Command::AppNewWindow
             | Command::EditFind
             | Command::ViewFullscreen
@@ -237,6 +242,7 @@ impl App {
             glass,
             theme,
             profile,
+            profiles: all,
             tabs: Vec::new(),
             selected: 0,
             layout: Layout::new(1.0, 1.0, 0, 0.0, 0),
@@ -1037,6 +1043,8 @@ impl App {
                 self.relayout();
             }
             Command::AppPalette => self.open_palette(),
+            Command::AppSettings => self.open_settings(None),
+            Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
                 if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
                     util::log(&format!("new window request: {e}"));
@@ -1336,16 +1344,17 @@ impl App {
     /// The command palette: what matches `query` of the commands the shell can run and the open tabs.
     fn palette_rows(&self, query: &str) -> Vec<popup::Row> {
         let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
-        let items = palette::items(self.language(), &self.keymap, &[], &tabs);
+        let items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs);
         palette::search(items, query)
             .into_iter()
             .filter_map(|item| {
                 let action = match item.action {
                     PaletteAction::Run(command) if wired(command) => popup::Action::Command(command),
                     PaletteAction::GotoTab(index) => popup::Action::Tab(index as usize),
-                    // shortcut: new tab with a profile, color scheme and settings entries wait for the settings
-                    // drawer and the profile picker.
-                    _ => return None,
+                    PaletteAction::NewTab(id) => popup::Action::NewTab(self.profiles.iter().position(|p| p.id == id)?),
+                    PaletteAction::SetColorScheme(name) => popup::Action::ColorScheme(themes::theme_names().find(|n| *n == name)?),
+                    PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
+                    PaletteAction::Run(_) => return None,
                 };
                 Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false })
             })
@@ -1369,19 +1378,180 @@ impl App {
             return;
         }
         (appearance.backdrop, appearance.opacity) = (backdrop, opacity);
+        self.apply_look();
+        self.save_settings();
+        self.redraw();
+    }
+
+    /// Puts the color scheme, the backdrop and the opacity of the settings in effect in the window and its panes.
+    fn apply_look(&mut self) {
+        let (backdrop, opacity) = (self.settings.appearance.backdrop, self.settings.appearance.opacity);
         let scheme = themes::scheme(&self.settings.theme);
+        self.glass = Glass::from_scheme(scheme);
         let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::NORMAL);
         self.theme = glass::render_theme(scheme, shown);
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
             entry.view.set_theme(self.theme.clone());
         }
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
+    }
+
+    fn save_settings(&self) {
         if let Some(path) = store::settings_path()
             && let Err(e) = store::save_keeping_original(&path, &settings::serialize(&self.settings))
         {
             util::log(&format!("settings: {e}"));
         }
+    }
+
+    /// What the settings list shows at the right of a row.
+    fn setting_text(&self, row: &Descriptor) -> String {
+        let lang = self.language();
+        match (row.control, (row.get)(&self.settings)) {
+            (Control::Toggle, Value::Bool(on)) => (if on { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned(),
+            (Control::Choice(options), Value::Index(i)) => options.get(i).map(|text| text.get(lang).to_owned()).unwrap_or_default(),
+            (Control::Slider(_), Value::Number(n)) => format!("{n:.0}%"),
+            (Control::Number(_), Value::Number(n)) => n.to_string(),
+            (Control::Profiles, Value::Text(id)) => self.profiles.iter().find(|p| p.id == id).map_or(id, |p| p.name.clone()),
+            (_, Value::Text(text)) => text,
+            _ => String::new(),
+        }
+    }
+
+    /// The settings that match `query`, or all of them in the order of the table.
+    fn settings_rows(&self, query: &str) -> Vec<popup::Row> {
+        let lang = self.language();
+        let found: Vec<&'static Descriptor> = if query.trim().is_empty() {
+            settings_ui::TABLE.iter().collect()
+        } else {
+            settings_ui::search(query, lang, &self.keymap)
+                .into_iter()
+                .filter_map(|row| match row {
+                    settings_ui::Row::Setting(descriptor) => Some(descriptor),
+                    settings_ui::Row::Key(_) => None,
+                })
+                .collect()
+        };
+        found
+            .into_iter()
+            .map(|row| popup::Row {
+                label: row.label(lang).to_owned(),
+                hint: self.setting_text(row),
+                action: Some(popup::Action::Setting(row.id)),
+                current: false,
+            })
+            .collect()
+    }
+
+    /// The settings, with the row `focus` under the cursor.
+    fn open_settings(&mut self, focus: Option<&str>) {
+        let rows = self.settings_rows("");
+        let target = focus.and_then(settings_ui::find).map(|row| popup::Action::Setting(row.id));
+        let at = target.and_then(|target| rows.iter().position(|row| row.action == Some(target)));
+        let anchor = self.screen_point(
+            (self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale,
+            (layout::TITLE_HEIGHT + 16.0) * self.scale,
+        );
+        self.open_popup(rows, popup::Kind::Settings, anchor);
+        if let (Some(popup), Some(at)) = (self.popup.as_mut(), at) {
+            popup.hover = Some(at);
+            popup.reveal(at);
+        }
+    }
+
+    /// The value after (or before) the one the row has: the next option, a step up or down, the next scheme.
+    fn next_setting_value(&self, row: &Descriptor, forward: bool) -> Option<Value> {
+        let step: isize = if forward { 1 } else { -1 };
+        let cycle = |len: usize, at: usize| (at as isize + step).rem_euclid(len.max(1) as isize) as usize;
+        Some(match (row.control, (row.get)(&self.settings)) {
+            (Control::Toggle, Value::Bool(on)) => Value::Bool(!on),
+            (Control::Choice(options), Value::Index(i)) => Value::Index(cycle(options.len(), i)),
+            (Control::Slider(range) | Control::Number(range), Value::Number(n)) => {
+                // Rounded to hundredths so that repeated steps of 0.05 do not drift.
+                let moved = (n + step as f64 * range.step).clamp(range.min, range.max);
+                Value::Number((moved * 100.0).round() / 100.0)
+            }
+            (Control::Themes, Value::Text(name)) => {
+                let names: Vec<&str> = themes::theme_names().collect();
+                let at = names.iter().position(|n| *n == name).unwrap_or(0);
+                Value::Text(names[cycle(names.len(), at)].to_owned())
+            }
+            (Control::Profiles, Value::Text(id)) => {
+                let at = self.profiles.iter().position(|p| p.id == id).unwrap_or(0);
+                Value::Text(self.profiles.get(cycle(self.profiles.len(), at))?.id.clone())
+            }
+            _ => return None,
+        })
+    }
+
+    /// Moves the setting with this id one value on, puts it in effect and keeps the list open.
+    fn change_setting(&mut self, id: &str, forward: bool) {
+        let Some(row) = settings_ui::find(id) else { return };
+        let Some(value) = self.next_setting_value(row, forward) else { return };
+        let before = self.settings.clone();
+        (row.set)(&mut self.settings, value);
+        self.apply_settings(&before);
+        let Some(query) = self.popup.as_ref().filter(|p| p.kind == popup::Kind::Settings).and_then(|p| p.query.clone()) else { return };
+        let rows = self.settings_rows(&query);
+        let Some(popup) = self.popup.as_mut() else { return };
+        let (hover, scroll) = (popup.hover, popup.scroll);
+        popup.set_rows(rows);
+        popup.hover = hover.filter(|&i| i < popup.rows.len());
+        popup.scroll_by(scroll);
+        // SAFETY: invalidating our own window.
+        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+    }
+
+    /// Puts what differs from `before` in effect and keeps the settings in the file.
+    fn apply_settings(&mut self, before: &Settings) {
+        if self.settings == *before {
+            return;
+        }
+        if self.settings.theme != before.theme || self.settings.appearance != before.appearance {
+            self.apply_look();
+        }
+        if self.settings.font.size != before.font.size {
+            for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+                if let Err(e) = entry.view.set_font_size(self.settings.font.size as f32) {
+                    util::log(&format!("font size: {e}"));
+                }
+            }
+            self.relayout();
+        }
+        if self.settings.default_profile != before.default_profile
+            && let Some(profile) = profiles::resolve_default(&self.profiles, &self.settings.default_profile)
+        {
+            self.profile = profile.clone();
+        }
+        self.save_settings();
         self.redraw();
+    }
+
+    /// The profiles a tab can open, one row each.
+    fn open_profiles(&mut self) {
+        let rows = self
+            .profiles
+            .iter()
+            .enumerate()
+            .map(|(i, profile)| popup::Row {
+                label: profile.name.clone(),
+                hint: String::new(),
+                action: Some(popup::Action::NewTab(i)),
+                current: profile.id == self.profile.id,
+            })
+            .collect();
+        let anchor = self.button_anchor(self.layout.tab_list);
+        self.open_popup(rows, popup::Kind::List, anchor);
+    }
+
+    /// A tab with the profile at `index`; the tabs and panes made later still use the default profile.
+    fn new_tab_with(&mut self, index: usize) {
+        let Some(profile) = self.profiles.get(index).cloned() else { return };
+        let default = std::mem::replace(&mut self.profile, profile);
+        if let Err(e) = self.new_tab() {
+            util::log(&format!("new tab: {e}"));
+        }
+        self.profile = default;
     }
 
     pub fn is_fullscreen(&self) -> bool {
@@ -1489,7 +1659,7 @@ impl App {
             self.find_search(&query);
             return;
         }
-        let rows = self.palette_rows(&query);
+        let rows = if self.popup.as_ref().is_some_and(|p| p.kind == popup::Kind::Settings) { self.settings_rows(&query) } else { self.palette_rows(&query) };
         let Some(popup) = self.popup.as_mut() else { return };
         popup.query = Some(query);
         popup.set_rows(rows);
@@ -1612,6 +1782,17 @@ impl App {
             }
             return;
         }
+        if popup.kind == popup::Kind::Settings && matches!(vk_code, 0x25 | 0x27) {
+            // Left and right move the value of the row under the cursor back and forth.
+            let id = popup.hover.and_then(|i| match popup.rows[i].action {
+                Some(popup::Action::Setting(id)) => Some(id),
+                _ => None,
+            });
+            if let Some(id) = id {
+                self.change_setting(id, vk_code == 0x27);
+            }
+            return;
+        }
         match vk_code {
             VK_UP | VK_DOWN => {
                 popup.hover = popup::step(&popup.rows, popup.hover, vk_code == VK_DOWN);
@@ -1641,6 +1822,10 @@ impl App {
     /// Closes the list and does what its row `row` says.
     fn choose(&mut self, row: usize) {
         let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
+        if let Some(popup::Action::Setting(id)) = action {
+            self.change_setting(id, true);
+            return;
+        }
         let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
         self.close_popup();
         // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
@@ -1661,6 +1846,14 @@ impl App {
             Some(popup::Action::Command(command)) => self.run(command),
             Some(popup::Action::Tab(index)) => self.select(index),
             Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
+            Some(popup::Action::ShowSetting(id)) => self.open_settings(Some(id)),
+            Some(popup::Action::NewTab(index)) => self.new_tab_with(index),
+            Some(popup::Action::ColorScheme(name)) => {
+                let before = self.settings.clone();
+                self.settings.theme = name.to_owned();
+                self.apply_settings(&before);
+            }
+            Some(popup::Action::Setting(_)) => {}
             None => {}
         }
     }
@@ -1673,6 +1866,7 @@ impl App {
     pub fn popup_paint(&mut self) {
         let scale = self.scale;
         let g = self.glass;
+        let placeholder = Text::SettingsSearch.get(self.language());
         let Some(popup) = self.popup.as_mut() else { return };
         let Some(view) = popup.surface.acquire() else { return };
         self.gpu.clear(&view, [0.0; 4]);
@@ -1727,6 +1921,9 @@ impl App {
             ui.push_clip(Rect::new(popup::QUERY_LEFT, y, (end - popup::QUERY_LEFT).max(0.0), line));
             ui.text(start, y, query, TEXT_SIZE, col(g.text()), false);
             ui.text(start + width, y, &popup.preedit, TEXT_SIZE, col(g.text()), false);
+            if query.is_empty() && popup.preedit.is_empty() && popup.kind == popup::Kind::Settings {
+                ui.text(popup::QUERY_LEFT + 8.0, y, placeholder, TEXT_SIZE, col(g.text_secondary()), false);
+            }
             if composing > 0.0 {
                 ui.fill(Rect::new(start + width, y + line - 1.0, composing, 1.0), col(g.accent));
             }

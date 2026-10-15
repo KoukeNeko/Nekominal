@@ -680,3 +680,49 @@ function Scenario-NextAcrylic {
         Press 0x1B; Start-Sleep -Milliseconds 300
     } '{ "appearance": { "opacity": 0.2 } }'
 }
+
+# What the app has kept in the settings file of this run.
+function Next-SavedSettings {
+    $path = Join-Path $global:NextAppData 'Nekominal\settings.json'
+    if (Test-Path $path) { Get-Content $path -Raw | ConvertFrom-Json } else { $null }
+}
+
+# The settings list from the menu shortcut, the palette entries for a colour scheme and for a setting, and what they keep.
+function Scenario-NextSettings {
+    Run-Next {
+        Next-Line 'echo ONE'
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900     # Ctrl+Shift+O (Ctrl+, is taken by the Zhuyin IME)
+        $popup = Next-PopupWindow
+        Next-Check 'settings.opens' ($popup -ne [IntPtr]::Zero) 'Ctrl+Shift+O opens the settings list'
+        if ($popup -eq [IntPtr]::Zero) { throw 'settings list missing; no keys sent on' }
+        $rect = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$rect)
+        Next-Check 'settings.is-drawn' ((Next-LightPixels ($rect.Left + 10) ($rect.Top + 10) ($rect.Right - $rect.Left - 20) ($rect.Bottom - $rect.Top - 20)) -gt 100) 'the list shows its rows, not just its backdrop'
+        Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 500
+        Press 0x27; Press 0x27; Press 0x27; Start-Sleep -Milliseconds 500    # Right x3: three steps up
+        $saved = Next-SavedSettings
+        Next-Check 'settings.right-steps-the-value-and-keeps-it' ($saved -and $saved.appearance.opacity -eq 0.75) "opacity in the file: $($saved.appearance.opacity)"
+        Press 0x0D; Start-Sleep -Milliseconds 500                             # Enter: one more
+        $saved = Next-SavedSettings
+        Next-Check 'settings.enter-steps-it-and-stays-open' ($saved.appearance.opacity -eq 0.76 -and (Next-PopupWindow) -ne [IntPtr]::Zero) "opacity $($saved.appearance.opacity), the list is still open"
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900              # palette
+        Type-Unicode 'color scheme: nord' 30; Start-Sleep -Milliseconds 500
+        Press 0x0D; Start-Sleep -Milliseconds 800
+        $saved = Next-SavedSettings
+        Next-Check 'settings.palette-sets-the-colour-scheme' ($saved.theme -eq 'Nord') "theme in the file: $($saved.theme)"
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Type-Unicode 'settings: language' 30; Start-Sleep -Milliseconds 500
+        Press 0x0D; Start-Sleep -Milliseconds 800
+        $popup = Next-PopupWindow
+        Next-Check 'settings.palette-opens-the-row' ($popup -ne [IntPtr]::Zero) 'a settings entry of the palette opens the list'
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Next-Line 'echo AFTER'
+        Next-Check 'settings.escape-closes' ((Next-Text) -match 'AFTER') 'after Esc the pane takes the typing again'
+        Press 0x4E @(0x11, 0x10); Start-Sleep -Milliseconds 900              # Ctrl+Shift+N: the profiles
+        Next-Check 'profiles.list-opens' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'Ctrl+Shift+N lists the profiles'
+        Press 0x28; Press 0x0D; Start-Sleep -Milliseconds 1800
+        Next-Line 'echo FROM-PROFILE'
+        $text = Next-Text
+        Next-Check 'profiles.choice-opens-a-tab' ($text -match 'FROM-PROFILE' -and $text -notmatch 'AFTER') 'choosing a profile opens a new tab of its own'
+    }
+}
