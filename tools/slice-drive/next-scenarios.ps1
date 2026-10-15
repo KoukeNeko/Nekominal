@@ -1072,3 +1072,34 @@ function Scenario-NextRestore {
         Next-Check 'restore.first-tab-keeps-its-folder' ((Next-Text) -match 'Windows>' -and (Next-Text) -notmatch 'System32') 'the first tab is in its folder too'
     } '{ "restoreSession": true }'
 }
+
+# The shortcuts page: Enter on a command waits for a chord, the chord becomes its shortcut at once and is kept in the settings,
+# a chord that programs in the terminal need is refused, Delete puts the default back.
+function Scenario-NextKeybind {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $isTab = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
+        $tabs = { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isTab).Count }
+        $bindings = { $s = Next-SavedSettings; if ($s -and $s.keybindings) { ($s.keybindings | ConvertTo-Json -Compress) } else { '' } }
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900          # the page
+        1..4 | ForEach-Object { Press 0x09 }; Start-Sleep -Milliseconds 400    # Tab x4: the shortcuts section
+        Press 0x28; Start-Sleep -Milliseconds 300                         # Down: the first command
+        Press 0x0D; Start-Sleep -Milliseconds 400                         # Enter: wait for a chord
+        Press 0x43 @(0x11); Start-Sleep -Milliseconds 400                 # Ctrl+C: a terminal program needs it
+        Next-Check 'keybind.a-chord-programs-need-is-refused' ((& $bindings) -eq '') "bindings: $(& $bindings)"
+        Press 0x59 @(0x11, 0x10); Start-Sleep -Milliseconds 700           # Ctrl+Shift+Y (Ctrl+Alt is AltGr: programs need it)
+        $kept = & $bindings
+        Next-Check 'keybind.chord-is-kept-in-the-settings' ($kept -match 'Ctrl\+Shift\+Y') "bindings: $kept"
+        Press 0x1B; Start-Sleep -Milliseconds 600                         # closes the page
+        $before = & $tabs
+        Press 0x59 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
+        Next-Check 'keybind.new-chord-runs-the-command' ((& $tabs) -eq $before + 1) "tabs $before -> $(& $tabs)"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        1..4 | ForEach-Object { Press 0x09 }; Start-Sleep -Milliseconds 300
+        Press 0x28; Start-Sleep -Milliseconds 300
+        Press 0x2E; Start-Sleep -Milliseconds 600                         # Delete: the default again
+        Next-Check 'keybind.delete-puts-the-default-back' ((& $bindings) -notmatch 'Ctrl\+Shift\+Y') "bindings: $(& $bindings)"
+        Press 0x1B; Start-Sleep -Milliseconds 500
+    }
+}

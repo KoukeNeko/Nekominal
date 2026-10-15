@@ -53,6 +53,9 @@ pub struct Page {
     pub drag: Option<&'static str>,
     /// The text field being typed in: the id of its row and what it holds so far.
     pub editing: Option<(&'static str, String)>,
+    /// The command whose shortcut the next chord pressed becomes, and whether the last chord was one a program needs.
+    pub capturing: Option<Command>,
+    pub reserved: bool,
 }
 
 /// What a rectangle does when it is pressed.
@@ -73,6 +76,10 @@ pub enum Part {
     /// The profile at this index.
     Profile(usize),
     Reset(&'static str),
+    /// The row of a command on the shortcuts page: pressing it waits for the new shortcut.
+    Binding(Command),
+    /// Puts the shortcuts of a command back to the default.
+    ResetKey(Command),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -326,9 +333,23 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
         match *entry {
             Entry::Key(command) => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
-                item(&mut items, Rect::new(rect.x + 16.0, rect.y, rect.w - 32.0, rect.h), None, label(command.label(lang), 13.0, Tone::Text, false, Align::Left), true);
-                let mut right = rect.x + rect.w - 16.0;
+                let capturing = page.capturing == Some(command);
+                item(&mut items, rect, Some(Part::Binding(command)), Visual::Plate(Fill::Row { focus: focus || capturing }), true);
+                item(&mut items, Rect::new(rect.x + 16.0, rect.y, (rect.w - 32.0) / 2.0, rect.h), None, label(command.label(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let mut right = rect.x + rect.w - 16.0 - RESET_ROOM;
+                if nekominal_model::keybindings::is_modified(&view.settings.keybindings, command) {
+                    let reset = Rect::new(rect.x + rect.w - 16.0 - 24.0, rect.y + (rect.h - 24.0) / 2.0, 24.0, 24.0);
+                    let part = Part::ResetKey(command);
+                    item(&mut items, reset, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                    item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                }
+                if capturing {
+                    let text = if page.reserved { Text::KeyReserved } else { Text::KeysPress };
+                    item(&mut items, Rect::new(rect.x + rect.w / 2.0, rect.y, rect.w / 2.0 - 16.0 - RESET_ROOM, rect.h), None, label(text.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
+                    y += ROW;
+                    rows.push(Rect::new(x0, start, content_width, y - start));
+                    continue;
+                }
                 for shortcut in view.keymap.shortcuts(command).iter().rev() {
                     let text = shortcut.to_string();
                     let chip = Rect::new(right - measure(&text, 12.0, false) - 20.0, rect.y + (rect.h - 24.0) / 2.0, measure(&text, 12.0, false) + 20.0, 24.0);

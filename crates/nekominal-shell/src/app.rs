@@ -12,6 +12,7 @@ use nekominal_input::{
 use nekominal_model::{
     bell::{self, BellContext, BellEffects},
     commands::{self, Command},
+    keybindings,
     palette::{self, PaletteAction, PaletteTab},
     keymap::{self, Keymap, Modifiers},
     layout::{Axis, PaneId},
@@ -1358,6 +1359,9 @@ impl App {
             if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
             return true;
         }
+        if self.page.as_ref().is_some_and(|page| page.capturing.is_some()) && self.capture_chord(vk_code, scan, extended, repeat) {
+            return true;
+        }
         let held = held();
         if self.page.is_some() && !held.ctrl && !held.alt && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_key(vk_code, repeat) {
             return true;
@@ -1988,6 +1992,12 @@ impl App {
             return if self.page.as_mut().and_then(|page| page.drag.take()).is_some() { Capture::Release } else { Capture::None };
         }
         let part = self.page_part_at(x, y);
+        if let Some(page) = self.page.as_mut() {
+            // A press anywhere gives up the wait for a shortcut, unless it is on the row that waits.
+            if page.capturing.is_some() && part != page.capturing.map(Part::Binding) {
+                (page.capturing, page.reserved) = (None, false);
+            }
+        }
         if !matches!(part, Some(Part::Field(id)) if self.page.as_ref().and_then(|p| p.editing.as_ref()).is_some_and(|(editing, _)| *editing == id)) {
             self.page_commit_edit();
         }
@@ -2043,6 +2053,12 @@ impl App {
                     self.apply_settings(&before);
                 }
             }
+            Part::Binding(command) => {
+                if let Some(page) = self.page.as_mut() {
+                    (page.capturing, page.reserved) = (Some(command), false);
+                }
+            }
+            Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
         }
         self.redraw();
         capture
@@ -2089,6 +2105,10 @@ impl App {
             settings_page::Entry::Setting(row) => Some(*row),
             settings_page::Entry::Key(_) => None,
         });
+        let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
+            settings_page::Entry::Key(command) => Some(*command),
+            settings_page::Entry::Setting(_) => None,
+        });
         match vk_code {
             VK_ESCAPE => {
                 if page.query.is_empty() {
@@ -2114,6 +2134,11 @@ impl App {
                 let Some(row) = focused_row else { return true };
                 self.step_setting(row.id, vk_code == VK_RIGHT, shift);
             }
+            VK_RETURN if !repeat && focused_command.is_some() => {
+                if let (Some(command), Some(page)) = (focused_command, self.page.as_mut()) {
+                    (page.capturing, page.reserved) = (Some(command), false);
+                }
+            }
             VK_RETURN if !repeat => {
                 let Some(row) = focused_row else { return true };
                 if matches!(row.control, Control::Text) {
@@ -2138,6 +2163,11 @@ impl App {
                     (page.scroll, page.focus) = (0.0, None);
                 }
             }
+            VK_DELETE if focused_command.is_some() => {
+                if let Some(command) = focused_command {
+                    self.change_bindings(|bindings| keybindings::reset(bindings, command));
+                }
+            }
             VK_DELETE => {
                 let Some(row) = focused_row else { return false };
                 let before = self.settings.clone();
@@ -2145,6 +2175,53 @@ impl App {
                 self.apply_settings(&before);
             }
             _ => return false,
+        }
+        self.redraw();
+        true
+    }
+
+    /// Changes the shortcuts the user bound, puts the new key map in effect and keeps the settings.
+    fn change_bindings(&mut self, change: impl FnOnce(&mut std::collections::BTreeMap<String, Vec<String>>)) {
+        let before = self.settings.clone();
+        change(&mut self.settings.keybindings);
+        self.keymap = keymap::build_keymap(commands::default_bindings(), &self.settings.keybindings).keymap;
+        self.apply_settings(&before);
+    }
+
+    /// A key while the page waits for the shortcut of a command: the chord pressed becomes its shortcut. Escape gives up,
+    /// Delete and Backspace take the shortcuts away, a chord that programs in the terminal need is refused. True when the
+    /// key was taken.
+    fn capture_chord(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
+        let Some(command) = self.page.as_ref().and_then(|page| page.capturing) else { return false };
+        // The input method has this key; there is nothing to read from it.
+        if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
+            return false;
+        }
+        let mods = held();
+        let modifier_only = matches!(vk_code, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5);
+        if repeat || modifier_only {
+            return true;
+        }
+        match vk_code {
+            0x1B => {}
+            0x08 | 0x2E if !mods.ctrl && !mods.alt && !mods.shift && !mods.meta => self.change_bindings(|bindings| keybindings::set(bindings, command, &[])),
+            _ => {
+                let chord = nekominal_input::physical_key(scan, extended).and_then(|key| keybindings::chord_of(key.name(), mods));
+                let Some(chord) = chord else { return true };
+                if keybindings::needed_by_programs(chord) {
+                    if let Some(page) = self.page.as_mut() {
+                        page.reserved = true;
+                    }
+                    self.redraw();
+                    return true;
+                }
+                let keymap = self.keymap.clone();
+                let replacing = keymap.shortcuts(command).first().copied();
+                self.change_bindings(|bindings| keybindings::assign(bindings, &keymap, command, replacing, chord));
+            }
+        }
+        if let Some(page) = self.page.as_mut() {
+            (page.capturing, page.reserved) = (None, false);
         }
         self.redraw();
         true

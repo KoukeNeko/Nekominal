@@ -183,6 +183,7 @@ texts! {
     KeyAdd "keys.add" "新增快速鍵" "Add shortcut";
     KeyRecord "keys.record" "按下按鍵" "Press keys";
     KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
+    KeysPress "keys.press" "按下新的快速鍵（Esc 取消，Delete 清除）" "Press a shortcut (Esc cancels, Delete clears)";
     KeyReserved "keys.reserved" "終端機程式使用此組合鍵" "Terminal programs use this shortcut";
     KeyReplace "keys.replace" "取代" "Replace";
     // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
