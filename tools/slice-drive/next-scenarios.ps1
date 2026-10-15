@@ -7,6 +7,7 @@
 #   Scenario-NextIme         # Zhuyin: composition and commit
 #   Scenario-NextKeys        # Ctrl+U, Ctrl+C, Backspace and CJK text reach the shell
 #   Scenario-NextClaude [fullscreen|classic]   # Claude Code starts, takes text and exits, no model call
+#   Scenario-NextResize [fullscreen|classic]   # 18 window sizes in a drag-like storm while Claude Code runs, against a fresh run
 #   Scenario-NextIdle        # memory and CPU of an idle window
 #   Scenario-NextAll
 #
@@ -173,6 +174,76 @@ function Scenario-NextIme {
         Next-Check 'ime.once' (([regex]::Matches($text, '你')).Count -eq 1) 'each committed character appears once'
     }
 }
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class NextW {
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int h2, uint flags);
+}
+'@
+
+# Sets the size of the window in DIP (SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE).
+function Next-Size([double]$Width, [double]$Height) {
+    $s = Get-Scale
+    [void][NextW]::SetWindowPos($script:Hwnd, [IntPtr]::Zero, 0, 0, [int]($Width * $s), [int]($Height * $s), 0x0016)
+}
+
+# Ends the CLI the way a person does, and only when the input box holds exactly /exit: nothing else may reach the model.
+function Next-ExitClaude {
+    Press 0x55 @(0x11)
+    Type-Unicode '/exit' 60; Start-Sleep -Milliseconds 500
+    if ((Next-Text) -notmatch '/exit') { throw 'the input box does not hold /exit: Enter not sent' }
+    Press 0x0D; Start-Sleep -Seconds 4
+}
+
+# The text of a CLI screen with what changes from run to run (the suggestion in the empty box) made equal.
+function Next-Normalized([string]$Text) {
+    # The suggestion, the usage notice of the account and the effort indicator come and go with time and account state.
+    (($Text -split "`r?`n") | ForEach-Object { if ($_ -match 'Try "') { '<suggestion>' } elseif ($_ -match 'of your weekly limit|◉ \w+ · /effort') { '<status>' } else { $_.TrimEnd() } }) -join "`n"
+}
+
+# A storm of window sizes while the CLI runs, then the screen against a fresh run of the CLI at the final size (full-screen
+# mode), or one banner in the whole buffer and nothing pushed into the scrollback (classic mode). The sizes change every
+# 40 ms, 18 times, the way a drag does; no model call is made.
+function Scenario-NextResize([ValidateSet('fullscreen', 'classic')][string]$Mode = 'fullscreen') {
+    $claude = if ($env:NEKOMINAL_CLAUDE_EXE) { $env:NEKOMINAL_CLAUDE_EXE } else { Join-Path $env:USERPROFILE '.local\bin\claude.exe' }
+    $cwd = Join-Path $PSScriptRoot '..\..\target\agent-probe\cwd'
+    New-Item -ItemType Directory -Force $cwd | Out-Null
+    $cwd = (Resolve-Path $cwd).Path
+    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1' }
+    if ($Mode -eq 'fullscreen') { $envTable['CLAUDE_CODE_NO_FLICKER'] = '1' } else { $envTable['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1' }
+    $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
+    $global:NextFailures = @()
+    try {
+        Start-App -Exe (Resolve-Path $global:NextExe).Path -Log '' -Layout '' -SettleMs 3500 -Env $envTable
+        Next-Line "Set-Location '$cwd'"
+        Next-Line "& '$claude'"
+        Start-Sleep -Seconds 9
+        $sizes = @(@(900, 600), @(1300, 800), @(700, 500), @(1100, 700), @(560, 420), @(1200, 760), @(800, 540), @(1000, 900), @(640, 480),
+                   @(1180, 640), @(760, 700), @(980, 560), @(600, 800), @(1240, 720), @(720, 520), @(1060, 780), @(840, 600), @(1000, 640))
+        foreach ($size in $sizes) { Next-Size $size[0] $size[1]; Start-Sleep -Milliseconds 40 }
+        Start-Sleep -Seconds 2
+        $storm = Next-Text
+        $banners = ([regex]::Matches($storm, 'Claude Code v\d')).Count
+        if ($Mode -eq 'classic') {
+            Next-Check 'resize.classic.one-banner' ($banners -eq 1) "the whole buffer holds $banners copies of the banner after $($sizes.Count) resizes"
+        }
+        Next-Check "resize.$Mode.alive" ($storm -match 'Claude Code' -and $storm -match '[─]{10}') 'the CLI redrew to the last size: banner and input box rules are there'
+        if ($Mode -eq 'fullscreen') {
+            Next-ExitClaude
+            Next-Line "& '$claude'"
+            Start-Sleep -Seconds 9
+            $fresh = Next-Text
+            $a = Next-Normalized $storm; $b = Next-Normalized $fresh
+            Next-Check 'resize.fullscreen.same-as-fresh' ($a -ceq $b) ("the screen after the storm and a fresh run at the same size have the same text ({0} and {1} lines)" -f ($a -split "`n").Count, ($b -split "`n").Count)
+        }
+        Next-ExitClaude
+    } finally {
+        Stop-App
+        if ($null -ne $saved) { Set-Clipboard -Value $saved }
+    }
+    if ($global:NextFailures.Count -gt 0) { throw "failed: $($global:NextFailures -join ', ')" }
+}
+
 function Scenario-NextIdle {
     Run-Next {
         Start-Sleep -Seconds 3
@@ -185,4 +256,4 @@ function Scenario-NextIdle {
     }
 }
 
-function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }
+function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextResize fullscreen; Scenario-NextResize classic; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }
