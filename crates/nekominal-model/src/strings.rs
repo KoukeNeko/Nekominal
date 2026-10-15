@@ -117,6 +117,8 @@ texts! {
     TabListEmpty "tabs.empty" "沒有符合的分頁" "No matching tabs";
     TabPaneCount "tab.paneCount" "{0} 個窗格" "{0} panes";
     TabZoomed "tab.zoomed" "已縮放" "Zoomed";
+    // The accessible name of a tab that is not at rest: its title, then its state.
+    TabNameStatus "tab.nameStatus" "{0}，{1}" "{0}, {1}";
 
     // Tab and pane indicators.
     AgentWorking "agent.working" "執行中" "Running";

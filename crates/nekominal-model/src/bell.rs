@@ -13,14 +13,6 @@ use crate::settings::{Bell, BellSound};
 /// that prints a binary file would otherwise ring the whole screen.
 pub const ALERT_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The bell settings of a profile. What it leaves unset follows the global settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct BellOverride {
-    pub visual: Option<bool>,
-    pub taskbar: Option<bool>,
-    pub sound: Option<BellSound>,
-}
-
 /// Where the bell rang.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BellContext {
@@ -42,20 +34,12 @@ pub struct BellEffects {
     pub sound: bool,
 }
 
-pub fn bell_effects(
-    settings: &Bell,
-    profile: Option<&BellOverride>,
-    context: &BellContext,
-) -> BellEffects {
-    let visual = profile.and_then(|p| p.visual).unwrap_or(settings.visual);
-    let taskbar = profile.and_then(|p| p.taskbar).unwrap_or(settings.taskbar);
-    let sound = profile.and_then(|p| p.sound).unwrap_or(settings.sound);
-
+pub fn bell_effects(settings: &Bell, context: &BellContext) -> BellEffects {
     // The user is looking at the pane that rang: there is nothing to point them to.
     let watching = context.window_active && context.pane_in_view;
-    let mut chip = visual && !watching;
-    let mut flash = taskbar && !context.window_active;
-    let mut play = match sound {
+    let mut chip = settings.visual && !watching;
+    let mut flash = settings.taskbar && !context.window_active;
+    let mut play = match settings.sound {
         BellSound::None => false,
         BellSound::Background => !watching,
         BellSound::Always => true,
@@ -115,7 +99,7 @@ mod tests {
     fn the_pane_being_looked_at_rings_for_nobody() {
         for sound in [BellSound::None, BellSound::Background] {
             assert_eq!(
-                bell_effects(&settings(true, true, sound), None, &WATCHING),
+                bell_effects(&settings(true, true, sound), &WATCHING),
                 NOTHING
             );
         }
@@ -129,7 +113,7 @@ mod tests {
             sound: BellSound::None,
         };
         assert_eq!(
-            bell_effects(&defaults, None, &HIDDEN_TAB),
+            bell_effects(&defaults, &HIDDEN_TAB),
             BellEffects {
                 chip: true,
                 taskbar_flash: false,
@@ -137,7 +121,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bell_effects(&defaults, None, &INACTIVE_WINDOW),
+            bell_effects(&defaults, &INACTIVE_WINDOW),
             BellEffects {
                 chip: true,
                 taskbar_flash: true,
@@ -150,7 +134,7 @@ mod tests {
             ..WATCHING
         };
         assert_eq!(
-            bell_effects(&defaults, None, &hidden_and_inactive),
+            bell_effects(&defaults, &hidden_and_inactive),
             BellEffects {
                 chip: true,
                 taskbar_flash: true,
@@ -161,25 +145,16 @@ mod tests {
 
     #[test]
     fn the_taskbar_flashes_only_while_the_window_is_not_active() {
-        let flash = |context| {
-            bell_effects(&settings(false, true, BellSound::None), None, &context).taskbar_flash
-        };
+        let flash =
+            |context| bell_effects(&settings(false, true, BellSound::None), &context).taskbar_flash;
         assert!(!flash(WATCHING) && !flash(HIDDEN_TAB));
         assert!(flash(INACTIVE_WINDOW));
-        assert!(
-            !bell_effects(
-                &settings(true, false, BellSound::None),
-                None,
-                &INACTIVE_WINDOW
-            )
-            .taskbar_flash
-        );
+        assert!(!bell_effects(&settings(true, false, BellSound::None), &INACTIVE_WINDOW).taskbar_flash);
     }
 
     #[test]
     fn a_sound_needs_the_setting_and_background_stays_out_of_the_pane_being_watched() {
-        let heard =
-            |sound, context| bell_effects(&settings(true, true, sound), None, &context).sound;
+        let heard = |sound, context| bell_effects(&settings(true, true, sound), &context).sound;
         for context in [WATCHING, HIDDEN_TAB, INACTIVE_WINDOW] {
             assert!(!heard(BellSound::None, context));
         }
@@ -197,7 +172,7 @@ mod tests {
             ..INACTIVE_WINDOW
         };
         assert_eq!(
-            bell_effects(&loud, None, &INACTIVE_WINDOW),
+            bell_effects(&loud, &INACTIVE_WINDOW),
             BellEffects {
                 chip: true,
                 taskbar_flash: true,
@@ -205,7 +180,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bell_effects(&loud, None, &at(0)),
+            bell_effects(&loud, &at(0)),
             BellEffects {
                 chip: true,
                 taskbar_flash: false,
@@ -213,7 +188,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bell_effects(&loud, None, &at(999)),
+            bell_effects(&loud, &at(999)),
             BellEffects {
                 chip: true,
                 taskbar_flash: false,
@@ -221,42 +196,12 @@ mod tests {
             }
         );
         assert_eq!(
-            bell_effects(&loud, None, &at(1000)),
+            bell_effects(&loud, &at(1000)),
             BellEffects {
                 chip: true,
                 taskbar_flash: true,
                 sound: true
             }
-        );
-    }
-
-    #[test]
-    fn a_profile_overrides_what_it_sets_and_inherits_the_rest() {
-        let global = settings(true, true, BellSound::None);
-        let quiet = BellOverride {
-            visual: Some(false),
-            taskbar: Some(false),
-            sound: None,
-        };
-        assert_eq!(
-            bell_effects(&global, Some(&quiet), &INACTIVE_WINDOW),
-            NOTHING
-        );
-        let loud = BellOverride {
-            sound: Some(BellSound::Always),
-            ..BellOverride::default()
-        };
-        assert_eq!(
-            bell_effects(&global, Some(&loud), &HIDDEN_TAB),
-            BellEffects {
-                chip: true,
-                taskbar_flash: false,
-                sound: true
-            }
-        );
-        assert_eq!(
-            bell_effects(&global, Some(&BellOverride::default()), &HIDDEN_TAB),
-            bell_effects(&global, None, &HIDDEN_TAB)
         );
     }
 
@@ -268,7 +213,7 @@ mod tests {
         };
         let silent_visuals = settings(false, false, BellSound::Background);
         assert_eq!(
-            bell_effects(&silent_visuals, None, &show(HIDDEN_TAB)),
+            bell_effects(&silent_visuals, &show(HIDDEN_TAB)),
             BellEffects {
                 chip: true,
                 taskbar_flash: false,
@@ -276,7 +221,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bell_effects(&silent_visuals, None, &show(INACTIVE_WINDOW)),
+            bell_effects(&silent_visuals, &show(INACTIVE_WINDOW)),
             BellEffects {
                 chip: true,
                 taskbar_flash: true,
@@ -285,7 +230,7 @@ mod tests {
         );
         // Without the system setting the same bell has no picture.
         assert_eq!(
-            bell_effects(&silent_visuals, None, &HIDDEN_TAB),
+            bell_effects(&silent_visuals, &HIDDEN_TAB),
             BellEffects {
                 chip: false,
                 taskbar_flash: false,

@@ -1059,8 +1059,7 @@ impl Shell {
             since_last_alert: self.last_alert.get().map(|at| at.elapsed()),
             show_sounds: window::show_sounds(),
         };
-        // No profile carries bell settings of its own yet.
-        let effects = bell_effects(&self.settings.borrow().bell, None, &context);
+        let effects = bell_effects(&self.settings.borrow().bell, &context);
         if effects.chip {
             pane.attention.set(Some(Attention::Bell));
             self.refresh_status(tab);

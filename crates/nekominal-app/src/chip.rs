@@ -14,7 +14,7 @@ use windows_reference::IReference;
 use nekominal_model::strings::Text;
 
 use crate::glass::Glass;
-use crate::i18n::{lang, t, tf};
+use crate::i18n::{t, tf};
 use crate::logic::{Attention, CHIP_MAX_WIDTH, TabState, TabStatus, reorder_target, shows_ordinal};
 use crate::util::{fe, find, load_xaml, solid_brush, ui, visibility, xml_escape};
 
@@ -243,8 +243,7 @@ impl Chip {
         let title = self.title_text.borrow();
         let status = self.status.borrow();
         let word = status_text(&status);
-        let separator = if lang() == nekominal_model::strings::Lang::ZhTw { "，" } else { ", " };
-        let name = word.map_or_else(|| title.clone(), |word| format!("{title}{separator}{word}"));
+        let name = word.map_or_else(|| title.clone(), |word| tf(Text::TabNameStatus, &[&*title, &word]));
         let mut tip = title.clone();
         let panes = (self.panes.get() >= 2).then(|| tf(Text::TabPaneCount, &[&self.panes.get()]));
         let zoomed = self.zoomed.get().then(|| t(Text::TabZoomed).to_owned());
