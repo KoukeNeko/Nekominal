@@ -30,6 +30,9 @@ const CHROME_WIDTH: f64 = 12.0 + 3.0 + 2.0 + 12.0 + 8.0 + 8.0 + 24.0;
 /// Pointer travel before a press on a chip becomes a drag.
 const DRAG_THRESHOLD: f64 = 5.0;
 
+/// The activity id of the notifications a chip raises, which lets a screen reader tell them from other notifications.
+const ANNOUNCEMENT_ID: &str = "nekominal.tab.needs-response";
+
 const CHIP_XAML: &str = r#"
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -174,17 +177,22 @@ pub fn status_color(glass: Glass, state: TabState, selected: bool) -> nekominal_
     }
 }
 
-/// The word of a state, the string the interface already has for it.
-pub fn status_text(status: &TabStatus) -> Option<&'static str> {
-    Some(t(match status.state {
+/// The string the interface has for a state; none for a tab at rest. `attention` tells a notification from a bell.
+pub fn status_label(state: TabState, attention: Option<Attention>) -> Option<Text> {
+    Some(match state {
         TabState::Idle => return None,
         TabState::Working => Text::AgentWorking,
         TabState::Blocked => Text::AgentBlocked,
         TabState::Done => Text::AgentDone,
         TabState::Error => Text::AgentError,
-        TabState::Attention if status.attention == Some(Attention::Notification) => Text::AgentNotification,
+        TabState::Attention if attention == Some(Attention::Notification) => Text::AgentNotification,
         TabState::Attention => Text::AgentBell,
-    }))
+    })
+}
+
+/// The word of a state, the string the interface already has for it.
+pub fn status_text(status: &TabStatus) -> Option<&'static str> {
+    status_label(status.state, status.attention).map(t)
 }
 
 impl Chip {
@@ -326,6 +334,30 @@ impl Chip {
 
     pub fn state(&self) -> TabState {
         self.status.borrow().state
+    }
+
+    pub fn status(&self) -> TabStatus {
+        self.status.borrow().clone()
+    }
+
+    /// Says `text` to assistive technology as a notification of this chip (UI Automation `RaiseNotificationEvent`),
+    /// once: the screen reader speaks it without the user having moved to the chip. Returns whether it was raised.
+    pub fn announce(&self, text: &str) -> bool {
+        let raised = FrameworkElementAutomationPeer::CreatePeerForElement(&self.root).and_then(|peer| {
+            peer.RaiseNotificationEvent(
+                AutomationNotificationKind::Other,
+                AutomationNotificationProcessing::ImportantMostRecent,
+                text,
+                ANNOUNCEMENT_ID,
+            )
+        });
+        match raised {
+            Ok(()) => true,
+            Err(e) => {
+                crate::util::log(&format!("chip announce: {e}"));
+                false
+            }
+        }
     }
 
     /// What the tab shows about its panes; the shell derives it, the chip only draws it.

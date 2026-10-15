@@ -16,11 +16,11 @@ use windows_core::{EventRevoker, Interface, Result};
 
 use nekominal_winui_sys::*;
 
-use crate::chip::{TabId, status_color, status_glyph};
+use crate::chip::{TabId, status_color, status_glyph, status_label, status_text};
 use crate::glass::Glass;
 use crate::i18n::{localize, t, tf};
 use crate::keyboard::{VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP};
-use crate::logic::{self, TabState};
+use crate::logic::{self, Heading, TabState, TabStatus};
 use crate::shell::{Overlay, Shell};
 use crate::util::*;
 
@@ -36,24 +36,32 @@ const COMMAND_ROW_XAML: &str = r#"
   <TextBlock x:Name="Shortcut" Grid.Column="1" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
 </Grid>"#;
 
-/// A row of the list of every tab: status mark, number, title, folder, pane count and shortcut.
+/// A row of the list of every tab: status mark, number, title (with what the tab asks under it), folder, pane count
+/// or the pane that waits, and shortcut. The first row of a group has the heading of the group above it.
 const TAB_ROW_XAML: &str = r#"
 <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       HorizontalAlignment="Stretch" ColumnSpacing="12">
+  <Grid.RowDefinitions>
+    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+  </Grid.RowDefinitions>
   <Grid.ColumnDefinitions>
     <ColumnDefinition Width="12"/><ColumnDefinition Width="Auto" MinWidth="20"/><ColumnDefinition Width="*"/>
     <ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/>
   </Grid.ColumnDefinitions>
-  <Grid VerticalAlignment="Center">
+  <TextBlock x:Name="Heading" Grid.ColumnSpan="6" FontSize="12" Opacity="0.6" Margin="0,0,0,4" Visibility="Collapsed"/>
+  <Grid Grid.Row="1" VerticalAlignment="Center">
     <Ellipse x:Name="Dot" Width="8" Height="8" HorizontalAlignment="Center"/>
     <TextBlock x:Name="Glyph" Visibility="Collapsed" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12"
                HorizontalAlignment="Center"/>
   </Grid>
-  <TextBlock x:Name="Ordinal" Grid.Column="1" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-  <TextBlock x:Name="Title" Grid.Column="2" TextTrimming="CharacterEllipsis"/>
-  <TextBlock x:Name="Folder" Grid.Column="3" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-  <TextBlock x:Name="Panes" Grid.Column="4" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
-  <TextBlock x:Name="Shortcut" Grid.Column="5" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Ordinal" Grid.Row="1" Grid.Column="1" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <StackPanel Grid.Row="1" Grid.Column="2" VerticalAlignment="Center">
+    <TextBlock x:Name="Title" TextTrimming="CharacterEllipsis"/>
+    <TextBlock x:Name="Detail" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
+  </StackPanel>
+  <TextBlock x:Name="Folder" Grid.Row="1" Grid.Column="3" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Panes" Grid.Row="1" Grid.Column="4" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
+  <TextBlock x:Name="Shortcut" Grid.Row="1" Grid.Column="5" Opacity="0.6" FontSize="12" VerticalAlignment="Center"/>
 </Grid>"#;
 
 /// The list item for a row, stretched over the width of the list, with the accessible name and shortcut the row shows.
@@ -73,24 +81,50 @@ fn command_item(entry: &PaletteItem) -> Result<ListViewItem> {
     list_item(&row, &entry.label, &entry.shortcut)
 }
 
-fn tab_item(entry: &TabRow, glass: Option<Glass>) -> Result<ListViewItem> {
+fn tab_item(entry: &TabRow, glass: Option<Glass>, heading: Option<Heading>) -> Result<ListViewItem> {
     let row = load_xaml(TAB_ROW_XAML)?;
-    let panes = if entry.panes > 1 { tf(Text::TabPaneCount, &[&entry.panes]) } else { String::new() };
+    // Where the response is needed, when it is one pane of several; else how many panes there are.
+    let panes = match entry.waiting_pane {
+        Some((position, count)) => tf(Text::TabPanePosition, &[&position, &count]),
+        None if entry.panes > 1 => tf(Text::TabPaneCount, &[&entry.panes]),
+        None => String::new(),
+    };
+    // What the tab says when it asks for a response (an agent's question, a notification), cleaned like any title.
+    let detail = entry.status.message.as_deref().filter(|_| entry.asks()).map(logic::clean_title).unwrap_or_default();
     for (name, text) in [
         ("Ordinal", entry.ordinal.to_string()),
         ("Title", entry.title.clone()),
+        ("Detail", detail.clone()),
         ("Folder", entry.folder.clone()),
         ("Panes", panes),
         ("Shortcut", entry.shortcut.clone()),
     ] {
         find::<TextBlock>(&row, name)?.SetText(&text)?;
     }
+    ui(&find::<TextBlock>(&row, "Detail")?)?.SetVisibility(visibility(!detail.is_empty()))?;
+    if entry.unread {
+        find::<TextBlock>(&row, "Title")?.SetFontWeight(FontWeight { weight: 600 })?;
+    }
+    if let Some(heading) = heading {
+        let block = find::<TextBlock>(&row, "Heading")?;
+        match status_label(heading.state, heading.attention) {
+            Some(word) => block.SetText(t(word))?,
+            // The tabs at rest have no word: their group only starts after a gap.
+            None => fe(&block)?.SetHeight(6.0)?,
+        }
+        ui(&block)?.SetVisibility(Visibility::Visible)?;
+    }
     if let Some(glass) = glass
-        && let Err(e) = paint_state(&row, glass, entry.state)
+        && let Err(e) = paint_state(&row, glass, entry.status.state)
     {
         log(&format!("tab row mark: {e}"));
     }
-    list_item(&row, &entry.title, &entry.shortcut)
+    // The state is in the name as it is in the name of a chip, so it never rests on the colour or the glyph alone.
+    let name = match status_text(&entry.status) {
+        Some(word) => tf(Text::TabNameStatus, &[&entry.title, &word]),
+        None => entry.title.clone(),
+    };
+    list_item(&row, &name, &entry.shortcut)
 }
 
 /// The state of the tab: a glyph that differs from the others without its colour, or the dot.
@@ -122,9 +156,20 @@ pub struct TabRow {
     /// What typing in the list is matched against: the title and the folder.
     pub search: String,
     pub panes: usize,
-    pub state: TabState,
+    pub status: TabStatus,
+    /// The response the tab needs has not been looked at (`logic::Watch`).
+    pub unread: bool,
+    /// Which pane of the tab waits for the user, as (position, count), when the tab has several.
+    pub waiting_pane: Option<(usize, usize)>,
     /// The shortcut that selects the tab, when it has one.
     pub shortcut: String,
+}
+
+impl TabRow {
+    /// The tab asks the user for a response: it is blocked, failed or notified.
+    fn asks(&self) -> bool {
+        logic::is_urgent(self.status.state) || self.status.state == TabState::Attention
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -273,8 +318,13 @@ impl Palette {
         *self.all_tabs.borrow_mut() = shell.tab_rows();
         let _ = self.input.SetText("");
         self.refill();
-        let current = shell.selected_index();
-        if let Some(position) = self.shown_tabs.borrow().get(current).map(|_| current) {
+        // The list opens on the first row of the response that waits when some tab has one nobody looked at (Enter
+        // goes to it), else on the tab that is shown.
+        let current = shell.selected_tab().map(|tab| tab.id);
+        let unread = self.shown_tabs.borrow().iter().any(|row| row.unread);
+        let opened_on =
+            if unread { Some(0) } else { self.shown_tabs.borrow().iter().position(|row| Some(row.id) == current) };
+        if let Some(position) = opened_on {
             self.select(position);
         }
         let _ = ui(&self.input).and_then(|input| input.Focus(FocusState::Programmatic));
@@ -310,14 +360,24 @@ impl Palette {
 
     fn refill_tabs(&self, query: &str) -> usize {
         let matches = fuzzy::rank(self.all_tabs.borrow().clone(), query, |row| row.search.as_str());
+        // Nothing typed and some response unread: the rows fall into groups by state. A typed query ranks by match.
+        let grouped = query.trim().is_empty() && matches.iter().any(|row| row.unread);
+        let states: Vec<_> = matches.iter().map(|row| (row.status.state, row.status.attention)).collect();
+        let entries: Vec<(TabRow, Option<Heading>)> = logic::list_order(&states, grouped)
+            .into_iter()
+            .map(|(index, heading)| (matches[index].clone(), heading))
+            .collect();
         let Ok(items) = self.list.items() else { return 0 };
         let _ = items.Clear();
         let glass = self.shell.upgrade().map(|shell| shell.glass.get());
-        let kept = logic::keep_built(matches, |entry| {
-            tab_item(entry, glass).and_then(|item| items.Append(&item)).map_err(|e| log(&format!("tab row: {e}"))).is_ok()
+        let kept = logic::keep_built(entries, |(entry, heading)| {
+            tab_item(entry, glass, *heading)
+                .and_then(|item| items.Append(&item))
+                .map_err(|e| log(&format!("tab row: {e}")))
+                .is_ok()
         });
         let count = kept.len();
-        *self.shown_tabs.borrow_mut() = kept;
+        *self.shown_tabs.borrow_mut() = kept.into_iter().map(|(row, _)| row).collect();
         count
     }
 

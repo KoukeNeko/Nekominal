@@ -61,6 +61,7 @@ texts! {
     TabNext "tab.next" "下一個分頁" "Next tab";
     TabPrevious "tab.previous" "上一個分頁" "Previous tab";
     TabGoto "tab.goto" "切換到分頁 {0}" "Go to tab {0}";
+    TabNextNeedsResponse "tab.nextNeedsResponse" "下一個需要回應的分頁" "Next tab needing a response";
     TabMoveLeft "tab.moveLeft" "向左移動分頁" "Move tab left";
     TabMoveRight "tab.moveRight" "向右移動分頁" "Move tab right";
     TabProfiles "tab.profiles" "設定檔" "Profiles";
@@ -120,6 +121,8 @@ texts! {
     TabListPlaceholder "tabs.placeholder" "輸入分頁名稱" "Type a tab name";
     TabListEmpty "tabs.empty" "沒有符合的分頁" "No matching tabs";
     TabPaneCount "tab.paneCount" "{0} 個窗格" "{0} panes";
+    // Which pane of a tab waits for the user: the list of every tab says it in place of the pane count.
+    TabPanePosition "tab.panePosition" "窗格 {0} / {1}" "Pane {0} of {1}";
     TabZoomed "tab.zoomed" "已縮放" "Zoomed";
     // The accessible name of a tab that is not at rest: its title, then its state.
     TabNameStatus "tab.nameStatus" "{0}，{1}" "{0}, {1}";

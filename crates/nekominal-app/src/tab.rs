@@ -15,7 +15,7 @@ use windows_core::{EventRevoker, Interface, Result};
 use crate::chip::{ATTENTION_GLYPH, Chip, TabId, status_glyph, status_text};
 use crate::glass::Glass;
 use crate::i18n::{t, tf};
-use crate::logic::{PxRect, TabStatus, divider_px, pane_px_rect, ratio_at, splitter_px_rect};
+use crate::logic::{PxRect, TabStatus, Watch, divider_px, pane_px_rect, ratio_at, splitter_px_rect};
 use crate::pane_view::PaneView;
 use crate::util::{Ext as _, find, load_xaml, solid_brush, ui, visibility};
 
@@ -71,6 +71,8 @@ pub struct Tab {
     pub title: RefCell<String>,
     /// The user named the tab: programs no longer change its title.
     pub renamed: Cell<bool>,
+    /// Whether the response the tab needs has been looked at (see `logic::Watch`).
+    pub watch: RefCell<Watch>,
     visible: Cell<bool>,
     glass: Cell<Glass>,
     dividers: RefCell<Vec<Rc<Divider>>>,
@@ -123,6 +125,7 @@ impl Tab {
             zoomed: Cell::new(None),
             title: RefCell::new(title),
             renamed: Cell::new(false),
+            watch: RefCell::new(Watch::default()),
             visible: Cell::new(false),
             glass: Cell::new(glass),
             dividers: RefCell::new(Vec::new()),
@@ -168,6 +171,38 @@ impl Tab {
 
     pub fn pane_count(&self) -> usize {
         self.panes.borrow().len()
+    }
+
+    /// Whether a pane of the tab waits for the user (`logic::needs_response`, as `refresh_status` last found it).
+    pub fn needs_response(&self) -> bool {
+        self.panes.borrow().iter().any(|pane| pane.needs_response.get())
+    }
+
+    /// For every pane in the order of the layout, whether it waits for the user.
+    pub fn waiting_panes(&self) -> Vec<(PaneId, bool)> {
+        self.layout
+            .borrow()
+            .pane_ids()
+            .into_iter()
+            .map(|id| (id, self.pane(id).is_some_and(|pane| pane.needs_response.get())))
+            .collect()
+    }
+
+    /// Gives the focus to the first pane that waits for the user when the focused one does not (a zoomed pane keeps it:
+    /// the others are not on screen). Returns whether the focus moved.
+    pub fn focus_waiting_pane(self: &Rc<Self>) -> bool {
+        if self.zoomed.get().is_some() {
+            return false;
+        }
+        let panes = self.waiting_panes();
+        let focused_waits = panes.iter().any(|(id, waits)| *id == self.focused.get() && *waits);
+        let Some((target, _)) = panes.into_iter().find(|(_, waits)| *waits).filter(|_| !focused_waits) else {
+            return false;
+        };
+        self.focused.set(target);
+        self.update_focus_look();
+        self.relayout();
+        true
     }
 
     /// Panes whose closing would end work: a command or an agent runs in them (`Pane::is_busy`). A shell waiting

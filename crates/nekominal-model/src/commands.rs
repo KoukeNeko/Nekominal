@@ -16,6 +16,8 @@ pub enum Command {
     /// One-based tab number, 1 to 9; 9 is the last tab (see [`Command::tab_goto_index`]). Other numbers are not
     /// commands: they have no id of their own.
     TabGoto(u8),
+    /// The next tab in strip order after the selected one, wrapping, that has a pane waiting for the user.
+    TabNextNeedsResponse,
     TabMoveLeft,
     TabMoveRight,
     /// The menu of profiles to open a new tab with.
@@ -69,6 +71,7 @@ impl Command {
         Command::TabGoto(7),
         Command::TabGoto(8),
         Command::TabGoto(9),
+        Command::TabNextNeedsResponse,
         Command::TabMoveLeft,
         Command::TabMoveRight,
         Command::TabProfiles,
@@ -127,6 +130,7 @@ impl Command {
             Command::TabGoto(8) => "tab.goto8",
             Command::TabGoto(9) => "tab.goto9",
             Command::TabGoto(_) => "tab.goto",
+            Command::TabNextNeedsResponse => "tab.nextNeedsResponse",
             Command::TabMoveLeft => "tab.moveLeft",
             Command::TabMoveRight => "tab.moveRight",
             Command::TabProfiles => "tab.profiles",
@@ -184,6 +188,7 @@ impl Command {
             Command::TabNext => Text::TabNext,
             Command::TabPrevious => Text::TabPrevious,
             Command::TabGoto(_) => Text::TabGoto,
+            Command::TabNextNeedsResponse => Text::TabNextNeedsResponse,
             Command::TabMoveLeft => Text::TabMoveLeft,
             Command::TabMoveRight => Text::TabMoveRight,
             Command::TabProfiles => Text::TabProfiles,
@@ -253,6 +258,7 @@ impl Command {
             Command::TabGoto(7) => &["Ctrl+Shift+7"],
             Command::TabGoto(8) => &["Ctrl+Shift+8"],
             Command::TabGoto(9) => &["Ctrl+Shift+9"],
+            Command::TabNextNeedsResponse => &["Ctrl+Shift+U"],
             Command::TabProfiles => &["Ctrl+Shift+N"],
             Command::PaneSplitRight => &["Alt+Shift+D", "Alt+Shift+="],
             Command::PaneSplitDown => &["Alt+Shift+S", "Alt+Shift+-"],
@@ -327,13 +333,15 @@ impl Command {
 
     /// Opens, closes or toggles something, so a held key must act once: with keyboard auto-repeat a held
     /// Alt+Shift+D would add a pane every 30 ms, and a held backdrop key would rebuild the system backdrop as
-    /// often. Navigation, resizing and the zoom commands repeat.
+    /// often, and a held jump to the next tab that needs a response would run round them all and stop on any.
+    /// Navigation, resizing and the zoom commands repeat.
     pub fn once_per_press(self) -> bool {
         matches!(
             self,
             Command::TabNew
                 | Command::TabClose
                 | Command::TabProfiles
+                | Command::TabNextNeedsResponse
                 | Command::PaneSplitRight
                 | Command::PaneSplitDown
                 | Command::PaneClose
@@ -431,9 +439,10 @@ mod tests {
             Command::AppearanceBackdropNext => 35,
             Command::AppearanceOpacityUp => 36,
             Command::AppearanceOpacityDown => 37,
+            Command::TabNextNeedsResponse => 38,
         }
     }
-    const VARIANTS: usize = 38;
+    const VARIANTS: usize = 39;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -667,6 +676,10 @@ mod tests {
         };
         assert_eq!(keymap.find(ctrl_shift, "KeyT"), Some(Command::TabNew));
         assert_eq!(keymap.find(ctrl_shift, "Digit3"), Some(Command::TabGoto(3)));
+        assert_eq!(
+            keymap.find(ctrl_shift, "KeyU"),
+            Some(Command::TabNextNeedsResponse)
+        );
         assert_eq!(keymap.find(ctrl, "KeyC"), Some(Command::EditSmartCopy));
         assert_eq!(keymap.find(ctrl_shift, "KeyC"), Some(Command::EditCopy));
         assert_eq!(keymap.find(ctrl, "Comma"), Some(Command::AppSettings));
@@ -749,6 +762,7 @@ mod tests {
             Command::TabNew
             | Command::TabClose
             | Command::TabProfiles
+            | Command::TabNextNeedsResponse
             | Command::PaneSplitRight
             | Command::PaneSplitDown
             | Command::PaneClose

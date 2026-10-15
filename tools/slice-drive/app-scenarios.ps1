@@ -13,6 +13,7 @@
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
+#   Scenario-Unread           # unread responses: the !N of the plate, the grouped list, Ctrl+Shift+U, alerts of an inactive window
 #   Scenario-StatusExit       # a program that ends with an error in the middle of a progress report shows an error
 #   Scenario-Toolbar          # bar tiers at 1440/1000/700/500 DIP, the menu of the "..." button, the split rows of the tab menu
 #   Scenario-Drawer           # the settings drawer: open and close, no resize, focus, Esc steps, search in both languages
@@ -699,6 +700,97 @@ function Scenario-Status {
         $results.Add((Check 'at the prompt, with the agent gone, the tab is named by the rules again' $plain (& $titleOf)))
         'ended in {0:N0} s' -f ((Get-Date) - $start).TotalSeconds
         Assert-Results $results 'status'
+    } -Pattern -NoShot
+}
+
+# The texts of the position plate one by one ('3 / 12', then '!2' while some tab waits), or nothing when it is hidden.
+function Plate-Parts {
+    $plate = Get-Element (Nk-Text 'tab.all') 'Button'
+    if (-not $plate) { return @() }
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
+    @($plate.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name })
+}
+
+# The title of the window of the app (what the taskbar button and Alt+Tab show).
+function Window-Title { $text = New-Object System.Text.StringBuilder 256; [void][D]::GetWindowText($script:Hwnd, $text, 256); $text.ToString() }
+
+# Chords with Ctrl+Shift: the jump to the next tab that needs a response.
+function Jump-To-Response { Chord @(0x11, 0x10) 0x55; Start-Sleep -Milliseconds 500 }
+
+# Unread responses, the jump and the alerts of an inactive window: twelve tabs, three of which report `blocked` six seconds
+# after they were left. The position plate says `!3`, the list puts the three first, viewing one takes it off the count,
+# Ctrl+Shift+U goes round the tabs that wait in the order of the strip and wraps, a response that begins in the pane being
+# looked at is not unread, and a response that begins while the window is not active is announced, flashes the taskbar
+# button and puts the count in the title of the window. Only two alerts are outstanding at a time.
+function Scenario-Unread {
+    Run-App 'unread' @{ confirmClose = $false } {
+        First-Prompt
+        Set-WindowWidth 1400
+        $results = [System.Collections.Generic.List[string]]::new()
+        $esc = '$e=[char]27;$a=[char]7;'
+        $report = { param($fields) $esc + 'Write-Host -NoNewline "$e]7501;' + $fields + '$a";' }
+        $blocked = Nk-Text 'agent.blocked'
+        $waits = { param($n) Type-Line ($esc + 'Start-Sleep 6;' + (& $report "state=blocked:kind=permission:id=t${n}:app=claude:msg=QWxsb3cgZWRpdD8=") + 'Start-Sleep 300') }
+        Name-Tab 't1'
+        foreach ($n in 2..12) {
+            New-Tab; Name-Tab "t$n"
+            if ($n -in 3, 6, 9) { & $waits $n; Start-Sleep -Milliseconds 300 }
+        }
+        Start-Sleep -Milliseconds 8000
+        $titles = { @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ }) }
+        $alerts = { @(Get-Content -LiteralPath $script:LogFile | Where-Object { $_ -match 'alert tab' }) }
+        $results.Add((Check 'twelve tabs, the twelfth shown' '12 / 12' (Plate-Parts)[0]))
+        $results.Add((Check 'three of them wait in hidden tabs: the plate says !3 after the position' '12 / 12|!3' ((Plate-Parts) -join '|')))
+        $results.Add((Check 'two alerts were raised and the third tab waits without one' 2 (& $alerts).Count))
+        $results.Add((Check 'the active window keeps its title' 'Nekominal' (Window-Title)))
+        Shot-Safe (Shot-Path 'unread-plate') | Out-Null
+        $results.Add((Check-True 'the alerts were announced and the taskbar did not flash (the window is active)' (@(& $alerts | Where-Object { $_ -match 'announced true, taskbar flash false' }).Count -eq 2) ((& $alerts) -join ' / ')))
+        # the list: the three that wait come first, in the order of the strip, and the list opens on the first
+        Open-TabList
+        Shot-Safe (Shot-Path 'unread-list') | Out-Null
+        $rows = @(Get-Items | ForEach-Object { $_.Current.Name })
+        $wanted = 't3', 't6', 't9' | ForEach-Object { Nk-Text 'tab.nameStatus' @($_, $blocked) }
+        $results.Add((Check 'the list has a row for each tab' 12 $rows.Count))
+        $results.Add((Check 'the first rows are the tabs that wait, in the order of the strip' ($wanted -join '|') (($rows | Select-Object -First 3) -join '|')))
+        $results.Add((Check 'the others follow in the order of the strip' 't1 t2 t4' (($rows | Select-Object -Skip 3 -First 3) -join ' ')))
+        Press 0x0D; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'Enter on the list opened on the first row selects the first tab that waits' 3 (Selected-Tab)))
+        $results.Add((Check 'viewing it takes it off the count' '3 / 12|!2' ((Plate-Parts) -join '|')))
+        # the jump goes to the next tab that waits, round the strip
+        Jump-To-Response
+        $results.Add((Check 'Ctrl+Shift+U goes to the next tab that waits' 6 (Selected-Tab)))
+        $results.Add((Check 'and that one leaves the count' '6 / 12|!1' ((Plate-Parts) -join '|')))
+        Jump-To-Response
+        $results.Add((Check 'then the next' 9 (Selected-Tab)))
+        $results.Add((Check 'with all three seen there is no count' '9 / 12' ((Plate-Parts) -join '|')))
+        Jump-To-Response
+        $results.Add((Check 'after the last it wraps to the first, which still waits' 3 (Selected-Tab)))
+        $results.Add((Check 'what was seen does not become unread when it is left' '3 / 12' ((Plate-Parts) -join '|')))
+        # a response that begins in the pane being looked at is not unread and raises no alert
+        $before = (& $alerts).Count
+        Click-Name 't1'; Start-Sleep -Milliseconds 400
+        Type-Line ($esc + (& $report 'state=blocked:id=here') + 'Start-Sleep 300'); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'a tab that waits in front of the user adds nothing to the count' '1 / 12' ((Plate-Parts) -join '|')))
+        $results.Add((Check 'and raises no alert' $before (& $alerts).Count))
+        $results.Add((Check 'the chip says it waits all the same' $blocked ((Get-Chips | Where-Object { $_.Index -eq 1 }).Status)))
+        # a response that begins while the window is not active: announced, flashed, counted in the title
+        Click-Name 't12'; Start-Sleep -Milliseconds 400
+        Type-Line ($esc + 'Start-Sleep 6;' + (& $report 'state=blocked:kind=question:id=late:app=claude') + 'Start-Sleep 300'); Start-Sleep -Milliseconds 400
+        Click-Name 't2'; Start-Sleep -Milliseconds 400
+        if (-not (Move-PatternAway)) { throw 'no corner of the screen is free of the app window' }
+        [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 8500
+        $inactive = @(& $alerts | Select-Object -Skip $before)
+        $results.Add((Check 'one more alert, announced, and the taskbar button flashed' 1 $inactive.Count))
+        $results.Add((Check-True 'it flashed the taskbar button' ($inactive.Count -eq 1 -and $inactive[0] -match 'announced true, taskbar flash true') ($inactive -join ' / ')))
+        $results.Add((Check 'the title of the inactive window counts the tabs that wait (t1, t3, t6, t9 and t12)' '!5 Nekominal' (Window-Title)))
+        [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 900
+        $results.Add((Check 'back in the foreground the title is plain again' 'Nekominal' (Window-Title)))
+        $results.Add((Check 'and the response that came meanwhile is on the plate' '2 / 12|!1' ((Plate-Parts) -join '|')))
+        # a narrow window keeps the count and drops the position
+        Set-WindowWidth 700
+        $results.Add((Check 'in the narrow bar the plate has the total and the count' '12|!1' ((Plate-Parts) -join '|')))
+        Set-WindowWidth 1400
+        Assert-Results $results 'unread'
     } -Pattern -NoShot
 }
 
@@ -2053,4 +2145,4 @@ function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }

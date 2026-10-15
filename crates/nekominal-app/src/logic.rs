@@ -231,6 +231,199 @@ pub fn hidden_alert(panes: &[PaneSignal], zoomed: Option<usize>) -> Option<TabSt
     (!waiting.is_empty()).then(|| tab_status(&waiting))
 }
 
+/// How much a state needs the user, higher first. It is `tab_status`'s order, which is `AgentState::urgency` doubled
+/// so that a bell or a notification fits between idle and done; the list of tabs sorts by it.
+pub fn state_rank(state: TabState) -> u8 {
+    let rank = |state: AgentState| state.urgency() * 2;
+    match state {
+        TabState::Blocked => rank(AgentState::Blocked),
+        TabState::Error => rank(AgentState::Error),
+        TabState::Working => rank(AgentState::Working),
+        TabState::Done => rank(AgentState::Done),
+        TabState::Attention => ATTENTION_RANK,
+        TabState::Idle => rank(AgentState::Idle),
+    }
+}
+
+/// A tab is blocked or failed: the states the count on the position plate is of, and the ones a window-level alert is
+/// raised for besides a notification.
+pub fn is_urgent(state: TabState) -> bool {
+    matches!(state, TabState::Blocked | TabState::Error)
+}
+
+/// What a window-level alert (an announcement to assistive technology, a flash of the taskbar button) is raised for.
+/// A bell is not one: it has its own settings (`bell_effects`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertKind {
+    Blocked,
+    Error,
+    Notification,
+}
+
+pub fn alert_kind(status: &TabStatus) -> Option<AlertKind> {
+    match status.state {
+        TabState::Blocked => Some(AlertKind::Blocked),
+        TabState::Error => Some(AlertKind::Error),
+        TabState::Attention if status.attention == Some(Attention::Notification) => Some(AlertKind::Notification),
+        _ => None,
+    }
+}
+
+/// What a tab asks of the user at one moment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Need {
+    /// A pane of the tab waits for the user (`needs_response`).
+    pub waiting: bool,
+    /// The reason, when it is one a window-level alert is raised for.
+    pub alert: Option<AlertKind>,
+}
+
+impl Need {
+    pub fn of(panes: &[PaneSignal], status: &TabStatus) -> Need {
+        Need { waiting: panes.iter().any(needs_response), alert: alert_kind(status) }
+    }
+}
+
+/// How many alerts may be outstanding at once: a third tab that needs a response while two alerts are still waiting
+/// for the user gets its mark, its unread flag and its place in the counts, but no announcement and no flash.
+pub const MAX_ALERTS: usize = 2;
+
+/// What the user has been shown of the response a tab needs. The flag is separate from the status the chip draws, which
+/// is read live from the panes: it says only that the response has not been looked at.
+#[derive(Clone, Debug, Default)]
+pub struct Watch {
+    need: Need,
+    unread: bool,
+    alerted: bool,
+}
+
+impl Watch {
+    /// A response nobody has looked at yet: it began while the tab was out of sight (another tab was selected, or the
+    /// window was not active), and neither viewing the tab nor the end of the need has come since.
+    pub fn unread(&self) -> bool {
+        self.unread
+    }
+
+    /// A window-level alert was raised for it and is still outstanding.
+    pub fn alerted(&self) -> bool {
+        self.alerted
+    }
+
+    /// The tab asks for `now`. `watched` is whether the user is looking at it: it is the selected tab of the active
+    /// window. `other_alerts` is how many other tabs have an alert that is still outstanding. Returns the alert to
+    /// raise, if this is the moment for one.
+    ///
+    /// A need that begins (or turns into a more urgent kind) while the tab is out of sight is unread. Watching the
+    /// tab, or the need ending, clears it; the tab being left again afterwards does not bring it back.
+    pub fn observe(&mut self, now: Need, watched: bool, other_alerts: usize) -> Option<AlertKind> {
+        let before = std::mem::replace(&mut self.need, now);
+        if !now.waiting || watched {
+            self.unread = false;
+            self.alerted = false;
+            return None;
+        }
+        let fresh = !before.waiting || (now.alert.is_some() && now.alert != before.alert);
+        self.unread |= fresh;
+        let raise = if fresh && other_alerts < MAX_ALERTS { now.alert } else { None };
+        self.alerted |= raise.is_some();
+        raise
+    }
+}
+
+/// A tab as the counts of the position plate and of the window title see it.
+#[derive(Clone, Copy, Debug)]
+pub struct TabAttention {
+    pub state: TabState,
+    pub unread: bool,
+    pub selected: bool,
+    /// A pane of the tab waits for the user.
+    pub waiting: bool,
+}
+
+/// The `!N` of the position plate: the tabs that are not selected, are blocked or failed, and have a response that
+/// nobody has looked at.
+pub fn plate_count(tabs: &[TabAttention]) -> usize {
+    tabs.iter().filter(|tab| tab.unread && !tab.selected && is_urgent(tab.state)).count()
+}
+
+/// How many tabs wait for the user now, seen or not: the count in the title of a window that is not active.
+pub fn waiting_count(tabs: &[TabAttention]) -> usize {
+    tabs.iter().filter(|tab| tab.waiting).count()
+}
+
+/// The mark before a count of tabs that need a response, on the position plate and in the window title. Text on
+/// purpose: nothing in the interface is a circle or a badge.
+pub const ATTENTION_MARK: char = '!';
+
+/// `!2`; nothing for none.
+pub fn attention_text(count: usize) -> Option<String> {
+    (count > 0).then(|| format!("{ATTENTION_MARK}{count}"))
+}
+
+/// The title of the window. While it is not active it starts with the count of the tabs that wait for the user, which
+/// the taskbar button and Alt+Tab show.
+pub fn window_title(app: &str, waiting: usize, window_active: bool) -> String {
+    match attention_text(waiting) {
+        Some(count) if !window_active => format!("{count} {app}"),
+        _ => app.to_owned(),
+    }
+}
+
+/// The tab that "next tab needing a response" goes to: the first after `selected`, in strip order and wrapping, that
+/// waits for the user. `None` when no other tab does.
+pub fn next_waiting(waiting: &[bool], selected: usize) -> Option<usize> {
+    let count = waiting.len();
+    (1..count).map(|step| (selected + step) % count).find(|index| waiting[*index])
+}
+
+/// Where the pane that waits for the user is among the panes of its tab, as (position, count) one-based; the first
+/// such pane in `waiting` (the panes in the order of the layout). Nothing for a tab with a single pane.
+pub fn waiting_pane(waiting: &[bool]) -> Option<(usize, usize)> {
+    if waiting.len() < 2 {
+        return None;
+    }
+    waiting.iter().position(|pane| *pane).map(|index| (index + 1, waiting.len()))
+}
+
+/// The heading of a group of rows in the list of every tab: the state its tabs are in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Heading {
+    pub state: TabState,
+    /// Told apart for a state of `Attention` only: a notification and a bell are two groups.
+    pub attention: Option<Attention>,
+}
+
+/// The order of the rows of the list of every tab, as (index of the tab in strip order, heading it opens). While some
+/// tab is unread (`any_unread`) the rows are grouped by state, the most urgent group first (`state_rank`), each group in
+/// strip order, and the first row of a group carries its heading. Otherwise the rows keep the strip order and have
+/// none. `tabs` are the state and the attention of every tab in strip order.
+pub fn list_order(tabs: &[(TabState, Option<Attention>)], any_unread: bool) -> Vec<(usize, Option<Heading>)> {
+    if !any_unread {
+        return (0..tabs.len()).map(|index| (index, None)).collect();
+    }
+    let heading = |index: usize| {
+        let (state, attention) = tabs[index];
+        Heading { state, attention: if state == TabState::Attention { attention } else { None } }
+    };
+    let kind_order = |heading: Heading| match heading.attention {
+        Some(Attention::Notification) => 0,
+        Some(_) => 1,
+        None => 2,
+    };
+    let mut order: Vec<usize> = (0..tabs.len()).collect();
+    order.sort_by_key(|index| (std::cmp::Reverse(state_rank(tabs[*index].0)), kind_order(heading(*index)), *index));
+    let mut previous = None;
+    order
+        .into_iter()
+        .map(|index| {
+            let current = heading(index);
+            let opens = previous != Some(current);
+            previous = Some(current);
+            (index, opens.then_some(current))
+        })
+        .collect()
+}
+
 /// An unselected chip is never narrower than this, in DIP.
 pub const CHIP_MIN_WIDTH: f64 = 48.0;
 /// No chip is wider than this.
@@ -1250,6 +1443,237 @@ mod tests {
     #[test]
     fn an_agent_record_that_says_idle_shows_nothing() {
         assert_eq!(tab_status(&[agent(AgentState::Idle)]), TabStatus::default());
+    }
+
+    fn tab_state_of(state: AgentState) -> TabState {
+        match state {
+            AgentState::Idle => TabState::Idle,
+            AgentState::Working => TabState::Working,
+            AgentState::Done => TabState::Done,
+            AgentState::Blocked => TabState::Blocked,
+            AgentState::Error => TabState::Error,
+        }
+    }
+
+    #[test]
+    fn states_are_ranked_by_the_urgency_of_the_emulator_with_a_bell_between_idle_and_done() {
+        let all = [AgentState::Idle, AgentState::Working, AgentState::Done, AgentState::Blocked, AgentState::Error];
+        for a in all {
+            for b in all {
+                assert_eq!(
+                    state_rank(tab_state_of(a)).cmp(&state_rank(tab_state_of(b))),
+                    a.urgency().cmp(&b.urgency()),
+                    "{a:?} against {b:?}"
+                );
+            }
+        }
+        assert!(state_rank(TabState::Idle) < state_rank(TabState::Attention));
+        assert!(state_rank(TabState::Attention) < state_rank(TabState::Done));
+        // The status of a tab is the one of its most urgent pane, by this rank.
+        let mixed = [agent(AgentState::Done), agent(AgentState::Working)];
+        assert_eq!(tab_status(&mixed).state, TabState::Working);
+        assert!(state_rank(TabState::Working) > state_rank(TabState::Done));
+    }
+
+    fn waiting(alert: Option<AlertKind>) -> Need {
+        Need { waiting: true, alert }
+    }
+
+    const QUIET: Need = Need { waiting: false, alert: None };
+
+    #[test]
+    fn a_response_that_begins_out_of_sight_is_unread_and_raises_one_alert() {
+        let mut watch = Watch::default();
+        assert_eq!(watch.observe(QUIET, false, 0), None);
+        assert!(!watch.unread() && !watch.alerted());
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
+        assert!(watch.unread() && watch.alerted());
+        // The same need seen again raises nothing more and stays unread.
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
+        assert!(watch.unread());
+        // A tab that is selected in the active window is watched: viewing it clears the flag and frees the alert.
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), true, 0), None);
+        assert!(!watch.unread() && !watch.alerted());
+    }
+
+    #[test]
+    fn leaving_a_tab_whose_response_was_seen_does_not_make_it_unread_again() {
+        let mut watch = Watch::default();
+        watch.observe(waiting(Some(AlertKind::Blocked)), false, 0);
+        watch.observe(waiting(Some(AlertKind::Blocked)), true, 0);
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
+        assert!(!watch.unread(), "it still waits, but the user has seen it");
+        // A new need after the old one ended is unread again.
+        watch.observe(QUIET, false, 0);
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
+        assert!(watch.unread());
+    }
+
+    #[test]
+    fn the_need_ending_clears_the_flag_without_anybody_looking() {
+        let mut watch = Watch::default();
+        watch.observe(waiting(Some(AlertKind::Error)), false, 0);
+        assert!(watch.unread());
+        watch.observe(QUIET, false, 0);
+        assert!(!watch.unread() && !watch.alerted());
+    }
+
+    #[test]
+    fn a_more_urgent_kind_is_a_new_need_and_a_bell_is_unread_without_an_alert() {
+        let mut watch = Watch::default();
+        // A bell: unread, but it has its own settings and raises no alert here.
+        assert_eq!(watch.observe(waiting(None), false, 0), None);
+        assert!(watch.unread() && !watch.alerted());
+        // The same tab then blocks: that raises one.
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
+        // Blocked turning into an error is announced again; an error staying one is not.
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Error)), false, 0), Some(AlertKind::Error));
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Error)), false, 0), None);
+    }
+
+    #[test]
+    fn at_most_two_alerts_are_outstanding_and_the_third_tab_is_unread_all_the_same() {
+        let mut third = Watch::default();
+        assert_eq!(third.observe(waiting(Some(AlertKind::Blocked)), false, MAX_ALERTS), None);
+        assert!(third.unread(), "it counts for the plate and the list");
+        assert!(!third.alerted(), "but it holds no alert");
+        // A slot freed later does not announce what was already waiting.
+        assert_eq!(third.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
+        let mut second = Watch::default();
+        assert_eq!(second.observe(waiting(Some(AlertKind::Blocked)), false, MAX_ALERTS - 1), Some(AlertKind::Blocked));
+    }
+
+    #[test]
+    fn a_need_in_the_window_the_user_is_looking_at_raises_nothing() {
+        let mut watch = Watch::default();
+        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), true, 0), None);
+        assert!(!watch.unread() && !watch.alerted());
+    }
+
+    #[test]
+    fn alerts_are_raised_for_blocked_failed_and_notified_tabs_but_not_for_a_bell() {
+        let of = |panes: &[PaneSignal]| alert_kind(&tab_status(panes));
+        assert_eq!(of(&[agent(AgentState::Blocked)]), Some(AlertKind::Blocked));
+        assert_eq!(of(&[agent(AgentState::Error)]), Some(AlertKind::Error));
+        let exit = PaneSignal { attention: Some(Attention::Exit), ..PaneSignal::default() };
+        assert_eq!(of(&[exit]), Some(AlertKind::Error));
+        let note = PaneSignal { attention: Some(Attention::Notification), ..PaneSignal::default() };
+        assert_eq!(of(&[note]), Some(AlertKind::Notification));
+        let bell = PaneSignal { attention: Some(Attention::Bell), ..PaneSignal::default() };
+        assert_eq!(of(&[bell.clone()]), None);
+        assert_eq!(of(&[agent(AgentState::Working), agent(AgentState::Done)]), None);
+        // A tab needs a response for a bell, though.
+        let status = tab_status(&[bell.clone()]);
+        assert_eq!(Need::of(&[bell], &status), Need { waiting: true, alert: None });
+        assert_eq!(Need::of(&[agent(AgentState::Working)], &TabStatus::default()), QUIET);
+    }
+
+    fn attention(state: TabState, unread: bool, selected: bool) -> TabAttention {
+        TabAttention {
+            state,
+            unread,
+            selected,
+            waiting: matches!(state, TabState::Blocked | TabState::Error | TabState::Attention),
+        }
+    }
+
+    #[test]
+    fn the_plate_counts_unread_blocked_and_failed_tabs_that_are_not_selected() {
+        let tabs = [
+            attention(TabState::Blocked, true, false),
+            attention(TabState::Error, true, false),
+            attention(TabState::Blocked, true, true),
+            attention(TabState::Blocked, false, false),
+            attention(TabState::Attention, true, false),
+            attention(TabState::Done, true, false),
+            attention(TabState::Working, true, false),
+            attention(TabState::Idle, false, false),
+        ];
+        assert_eq!(plate_count(&tabs), 2, "a blocked one that is selected, seen, a bell and the rest are not counted");
+        assert_eq!(plate_count(&[]), 0);
+        // The window title counts everything that waits, the selected tab and the seen ones included.
+        assert_eq!(waiting_count(&tabs), 5);
+    }
+
+    #[test]
+    fn a_count_is_text_with_a_mark_and_is_not_there_for_none() {
+        assert_eq!(attention_text(0), None);
+        assert_eq!(attention_text(3).as_deref(), Some("!3"));
+        assert_eq!(attention_text(12).as_deref(), Some("!12"));
+        assert_eq!(window_title("Nekominal", 2, false), "!2 Nekominal");
+        assert_eq!(window_title("Nekominal", 2, true), "Nekominal", "an active window shows no count");
+        assert_eq!(window_title("Nekominal", 0, false), "Nekominal");
+    }
+
+    #[test]
+    fn the_next_tab_that_waits_follows_the_strip_order_and_wraps() {
+        let waiting = [false, true, false, true, true, false];
+        assert_eq!(next_waiting(&waiting, 0), Some(1));
+        assert_eq!(next_waiting(&waiting, 1), Some(3));
+        assert_eq!(next_waiting(&waiting, 3), Some(4));
+        assert_eq!(next_waiting(&waiting, 4), Some(1), "after the last one it wraps to the first");
+        assert_eq!(next_waiting(&waiting, 5), Some(1));
+        assert_eq!(next_waiting(&[false, true], 1), None, "the only tab that waits is the one shown");
+        assert_eq!(next_waiting(&[false, false, false], 1), None);
+        assert_eq!(next_waiting(&[true], 0), None);
+        assert_eq!(next_waiting(&[], 0), None);
+        // Visiting them in turn from the first returns to where it began.
+        let mut at = 0;
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            at = next_waiting(&waiting, at).unwrap();
+            seen.push(at);
+        }
+        assert_eq!(seen, [1, 3, 4]);
+    }
+
+    #[test]
+    fn the_pane_that_waits_is_named_by_its_place_among_several() {
+        assert_eq!(waiting_pane(&[]), None);
+        assert_eq!(waiting_pane(&[true]), None, "a single pane needs no place");
+        assert_eq!(waiting_pane(&[false, true, false]), Some((2, 3)));
+        assert_eq!(waiting_pane(&[true, true]), Some((1, 2)), "the first of those that wait");
+        assert_eq!(waiting_pane(&[false, false]), None);
+    }
+
+    #[test]
+    fn the_list_groups_tabs_by_state_most_urgent_first_when_one_is_unread_and_keeps_the_strip_order_otherwise() {
+        let tabs = [
+            (TabState::Idle, None),
+            (TabState::Done, None),
+            (TabState::Blocked, None),
+            (TabState::Working, None),
+            (TabState::Error, None),
+            (TabState::Blocked, None),
+            (TabState::Attention, Some(Attention::Bell)),
+            (TabState::Attention, Some(Attention::Notification)),
+        ];
+        let plain = list_order(&tabs, false);
+        assert_eq!(plain.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert!(plain.iter().all(|(_, heading)| heading.is_none()));
+
+        let grouped = list_order(&tabs, true);
+        let order: Vec<usize> = grouped.iter().map(|(index, _)| *index).collect();
+        // Blocked (2, 5), error (4), working (3), done (1), a notification (7), a bell (6), the rest (0).
+        assert_eq!(order, [2, 5, 4, 3, 1, 7, 6, 0]);
+        let headings: Vec<(usize, TabState)> =
+            grouped.iter().filter_map(|(index, heading)| heading.map(|heading| (*index, heading.state))).collect();
+        assert_eq!(
+            headings,
+            [
+                (2, TabState::Blocked),
+                (4, TabState::Error),
+                (3, TabState::Working),
+                (1, TabState::Done),
+                (7, TabState::Attention),
+                (6, TabState::Attention),
+                (0, TabState::Idle)
+            ]
+        );
+        let notification = grouped[5].1.unwrap();
+        assert_eq!(notification.attention, Some(Attention::Notification));
+        assert_eq!(grouped[6].1.unwrap().attention, Some(Attention::Bell));
+        assert_eq!(list_order(&[], true), Vec::new());
     }
 
     #[test]

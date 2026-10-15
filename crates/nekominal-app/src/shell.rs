@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use nekominal_model::{
-    bell::{BellContext, bell_effects},
+    bell::{BellContext, bell_effects, flash_for_response},
     commands::{self, Command},
     keymap::{self, Keymap},
     layout::{Axis, PaneId},
@@ -18,7 +18,7 @@ use nekominal_model::{
     settings::{self, Backdrop, Problem, Settings},
     settings_ui::{Descriptor, Value},
     store,
-    strings::{Lang, Text},
+    strings::{APP_NAME, Lang, Text},
     themes::{self},
 };
 use nekominal_pane::host::Activity;
@@ -32,14 +32,14 @@ use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
-use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId};
+use crate::chip::{CHIP_GAP, Chip, TabEvent, TabId, status_text};
 use crate::design;
 use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
 use crate::logic::{
-    self, AgentLabel, Attention, BarTier, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts,
-    TitleSource,
+    self, AgentLabel, AlertKind, Attention, BarTier, COUNT_BLOCK_WIDTH, Need, PaneSignal, Plate, REVEAL_MARGIN,
+    Reported, TabAttention, TabStatus, TitleParts, TitleSource,
 };
 use crate::palette::TabRow;
 use crate::pane_view::{Look, PaneRequest, PaneView};
@@ -82,6 +82,8 @@ struct Ui {
     tab_plate: Border,
     tab_plate_button: Button,
     tab_plate_text: TextBlock,
+    /// `!2` after the position: the tabs that are blocked or failed, not shown, with a response nobody looked at.
+    tab_plate_attention: TextBlock,
     drag: Grid,
     tool_cluster: Border,
     tool_split_right: Button,
@@ -150,6 +152,11 @@ pub struct Shell {
     window_active: Cell<bool>,
     /// When the window last flashed its taskbar button or played a sound: those happen at most once a second.
     last_alert: Cell<Option<Instant>>,
+    /// The count after the position on the plate as the last layout of the strip drew it, and the title the window has.
+    plate_attention: Cell<usize>,
+    window_title: RefCell<String>,
+    /// The window was closed: its title can no longer be set.
+    closed: Cell<bool>,
     palette: RefCell<Option<Rc<palette::Palette>>>,
     find: RefCell<Option<Rc<findbar::FindBar>>>,
     /// The settings drawer. It is not an `Overlay`: it floats over the terminal without taking the keyboard from it.
@@ -300,7 +307,7 @@ pub fn launch() -> Result<()> {
     let _ = ApplicationLanguages::SetPrimaryLanguageOverride(lang.tag());
 
     let window = Window::new()?;
-    window.SetTitle("Nekominal")?;
+    window.SetTitle(APP_NAME)?;
     let resources: ResourceDictionary = XamlReader::Load(&design::resources_xaml())?.cast()?;
     Application::Current()?.Resources()?.MergedDictionaries()?.Append(&resources)?;
     let root = load_xaml(&localize(SHELL_XAML))?;
@@ -332,6 +339,7 @@ pub fn launch() -> Result<()> {
         tab_plate: find(&root, "TabPlate")?,
         tab_plate_button: find(&root, "TabPlateButton")?,
         tab_plate_text: find(&root, "TabPlateText")?,
+        tab_plate_attention: find(&root, "TabPlateAttention")?,
         drag: find(&root, "DragRegion")?,
         tool_cluster: find(&root, "ToolCluster")?,
         tool_split_right: find(&root, "ToolSplitRight")?,
@@ -383,6 +391,9 @@ pub fn launch() -> Result<()> {
         syncing_controls: Cell::new(false),
         window_active: Cell::new(true),
         last_alert: Cell::new(None),
+        plate_attention: Cell::new(0),
+        window_title: RefCell::new(APP_NAME.to_owned()),
+        closed: Cell::new(false),
         palette: RefCell::new(None),
         find: RefCell::new(None),
         drawer: RefCell::new(None),
@@ -553,6 +564,8 @@ impl Shell {
         ] {
             self.palette_brush(key)?.SetColor(xaml_color(color))?;
         }
+        // The count of the plate is amber, the colour of what waits for the user.
+        self.ui.tab_plate_attention.SetForeground(&solid_brush(glass.mark(glass.warning))?)?;
         if self.backdrop_applied.get() != Some(backdrop) {
             // The rest of the glass is applied either way; what stays as it was is said once, in the InfoBar.
             match window::set_system_backdrop(&self.window, backdrop) {
@@ -898,8 +911,11 @@ impl Shell {
         self.update_strip_edges(None);
     }
 
-    /// Shows `current / total` (or the total alone on a narrow strip) and returns the width the plate takes.
+    /// Shows `current / total` (or the total alone on a narrow strip), then the `!N` of the tabs that wait for the user,
+    /// and returns the width the plate takes. The count is shown on a narrow strip too: it is what the plate is for.
     fn update_plate(&self, count: usize, selected: usize, budget: f64) -> f64 {
+        let unread = logic::plate_count(&self.attention_tabs());
+        self.plate_attention.set(unread);
         let text = match logic::plate(selected, count, budget, self.tier()) {
             None => {
                 let _ = ui(&self.ui.tab_plate).and_then(|plate| plate.SetVisibility(Visibility::Collapsed));
@@ -909,6 +925,9 @@ impl Shell {
             Some(Plate::Total(total)) => total.to_string(),
         };
         let _ = self.ui.tab_plate_text.SetText(&text);
+        let attention = logic::attention_text(unread);
+        let _ = self.ui.tab_plate_attention.SetText(attention.as_deref().unwrap_or_default());
+        let _ = ui(&self.ui.tab_plate_attention).and_then(|mark| mark.SetVisibility(visibility(attention.is_some())));
         let plate = ui(&self.ui.tab_plate);
         let _ = plate.as_ref().map(|plate| plate.SetVisibility(Visibility::Visible));
         let measured = plate.and_then(|plate| {
@@ -1000,6 +1019,8 @@ impl Shell {
                 this.apply_pending_opacity();
                 this.flush_settings();
             }
+            // The title of an inactive window carries the count of the tabs that wait for the user.
+            this.update_attention();
         }))?);
         self.revokers.borrow_mut().extend(revokers);
         Ok(())
@@ -1008,6 +1029,7 @@ impl Shell {
     /// Every session ends here, while the process can still start the threads that close them (critique.md C14).
     fn on_closed(self: &Rc<Self>) {
         log("window closed: ending every session");
+        self.closed.set(true);
         if let Err(e) = window::restore_alt_chords(&self.window) {
             log(&format!("restore_alt_chords: {e}"));
         }
@@ -1274,7 +1296,76 @@ impl Shell {
         if tab.chip.state() != status.state {
             log(&format!("tab {} status {:?}", tab.id, status.state));
         }
-        tab.chip.set_status(status);
+        // Whether the response was looked at is a flag of its own (`logic::Watch`): the chip shows what the panes say
+        // now, and the flag says only that the user was not there when it began.
+        let watched = self.window_active.get() && tab.is_visible();
+        let other_alerts =
+            self.tabs.borrow().iter().filter(|other| other.id != tab.id && other.watch.borrow().alerted()).count();
+        let raised = tab.watch.borrow_mut().observe(Need::of(&signals, &status), watched, other_alerts);
+        tab.chip.set_status(status.clone());
+        if let Some(kind) = raised {
+            self.raise_alert(tab, kind, &status);
+        }
+        self.update_attention();
+    }
+
+    /// A tab began to need a response out of sight: the screen reader is told once, and the taskbar button flashes while
+    /// the window is not active (at most once a second, with the bell and the sound; `bell.taskbar` is the setting).
+    /// Neither happens when two alerts are outstanding already (`logic::MAX_ALERTS`); the tab has its mark all the same.
+    fn raise_alert(&self, tab: &Rc<Tab>, kind: AlertKind, status: &TabStatus) {
+        let flash = flash_for_response(
+            self.settings.borrow().bell.taskbar,
+            self.window_active.get(),
+            self.last_alert.get().map(|at| at.elapsed()),
+        );
+        if flash {
+            match window::flash_taskbar(&self.window) {
+                Ok(()) => self.last_alert.set(Some(Instant::now())),
+                Err(e) => log(&format!("taskbar flash: {e}")),
+            }
+        }
+        let name = match status_text(status) {
+            Some(word) => tf(Text::TabNameStatus, &[&*tab.title.borrow(), &word]),
+            None => tab.title.borrow().clone(),
+        };
+        let announced = tab.chip.announce(&name);
+        log(&format!("alert tab {} {kind:?}: announced {announced}, taskbar flash {flash}", tab.id));
+    }
+
+    /// Every tab as the counts see it.
+    fn attention_tabs(&self) -> Vec<TabAttention> {
+        let selected = self.selected.get();
+        self.tabs
+            .borrow()
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| TabAttention {
+                state: tab.chip.state(),
+                unread: tab.watch.borrow().unread(),
+                selected: index == selected,
+                waiting: tab.needs_response(),
+            })
+            .collect()
+    }
+
+    /// The `!N` of the plate (the strip is laid out again when its width changes) and the title of the window follow the
+    /// tabs. Runs whenever what a tab needs, or whether the window is active, changes.
+    fn update_attention(&self) {
+        if self.closed.get() {
+            return;
+        }
+        let tabs = self.attention_tabs();
+        if logic::plate_count(&tabs) != self.plate_attention.get() {
+            self.layout_tabs(false);
+        }
+        let title = logic::window_title(APP_NAME, logic::waiting_count(&tabs), self.window_active.get());
+        if *self.window_title.borrow() != title {
+            if let Err(e) = self.window.SetTitle(&title) {
+                log(&format!("window title: {e}"));
+            }
+            log(&format!("window title '{title}'"));
+            *self.window_title.borrow_mut() = title;
+        }
     }
 
     /// The user has seen the focused pane of the tab: its bells, notifications and what a finished or failed agent
@@ -1321,6 +1412,7 @@ impl Shell {
                 let cwd = tab.focused_pane().and_then(|pane| pane.cwd.borrow().clone());
                 let folder =
                     cwd.map(|cwd| logic::folder_label(&cwd.to_string_lossy(), home.as_deref())).unwrap_or_default();
+                let waiting: Vec<bool> = tab.waiting_panes().into_iter().map(|(_, waits)| waits).collect();
                 TabRow {
                     id: tab.id,
                     ordinal: index + 1,
@@ -1328,7 +1420,9 @@ impl Shell {
                     title,
                     folder,
                     panes: tab.pane_count(),
-                    state: tab.chip.state(),
+                    status: tab.chip.status(),
+                    unread: tab.watch.borrow().unread(),
+                    waiting_pane: logic::waiting_pane(&waiting),
                     shortcut: Command::tab_goto_number(index, tabs.len())
                         .map(|number| keymap.shortcut_text(Command::TabGoto(number)))
                         .unwrap_or_default(),
@@ -1456,6 +1550,15 @@ impl Shell {
         self.show_index(index);
     }
 
+    /// Selects the tab at `index` the way the list of every tab and the jump to the next response do: where a pane of the
+    /// tab waits for the user, that pane is the one that gets the focus.
+    fn go_to_tab(self: &Rc<Self>, index: usize) {
+        if let Some(tab) = self.tabs.borrow().get(index).cloned() {
+            tab.focus_waiting_pane();
+        }
+        self.select_index(index);
+    }
+
     /// Shows the tab at `index` without touching the order of use (the next/previous keys do that when they come up).
     fn show_index(self: &Rc<Self>, index: usize) {
         let tabs = self.tabs.borrow().clone();
@@ -1485,10 +1588,6 @@ impl Shell {
         if let Some(pane) = self.selected_tab().and_then(|tab| tab.focused_pane()) {
             pane.focus();
         }
-    }
-
-    pub fn selected_index(&self) -> usize {
-        self.selected.get()
     }
 
     fn move_tab(self: &Rc<Self>, id: TabId, to: usize) {
@@ -2295,6 +2394,12 @@ impl Shell {
                         self.select_index(index);
                     }
                 }
+                Command::TabNextNeedsResponse => {
+                    let waiting: Vec<bool> = self.tabs.borrow().iter().map(|tab| tab.needs_response()).collect();
+                    if let Some(index) = logic::next_waiting(&waiting, self.selected.get()) {
+                        self.go_to_tab(index);
+                    }
+                }
                 Command::TabMoveLeft | Command::TabMoveRight => {
                     if let Some(tab) = &tab {
                         let index = self.selected.get();
@@ -2417,7 +2522,7 @@ impl Shell {
             PaletteAction::Run(command) => self.run(command),
             PaletteAction::GotoTab(id) => {
                 if let Some(index) = self.tab_index(id) {
-                    self.select_index(index);
+                    self.go_to_tab(index);
                 }
             }
             PaletteAction::NewTab(id) => {

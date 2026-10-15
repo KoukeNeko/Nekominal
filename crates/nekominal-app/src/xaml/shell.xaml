@@ -72,7 +72,12 @@
         <Border x:Name="TabPlate" Margin="4,0,0,0" Height="32" CornerRadius="{StaticResource NkCornerRadius}"
                 Background="{StaticResource NkCluster}" Visibility="Collapsed">
           <Button x:Name="TabPlateButton" Style="{StaticResource NkIconButton}" Width="NaN" MinWidth="32" Padding="10,0">
-            <TextBlock x:Name="TabPlateText" FontFamily="Segoe UI Variable Text" FontSize="12.5"/>
+            <!-- `3 / 12`, then `!2` in amber (text, not a badge) while tabs wait for the user. -->
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock x:Name="TabPlateText" FontFamily="Segoe UI Variable Text" FontSize="12.5"/>
+              <TextBlock x:Name="TabPlateAttention" FontFamily="Segoe UI Variable Text" FontSize="12.5" FontWeight="SemiBold"
+                         Visibility="Collapsed"/>
+            </StackPanel>
           </Button>
         </Border>
       </StackPanel>

@@ -49,10 +49,7 @@ pub fn bell_effects(settings: &Bell, context: &BellContext) -> BellEffects {
         chip |= !watching;
         flash |= !context.window_active;
     }
-    if context
-        .since_last_alert
-        .is_some_and(|since| since < ALERT_INTERVAL)
-    {
+    if !alert_due(context.since_last_alert) {
         flash = false;
         play = false;
     }
@@ -61,6 +58,22 @@ pub fn bell_effects(settings: &Bell, context: &BellContext) -> BellEffects {
         taskbar_flash: flash,
         sound: play,
     }
+}
+
+/// Whether a taskbar flash or a sound may happen now: the first is immediate, then one in each [`ALERT_INTERVAL`].
+pub fn alert_due(since_last_alert: Option<Duration>) -> bool {
+    since_last_alert.is_none_or(|since| since >= ALERT_INTERVAL)
+}
+
+/// Whether the taskbar button flashes for a tab that has started to need a response (an agent that waits for an answer
+/// or failed, a notification). Like a bell it flashes only while the window is not active, and it shares the
+/// limit of one a second with the bell and the sound. The setting is the one of the bell: it is the taskbar alert.
+pub fn flash_for_response(
+    taskbar: bool,
+    window_active: bool,
+    since_last_alert: Option<Duration>,
+) -> bool {
+    taskbar && !window_active && alert_due(since_last_alert)
 }
 
 #[cfg(test)]
@@ -203,6 +216,21 @@ mod tests {
                 sound: true
             }
         );
+    }
+
+    #[test]
+    fn a_new_response_flashes_the_taskbar_of_an_inactive_window_once_a_second() {
+        let second = ALERT_INTERVAL;
+        let just_before = ALERT_INTERVAL - Duration::from_millis(1);
+        // Needs the setting and a window that is not active.
+        assert!(flash_for_response(true, false, None));
+        assert!(!flash_for_response(false, false, None));
+        assert!(!flash_for_response(true, true, None));
+        // The first is immediate, then one in each interval, bells and sounds counted in.
+        assert!(!flash_for_response(true, false, Some(Duration::ZERO)));
+        assert!(!flash_for_response(true, false, Some(just_before)));
+        assert!(flash_for_response(true, false, Some(second)));
+        assert!(alert_due(None) && !alert_due(Some(just_before)) && alert_due(Some(second)));
     }
 
     #[test]
