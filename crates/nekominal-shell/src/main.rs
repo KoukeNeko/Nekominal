@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod find;
 mod gpu;
 mod layout;
 mod popup;

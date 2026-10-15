@@ -31,6 +31,7 @@ use crate::gpu::{self, Gpu, Surface};
 /// Width of a menu or a list, and of the command palette.
 pub const WIDTH: f32 = 260.0;
 pub const PALETTE_WIDTH: f32 = 520.0;
+pub const FIND_WIDTH: f32 = 380.0;
 /// Height of the query line above the rows of the palette.
 pub const HEADER: f32 = 48.0;
 /// The rows the palette shows before it scrolls.
@@ -79,6 +80,9 @@ pub struct Popup {
     pub size: (f32, f32),
     /// Height of the query line above the rows: 0 for a menu or a list.
     pub header: f32,
+    pub kind: Kind,
+    /// What the query line says at its right (the find bar's count).
+    pub status: String,
     /// What was typed in the query line; `None` for a menu or a list.
     pub query: Option<String>,
     /// Height of all the rows together; more than `size.1` when the list scrolls.
@@ -163,16 +167,22 @@ pub fn row_at(rows: &[Row], rects: &[Rect], x: f32, y: f32) -> Option<usize> {
 /// The next row that can be chosen after `from` in a direction (wrapping), for the arrow keys.
 pub fn step(rows: &[Row], from: Option<usize>, forward: bool) -> Option<usize> {
     let n = rows.len();
+    if n == 0 {
+        return None;
+    }
     let start = from.unwrap_or(if forward { n - 1 } else { 0 });
     (1..=n).map(|k| if forward { (start + k) % n } else { (start + n - k) % n }).find(|&i| !rows[i].is_separator())
 }
 
 /// What to open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// A menu or a list, as wide as `WIDTH`, as tall as its rows.
     List,
     /// The command palette: a query line above a fixed number of rows.
     Palette,
+    /// The find bar: only the query line, with the count of matches at its right.
+    Find,
 }
 
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
@@ -180,6 +190,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
     let (width, header, fixed_height, query) = match kind {
         Kind::List => (WIDTH, 0.0, None, None),
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
+        Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
     };
     let (rects, rows_size) = layout(&rows, width);
     let content_height = rows_size.1;
@@ -243,7 +254,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
         let _ = ShowWindow(hwnd, SW_SHOW);
         // Taking the activation is what lets the pop-up notice that the user went elsewhere.
         let _ = SetForegroundWindow(hwnd);
-        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, query, content_height, scroll: 0.0, hover: None };
+        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), query, content_height, scroll: 0.0, hover: None };
         if popup.query.is_some() {
             popup.set_rows(rows);
         } else {
@@ -283,6 +294,12 @@ mod tests {
         assert_eq!(row_at(&rows, &rects, 20.0, rects[1].y + 4.0), None);
         assert_eq!(row_at(&rows, &rects, 20.0, rects[3].y + 4.0), Some(3));
         assert_eq!(row_at(&rows, &rects, 2.0, 20.0), None, "the padding is not a row");
+    }
+
+    #[test]
+    fn the_arrow_keys_have_nothing_to_choose_in_an_empty_list() {
+        assert_eq!(step(&[], None, true), None);
+        assert_eq!(step(&[], None, false), None);
     }
 
     #[test]

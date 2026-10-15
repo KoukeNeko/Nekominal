@@ -114,6 +114,44 @@ function Next-LightPixels([int]$X, [int]$Y, [int]$W, [int]$H) {
     } finally { $bitmap.Dispose() }
 }
 
+# How many sampled pixels differ between two screen regions saved as pictures.
+function Next-DiffPixels([string]$A, [string]$B) {
+    Add-Type -AssemblyName System.Drawing
+    $first = [System.Drawing.Bitmap]::FromFile($A); $second = [System.Drawing.Bitmap]::FromFile($B)
+    try {
+        $count = 0
+        for ($py = 0; $py -lt [Math]::Min($first.Height, $second.Height); $py += 2) {
+            for ($px = 0; $px -lt [Math]::Min($first.Width, $second.Width); $px += 2) {
+                $p = $first.GetPixel($px, $py); $q = $second.GetPixel($px, $py)
+                if ([Math]::Abs($p.R - $q.R) + [Math]::Abs($p.G - $q.G) + [Math]::Abs($p.B - $q.B) -gt 60) { $count++ }
+            }
+        }
+        $count
+    } finally { $first.Dispose(); $second.Dispose() }
+}
+
+function Scenario-NextFind {
+    Run-Next {
+        Next-Line 'echo needle-A'; Next-Line 'echo hay'; Next-Line 'echo needle-B'
+        $r = Win-Rect
+        $region = @(($r.Left + 4), ($r.Top + 80), 700, 300)
+        $before = Join-Path $env:TEMP 'find-before.png'; $during = Join-Path $env:TEMP 'find-during.png'; $after = Join-Path $env:TEMP 'find-after.png'
+        ShotRegion $before $region[0] $region[1] $region[2] $region[3] | Out-Null
+        Press 0x46 @(0x11, 0x10); Start-Sleep -Milliseconds 900       # Ctrl+Shift+F
+        Type-Unicode 'needle' 40; Start-Sleep -Milliseconds 700
+        ShotRegion $during $region[0] $region[1] $region[2] $region[3] | Out-Null
+        if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($r.Left + 4) ($r.Top + 40) 1620 340 | Out-Null }
+        $marked = Next-DiffPixels $before $during
+        Next-Check 'find.highlights-the-matches' ($marked -gt 300) "$marked pixels changed once the matches were marked"
+        Press 0x1B; Start-Sleep -Milliseconds 700                      # Esc
+        ShotRegion $after $region[0] $region[1] $region[2] $region[3] | Out-Null
+        $left = Next-DiffPixels $before $after
+        Next-Check 'find.escape-clears-them' ($left -lt 80) "$left pixels differ from the start after Esc"
+        Next-Line 'echo AFTER-FIND'
+        Next-Check 'find.pane-takes-typing-again' ((Next-Text) -match 'AFTER-FIND') 'after Esc the pane takes the typing again'
+    }
+}
+
 function Scenario-NextMenu {
     Run-Next {
         Next-Line 'echo ONE'

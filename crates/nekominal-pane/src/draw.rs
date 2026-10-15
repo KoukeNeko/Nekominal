@@ -19,6 +19,8 @@ pub struct PaneRenderer {
     selection: Vec<r::RowSpan>,
     /// The cells of the link under the pointer, one span per row.
     hover_link: Vec<r::RowSpan>,
+    /// The search matches in view, the current one marked.
+    highlights: Vec<r::Highlight>,
     preedit: Option<String>,
     preedit_at: Option<r::Preedit>,
     force_draw: bool,
@@ -56,6 +58,7 @@ impl PaneRenderer {
             cells: Vec::new(),
             selection: Vec::new(),
             hover_link: Vec::new(),
+            highlights: Vec::new(),
             preedit: None,
             preedit_at: None,
             force_draw: true,
@@ -117,6 +120,14 @@ impl PaneRenderer {
         }
     }
 
+    /// The search matches in view (grid positions through `view::match_spans`); an empty list removes them.
+    pub fn set_highlights(&mut self, highlights: Vec<r::Highlight>) {
+        if highlights != self.highlights {
+            self.highlights = highlights;
+            self.force_draw = true;
+        }
+    }
+
     /// The text being composed by the IME, drawn at the cursor cell.
     pub fn set_preedit(&mut self, text: Option<String>) {
         if text != self.preedit {
@@ -168,7 +179,7 @@ impl PaneRenderer {
             cells: &self.cells,
             cursor: view::cursor(&self.snapshot, self.focused, true),
             selection: &self.selection,
-            highlights: &[],
+            highlights: &self.highlights,
             hover_link: &self.hover_link,
             preedit: self.preedit_at.as_ref(),
             scrollbar: None,

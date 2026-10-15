@@ -19,7 +19,8 @@ use nekominal_model::{
     store,
     themes::{self, Color as SchemeColor},
 };
-use nekominal_pane::{Pane, PaneRenderer, UiEvent};
+use nekominal_pane::{Pane, PaneRenderer, UiEvent, view as pane_view};
+use nekominal_term::SearchMatch;
 use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
@@ -35,7 +36,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    clipboard,
+    clipboard, find,
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
@@ -102,10 +103,21 @@ pub struct App {
     dragged_splitter: Option<Vec<u8>>,
     /// The "…" menu while it is open.
     popup: Option<popup::Popup>,
+    /// The search of the find bar while it is open.
+    find: Option<FindState>,
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
 }
+
+/// The matches of the find bar and the one the bar is on.
+struct FindState {
+    matches: Vec<SearchMatch>,
+    current: usize,
+}
+
+/// Matches kept at most: more than this are of no use to anyone and cost a scan of the whole buffer.
+const FIND_LIMIT: usize = 10_000;
 
 /// Whether `App::run` does something for the command.
 fn wired(command: Command) -> bool {
@@ -133,6 +145,7 @@ fn wired(command: Command) -> bool {
             | Command::PromptPrevious
             | Command::PromptNext
             | Command::AppPalette
+            | Command::EditFind
     )
 }
 
@@ -210,6 +223,7 @@ impl App {
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
+            find: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
         };
@@ -796,6 +810,7 @@ impl App {
                 self.relayout();
             }
             Command::AppPalette => self.open_palette(),
+            Command::EditFind => self.open_find(),
             Command::EditCopy => {
                 self.copy_selection();
             }
@@ -873,10 +888,13 @@ impl App {
             return;
         };
 
+        let highlights = self.find_highlights();
         let mut first = true;
         if let Some(tab) = self.tabs.get_mut(self.selected) {
+            let focused = tab.focused;
             for id in tab.shown() {
                 let Some(entry) = tab.entry_mut(id) else { continue };
+                entry.view.set_highlights(if id == focused { highlights.clone() } else { Vec::new() });
                 entry.view.prepare(&entry.pane.term);
                 let rect = [entry.rect.x.max(0) as u32, entry.rect.y.max(0) as u32, entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32];
                 entry.view.draw_in(&view, rect, first);
@@ -1060,6 +1078,69 @@ impl App {
         self.open_popup(rows, popup::Kind::Palette, anchor);
     }
 
+    fn open_find(&mut self) {
+        let anchor = self.screen_point(self.layout.size.0 * self.scale - 24.0 * self.scale, layout::TITLE_HEIGHT * self.scale);
+        self.open_popup(Vec::new(), popup::Kind::Find, anchor);
+    }
+
+    /// Searches the focused pane for what the bar holds, and shows the last match (the nearest to the prompt).
+    fn find_search(&mut self, query: &str) {
+        let matches = match self.focused() {
+            Some(entry) if !query.is_empty() => {
+                entry.pane.term.lock().search_all(&find::literal_pattern(query), FIND_LIMIT).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        let current = matches.len().saturating_sub(1);
+        self.find = Some(FindState { matches, current });
+        self.find_show_current();
+    }
+
+    fn find_step(&mut self, forward: bool) {
+        if let Some(find) = self.find.as_mut() {
+            find.current = find::step(find.current, find.matches.len(), forward);
+        }
+        self.find_show_current();
+    }
+
+    /// Scrolls the pane to the current match when it is out of view, and updates the count in the bar.
+    fn find_show_current(&mut self) {
+        let Some(find) = self.find.as_ref() else { return };
+        let query = self.popup.as_ref().and_then(|p| p.query.clone()).unwrap_or_default();
+        let status = find::status(&query, find.current, find.matches.len());
+        if let (Some(found), Some(entry)) = (find.matches.get(find.current), self.focused()) {
+            let mut core = entry.pane.term.lock();
+            let (rows, top) = (core.rows() as i32, -(core.display_offset() as i32));
+            if found.start.0 < top || found.end.0 > top + rows - 1 {
+                core.scroll_to_line(found.start.0 - rows / 2);
+            }
+        }
+        if let Some(popup) = self.popup.as_mut() {
+            popup.status = status;
+            // SAFETY: invalidating our own window.
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        }
+        self.redraw();
+    }
+
+    /// The matches of the find bar that are in view in the focused pane, for the renderer.
+    fn find_highlights(&self) -> Vec<r::Highlight> {
+        let (Some(find), Some(entry)) = (self.find.as_ref(), self.focused()) else { return Vec::new() };
+        let core = entry.pane.term.lock();
+        let (rows, columns, offset) = (core.rows(), core.columns(), core.display_offset());
+        let (top, bottom) = (-(offset as i32), rows as i32 - 1 - offset as i32);
+        let mut highlights = Vec::new();
+        for (i, found) in find.matches.iter().enumerate() {
+            if found.end.0 < top || found.start.0 > bottom {
+                continue;
+            }
+            let mut spans = Vec::new();
+            pane_view::match_spans(found.start, found.end, offset, rows, columns, &mut spans);
+            highlights.extend(spans.into_iter().map(|span| r::Highlight { span, current: i == find.current }));
+        }
+        highlights
+    }
+
     /// A character typed into the palette: it goes into the query, and the rows follow.
     pub fn popup_char(&mut self, unit: u16) {
         let Some(query) = self.popup.as_ref().and_then(|p| p.query.clone()) else { return };
@@ -1074,6 +1155,13 @@ impl App {
                 query.push(ch);
             }
             _ => return,
+        }
+        if self.popup.as_ref().is_some_and(|p| p.kind == popup::Kind::Find) {
+            if let Some(popup) = self.popup.as_mut() {
+                popup.query = Some(query.clone());
+            }
+            self.find_search(&query);
+            return;
         }
         let rows = self.palette_rows(&query);
         let Some(popup) = self.popup.as_mut() else { return };
@@ -1120,6 +1208,7 @@ impl App {
 
     pub fn close_popup(&mut self) {
         let Some(popup) = self.popup.take() else { return };
+        self.find = None;
         self.popup_closed = Some(Instant::now());
         // SAFETY: destroys a window of this thread; the swap chain goes with the `Popup`.
         unsafe { let _ = DestroyWindow(popup.hwnd); }
@@ -1161,6 +1250,19 @@ impl App {
         const VK_UP: i32 = 0x26;
         const VK_DOWN: i32 = 0x28;
         let Some(popup) = self.popup.as_mut() else { return };
+        if popup.kind == popup::Kind::Find {
+            // Enter goes to the next match, with Shift to the one before; the arrows go the same ways.
+            let forward = match vk_code {
+                VK_RETURN => Some(!held().shift),
+                VK_DOWN => Some(true),
+                VK_UP => Some(false),
+                _ => None,
+            };
+            if let Some(forward) = forward {
+                self.find_step(forward);
+            }
+            return;
+        }
         match vk_code {
             VK_UP | VK_DOWN => {
                 popup.hover = popup::step(&popup.rows, popup.hover, vk_code == VK_DOWN);
@@ -1248,7 +1350,13 @@ impl App {
             let width = ui.text(44.0, y, query, TEXT_SIZE, col(g.text()), false);
             // The caret: a bar after the text, not blinking, so the window needs no timer.
             ui.fill(Rect::new(44.0 + width + 1.0, y, 1.5, line), col(g.text()));
-            ui.fill(Rect::new(0.0, header - 1.0, popup.size.0, 1.0), col(g.divider()));
+            if !popup.status.is_empty() {
+                let width = ui.measure(&popup.status, TEXT_SIZE, false);
+                ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);
+            }
+            if popup.kind != popup::Kind::Find {
+                ui.fill(Rect::new(0.0, header - 1.0, popup.size.0, 1.0), col(g.divider()));
+            }
         }
         ui.end_frame(&view);
         popup.surface.present();

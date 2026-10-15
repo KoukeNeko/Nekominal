@@ -98,6 +98,22 @@ pub fn selection_spans(snapshot: &Snapshot, spans: &mut Vec<r::RowSpan>) {
     }
 }
 
+/// Adds the rows of the viewport that a match covers: `start` and `end` are grid points (line, column) with `end`
+/// included, as the search gives them; `display_offset` is how far the view is scrolled back.
+pub fn match_spans(start: (i32, usize), end: (i32, usize), display_offset: usize, rows: usize, columns: usize, spans: &mut Vec<r::RowSpan>) {
+    for row in 0..rows {
+        let line = row as i32 - display_offset as i32;
+        if line < start.0 || line > end.0 {
+            continue;
+        }
+        let first = if line == start.0 { start.1 } else { 0 };
+        let last = if line == end.0 { end.1 } else { columns.saturating_sub(1) };
+        if first <= last {
+            spans.push(r::RowSpan { row: row as u16, start: first as u16, end: (last + 1) as u16 });
+        }
+    }
+}
+
 pub fn cursor(snapshot: &Snapshot, focused: bool, visible: bool) -> Option<r::CursorView> {
     let (row, col) = snapshot.cursor.position?;
     let shape = match snapshot.cursor.shape {
@@ -227,5 +243,19 @@ mod tests {
         let before = theme.clone();
         let _ = dimmed(&theme);
         assert_eq!(theme, before);
+    }
+
+    #[test]
+    fn a_match_covers_the_rows_in_view_and_a_wrapped_one_runs_to_the_edge() {
+        let spans = |start, end, offset| {
+            let mut spans = Vec::new();
+            match_spans(start, end, offset, 10, 80, &mut spans);
+            spans.into_iter().map(|s| (s.row, s.start, s.end)).collect::<Vec<_>>()
+        };
+        assert_eq!(spans((3, 5), (3, 8), 0), [(3, 5, 9)], "one row, end included");
+        assert_eq!(spans((3, 70), (5, 4), 0), [(3, 70, 80), (4, 0, 80), (5, 0, 5)], "a match that wraps");
+        assert_eq!(spans((-4, 2), (-4, 6), 6), [(2, 2, 7)], "scrolled back six lines, line -4 is row 2");
+        assert!(spans((-4, 2), (-4, 6), 0).is_empty(), "a match in the scrollback is out of view");
+        assert_eq!(spans((9, 0), (12, 3), 0), [(9, 0, 80)], "the part below the view is cut");
     }
 }
