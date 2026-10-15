@@ -923,6 +923,7 @@ impl TerminalCore {
             self.resize_hidden_primary(target);
         } else {
             if narrower {
+                self.clear_rows_the_cut_drops(target.screen_lines);
                 self.reflow_into_blank_rows(target.columns);
             }
             self.term.resize(target);
@@ -945,9 +946,10 @@ impl TerminalCore {
     /// ends where it would have if the program had drawn it at the new width, with no more scrollback than that.
     fn reflow_into_blank_rows(&mut self, columns: usize) {
         let rows = self.term.screen_lines();
+        let screen_pushes = self.rows_pushed_by_the_screen(columns);
         let history = self.term.history_size();
         self.term.resize(TermDims::new(columns, rows));
-        let pushed = self.term.history_size().saturating_sub(history);
+        let pushed = self.term.history_size().saturating_sub(history).min(screen_pushes);
         let grid = self.term.grid();
         let cursor_row = usize::try_from(grid.cursor.point.line.0).unwrap_or(0);
         let blank = (cursor_row + 1..rows).rev().take_while(|row| grid[Line(*row as i32)].is_clear()).count();
@@ -955,6 +957,34 @@ impl TerminalCore {
         if given_back > 0 {
             self.term.resize(TermDims::new(columns, rows - given_back));
             self.term.resize(TermDims::new(columns, rows));
+        }
+    }
+
+    /// The rows the screen alone pushes into the scrollback when it narrows to `columns` at its current height.
+    /// Reflowing the real grid also re-wraps the scrollback, and the rows that adds are not rows the screen gave
+    /// up: counting them would pull old scrollback back onto a screen that has blank rows (and the program's next
+    /// redraw from the top left then erases it). The screen is reflowed on a grid of its own for the count.
+    fn rows_pushed_by_the_screen(&self, columns: usize) -> usize {
+        let grid = self.term.grid();
+        let (rows, old_columns) = (grid.screen_lines(), grid.columns());
+        let mut screen: Grid<Cell> = Grid::new(rows, old_columns, rows * old_columns);
+        for row in 0..rows {
+            let line = Line(row as i32);
+            screen[line] = grid[line].clone();
+        }
+        screen.cursor = grid.cursor.clone();
+        screen.saved_cursor = grid.saved_cursor.clone();
+        screen.resize(true, rows, columns);
+        screen.history_size()
+    }
+
+    /// Clears the rows under the cursor that a cut to `rows` rows drops anyway. alacritty changes the rows before
+    /// the columns, so those rows never wrap; reflowing them first would wrap the ones that hold something into the
+    /// scrollback, and the blank ones that could have taken the wrapping of the rows above would be spent by the cut.
+    fn clear_rows_the_cut_drops(&mut self, rows: usize) {
+        let cursor_row = usize::try_from(self.term.grid().cursor.point.line.0).unwrap_or(0);
+        for row in rows.max(cursor_row + 1)..self.term.screen_lines() {
+            self.term.grid_mut()[Line(row as i32)].reset(&Cell::default());
         }
     }
 
@@ -967,6 +997,7 @@ impl TerminalCore {
         let blank = Grid::new(self.term.screen_lines(), self.term.columns(), 0);
         let mut alternate = mem::replace(self.term.grid_mut(), blank);
         self.term.swap_alt();
+        self.clear_rows_the_cut_drops(target.screen_lines);
         self.reflow_into_blank_rows(target.columns);
         self.term.resize(target);
         self.term.swap_alt();

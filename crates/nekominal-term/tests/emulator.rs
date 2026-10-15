@@ -477,7 +477,10 @@ fn classic_screen(width: usize) -> String {
 fn a_program_that_redraws_after_every_resize_leaves_no_old_screen_in_the_scrollback() {
     let mut core = core(100, 30);
     feed(&mut core, &classic_screen(100));
-    for (columns, rows) in [(80, 24), (60, 20), (40, 30), (100, 30), (50, 15), (100, 30)] {
+    // The last three steps narrow and shorten at once (a corner drag); a cut that spent the blank rows before they
+    // could take the wrapping would leave old rows in the scrollback there.
+    let steps = [(80, 24), (60, 20), (40, 30), (100, 30), (50, 15), (100, 30), (30, 12), (24, 9), (100, 30)];
+    for (columns, rows) in steps {
         core.resize(columns, rows);
         feed(&mut core, &classic_screen(columns));
         let mut fresh = self::core(columns, rows);
@@ -487,6 +490,122 @@ fn a_program_that_redraws_after_every_resize_leaves_no_old_screen_in_the_scrollb
         assert_eq!(core.cursor_cell(), fresh.cursor_cell(), "{columns}x{rows}: the cursor");
     }
     assert_eq!(core.history_size(), 0);
+}
+
+/// The scrollback as text, one line per row.
+fn scrollback_text(core: &TerminalCore) -> String {
+    let history = core.history_size() as i32;
+    core.text_between((-history, 0), (-1, core.columns() - 1))
+}
+
+#[test]
+fn narrowing_a_cleared_screen_does_not_pull_scrollback_back_onto_it() {
+    let mut core = core(20, 8);
+    for i in 0..14 {
+        feed(&mut core, &format!("L{i:02}-{}\r\n", "x".repeat(26)));
+    }
+    // Ctrl+L: the screen goes into the scrollback and the prompt starts at the top.
+    feed(&mut core, "\x1b[H\x1b[2J$ ");
+    core.resize(10, 8);
+    assert_eq!(core.cursor_cell(), (0, 2), "the prompt stays where it was drawn");
+    assert_eq!(snap(&mut core).text(), "$");
+}
+
+#[test]
+fn narrowing_gives_back_only_the_rows_the_screen_itself_pushed() {
+    // The scrollback holds "  ab" (two rows at two columns) and "cd"; the screen row "xf" does not wrap.
+    let mut core = core(4, 2);
+    feed(&mut core, "\x1b[2;3Hab\r\ncd\r\nef\r\n\x1b[1;1Hx");
+    core.resize(2, 2);
+    assert_eq!(core.cursor_cell(), (0, 1));
+    assert_eq!(snap(&mut core).text(), "xf");
+    assert_eq!(core.history_size(), 4, "the rows of the old scrollback wrap on their own");
+}
+
+#[test]
+fn narrowing_does_not_count_the_wrapping_of_old_scrollback_as_rows_the_screen_gave_up() {
+    // Scrollback lines as wide as the old screen wrap into two history rows each when it narrows.
+    let mut core = core(20, 10);
+    for i in 0..12 {
+        feed(&mut core, &format!("{i:#>20}\r\n"));
+    }
+    feed(&mut core, "\x1b[H\x1b[JAAAAAAAAAAAAAAAAAAAA\r\nBBBBBBBBBBBBBBBBBBBB\r\n$ ");
+    core.resize(10, 10);
+    assert_eq!(snap(&mut core).text(), "AAAAAAAAAA\nAAAAAAAAAA\nBBBBBBBBBB\nBBBBBBBBBB\n$");
+    assert_eq!(core.cursor_cell(), (4, 2));
+}
+
+#[test]
+fn narrowing_takes_only_the_rows_wrapping_added_and_leaves_unrelated_scrollback_alone() {
+    // A shell session has scrollback and the program then redraws from the top left. Giving back more blank rows than
+    // wrapping added would pull old scrollback lines onto the screen, where the next redraw overwrites them.
+    let mut core = core(20, 10);
+    for i in 0..40 {
+        feed(&mut core, &format!("h{i}\r\n"));
+    }
+    feed(&mut core, &format!("\x1b[H\x1b[J{}\r\n{}\r\n{}\r\n$ ", "A".repeat(20), "B".repeat(20), "C".repeat(20)));
+    let history = core.history_size();
+    assert!(history > 0);
+    core.resize(10, 10);
+    assert_eq!(core.history_size(), history, "no old line comes back onto the screen");
+    assert_eq!(snap(&mut core).text(), "AAAAAAAAAA\nAAAAAAAAAA\nBBBBBBBBBB\nBBBBBBBBBB\nCCCCCCCCCC\nCCCCCCCCCC\n$");
+}
+
+#[test]
+fn a_redraw_from_the_top_left_after_narrowing_keeps_the_shell_scrollback() {
+    let mut core = core(100, 30);
+    for i in 0..40 {
+        feed(&mut core, &format!("S{i:02}-{}\r\n", "x".repeat(76)));
+    }
+    feed(&mut core, &classic_screen(100));
+    let shell_lines = |core: &TerminalCore| scrollback_text(core).lines().filter(|line| line.starts_with('S')).count();
+    let before = shell_lines(&core);
+    assert!(before > 0);
+    core.resize(60, 30);
+    feed(&mut core, &classic_screen(60));
+    assert_eq!(shell_lines(&core), before, "the redraw erases the screen, not what the shell printed before it");
+    let everything = format!("{}\n{}", scrollback_text(&core), snap(&mut core).text());
+    assert_eq!(everything.lines().filter(|line| line.contains("Welcome")).count(), 1, "one banner, not two");
+}
+
+#[test]
+fn painted_rows_under_the_cursor_that_a_shorter_screen_cuts_do_not_push_the_top_rows_into_the_scrollback() {
+    // Every row is painted, so no blank row can take anything, and the screen also gets shorter.
+    let mut core = core(9, 5);
+    feed(&mut core, "\x1b[44m\x1b[2J");
+    core.resize(8, 4);
+    assert!(core.history_size() <= 5, "no more than alacritty alone leaves");
+}
+
+#[test]
+fn text_above_painted_rows_stays_on_the_screen_when_the_screen_narrows_and_shortens() {
+    let mut core = core(15, 17);
+    feed(&mut core, "\x1b[41m\x1b[3Sh");
+    core.resize(4, 14);
+    assert_eq!(core.history_size(), 3, "only the three rows the scroll pushed");
+    assert_eq!(snap(&mut core).row_text(0), "h", "the text the cursor is on is not pushed away");
+}
+
+#[test]
+fn the_hidden_primary_screen_ends_up_as_if_it_had_been_shown() {
+    let script = format!("{}\r\n{}\r\n{}\r\n$ ", "A".repeat(60), "B".repeat(60), "C".repeat(60));
+    for sizes in [vec![(30, 20)], vec![(45, 20), (20, 20)], vec![(30, 6)], vec![(10, 4), (3, 20), (50, 20)], vec![(30, 40)]] {
+        let mut shown = core(60, 20);
+        let mut hidden = core(60, 20);
+        feed(&mut shown, &script);
+        feed(&mut hidden, &script);
+        feed(&mut hidden, "\x1b[?1049h\x1b[2Jfullscreen");
+        for &(columns, rows) in &sizes {
+            shown.resize(columns, rows);
+            hidden.resize(columns, rows);
+        }
+        feed(&mut hidden, "\x1b[?1049l");
+        assert_eq!(
+            (hidden.history_size(), hidden.cursor_cell(), snap(&mut hidden).text()),
+            (shown.history_size(), shown.cursor_cell(), snap(&mut shown).text()),
+            "{sizes:?}"
+        );
+    }
 }
 
 #[test]
