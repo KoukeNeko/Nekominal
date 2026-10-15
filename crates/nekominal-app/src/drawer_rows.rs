@@ -9,9 +9,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use nekominal_model::commands::Command;
 use nekominal_model::settings::Settings;
-use nekominal_model::settings_ui::{self, Control as RowControl, Descriptor, Range, Section, Value};
+use nekominal_model::settings_ui::{self, Control as RowControl, Descriptor, Range, Value};
 use nekominal_model::strings::Text;
 use nekominal_model::themes;
 use nekominal_winui_sys::*;
@@ -19,6 +18,7 @@ use windows_core::{EventRevoker, Interface, Result};
 use windows_reference::IReference;
 
 use crate::drawer::Drawer;
+use crate::drawer_pages::Extras;
 use crate::i18n::{t, tf};
 use crate::keyboard::{self, VK_DOWN, VK_END, VK_HOME, VK_LEFT, VK_PAGE_DOWN, VK_PAGE_UP, VK_RETURN, VK_RIGHT, VK_UP};
 use crate::logic::{self, Arrow};
@@ -42,8 +42,17 @@ const ROW_XAML: &str = r#"
     </Grid.RowDefinitions>
     <Border x:Name="Bar" Grid.RowSpan="2" Width="2" Margin="-15,8,0,8" HorizontalAlignment="Left" Opacity="0"
             IsHitTestVisible="False" Background="{StaticResource NkPanelAccent}"/>
-    <TextBlock x:Name="Label" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
-               Foreground="{StaticResource NkPanelText}"/>
+    <Grid ColumnSpacing="8">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock x:Name="Label" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                 Foreground="{StaticResource NkPanelText}"/>
+      <!-- Said of a row whose value in the settings file was not valid. -->
+      <TextBlock x:Name="Tag" Grid.Column="1" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed"
+                 Foreground="{StaticResource NkPanelWarning}"/>
+    </Grid>
     <Border x:Name="Slot" @SLOT@/>
     <Button x:Name="Reset" Grid.Column="2" Style="{StaticResource NkIconButton}" Opacity="0" IsEnabled="False">
       <FontIcon Glyph="&#xE7A7;" FontSize="12"/>
@@ -63,6 +72,8 @@ struct Shown {
     /// The profiles of the list, as (id, name and program).
     items: Vec<(String, String)>,
     modified: bool,
+    /// The settings file has a value for the row that is not valid.
+    invalid: bool,
 }
 
 enum Kind {
@@ -98,6 +109,7 @@ pub struct SettingRow {
     pub root: FrameworkElement,
     bar: UIElement,
     reset: Button,
+    tag: TextBlock,
     /// Takes the focus when a search or the palette brings the user to the row.
     pub focus: UIElement,
     kind: Kind,
@@ -114,33 +126,6 @@ impl SettingRow {
         let Some(at) = themes::theme_names().position(|candidate| candidate == name) else { return false };
         focus_item(tiles, at);
         true
-    }
-}
-
-/// The read-only rows of the pages that list things, and the shortcuts page.
-#[derive(Default)]
-pub struct Extras {
-    keys: Vec<(Command, FrameworkElement)>,
-    advanced: Vec<FrameworkElement>,
-}
-
-impl Extras {
-    pub fn key_row(&self, command: Command) -> Option<FrameworkElement> {
-        self.keys.iter().find(|(known, _)| *known == command).map(|(_, row)| row.clone())
-    }
-
-    /// The rows a section has besides the ones of the table.
-    pub fn section_rows(&self, section: Section) -> Vec<FrameworkElement> {
-        match section {
-            Section::Keys => self.keys.iter().map(|(_, row)| row.clone()).collect(),
-            Section::Advanced => self.advanced.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Lets go of a shortcut that is being recorded; true when there was one.
-    pub fn stop_recording(&self) -> bool {
-        false
     }
 }
 
@@ -182,7 +167,7 @@ fn arrow_of(key: i32) -> Option<Arrow> {
     })
 }
 
-fn stack(horizontal: bool, spacing: f64) -> Result<StackPanel> {
+pub(crate) fn stack(horizontal: bool, spacing: f64) -> Result<StackPanel> {
     let markup = format!(
         r#"<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Orientation="{}" Spacing="{spacing}"/>"#,
         if horizontal { "Horizontal" } else { "Vertical" }
@@ -273,11 +258,11 @@ pub fn build(drawer: &Rc<Drawer>, shell: &Rc<Shell>) -> Result<()> {
         }
     }
     *drawer.rows.borrow_mut() = rows;
-    *drawer.extras.borrow_mut() = build_extras(shell);
+    *drawer.extras.borrow_mut() = Extras::build(shell);
     Ok(())
 }
 
-fn row_frame(label: &str, wide: bool) -> Result<(FrameworkElement, Border, UIElement, Button)> {
+pub(crate) fn row_frame(label: &str, wide: bool) -> Result<(FrameworkElement, Border, UIElement, Button)> {
     let markup = ROW_XAML.replace("@SLOT@", if wide { SLOT_WIDE } else { SLOT_LINE });
     let root = load_xaml(&markup)?;
     find::<TextBlock>(&root, "Label")?.SetText(label)?;
@@ -291,6 +276,8 @@ fn build_row(drawer: &Rc<Drawer>, shell: &Rc<Shell>, descriptor: &'static Descri
     let label = descriptor.label(shell.lang());
     let wide = matches!(descriptor.control, RowControl::Themes | RowControl::Profiles);
     let (root, slot, bar, reset) = row_frame(label, wide)?;
+    let tag: TextBlock = find(&root, "Tag")?;
+    tag.SetText(t(Text::SettingInvalid))?;
     let mut revokers = Vec::new();
 
     let (content, focus, kind): (UIElement, UIElement, Kind) = match descriptor.control {
@@ -322,6 +309,7 @@ fn build_row(drawer: &Rc<Drawer>, shell: &Rc<Shell>, descriptor: &'static Descri
         root,
         bar,
         reset,
+        tag,
         focus,
         kind,
         last: RefCell::new(None),
@@ -638,55 +626,6 @@ fn tile_button(scheme: &themes::Scheme) -> Result<ToggleButton> {
     load_xaml(&markup)?.cast()
 }
 
-/// The pages that list things: the shortcuts as they are now, and what the application says about itself.
-fn build_extras(shell: &Rc<Shell>) -> Extras {
-    let mut extras = Extras::default();
-    let lang = shell.lang();
-    for command in settings_ui::key_rows() {
-        let shortcuts =
-            shell.keymap.borrow().shortcuts(command).iter().map(ToString::to_string).collect::<Vec<_>>().join("   ");
-        match info_row(&command.label(lang), &shortcuts, false) {
-            Ok(row) => extras.keys.push((command, row)),
-            Err(e) => log(&format!("drawer key row {}: {e}", command.id())),
-        }
-    }
-    let mut about: Vec<(&str, String, bool)> =
-        vec![(t(Text::SettingsVersion), env!("CARGO_PKG_VERSION").to_owned(), false)];
-    if let Ok(backend) = nekominal_pty::conpty::backend() {
-        let conpty = if backend.kind == nekominal_pty::conpty::Backend::BUNDLED {
-            tf(Text::ConptyBundled, &[&backend.version])
-        } else {
-            t(Text::ConptySystem).to_owned()
-        };
-        about.push((t(Text::SettingsConpty), conpty, false));
-    }
-    if let Some(path) = nekominal_model::store::settings_path() {
-        about.push((t(Text::SettingsFile), path.display().to_string(), true));
-    }
-    for (label, value, wide) in about {
-        match info_row(label, &value, wide) {
-            Ok(row) => extras.advanced.push(row),
-            Err(e) => log(&format!("drawer info row {label}: {e}")),
-        }
-    }
-    extras
-}
-
-/// A row that only says something: a label and a text. A long text (a path) goes under the label.
-fn info_row(label: &str, value: &str, wide: bool) -> Result<FrameworkElement> {
-    let (root, slot, _, reset) = row_frame(label, wide)?;
-    let text: TextBlock = load_xaml(
-        r#"<TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontSize="13"
-                      Foreground="{StaticResource NkPanelTextSecondary}" IsTextSelectionEnabled="True"
-                      TextTrimming="CharacterEllipsis"/>"#,
-    )?
-    .cast()?;
-    text.SetText(value)?;
-    slot.SetChild(&text)?;
-    ui(&reset)?.SetVisibility(Visibility::Collapsed)?;
-    Ok(root)
-}
-
 /// Brings the controls of every row in line with the settings. A row whose state did not change is left alone.
 pub fn sync(drawer: &Drawer, shell: &Rc<Shell>) {
     let settings = shell.settings.borrow().clone();
@@ -695,6 +634,7 @@ pub fn sync(drawer: &Drawer, shell: &Rc<Shell>) {
             log(&format!("drawer sync {}: {e}", row.descriptor.id));
         }
     }
+    drawer.extras.borrow().sync(shell);
 }
 
 impl SettingRow {
@@ -706,6 +646,7 @@ impl SettingRow {
             text: String::new(),
             items: Vec::new(),
             modified: self.descriptor.is_modified(settings),
+            invalid: shell.problems.borrow().iter().any(|problem| problem.key == self.descriptor.id),
         };
         if self.descriptor.id == "appearance.opacity" {
             // The slider shows what is asked for, reads 100% and is off without a backdrop, and says so when the
@@ -763,6 +704,7 @@ impl SettingRow {
             }
             _ => {}
         }
+        ui(&self.tag)?.SetVisibility(visibility(shown.invalid))?;
         // The reset button keeps its room while it is not needed (nothing moves); it is off, and so out of the tab order.
         ui(&self.bar)?.SetOpacity(if shown.modified { 1.0 } else { 0.0 })?;
         ui(&self.reset)?.SetOpacity(if shown.modified { 1.0 } else { 0.0 })?;

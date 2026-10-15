@@ -1732,4 +1732,106 @@ function Scenario-DrawerRows {
         Assert-Results $results 'drawer-opacity'
     } -NoShot
 }
+# The settings drawer, third part: a settings file with wrong values opens with a warning that has the action "open the
+# settings file" (logged, not opened), the advanced page lists each problem in the language of the interface with the
+# file, and each affected row says so; fixing the file and reloading takes it all away. The profile list chooses the
+# default profile, the agents page holds its four rows (the OSC 52 choice is saved and reset), the advanced page the
+# language, the version, ConPTY and the file.
+function Scenario-DrawerPages {
+    $bad = @{ theme = 'Nope'; font = @{ size = 400 }; cursor = @{ style = 'star' }; keybindings = @{ 'tab.new' = 'nonsense+'; 'paste' = 'Ctrl+V' } }
+    Run-App 'drawer-pages' (@{ confirmClose = $false } + $bad) {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $results.Add((Check 'a file with 5 problems opens with the warning that says so' $true ([bool](Get-Element (Nk-Text 'status.settingsProblems' @(5))))))
+        $action = Nk-Text 'app.openSettingsFile'
+        $results.Add((Check 'and offers to open the settings file' $true ([bool](Get-Element $action 'Button'))))
+        $mark = Log-Mark
+        Click-Name $action -Class 'Button'; Start-Sleep -Milliseconds 800
+        $results.Add((Check-True 'the action asks for the settings file (and starts nothing)' (@(Log-Since $mark | Where-Object { $_ -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*settings\.json' }).Count -eq 1)))
+        Open-Drawer
+        $row = { param($key) Get-Element $key 'TextBlock' }
+        $results.Add((Check 'the appearance page tags the three rows whose value was invalid' 3 @(Get-ElementsByName (Nk-Text 'setting.invalid')).Count))
+        Click-Name (Nk-Text 'settings.advanced') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'the advanced page has the heading of the problems' $true ([bool](& $row (Nk-Text 'settings.problems')))))
+        $results.Add((Check 'and the action to open the file' $true ([bool](Get-Element $action 'Button'))))
+        foreach ($key in 'theme', 'font.size', 'cursor.style', 'keybindings.tab.new', 'keybindings.paste') { $results.Add((Check "the problem of $key is listed" $true ([bool](& $row $key)))) }
+        $results.Add((Check 'in the words of the interface' $true ([bool](& $row '需要 6 到 72 的數字'))))
+        $results.Add((Check 'also for a shortcut that is not valid' $true ([bool](& $row (Nk-Text 'problem.badShortcut' @('nonsense+'))))))
+        $results.Add((Check 'and a command that does not exist' $true ([bool](& $row (Nk-Text 'problem.unknownCommand')))))
+        $results.Add((Check 'the file itself is on the page' $true ([bool](& $row (Nk-Text 'settings.file')))))
+        Close-Drawer
+        # fixing the file and reloading takes the warning away
+        $file = Join-Path (Join-Path (Join-Path (Split-Path $script:LogFile) 'drawer-pages-appdata') 'Nekominal') 'settings.json'
+        Set-Content -Path $file -Value '{ "language": "zh-TW", "confirmClose": false }' -Encoding UTF8
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700; Type-Unicode (Nk-Text 'app.reloadSettings') 40; Press 0x0D; Start-Sleep -Milliseconds 1200
+        $results.Add((Check 'a fixed file and a reload take the warning away' $false ([bool](Get-Element (Nk-Text 'status.settingsProblems' @(5))))))
+        Open-Drawer
+        $results.Add((Check 'and the tags' 0 @(Get-ElementsByName (Nk-Text 'setting.invalid')).Count))
+        Click-Name (Nk-Text 'settings.advanced') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'and the list of problems' $false ([bool](& $row (Nk-Text 'settings.problems')))))
+        $results.Add((Check 'while the version, ConPTY and the file stay' 3 @((Nk-Text 'settings.version'), (Nk-Text 'settings.conpty'), (Nk-Text 'settings.file') | Where-Object { & $row $_ }).Count))
+        Close-Drawer
+        Assert-Results $results 'drawer-pages'
+    } -NoShot
+    Run-App 'drawer-pages-en' (@{ language = 'en-US' } + $bad) {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Open-Drawer
+        Click-Name (Nk-Text 'settings.advanced' -Lang en) -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $texts = @(Get-ElementsByName '*' | ForEach-Object { $_.Current.Name } | Where-Object { $_ -match 'Needs|No such|valid shortcut|No color scheme' })
+        $texts | ForEach-Object { 'problem text: ' + $_ }
+        $results.Add((Check 'the problems are listed in English' 5 $texts.Count))
+        $results.Add((Check 'with no Chinese in them' 0 @($texts | Where-Object { $_ -match '[⺀-鿿]' }).Count))
+        $results.Add((Check 'the number problem reads like the table says' $true ($texts -contains (Nk-Text 'problem.number' @(6, 72) -Lang en))))
+        Close-Drawer
+        Assert-Results $results 'drawer-pages-en'
+    } -NoShot
+    Run-App 'drawer-pages-rows' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Open-Drawer
+        # profiles: the default profile is chosen from the list; reset puts the first one back
+        Click-Name (Nk-Text 'settings.profiles') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $sections = 'settings.appearance', 'settings.terminal', 'settings.profiles', 'settings.agents', 'settings.keys', 'settings.advanced' | ForEach-Object { Nk-Text $_ }
+        $profiles = @(Get-ElementsByName '*' 'ToggleButton' | Where-Object { $sections -notcontains $_.Current.Name } | Sort-Object { $_.Current.BoundingRectangle.Y })
+        'profiles: ' + (($profiles | ForEach-Object { $_.Current.Name }) -join ' | ')
+        $results.Add((Check-True 'the profile list has the shells of this machine' ($profiles.Count -ge 2)))
+        $states = @($profiles | ForEach-Object { [string]$_.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState })
+        $results.Add((Check 'the first is the default' 'On' $states[0]))
+        $second = $profiles[1].Current.Name
+        Click-Name $second -Class 'ToggleButton'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'choosing the second makes it the default' 'On' (Toggle-State $second)))
+        $results.Add((Check 'and the file holds its id' $true (-not [string]::IsNullOrEmpty((Saved-Settings).defaultProfile))))
+        $results.Add((Check 'the row has its reset button on' $true (Reset-Button (Nk-Text 'settings.defaultProfile')).Current.IsEnabled))
+        Click-Name (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), (Nk-Text 'settings.defaultProfile'))) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'reset makes the first the default again' 'Off' (Toggle-State $second)))
+        $results.Add((Check 'and the file holds none' $null ((Saved-Settings).defaultProfile)))
+        # agents: four rows; the OSC 52 choice
+        Click-Name (Nk-Text 'settings.agents') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        $rows = 'settings.agentEnvironment', 'settings.kitty', 'settings.shellIntegration', 'settings.osc52' | ForEach-Object { Nk-Text $_ }
+        $results.Add((Check 'the agents page has its four rows' 4 @($rows | Where-Object { Get-Element $_ 'TextBlock' }).Count))
+        $osc = Nk-Text 'settings.osc52'
+        $results.Add((Check 'OSC 52 starts on write only' 'On' (Toggle-State (Choice-Name $osc (Nk-Text 'osc52.write')))))
+        Click-Name (Choice-Name $osc (Nk-Text 'osc52.readWrite')); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'choosing read and write is saved' 'read-write' ((Saved-Settings).osc52)))
+        Click-Name (Nk-Text 'common.labelValue' @((Nk-Text 'common.restoreDefault'), $osc)) -Class 'Button'; Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'and reset takes it back out of the file' $null ((Saved-Settings).osc52)))
+        # the kitty protocol row is a toggle like the others
+        $kitty = Nk-Text 'settings.kitty'
+        Click-Name (Choice-Name $kitty (Nk-Text 'toggle.off')); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'turning the kitty keyboard protocol off is saved' $false ((Saved-Settings).keyboard.kittyProtocol)))
+        # advanced: the language is a setting of the file (read at start-up)
+        Click-Name (Nk-Text 'settings.advanced') -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+        Click-Name (Choice-Name (Nk-Text 'settings.language') (Nk-Text 'language.enUs')); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'choosing English is saved for the next start' 'en-US' ((Saved-Settings).language)))
+        $results.Add((Check 'the interface stays in its language until then' $true ([bool](Get-Element (Nk-Text 'settings.search') 'TextBox'))))
+        Close-Drawer
+        Assert-Results $results 'drawer-pages-rows'
+    } -NoShot
+}
+function Get-ElementsByName([string]$Name, [string]$Class = '') {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
+    foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
+}
 function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer }

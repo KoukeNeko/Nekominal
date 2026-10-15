@@ -13,6 +13,7 @@ use nekominal_model::themes;
 use nekominal_winui_sys::*;
 use windows_core::{EventRevoker, Interface, Result};
 
+use crate::drawer_pages::Extras;
 use crate::drawer_rows::{self, SettingRow};
 use crate::i18n::{localize, t};
 use crate::keyboard::{VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_RIGHT};
@@ -34,10 +35,12 @@ pub struct Drawer {
     current: Cell<Section>,
     pub(crate) rows: RefCell<Vec<Rc<SettingRow>>>,
     /// The shortcuts page and the read-only rows of the advanced page, built when the sheet is first opened.
-    pub(crate) extras: RefCell<drawer_rows::Extras>,
+    pub(crate) extras: RefCell<Extras>,
     /// Set while the controls are brought in line with the settings, so that does not count as a change.
     pub(crate) syncing: Cell<bool>,
     open: Cell<bool>,
+    /// The width the sheet has now.
+    width: Cell<f64>,
     /// The keyboard focus is somewhere in the sheet.
     focus_inside: Cell<bool>,
     pub(crate) peek: RefCell<Peek>,
@@ -69,9 +72,10 @@ impl Drawer {
             chips,
             current: Cell::new(Section::Appearance),
             rows: RefCell::new(Vec::new()),
-            extras: RefCell::new(drawer_rows::Extras::default()),
+            extras: RefCell::new(Extras::default()),
             syncing: Cell::new(false),
             open: Cell::new(false),
+            width: Cell::new(logic::DRAWER_WIDTH),
             focus_inside: Cell::new(false),
             peek: RefCell::new(Peek::default()),
             peeking: RefCell::new(None),
@@ -158,7 +162,17 @@ impl Drawer {
 
     /// Gives the sheet the width a body of `body_width` DIP of window allows.
     fn fit(&self, body_width: f64) {
-        let _ = fe(&self.panel).and_then(|panel| panel.SetWidth(logic::drawer_width(body_width)));
+        let width = logic::drawer_width(body_width);
+        self.width.set(width);
+        let _ = fe(&self.panel).and_then(|panel| panel.SetWidth(width));
+        self.keep_message_clear();
+    }
+
+    /// The message bar of the window moves out of the way of the sheet while it is open.
+    fn keep_message_clear(&self) {
+        if let Some(shell) = self.shell.upgrade() {
+            shell.reserve_at_right(if self.open.get() { self.width.get() + logic::DRAWER_MARGIN } else { 0.0 });
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -173,6 +187,7 @@ impl Drawer {
     /// Shows the sheet and puts the focus in the search box, or on the row `target` names (a palette entry).
     pub fn open(&self, target: Option<&str>) {
         self.open.set(true);
+        self.keep_message_clear();
         let _ = ui(&self.root).and_then(|root| root.SetVisibility(Visibility::Visible));
         self.sync();
         let row = target.and_then(|id| self.rows.borrow().iter().find(|row| row.descriptor.id == id).cloned());
@@ -210,6 +225,7 @@ impl Drawer {
         let _ = self.search.SetText("");
         let _ = ui(&self.root).and_then(|root| root.SetVisibility(Visibility::Collapsed));
         self.focus_inside.set(false);
+        self.keep_message_clear();
         if let Some(shell) = self.shell.upgrade() {
             shell.focus_active_pane();
         }

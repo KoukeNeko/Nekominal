@@ -134,6 +134,11 @@ impl Glass {
     pub fn panel_accent(&self) -> Color {
         self.mark(self.accent)
     }
+
+    /// The tag of a row whose value in the settings file was not valid.
+    pub fn panel_warning(&self) -> Color {
+        self.mark(self.warning)
+    }
 }
 
 /// Alpha of the tint over the top bar. The terminal body is painted with the opacity setting; the bar uses

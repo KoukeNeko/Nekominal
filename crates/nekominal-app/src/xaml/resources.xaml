@@ -17,6 +17,7 @@
     <SolidColorBrush x:Key="NkPanelTextSecondary" Color="#FF9AA5CE"/>
     <SolidColorBrush x:Key="NkPanelOutline" Color="#FF7982A9"/>
     <SolidColorBrush x:Key="NkPanelAccent" Color="#FF7AA2F7"/>
+    <SolidColorBrush x:Key="NkPanelWarning" Color="#FFE0AF68"/>
     <SolidColorBrush x:Key="NkPanelBorder" Color="#2EFFFFFF"/>
     <SolidColorBrush x:Key="NkSelected" Color="#29FFFFFF"/>
     <SolidColorBrush x:Key="NkSelectedBorder" Color="#38FFFFFF"/>

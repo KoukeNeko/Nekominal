@@ -15,7 +15,7 @@ use nekominal_model::{
     layout::{Axis, PaneId},
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
-    settings::{self, Backdrop, Settings},
+    settings::{self, Backdrop, Problem, Settings},
     settings_ui::{Descriptor, Value},
     store,
     strings::{Lang, Text},
@@ -99,6 +99,8 @@ struct Ui {
     terminal_area: Grid,
     body: Grid,
     message_bar: InfoBar,
+    /// The button of the message bar, for a message that has an action (the settings file has problems).
+    message_action: Button,
 }
 
 pub struct Shell {
@@ -108,6 +110,8 @@ pub struct Shell {
     resources: ResourceDictionary,
     ui: Ui,
     pub settings: RefCell<Settings>,
+    /// What is wrong with the settings file: the values of `settings.json` and the shortcuts that were not valid.
+    pub problems: RefCell<Vec<Problem>>,
     pub keymap: RefCell<Keymap>,
     pub profiles: RefCell<Vec<Profile>>,
     /// The shells found on this machine, which the profiles of the settings are merged with.
@@ -342,6 +346,7 @@ pub fn launch() -> Result<()> {
         terminal_area: find(&root, "TerminalArea")?,
         body: find(&root, "Body")?,
         message_bar: find(&root, "MessageBar")?,
+        message_action: find(&root, "MessageAction")?,
     };
 
     let shell = Rc::new(Shell {
@@ -350,6 +355,7 @@ pub fn launch() -> Result<()> {
         resources,
         ui: elements,
         settings: RefCell::new(settings),
+        problems: RefCell::new(parsed.problems.iter().chain(&built.problems).cloned().collect()),
         keymap: RefCell::new(built.keymap),
         profiles: RefCell::new(Vec::new()),
         discovered: RefCell::new(Vec::new()),
@@ -404,9 +410,8 @@ pub fn launch() -> Result<()> {
     appw.MoveAndResize(RectInt32 { x: 120, y: 80, width: 1500, height: 960 })?;
     window.Activate()?;
 
-    let problems = parsed.problems.len() + built.problems.len();
     let loaded_shell = shell.clone();
-    let loaded = fe(&root)?.Loaded(cb!("root loaded", |_, _| loaded_shell.on_loaded(problems, load_error.clone())))?;
+    let loaded = fe(&root)?.Loaded(cb!("root loaded", |_, _| loaded_shell.on_loaded(load_error.clone())))?;
     shell.revokers.borrow_mut().push(loaded);
     log("shell built");
     Ok(())
@@ -417,7 +422,7 @@ impl Shell {
     // Start-up
     // ---------------------------------------------------------------------------------------------
 
-    fn on_loaded(self: &Rc<Self>, settings_problems: usize, load_error: Option<String>) {
+    fn on_loaded(self: &Rc<Self>, load_error: Option<String>) {
         let scale = self.scale();
         let (left, right) = window::caption_insets(&self.window, scale);
         let _ = self.ui.left_inset.SetWidth(GridLength { value: left, grid_unit_type: GridUnitType::Pixel });
@@ -435,9 +440,9 @@ impl Shell {
         self.set_profiles(&found);
 
         if let Some(error) = load_error {
-            self.show_message(&tf(Text::StatusSettingsSaveFailed, &[&error]), InfoBarSeverity::Warning);
-        } else if settings_problems > 0 {
-            self.show_message(&tf(Text::StatusSettingsProblems, &[&settings_problems]), InfoBarSeverity::Warning);
+            self.show_message(&tf(Text::StatusSettingsLoadFailed, &[&error]), InfoBarSeverity::Warning);
+        } else if !self.problems.borrow().is_empty() {
+            self.show_settings_problems();
         } else if nekominal_pty::profiles::inherited_no_color() {
             self.show_message(t(Text::InfobarNoColor), InfoBarSeverity::Informational);
         } else if nekominal_pty::conpty::backend()
@@ -538,6 +543,7 @@ impl Shell {
             ("NkPanelTextSecondary", glass.panel_text_secondary()),
             ("NkPanelOutline", glass.panel_outline()),
             ("NkPanelAccent", glass.panel_accent()),
+            ("NkPanelWarning", glass.panel_warning()),
             ("NkPanelBorder", glass.panel_border()),
             ("NkSelected", glass.chip_selected()),
             ("NkSelectedBorder", glass.chip_selected_border()),
@@ -777,6 +783,8 @@ impl Shell {
         revokers.push(self.ui.tool_menu.on_click(cb!("app menu", |_, _| this.show_app_menu()))?);
         let this = self.clone();
         revokers.push(self.ui.tab_plate_button.on_click(cb!("tab list", |_, _| this.toggle_overlay(Overlay::Tabs)))?);
+        let this = self.clone();
+        revokers.push(self.ui.message_action.on_click(cb!("message action", |_, _| this.open_settings_file()))?);
 
         // Quick appearance flyout: changes apply while the control moves.
         let this = self.clone();
@@ -1957,16 +1965,18 @@ impl Shell {
         };
         let parsed = settings::parse(text.as_deref());
         let built = keymap::build_keymap(commands::default_bindings(), &parsed.settings.keybindings);
-        let problems = parsed.problems.len() + built.problems.len();
+        let problems: Vec<Problem> = parsed.problems.iter().chain(&built.problems).cloned().collect();
+        let count = problems.len();
+        *self.problems.borrow_mut() = problems;
         let before = self.settings.replace(parsed.settings);
         *self.keymap.borrow_mut() = built.keymap;
         self.apply_loaded_settings(&before);
-        if problems > 0 {
-            self.show_message(&tf(Text::StatusSettingsProblems, &[&problems]), InfoBarSeverity::Warning);
+        if count > 0 {
+            self.show_settings_problems();
         } else {
             let _ = self.ui.message_bar.SetIsOpen(false);
         }
-        log(&format!("settings reloaded from {}: {problems} problems", path.display()));
+        log(&format!("settings reloaded from {}: {count} problems", path.display()));
     }
 
     /// The font of the settings reaches every pane: the renderer takes a new size at once, a new family or line
@@ -2039,7 +2049,25 @@ impl Shell {
         let bar = &self.ui.message_bar;
         let _ = bar.SetSeverity(severity);
         let _ = bar.SetMessage(message);
+        let _ = ui(&self.ui.message_action).and_then(|action| action.SetVisibility(Visibility::Collapsed));
         let _ = bar.SetIsOpen(true);
+    }
+
+    /// Keeps the message bar clear of the drawer: `width` DIP at the right of the body are not its to use.
+    pub fn reserve_at_right(&self, width: f64) {
+        let margin = Thickness { left: 16.0, top: 12.0, right: 16.0 + width, bottom: 0.0 };
+        let _ = fe(&self.ui.message_bar).and_then(|bar| bar.SetMargin(margin));
+    }
+
+    /// The message of a settings file that has problems, with the action that opens the file; the drawer lists them.
+    fn show_settings_problems(&self) {
+        let count = self.problems.borrow().len();
+        self.show_message(&tf(Text::StatusSettingsProblems, &[&count]), InfoBarSeverity::Warning);
+        let action = &self.ui.message_action;
+        let label = IReference::from(t(Text::AppOpenSettingsFile)).cast::<windows_core::IInspectable>();
+        let _ = label.and_then(|label| action.cast::<ContentControl>()?.SetContent(&label));
+        let _ = ui(action).and_then(|action| action.SetVisibility(Visibility::Visible));
+        self.sync_drawer();
     }
 
     /// Asks before ending work; `title` names what closes, the buttons answer it.
