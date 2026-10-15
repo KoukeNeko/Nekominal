@@ -326,7 +326,8 @@ impl Command {
     }
 
     /// Opens, closes or toggles something, so a held key must act once: with keyboard auto-repeat a held
-    /// Alt+Shift+D would add a pane every 30 ms. Navigation, resizing and the zoom commands repeat.
+    /// Alt+Shift+D would add a pane every 30 ms, and a held backdrop key would rebuild the system backdrop as
+    /// often. Navigation, resizing and the zoom commands repeat.
     pub fn once_per_press(self) -> bool {
         matches!(
             self,
@@ -342,6 +343,8 @@ impl Command {
                 | Command::ViewFullscreen
                 | Command::AppPalette
                 | Command::AppSettings
+                | Command::AppOpenSettingsFile
+                | Command::AppearanceBackdropNext
         )
     }
 
@@ -738,43 +741,70 @@ mod tests {
         assert_eq!(hidden, expected);
     }
 
-    #[test]
-    fn commands_that_open_close_or_toggle_act_once_per_press() {
-        let once: BTreeSet<&str> = Command::ALL
-            .iter()
-            .filter(|c| c.once_per_press())
-            .map(|c| c.id())
-            .collect();
-        let expected: BTreeSet<&str> = [
-            "tab.new",
-            "tab.close",
-            "tab.profiles",
-            "pane.splitRight",
-            "pane.splitDown",
-            "pane.close",
-            "pane.zoom",
-            "pane.restart",
-            "edit.find",
-            "view.fullscreen",
-            "app.palette",
-            "app.settings",
-        ]
-        .into();
-        assert_eq!(once, expected);
-        // What a held key is meant to repeat.
-        for command in [
-            Command::TabNext,
-            Command::PaneFocus(Direction::Left),
-            Command::PaneResize(Direction::Right),
-            Command::ViewZoomIn,
-            Command::ScrollPageUp,
-            Command::EditPaste,
-        ] {
-            assert!(!command.once_per_press(), "{}", command.id());
+    /// Whether holding the key of a command is meant to act once (it opens, closes, toggles, switches or starts
+    /// something) or to repeat (it moves, resizes, scrolls, steps a value or edits). Every command is named here,
+    /// with no wildcard: a new command does not compile until it is classified, and then `once_per_press` must agree.
+    fn held_key_acts_once(command: Command) -> bool {
+        match command {
+            Command::TabNew
+            | Command::TabClose
+            | Command::TabProfiles
+            | Command::PaneSplitRight
+            | Command::PaneSplitDown
+            | Command::PaneClose
+            | Command::PaneZoom
+            | Command::PaneRestart
+            | Command::EditFind
+            | Command::ViewFullscreen
+            | Command::AppPalette
+            | Command::AppSettings
+            | Command::AppOpenSettingsFile
+            | Command::AppearanceBackdropNext => true,
+            Command::TabNext
+            | Command::TabPrevious
+            | Command::TabGoto(_)
+            | Command::TabMoveLeft
+            | Command::TabMoveRight
+            | Command::PaneFocus(_)
+            | Command::PaneResize(_)
+            | Command::EditCopy
+            | Command::EditSmartCopy
+            | Command::EditPaste
+            | Command::EditSelectAll
+            | Command::EditClear
+            | Command::ScrollPageUp
+            | Command::ScrollPageDown
+            | Command::ScrollTop
+            | Command::ScrollBottom
+            | Command::PromptPrevious
+            | Command::PromptNext
+            | Command::ViewZoomIn
+            | Command::ViewZoomOut
+            | Command::ViewZoomReset
+            | Command::AppReloadSettings
+            | Command::AppearanceOpacityUp
+            | Command::AppearanceOpacityDown => false,
         }
-        // The default split shortcuts are the chords that reach Windows as Alt+character.
-        for command in [Command::PaneSplitRight, Command::PaneSplitDown] {
-            assert!(command.once_per_press());
+    }
+
+    #[test]
+    fn commands_that_open_close_switch_or_toggle_act_once_per_press_and_the_rest_repeat() {
+        for command in Command::ALL {
+            assert_eq!(
+                command.once_per_press(),
+                held_key_acts_once(*command),
+                "{}",
+                command.id()
+            );
+        }
+        // The default split shortcuts are the chords that reach Windows as Alt+character, and the backdrop key
+        // rebuilds the system backdrop: none may repeat.
+        for command in [
+            Command::PaneSplitRight,
+            Command::PaneSplitDown,
+            Command::AppearanceBackdropNext,
+        ] {
+            assert!(command.once_per_press(), "{}", command.id());
         }
     }
 
