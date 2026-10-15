@@ -13,6 +13,7 @@ members = [
     "tools/winprobe",
     "tools/agent-probe",
     "tools/ui-spike",
+    "tools/d3d11-spike",
     "crates/nekominal-winui-sys",
     "crates/nekominal-app",
     "crates/nekominal-slice",
