@@ -9,6 +9,7 @@
 #   Scenario-Silence          # sound witness over the trigger matrix (needs an audio endpoint), Alt+Space, held Alt+Shift+D
 #   Scenario-Opacity          # live opacity pixels on an idle terminal, 200-event replay, 20 backdrop switches, backdrop None
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
+#   Scenario-TabDrag          # dragging an unselected chip of a compressed strip moves it by the widths of the layout the press made
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
@@ -782,6 +783,34 @@ function Scenario-Toolbar {
         Assert-Results $results 'toolbar'
     } -NoShot
 }
+# Dragging an unselected chip of a compressed strip: the press that starts the drag selects the chip, which makes it wider,
+# and the drag has to count with the widths of that layout. Twelve tabs at 988 DIP, the chip of tab 7 dragged 110 DIP to
+# the right passes the middle of its right neighbour (78 DIP away once it is selected) and not that of the next (130).
+function Scenario-TabDrag {
+    Run-App 'tab-drag' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Name-Tab 't1'
+        foreach ($n in 2..12) { New-Tab; Name-Tab "t$n" }
+        Set-WindowWidth 988
+        $order = { @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ }) }
+        $before = & $order
+        'before: ' + ($before -join ' ')
+        $chip = (Get-Chips | Where-Object { (Chip-Title $_) -eq 't7' })
+        $r = $chip.Rect
+        $scale = Get-Scale
+        $x = [int]($r.X + 8 * $scale); $y = [int]($r.Y + $r.Height / 2)
+        Drag-To $x $y ([int]($x + 110 * $scale)) $y 20 25
+        Start-Sleep -Milliseconds 800
+        $after = & $order
+        'after:  ' + ($after -join ' ')
+        $expected = @($before | Where-Object { $_ -ne 't7' }); $at = $expected.IndexOf('t8') + 1
+        $expected = @($expected[0..($at - 1)]) + 't7' + @($expected[$at..($expected.Count - 1)])
+        $results.Add((Check 'dragging the chip of tab 7 110 DIP to the right moves it past tab 8 only' ($expected -join ' ') ($after -join ' ')))
+        $results.Add((Check 'and it stays the tab shown, now eighth' '8 / 12' (Plate-Text)))
+        Assert-Results $results 'tab drag'
+    } -NoShot
+}
 # A program that reported progress and then ended with an error shows an error, not the work it was doing: the exit
 # clears the progress and a failed exit outranks it. The program is a profile of its own (it keeps its last screen).
 function Scenario-StatusExit {
@@ -1450,4 +1479,4 @@ function Scenario-Restart {
         Check 'opening the settings file names the file and starts nothing' $true ([bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*restart-appdata\\Nekominal\\settings\.json'))
     }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes }
