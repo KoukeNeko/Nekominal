@@ -9,6 +9,8 @@
 #   Scenario-NextClaude [fullscreen|classic]   # Claude Code starts, takes text and exits, no model call
 #   Scenario-NextResize [fullscreen|classic]   # 18 window sizes in a drag-like storm while Claude Code runs, against a fresh run
 #   Scenario-NextIdle        # memory and CPU of an idle window
+#   Scenario-NextExit        # closing the last window ends the process without forced cleanup
+#   Scenario-NextWindows     # two windows in one process; only the last close ends it
 #   Scenario-NextAll
 #
 # A scenario fails (throws) when a check fails. The clipboard of the user is saved and restored.
@@ -186,6 +188,27 @@ function Scenario-NextAppearance {
     }
 }
 
+function Scenario-NextTabMarks {
+    Run-Next {
+        $r = Win-Rect; $scale = Get-Scale
+        $region = @([int]($r.Left + 12 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
+        $shots = 1..4 | ForEach-Object { Join-Path $env:TEMP "tabmark-$_.png" }
+        Next-Line 'Start-Sleep 5; [Console]::Out.Write("`e]9;ping`a")'
+        Start-Sleep -Milliseconds 300
+        ShotRegion $shots[0] $region[0] $region[1] $region[2] $region[3] | Out-Null          # the first tab, selected, quiet
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500                              # a second tab takes the selection
+        ShotRegion $shots[1] $region[0] $region[1] $region[2] $region[3] | Out-Null          # the first tab, not selected, before the ping
+        Start-Sleep -Seconds 6
+        ShotRegion $shots[2] $region[0] $region[1] $region[2] $region[3] | Out-Null          # after the ping rang out of sight
+        $marked = Next-DiffPixels $shots[1] $shots[2]
+        Next-Check 'tabmarks.notification-marks-the-other-tab' ($marked -gt 8) "$marked pixels of the first chip changed when the ping rang out of sight"
+        $first = Next-At 60 24; Click-At $first[0] $first[1]; Start-Sleep -Milliseconds 800
+        ShotRegion $shots[3] $region[0] $region[1] $region[2] $region[3] | Out-Null          # the first tab again, selected
+        $left = Next-DiffPixels $shots[0] $shots[3]
+        Next-Check 'tabmarks.selecting-the-tab-clears-the-mark' ($left -lt 8) "$left pixels differ from the quiet chip after selecting it"
+    }
+}
+
 function Scenario-NextMenu {
     Run-Next {
         Next-Line 'echo ONE'
@@ -250,6 +273,65 @@ function Scenario-NextPalette {
         Press 0x1B; Start-Sleep -Milliseconds 500                   # Esc
         Next-Line 'echo AFTER-ESC'
         Next-Check 'palette.escape-closes' ((Next-Text) -match 'AFTER-ESC') 'after Esc the pane takes the typing again'
+    }
+}
+
+function Next-PopupWindow {
+    $found = [Collections.Generic.List[IntPtr]]::new()
+    [void][D]::EnumWindows([D+EnumProc]{ param($h, $l)
+        [uint32]$windowPid = 0
+        [void][D]::GetWindowThreadProcessId($h, [ref]$windowPid)
+        if ($windowPid -eq $script:App.Id -and [D]::IsWindowVisible($h)) {
+            $class = [Text.StringBuilder]::new(256)
+            [void][D]::GetClassName($h, $class, $class.Capacity)
+            if ($class.ToString() -eq 'NekominalPopup') { $found.Add($h) }
+        }
+        return $true
+    }, [IntPtr]::Zero)
+    if ($found.Count -gt 1) { throw 'more than one popup in the test app' }
+    if ($found.Count -eq 1) { return $found[0] }
+    return [IntPtr]::Zero
+}
+
+function Scenario-NextConfirm {
+    Run-Next {
+        $payload = 'PASTE-GUARD-' + ('x' * 6000)
+        Set-Clipboard -Value $payload
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 700
+        $popup = Next-PopupWindow
+        Next-Check 'confirm.large-paste-asks' ($popup -ne [IntPtr]::Zero) 'large clipboard text opens a confirmation'
+        if ($popup -eq [IntPtr]::Zero) { throw 'confirmation missing; no acceptance keys sent' }
+        $rect = [D+RECT]::new(); [void][D]::GetWindowRect($popup, [ref]$rect)
+        Next-Check 'confirm.drawn' ((Next-LightPixels ($rect.Left + 15) ($rect.Top + 10) ($rect.Right - $rect.Left - 30) ($rect.Bottom - $rect.Top - 20)) -gt 100) 'question and buttons contain rendered text'
+        Next-Check 'confirm.owner-stays-active' ([D]::GetForegroundWindow() -eq $script:Hwnd) 'the confirmation does not activate a different window'
+        Press 0x0D; Start-Sleep -Milliseconds 400
+        Next-Check 'confirm.enter-cancels' ((Next-PopupWindow) -eq [IntPtr]::Zero -and (Next-Text) -notmatch 'PASTE-GUARD-') 'Enter initially cancels without inserting clipboard text'
+        Set-Clipboard -Value $payload
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 500
+        Press 0x73 @(0x12); Start-Sleep -Milliseconds 400  # Alt+F4 dismisses the popup only.
+        Next-Check 'confirm.alt-f4-cancels' (-not $script:App.HasExited -and (Next-PopupWindow) -eq [IntPtr]::Zero) 'Alt+F4 cancels the popup and keeps the terminal'
+        Press 0x1B; Start-Sleep -Milliseconds 300
+        Set-Clipboard -Value $payload
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 500
+        Press 0x27; Press 0x0D; Start-Sleep -Milliseconds 600
+        Next-Check 'confirm.accept-pastes' ((Next-Text) -match 'PASTE-GUARD-') 'explicit acceptance inserts the held clipboard text'
+        Press 0x1B; Start-Sleep -Milliseconds 300
+        Next-Line 'Start-Sleep -Seconds 60'
+        [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 600
+        Next-Check 'confirm.busy-window-asks' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'a running session requires confirmation'
+        Press 0x1B; Start-Sleep -Milliseconds 300
+        Next-Check 'confirm.cancel-keeps-session' (-not $script:App.HasExited -and (Next-PopupWindow) -eq [IntPtr]::Zero) 'Escape leaves the running window open'
+        [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 500
+        Press 0x27; Press 0x0D
+        $ended = $script:App.WaitForExit(5000)
+        Next-Check 'confirm.accept-closes-window' $ended 'explicit acceptance closes the running window'
+        if ($ended) { Next-Check 'confirm.exit-success' ($script:App.ExitCode -eq 0) "exit code $($script:App.ExitCode)" }
+    }
+    Run-Next {
+        Press 0x73 @(0x12)
+        $ended = $script:App.WaitForExit(5000)
+        Next-Check 'confirm.alt-f4-idle-window' $ended 'without a popup Alt+F4 closes an idle window normally'
+        if ($ended) { Next-Check 'confirm.alt-f4-exit-success' ($script:App.ExitCode -eq 0) "exit code $($script:App.ExitCode)" }
     }
 }
 
@@ -449,4 +531,51 @@ function Scenario-NextIdle {
     }
 }
 
-function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextResize fullscreen; Scenario-NextResize classic; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle }
+# Close through WM_CLOSE, not the harness's forced cleanup. This needs no keyboard or foreground ownership.
+function Scenario-NextExit {
+    Run-Next {
+        $app = $script:App
+        Next-Check 'exit.close-request' ($app.CloseMainWindow()) 'the app received WM_CLOSE at its idle prompt'
+        $exited = $app.WaitForExit(5000)
+        Next-Check 'exit.process-ends' $exited 'closing the last window ends the process within 5 seconds'
+        if ($exited) { Next-Check 'exit.success' ($app.ExitCode -eq 0) "exit code $($app.ExitCode)" }
+    }
+}
+
+function Scenario-NextWindows([switch]$Inspect) {
+    Run-Next {
+        $app = $script:App
+        $first = $script:Hwnd
+        $app.Refresh(); $oneWindowMB = $app.PrivateMemorySize64 / 1MB
+        # Read the application message id from its source instead of keeping a second definition.
+        $source = Get-Content (Join-Path $PSScriptRoot '../../crates/nekominal-shell/src/win.rs') -Raw
+        if ($source -notmatch 'const WM_NEW_WINDOW: u32 = WM_APP \+ (\d+);') { throw 'new-window message not found' }
+        $message = [uint32](0x8000 + [int]$Matches[1])
+        Next-Check 'windows.new-request' ([D]::PostMessage($first, $message, [UIntPtr]::Zero, [IntPtr]::Zero)) 'new-window request queued'
+        $deadline = [DateTime]::UtcNow.AddSeconds(8)
+        do {
+            Start-Sleep -Milliseconds 100
+            $windows = @([D]::AllWindows([uint32]$app.Id))
+        } while ($windows.Count -lt 2 -and [DateTime]::UtcNow -lt $deadline)
+        Next-Check 'windows.two-in-one-process' ($windows.Count -eq 2) "$($windows.Count) visible windows belong to the same process"
+        if ($Inspect) {
+            Write-Host ('info windows.inspect | handles ' + (($windows | ForEach-Object { $_.ToInt64() }) -join ', '))
+            Start-Sleep -Seconds 15
+        }
+        Start-Sleep -Seconds 2
+        $app.Refresh()
+        Write-Host ('info windows.memory | one {0:N1} MB, two {1:N1} MB private' -f $oneWindowMB, ($app.PrivateMemorySize64 / 1MB))
+        Next-Check 'windows.first-close-request' ([D]::PostMessage($first, 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)) 'close the first idle window'
+        Start-Sleep -Milliseconds 800
+        $remaining = @([D]::AllWindows([uint32]$app.Id))
+        Next-Check 'windows.other-survives' (-not $app.HasExited -and $remaining.Count -eq 1 -and $remaining[0] -ne $first) 'the other window stays alive'
+        if ($remaining.Count -eq 1) {
+            [void][D]::PostMessage($remaining[0], 0x0010, [UIntPtr]::Zero, [IntPtr]::Zero)
+            $ended = $app.WaitForExit(5000)
+            Next-Check 'windows.last-close-exits' $ended 'the last close ends the process within 5 seconds'
+            if ($ended) { Next-Check 'windows.exit-success' ($app.ExitCode -eq 0) "exit code $($app.ExitCode)" }
+        }
+    }
+}
+
+function Scenario-NextAll { Scenario-NextTabs; Scenario-NextClipboard; Scenario-NextKeys; Scenario-NextIme; Scenario-NextResize fullscreen; Scenario-NextResize classic; Scenario-NextClaude fullscreen; Scenario-NextClaude classic; Scenario-NextIdle; Scenario-NextExit }

@@ -26,13 +26,13 @@ use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_ui::{Color, Rect, Ui};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, POINT, WPARAM},
+    Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
     Globalization::GetUserDefaultLocaleName,
-    Graphics::Gdi::{ClientToScreen, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
+    Graphics::Gdi::{ClientToScreen, ScreenToClient, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
         WindowsAndMessaging::{
-            DestroyWindow, GWL_STYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowPlacement, HWND_TOP, PostMessageW,
+            DestroyWindow, GWL_STYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
             SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
             SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WS_OVERLAPPEDWINDOW,
         },
@@ -44,8 +44,8 @@ use crate::{
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
-    logic::{self, PxRect},
-    open, popup,
+    logic::{self, Attention, PxRect},
+    open, popup, status,
     tab::{PaneEntry, Tab},
     util,
 };
@@ -72,8 +72,6 @@ pub enum Cursor {
 pub const CORNER_RADIUS: f32 = 8.0;
 const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
-
-static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 
 pub struct App {
     hwnd: HWND,
@@ -107,6 +105,7 @@ pub struct App {
     dragged_splitter: Option<Vec<u8>>,
     /// The "…" menu while it is open.
     popup: Option<popup::Popup>,
+    confirmation: Option<Confirmation>,
     /// The placement and style the window had before full screen, while it is full screen.
     fullscreen: Option<(WINDOWPLACEMENT, isize)>,
     /// The search of the find bar while it is open.
@@ -114,12 +113,21 @@ pub struct App {
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
+    wake_pending: Arc<AtomicBool>,
 }
 
 /// The matches of the find bar and the one the bar is on.
 struct FindState {
     matches: Vec<SearchMatch>,
     current: usize,
+}
+
+/// The exact operation held until the user accepts. Closing any pane cancels it before indices can change.
+enum Confirmation {
+    Paste { tab: usize, pane: PaneId, text: String },
+    ClosePane { tab: usize, pane: PaneId },
+    CloseTab(usize),
+    CloseWindow,
 }
 
 /// Matches kept at most: more than this are of no use to anyone and cost a scan of the whole buffer.
@@ -151,6 +159,7 @@ fn wired(command: Command) -> bool {
             | Command::PromptPrevious
             | Command::PromptNext
             | Command::AppPalette
+            | Command::AppNewWindow
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::AppearanceBackdropNext
@@ -190,7 +199,7 @@ fn input_mods(m: Modifiers) -> Mods {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32) -> Result<App, String> {
+    pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>) -> Result<App, String> {
         let text = store::settings_path().and_then(|path| store::load(&path).ok().flatten());
         let settings = settings::parse(text.as_deref()).settings;
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
@@ -206,7 +215,10 @@ impl App {
             .cloned()
             .ok_or("no shell was found")?;
 
-        let (gpu, surface) = gpu::create(hwnd, size_px)?;
+        let (gpu, surface) = match shared_gpu {
+            Some(gpu) => { let surface = gpu::create_surface(&gpu, hwnd, size_px)?; (gpu, surface) }
+            None => gpu::create(hwnd, size_px)?,
+        };
         let ui = Ui::new(&gpu)?;
         let mut app = App {
             hwnd,
@@ -233,10 +245,12 @@ impl App {
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
+            confirmation: None,
             fullscreen: None,
             find: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
+            wake_pending: Arc::new(AtomicBool::new(false)),
         };
         app.relayout();
         app.new_tab()?;
@@ -250,6 +264,8 @@ impl App {
     pub fn dark(&self) -> bool {
         !self.glass.light
     }
+
+    pub fn shared_gpu(&self) -> Gpu { self.gpu.clone() }
 
     // --- the selected tab and its focused pane ------------------------------------------------------------------
 
@@ -314,9 +330,10 @@ impl App {
         let view = PaneRenderer::new_sharing(&self.gpu, self.renderer_config(), self.theme.clone(), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
         let hwnd = self.hwnd.0 as isize;
+        let wake_pending = self.wake_pending.clone();
         let wake: nekominal_pane::Wake = Arc::new(move || {
             // One posted message per burst of output: the handler clears the flag when it draws.
-            if !WAKE_PENDING.swap(true, Ordering::AcqRel) {
+            if !wake_pending.swap(true, Ordering::AcqRel) {
                 // SAFETY: posting to a window handle from another thread is allowed; a dead window drops it.
                 unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
             }
@@ -332,6 +349,9 @@ impl App {
             rect: PxRect { x: 0, y: 0, w: size_px.0 as i32, h: size_px.1 as i32 },
             title: String::new(),
             exited: false,
+            attention: None,
+            note: None,
+            progress: None,
         })
     }
 
@@ -368,6 +388,9 @@ impl App {
 
     /// Closes a pane; the tab goes with its last pane, and the window with its last tab.
     fn close_pane(&mut self, tab_index: usize, id: PaneId) {
+        if self.confirmation.is_some() {
+            self.close_popup();
+        }
         let Some(tab) = self.tabs.get_mut(tab_index) else { return };
         if tab.remove(id) {
             self.close_tab(tab_index);
@@ -381,6 +404,9 @@ impl App {
     fn close_tab(&mut self, index: usize) {
         if index >= self.tabs.len() {
             return;
+        }
+        if self.confirmation.is_some() {
+            self.close_popup();
         }
         let tab = self.tabs.remove(index);
         for entry in &tab.panes {
@@ -402,6 +428,7 @@ impl App {
     fn select(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.selected {
             self.selected = index;
+            self.tabs[index].mark_seen();
             self.relayout();
             self.sync_focus();
             self.redraw();
@@ -451,11 +478,11 @@ impl App {
     }
 
     pub fn on_activate(&mut self, active: bool) {
-        // The menu takes the activation while it is open; the window is still the one in use.
-        if !active && self.popup.is_some() {
-            return;
-        }
+        if !active { self.close_popup(); }
         self.active = active;
+        if active && let Some(tab) = self.tabs.get_mut(self.selected) {
+            tab.mark_seen();
+        }
         self.sync_focus();
         self.redraw();
     }
@@ -486,11 +513,15 @@ impl App {
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
     pub fn on_wake(&mut self) {
-        WAKE_PENDING.store(false, Ordering::Release);
+        self.wake_pending.store(false, Ordering::Release);
         let mut ended: Vec<(usize, PaneId)> = Vec::new();
+        let (selected, active) = (self.selected, self.active);
         for (t, tab) in self.tabs.iter_mut().enumerate() {
+            // Bells and notifications are for what the user is not looking at.
+            let watched = t == selected && active;
             for entry in &mut tab.panes {
                 while let Ok(event) = entry.pane.events.try_recv() {
+                    entry.progress = status::progress_after(entry.progress, &event);
                     match event {
                         UiEvent::Title(title) => entry.title = logic::clean_title(&title),
                         UiEvent::ClipboardStore(text) => {
@@ -499,10 +530,22 @@ impl App {
                         UiEvent::ClipboardLoad(request) => {
                             entry.pane.answer_clipboard(&request, &clipboard::read_text().unwrap_or_default());
                         }
+                        UiEvent::Bell if !watched => {
+                            entry.attention = entry.attention.or(Some(Attention::Bell));
+                        }
+                        UiEvent::Notification(notification) if !watched => {
+                            if entry.attention != Some(Attention::Exit) {
+                                entry.attention = Some(Attention::Notification);
+                            }
+                            let text = format!("{} {}", notification.title, notification.body);
+                            entry.note = Some(logic::clean_title(&text));
+                        }
                         UiEvent::Exit(code) => {
                             entry.exited = true;
                             if code == 0 {
                                 ended.push((t, entry.id));
+                            } else {
+                                entry.attention = Some(Attention::Exit);
                             }
                         }
                         _ => {}
@@ -552,6 +595,7 @@ impl App {
     }
 
     pub fn on_mouse_move(&mut self, x: i32, y: i32, time_ms: u32) {
+        if self.popup_keeps_owner_active() { return; }
         let hit = self.hit_test(x, y);
         if hit != self.hover {
             self.hover = hit;
@@ -634,6 +678,11 @@ impl App {
 
     /// A mouse button changed. The result says whether the window should take or give back the mouse capture.
     pub fn on_button(&mut self, x: i32, y: i32, button: MouseButton, down: bool, time_ms: u32) -> Capture {
+        if self.popup_keeps_owner_active() {
+            // Consume both halves of the outside click; it dismisses the menu without reaching the shell.
+            if !down { self.close_popup(); }
+            return Capture::None;
+        }
         let hit = self.hit_test(x, y);
         // A left press outside the panes, and its release, are for the chrome.
         if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
@@ -647,7 +696,7 @@ impl App {
             if pressed == hit {
                 match hit {
                     Hit::Chip(i) => self.select(i),
-                    Hit::ChipClose(i) => self.close_tab(i),
+                    Hit::ChipClose(i) => self.request_close_tab(i),
                     Hit::NewTab => {
                         if let Err(e) = self.new_tab() {
                             util::log(&format!("new tab: {e}"));
@@ -722,6 +771,7 @@ impl App {
     }
 
     pub fn on_wheel(&mut self, x: i32, y: i32, delta: i16, time_ms: u32) {
+        if self.popup_keeps_owner_active() { return; }
         if let Some(id) = self.tab().and_then(|t| t.pane_at(x, y)) {
             self.pointer(id, PointerKind::Wheel { delta: i32::from(delta), horizontal: false }, x, y, time_ms);
         }
@@ -752,6 +802,13 @@ impl App {
 
     /// The text being composed, drawn at the cursor; `None` when the composition ended.
     pub fn on_ime_preedit(&mut self, text: Option<String>) {
+        if let Some(popup) = self.popup.as_mut() {
+            if popup.query.is_some() {
+                popup.preedit = text.unwrap_or_default();
+                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            }
+            return;
+        }
         if let Some(entry) = self.tabs.get_mut(self.selected).and_then(Tab::focused_entry_mut) {
             entry.view.set_preedit(text);
         }
@@ -760,6 +817,11 @@ impl App {
 
     /// Text the input method finished: it goes to the program as typed.
     pub fn on_ime_commit(&mut self, text: &str) {
+        if let Some(popup) = self.popup.as_mut() {
+            popup.preedit.clear();
+            for unit in text.encode_utf16() { self.popup_char(unit); }
+            return;
+        }
         if let Some(entry) = self.focused() {
             entry.pane.send_text(text);
         }
@@ -767,6 +829,18 @@ impl App {
 
     /// Where the cursor cell is in the window, in pixels: left, top and height (the candidate window hangs under it).
     pub fn ime_anchor(&self) -> Option<(i32, i32, i32)> {
+        if let Some(popup) = self.popup.as_ref() {
+            popup.query.as_ref()?;
+            let mut rect = RECT::default();
+            // SAFETY: both windows are owned by this thread; convert the painted caret to the IME owner's coordinates.
+            unsafe {
+                GetWindowRect(popup.hwnd, &mut rect).ok()?;
+                let mut point = POINT { x: rect.left + (popup.caret.0 * self.scale) as i32,
+                                        y: rect.top + (popup.caret.1 * self.scale) as i32 };
+                if !ScreenToClient(self.hwnd, &mut point).as_bool() { return None; }
+                return Some((point.x, point.y, (popup.caret.2 * self.scale) as i32));
+            }
+        }
         let entry = self.focused()?;
         let (x, y, _, height) = entry.view.cursor_cell_px(&entry.pane.term);
         Some((entry.rect.x + x as i32, entry.rect.y + y as i32, height as i32))
@@ -780,7 +854,80 @@ impl App {
 
     fn paste(&mut self) {
         if let (Some(text), Some(entry)) = (clipboard::read_text(), self.focused()) {
-            entry.pane.paste(&text);
+            let warning = logic::paste_warning(&text, entry.pane.input_modes().bracketed_paste, &self.settings.paste);
+            let title = match warning {
+                None => return entry.pane.paste(&text),
+                Some(logic::PasteWarning::Lines(lines)) => Text::DialogPasteLines.format(self.language(), &[&lines]),
+                Some(logic::PasteWarning::Bytes(bytes)) => Text::DialogPasteSize.format(self.language(), &[&logic::size_label(bytes)]),
+            };
+            let pane = entry.id;
+            self.confirm(title, Text::EditPaste, Confirmation::Paste { tab: self.selected, pane, text });
+        }
+    }
+
+    fn request_close_tab(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get(index) else { return };
+        let running = tab.panes.iter().filter(|p| !p.exited && p.pane.is_busy()).count() as u32;
+        if self.settings.should_confirm_close(running) {
+            let title = Text::DialogCloseTab.format(self.language(), &[&self.tab_label(index)]);
+            self.confirm(title, Text::CommonClose, Confirmation::CloseTab(index));
+        } else {
+            self.close_tab(index);
+        }
+    }
+
+    fn request_close_pane(&mut self, tab: usize, pane: PaneId) {
+        let Some(entry) = self.tabs.get(tab).and_then(|t| t.entry(pane)) else { return };
+        let running = u32::from(!entry.exited && entry.pane.is_busy());
+        if self.settings.should_confirm_close(running) {
+            let title = Text::DialogCloseSessions.format(self.language(), &[&running]);
+            self.confirm(title, Text::CommonClose, Confirmation::ClosePane { tab, pane });
+        } else {
+            self.close_pane(tab, pane);
+        }
+    }
+
+    /// WM_CLOSE may destroy the window only after the same check used by pane and tab close.
+    pub fn request_close_window(&mut self) -> bool {
+        let running = self.tabs.iter().flat_map(|t| &t.panes).filter(|p| !p.exited && p.pane.is_busy()).count() as u32;
+        if !self.settings.should_confirm_close(running) {
+            self.close_popup();
+            return true;
+        }
+        if self.confirmation.is_none() {
+            let title = Text::DialogCloseSessions.format(self.language(), &[&running]);
+            self.confirm(title, Text::CommonClose, Confirmation::CloseWindow);
+        }
+        false
+    }
+
+    fn confirm(&mut self, title: String, accept: Text, action: Confirmation) {
+        if self.confirmation.is_some() {
+            return;
+        }
+        self.close_popup();
+        let lang = self.language();
+        let rows = vec![
+            popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false },
+            popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false },
+        ];
+        let size = self.surface.size();
+        let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH).1.1;
+        let anchor = self.screen_point((size.0 as f32 + popup::DIALOG_WIDTH * self.scale) / 2.0,
+                                      (size.1 as f32 - height * self.scale) / 2.0 - 4.0 * self.scale);
+        match popup::open(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark()) {
+            Ok(mut popup) => {
+                popup.heading = title;
+                popup.hover = Some(0);
+                self.confirmation = Some(action);
+                self.text = Utf16Assembler::default();
+                // SAFETY: the owner retains focus and routes input to this confirmation.
+                unsafe {
+                    let _ = InvalidateRect(Some(popup.hwnd), None, false);
+                }
+                self.popup = Some(popup);
+            }
+            Err(e) => util::log(&format!("confirmation: {e}")),
         }
     }
 
@@ -793,14 +940,14 @@ impl App {
                     util::log(&format!("new tab: {e}"));
                 }
             }
-            Command::TabClose => self.close_tab(self.selected),
+            Command::TabClose => self.request_close_tab(self.selected),
             Command::TabNext => self.select((self.selected + 1) % self.tabs.len().max(1)),
             Command::TabPrevious => self.select((self.selected + self.tabs.len().max(1) - 1) % self.tabs.len().max(1)),
             Command::PaneSplitRight => self.split(Axis::Row),
             Command::PaneSplitDown => self.split(Axis::Column),
             Command::PaneClose => {
                 if let Some(id) = self.tab().map(|t| t.focused) {
-                    self.close_pane(self.selected, id);
+                    self.request_close_pane(self.selected, id);
                 }
             }
             Command::PaneZoom => {
@@ -821,6 +968,11 @@ impl App {
                 self.relayout();
             }
             Command::AppPalette => self.open_palette(),
+            Command::AppNewWindow => {
+                if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
+                    util::log(&format!("new window request: {e}"));
+                }
+            }
             Command::EditFind => self.open_find(),
             Command::ViewFullscreen => self.toggle_fullscreen(),
             Command::AppearanceBackdropNext => {
@@ -868,6 +1020,11 @@ impl App {
 
     /// A key went down. `true` when the window handled it (a shortcut, or the terminal encoded it).
     pub fn on_key_down(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
+        if self.popup_keeps_owner_active() {
+            if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET { return false; }
+            if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
+            return true;
+        }
         let held = held();
         if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
             && let Some(command) = self.keymap.find(held, name)
@@ -891,6 +1048,7 @@ impl App {
 
     /// One UTF-16 unit of text from the keyboard or the IME.
     pub fn on_char(&mut self, unit: u16) {
+        if self.popup.is_some() { self.popup_char(unit); return; }
         if unit < 0x20 || unit == 0x7F {
             return;
         }
@@ -979,7 +1137,16 @@ impl App {
             let right = close.map_or(chip.x + chip.w - 10.0, |c| c.x - 4.0);
             self.ui.push_clip(Rect::new(chip.x, chip.y, (right - chip.x).max(0.0), chip.h));
             let color = if selected { col(g.text()) } else { col(g.text_secondary()) };
-            self.ui.text(chip.x + 12.0, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
+            // What the tab asks for: its glyph in the status colour, ahead of the title.
+            let status = self.tabs[i].status();
+            let mut title_x = chip.x + 12.0;
+            if let Some(glyph) = status::glyph(status.state) {
+                let icon_line = self.ui.line_height(ICON_SIZE);
+                let at = chip.x + 10.0;
+                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0, glyph, ICON_SIZE, col(status::color(g, status.state)));
+                title_x = at + ICON_SIZE + 6.0;
+            }
+            self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
             if let Some(close) = close {
                 if self.hover == Hit::ChipClose(i) {
@@ -1243,19 +1410,9 @@ impl App {
 
     /// A character typed into the palette: it goes into the query, and the rows follow.
     pub fn popup_char(&mut self, unit: u16) {
-        let Some(query) = self.popup.as_ref().and_then(|p| p.query.clone()) else { return };
-        let mut query = query;
-        match unit {
-            0x08 => {
-                query.pop();
-            }
-            u if u >= 0x20 && u != 0x7F => {
-                // Surrogates (outside the BMP) are left out: the input method sends them one half at a time.
-                let Some(ch) = char::from_u32(u32::from(u)) else { return };
-                query.push(ch);
-            }
-            _ => return,
-        }
+        let Some(query) = self.popup.as_mut().and_then(|p| p.query.as_mut()) else { return };
+        if !popup::edit_query(query, &mut self.text, unit) { return; }
+        let query = query.clone();
         if self.popup.as_ref().is_some_and(|p| p.kind == popup::Kind::Find) {
             if let Some(popup) = self.popup.as_mut() {
                 popup.query = Some(query.clone());
@@ -1297,6 +1454,7 @@ impl App {
         }
         match popup::open(self.hwnd, &self.gpu, rows, kind, anchor, self.scale, self.dark()) {
             Ok(popup) => {
+                self.text = Utf16Assembler::default();
                 // SAFETY: invalidating the window just made.
                 unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
                 self.popup = Some(popup);
@@ -1308,12 +1466,18 @@ impl App {
 
     pub fn close_popup(&mut self) {
         let Some(popup) = self.popup.take() else { return };
+        self.confirmation = None;
+        self.text = Utf16Assembler::default();
         self.find = None;
         self.popup_closed = Some(Instant::now());
         // SAFETY: destroys a window of this thread; the swap chain goes with the `Popup`.
         unsafe { let _ = DestroyWindow(popup.hwnd); }
         drop(popup);
         self.redraw();
+    }
+
+    pub fn popup_keeps_owner_active(&self) -> bool {
+        self.popup.is_some()
     }
 
     /// The menu lost the activation: another window was clicked, or this one.
@@ -1345,11 +1509,27 @@ impl App {
         }
     }
 
-    pub fn popup_key(&mut self, vk_code: i32) {
+    pub fn popup_key(&mut self, vk_code: i32, repeat: bool) {
         const VK_RETURN: i32 = 0x0D;
         const VK_UP: i32 = 0x26;
         const VK_DOWN: i32 = 0x28;
         let Some(popup) = self.popup.as_mut() else { return };
+        if popup.kind == popup::Kind::Confirm {
+            if repeat {
+                return;
+            }
+            match vk_code {
+                0x09 | 0x25 | 0x27 => {
+                    popup.hover = popup::step(&popup.rows, popup.hover, vk_code != 0x25 && !(vk_code == 0x09 && held().shift));
+                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                }
+                VK_RETURN | 0x20 => {
+                    if let Some(row) = popup.hover { self.choose(row); }
+                }
+                _ => {}
+            }
+            return;
+        }
         if popup.kind == popup::Kind::Find {
             // Enter goes to the next match, with Shift to the one before; the arrows go the same ways.
             let forward = match vk_code {
@@ -1392,8 +1572,23 @@ impl App {
     /// Closes the list and does what its row `row` says.
     fn choose(&mut self, row: usize) {
         let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
+        let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
         self.close_popup();
+        // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
+        self.popup_closed = None;
         match action {
+            Some(popup::Action::Confirm) => match confirmation {
+                Some(Confirmation::Paste { tab, pane, text }) => {
+                    if let Some(entry) = self.tabs.get(tab).and_then(|t| t.entry(pane)) {
+                        if !entry.exited { entry.pane.paste(&text); }
+                    }
+                }
+                Some(Confirmation::ClosePane { tab, pane }) => self.close_pane(tab, pane),
+                Some(Confirmation::CloseTab(tab)) => self.close_tab(tab),
+                Some(Confirmation::CloseWindow) => unsafe { let _ = DestroyWindow(self.hwnd); },
+                None => {}
+            },
+            Some(popup::Action::Cancel) => {},
             Some(popup::Action::Command(command)) => self.run(command),
             Some(popup::Action::Tab(index)) => self.select(index),
             Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
@@ -1419,6 +1614,12 @@ impl App {
         ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
         let line = ui.line_height(TEXT_SIZE);
         let header = popup.header;
+        if popup.kind == popup::Kind::Confirm {
+            popup::paint_confirmation(ui, &popup.heading, &popup.rows, popup.hover, popup.size.0, g);
+            ui.end_frame(&view);
+            popup.surface.present();
+            return;
+        }
         // The rows scroll under the query line, so they are clipped to the part below it.
         ui.push_clip(Rect::new(0.0, header, popup.size.0, popup.size.1 - header));
         for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
@@ -1448,9 +1649,23 @@ impl App {
             let y = (header - line) / 2.0;
             let icon_line = ui.line_height(14.0);
             ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
-            let width = ui.text(44.0, y, query, TEXT_SIZE, col(g.text()), false);
+            let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
+            let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
+            let width = ui.measure(query, TEXT_SIZE, false);
+            let composing = ui.measure(&popup.preedit, TEXT_SIZE, false);
+            let scroll = (width + composing + 4.0 - (end - popup::QUERY_LEFT)).max(0.0);
+            let start = popup::QUERY_LEFT - scroll;
+            ui.push_clip(Rect::new(popup::QUERY_LEFT, y, (end - popup::QUERY_LEFT).max(0.0), line));
+            ui.text(start, y, query, TEXT_SIZE, col(g.text()), false);
+            ui.text(start + width, y, &popup.preedit, TEXT_SIZE, col(g.text()), false);
+            if composing > 0.0 {
+                ui.fill(Rect::new(start + width, y + line - 1.0, composing, 1.0), col(g.accent));
+            }
+            let caret = start + width + composing + 1.0;
+            popup.caret = (caret, y, line);
             // The caret: a bar after the text, not blinking, so the window needs no timer.
-            ui.fill(Rect::new(44.0 + width + 1.0, y, 1.5, line), col(g.text()));
+            ui.fill(Rect::new(caret, y, 1.5, line), col(g.text()));
+            ui.pop_clip();
             if !popup.status.is_empty() {
                 let width = ui.measure(&popup.status, TEXT_SIZE, false);
                 ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);

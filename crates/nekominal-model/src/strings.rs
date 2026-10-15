@@ -96,6 +96,7 @@ texts! {
     ViewZoomOut "view.zoomOut" "縮小字型" "Decrease font size";
     ViewZoomReset "view.zoomReset" "重設字型大小" "Reset font size";
     AppPalette "app.palette" "命令選擇區" "Command palette";
+    AppNewWindow "app.newWindow" "新增視窗" "New window";
     AppSettings "app.settings" "設定" "Settings";
     // "設定檔" already names a profile, so the settings file is spelled out by its format.
     AppOpenSettingsFile "app.openSettingsFile" "開啟設定 JSON" "Open settings file";

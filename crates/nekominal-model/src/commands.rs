@@ -51,6 +51,7 @@ pub enum Command {
     ViewZoomOut,
     ViewZoomReset,
     AppPalette,
+    AppNewWindow,
     AppSettings,
     AppOpenSettingsFile,
     AppReloadSettings,
@@ -111,6 +112,7 @@ impl Command {
         Command::ViewZoomOut,
         Command::ViewZoomReset,
         Command::AppPalette,
+        Command::AppNewWindow,
         Command::AppSettings,
         Command::AppOpenSettingsFile,
         Command::AppReloadSettings,
@@ -172,6 +174,7 @@ impl Command {
             Command::ViewZoomOut => "view.zoomOut",
             Command::ViewZoomReset => "view.zoomReset",
             Command::AppPalette => "app.palette",
+            Command::AppNewWindow => "app.newWindow",
             Command::AppSettings => "app.settings",
             Command::AppOpenSettingsFile => "app.openSettingsFile",
             Command::AppReloadSettings => "app.reloadSettings",
@@ -232,6 +235,7 @@ impl Command {
             Command::ViewZoomOut => Text::ViewZoomOut,
             Command::ViewZoomReset => Text::ViewZoomReset,
             Command::AppPalette => Text::AppPalette,
+            Command::AppNewWindow => Text::AppNewWindow,
             Command::AppSettings => Text::AppSettings,
             Command::AppOpenSettingsFile => Text::AppOpenSettingsFile,
             Command::AppReloadSettings => Text::AppReloadSettings,
@@ -302,6 +306,7 @@ impl Command {
             Command::AppPalette => &["Ctrl+Shift+P"],
             Command::AppSettings => &["Ctrl+,", "Ctrl+Shift+O"],
             Command::TabClose
+            | Command::AppNewWindow
             | Command::TabGoto(_)
             | Command::TabMoveLeft
             | Command::TabMoveRight
@@ -374,6 +379,7 @@ impl Command {
                 | Command::EditFind
                 | Command::ViewFullscreen
                 | Command::AppPalette
+                | Command::AppNewWindow
                 | Command::AppSettings
                 | Command::AppOpenSettingsFile
                 | Command::AppearanceBackdropNext
@@ -466,9 +472,10 @@ mod tests {
             Command::TabNextNeedsResponse => 38,
             Command::TabSelectLeft => 39,
             Command::TabSelectRight => 40,
+            Command::AppNewWindow => 41,
         }
     }
-    const VARIANTS: usize = 41;
+    const VARIANTS: usize = 42;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -797,6 +804,7 @@ mod tests {
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::AppPalette
+            | Command::AppNewWindow
             | Command::AppSettings
             | Command::AppOpenSettingsFile
             | Command::AppearanceBackdropNext => true,

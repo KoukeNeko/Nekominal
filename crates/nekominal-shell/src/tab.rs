@@ -3,7 +3,7 @@
 use nekominal_model::layout::{Axis, Direction, Node, PaneId, Splitter, UNIT};
 use nekominal_pane::{Pane, PaneRenderer};
 
-use crate::logic::{self, PxRect};
+use crate::logic::{self, Attention, PaneSignal, PxRect, Reported, TabStatus};
 
 /// How far one keyboard step moves the border of a pane, as a share of the tab area.
 const RESIZE_STEP: f64 = 0.05;
@@ -19,6 +19,12 @@ pub struct PaneEntry {
     /// The title the program set.
     pub title: String,
     pub exited: bool,
+    /// A bell, a notification or a failed exit nobody has looked at.
+    pub attention: Option<Attention>,
+    /// What the notification said.
+    pub note: Option<String>,
+    /// Progress the program reports (OSC 9;4).
+    pub progress: Option<Reported>,
 }
 
 pub struct Tab {
@@ -63,6 +69,26 @@ impl Tab {
     /// The title of the tab: what the focused pane's program set.
     pub fn title(&self) -> &str {
         self.focused_entry().map_or("", |p| p.title.as_str())
+    }
+
+    /// What the tab shows: the status of its most urgent pane.
+    pub fn status(&self) -> TabStatus {
+        let signals: Vec<PaneSignal> = self
+            .panes
+            .iter()
+            .map(|p| PaneSignal { agent: p.pane.agent_summary(), progress: p.progress, attention: p.attention, note: p.note.clone() })
+            .collect();
+        logic::tab_status(&signals)
+    }
+
+    /// The user is looking at the tab: its bells and notifications are seen. A failed exit stays.
+    pub fn mark_seen(&mut self) {
+        for entry in &mut self.panes {
+            if entry.attention != Some(Attention::Exit) {
+                entry.attention = None;
+                entry.note = None;
+            }
+        }
     }
 
     /// Adds a pane next to the focused one (below it for a column, right of it for a row) and focuses it.

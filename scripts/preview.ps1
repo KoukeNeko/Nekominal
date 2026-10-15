@@ -3,8 +3,8 @@
   Builds Nekominal when needed and opens it, so it can be looked at.
 
 .DESCRIPTION
-  Checks what the app needs (Windows App Runtime 2.x, the ConPTY pair), runs `cargo build --release -p nekominal-app`
-  when the executable is missing or older than the sources, and starts target\release\nekominal.exe.
+  Checks the ConPTY pair, runs `cargo build --release -p nekominal-shell`
+  when the executable is missing or older than the sources, and starts target\release\nekominal-next.exe.
 
   Without options the app opens with your own settings and returns at once. Any of -Theme, -Backdrop, -Opacity and
   -Language (or -Isolated) opens it with a private settings file and session in a temporary folder instead, waits
@@ -54,28 +54,13 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $root 'target\release\nekominal.exe'
+$exe = Join-Path $root 'target\release\nekominal-next.exe'
 $exeDir = Split-Path -Parent $exe
 $resources = Join-Path $root 'crates\nekominal-pty\resources'
-$runtimeFamily = 'Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe'
-$runtimePage = 'https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads'
 $logPath = Join-Path ([IO.Path]::GetTempPath()) 'nekominal-preview.log'
 
 function Say([string]$text) { Write-Host $text }
 function Fail([string]$text) { Write-Host "error: $text" -ForegroundColor Red; exit 1 }
-
-# --- the Windows App Runtime the app starts from (it is not bundled) --------------------------------------------------
-$runtime = $null
-try {
-    $runtime = Get-AppxPackage -PackageTypeFilter Framework |
-        Where-Object { $_.PackageFamilyName -eq $runtimeFamily -and "$($_.Architecture)" -eq 'X64' } |
-        Sort-Object { [version]$_.Version } -Descending | Select-Object -First 1
-} catch {
-    Say "note: could not look for the Windows App Runtime ($($_.Exception.Message)); going on."
-}
-if ($runtime) { Say "Windows App Runtime $($runtime.Version) (x64) found." }
-elseif (-not $DryRun) { Fail "the Windows App Runtime 2.x (x64) is not installed. Install it from $runtimePage and run this again." }
-else { Say "Windows App Runtime 2.x (x64) NOT found: install it from $runtimePage." }
 
 # --- the ConPTY pair beside the executable ----------------------------------------------------------------------------
 $pairMissing = -not ((Test-Path (Join-Path $resources 'conpty.dll')) -and (Test-Path (Join-Path $resources 'OpenConsole.exe')))
@@ -86,12 +71,12 @@ if ($pairMissing) {
 }
 
 # --- the build ---------------------------------------------------------------------------------------------------------
-$running = @(Get-Process -Name nekominal -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+$running = @(Get-Process -Name nekominal-next -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
 $reason = $null
 if ($Rebuild) { $reason = '-Rebuild' }
 elseif (-not (Test-Path $exe)) { $reason = 'there is no executable yet' }
 elseif (-not $NoBuild) {
-    $sources = @(Get-ChildItem -Path (Join-Path $root 'crates') -Recurse -File -Include '*.rs', '*.xaml', '*.toml' |
+    $sources = @(Get-ChildItem -Path (Join-Path $root 'crates') -Recurse -File -Include '*.rs', '*.hlsl', '*.toml' |
             Where-Object { $_.FullName -notmatch '\\target\\' }) + @(Get-Item (Join-Path $root 'Cargo.toml'), (Join-Path $root 'Cargo.lock'))
     $newest = $sources | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($newest.LastWriteTime -gt (Get-Item $exe).LastWriteTime) {
@@ -121,11 +106,11 @@ if ($reason -and -not $NoBuild) {
         $cargo = $found
         Say "cargo: $found (not on PATH)"
     }
-    if ($DryRun) { Say '  (would run: cargo build --release -p nekominal-app)' }
+    if ($DryRun) { Say '  (would run: cargo build --release -p nekominal-shell)' }
     else {
         Push-Location $root
         try {
-            & cargo build --release -p nekominal-app
+            & cargo build --release -p nekominal-shell
             if ($LASTEXITCODE -ne 0) { Fail "cargo build failed (exit code $LASTEXITCODE)." }
         } finally { Pop-Location }
     }

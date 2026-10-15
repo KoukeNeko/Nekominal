@@ -1,9 +1,10 @@
-//! A floating list of rows in a window of its own: the "…" menu and the list of all tabs. The window is a pop-up with the DWM acrylic
-//! backdrop, so the blur is real, not painted. This file holds the rows, their geometry and the window; the drawing
+//! Floating lists and confirmations in their own windows, requesting DWM acrylic behind the translucent content.
+//! This file holds the rows, their geometry and the window; the drawing
 //! and the messages go through `App`, which owns the device and the UI layer.
 
 use nekominal_model::{commands::Command, settings::Backdrop};
-use nekominal_ui::Rect;
+use nekominal_ui::{Rect, Ui, Color};
+use nekominal_input::Utf16Assembler;
 use windows::{
     Win32::{
         Foundation::{HWND, POINT},
@@ -18,8 +19,8 @@ use windows::{
         UI::{
             Controls::MARGINS,
             WindowsAndMessaging::{
-                CreateWindowExW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, WNDCLASSW,
-                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+                CreateWindowExW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOWNOACTIVATE, ShowWindow, WNDCLASSW,
+                WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WINDOW_EX_STYLE,
             },
         },
     },
@@ -27,13 +28,18 @@ use windows::{
 };
 
 use crate::gpu::{self, Gpu, Surface};
+use crate::{app::CORNER_RADIUS, glass::Glass};
 
 /// Width of a menu or a list, and of the command palette.
 pub const WIDTH: f32 = 260.0;
 pub const PALETTE_WIDTH: f32 = 520.0;
 pub const FIND_WIDTH: f32 = 380.0;
+pub const DIALOG_WIDTH: f32 = 480.0;
+pub const DIALOG_HEADER: f32 = 112.0;
 /// Height of the query line above the rows of the palette.
 pub const HEADER: f32 = 48.0;
+pub const QUERY_LEFT: f32 = 44.0;
+const WINDOW_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(WS_EX_NOACTIVATE.0 | WS_EX_NOREDIRECTIONBITMAP.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0);
 /// The rows the palette shows before it scrolls.
 const PALETTE_ROWS: f32 = 8.0;
 const PADDING: f32 = 6.0;
@@ -45,6 +51,8 @@ const GAP: f32 = 4.0;
 /// What choosing a row does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Confirm,
+    Cancel,
     Command(Command),
     /// Select the tab with this index.
     Tab(usize),
@@ -85,8 +93,13 @@ pub struct Popup {
     pub kind: Kind,
     /// What the query line says at its right (the find bar's count).
     pub status: String,
+    /// The question above the buttons of a confirmation, not an editable query.
+    pub heading: String,
     /// What was typed in the query line; `None` for a menu or a list.
     pub query: Option<String>,
+    pub preedit: String,
+    /// The painted query caret in popup DIP; the owner's IME uses the same position.
+    pub caret: (f32, f32, f32),
     /// Height of all the rows together; more than `size.1` when the list scrolls.
     pub content_height: f32,
     /// How far the rows are scrolled up, in DIP.
@@ -161,6 +174,45 @@ pub fn layout(rows: &[Row], width: f32) -> (Vec<Rect>, (f32, f32)) {
     (rects, (width, y + PADDING))
 }
 
+/// Two equally sized buttons; Cancel is first and is the initial keyboard choice.
+pub fn dialog_buttons(width: f32) -> (Vec<Rect>, (f32, f32)) {
+    let button_width = (width - 3.0 * PADDING) / 2.0;
+    (vec![Rect::new(PADDING, PADDING, button_width, ROW_HEIGHT),
+          Rect::new(2.0 * PADDING + button_width, PADDING, button_width, ROW_HEIGHT)],
+     (width, ROW_HEIGHT + 2.0 * PADDING))
+}
+
+/// Draws the question and its two buttons into the current UI frame, also usable offscreen.
+pub fn paint_confirmation(ui: &mut Ui, heading: &str, rows: &[Row], hover: Option<usize>, width: f32, glass: Glass) {
+    let color = |c: nekominal_model::themes::Color| Color([c.r, c.g, c.b, c.a]);
+    let font_size = 13.0;
+    let line = ui.line_height(font_size);
+    ui.push_clip(Rect::new(16.0, 12.0, width - 32.0, DIALOG_HEADER - 24.0));
+    let mut text = String::new();
+    let mut y = 16.0;
+    for ch in heading.chars() {
+        text.push(ch);
+        if ui.measure(&text, font_size, false) > width - 32.0 {
+            text.pop();
+            ui.text(16.0, y, &text, font_size, color(glass.text()), false);
+            y += line;
+            text.clear();
+            text.push(ch);
+        }
+    }
+    ui.text(16.0, y, &text, font_size, color(glass.text()), false);
+    ui.pop_clip();
+    let (rects, _) = dialog_buttons(width);
+    for (i, (row, rect)) in rows.iter().zip(rects).enumerate() {
+        let rect = Rect::new(rect.x, rect.y + DIALOG_HEADER, rect.w, rect.h);
+        let selected = hover == Some(i);
+        ui.rrect(rect, CORNER_RADIUS, color(if selected { glass.chip_selected() } else { glass.hover() }),
+                 Some((color(if selected { glass.accent } else { glass.divider() }), 1.0)));
+        let x = rect.x + (rect.w - ui.measure(&row.label, font_size, false)) / 2.0;
+        ui.text(x, rect.y + (rect.h - line) / 2.0, &row.label, font_size, color(glass.text()), false);
+    }
+}
+
 /// The row under a point of the content (DIP, scrolling included); separators are not under anything.
 pub fn row_at(rows: &[Row], rects: &[Rect], x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|&i| !rows[i].is_separator())
@@ -179,6 +231,7 @@ pub fn step(rows: &[Row], from: Option<usize>, forward: bool) -> Option<usize> {
 /// What to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    Confirm,
     /// A menu or a list, as wide as `WIDTH`, as tall as its rows.
     List,
     /// The command palette: a query line above a fixed number of rows.
@@ -187,14 +240,29 @@ pub enum Kind {
     Find,
 }
 
+/// A query consumes UTF-16 separately from the terminal, including non-BMP characters.
+pub fn edit_query(query: &mut String, input: &mut Utf16Assembler, unit: u16) -> bool {
+    match unit {
+        0x08 => {
+            *input = Utf16Assembler::default();
+            query.pop().is_some()
+        }
+        u if u >= 0x20 && u != 0x7F => {
+            if let Some(ch) = input.push(u) { query.push(ch); true } else { false }
+        }
+        _ => false,
+    }
+}
+
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
 pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
     let (width, header, fixed_height, query) = match kind {
+        Kind::Confirm => (DIALOG_WIDTH, DIALOG_HEADER, Some(DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING), None),
         Kind::List => (WIDTH, 0.0, None, None),
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
         Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
     };
-    let (rects, rows_size) = layout(&rows, width);
+    let (rects, rows_size) = if kind == Kind::Confirm { dialog_buttons(width) } else { layout(&rows, width) };
     let content_height = rows_size.1;
     let size = (width, fixed_height.unwrap_or(header + rows_size.1));
     let (w, h) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
@@ -222,7 +290,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
         let y = (anchor.1 + gap).clamp(work.top, (work.bottom - h).max(work.top));
 
         let hwnd = CreateWindowExW(
-            WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            WINDOW_STYLE,
             w!("NekominalPopup"),
             w!(""),
             WS_POPUP,
@@ -242,9 +310,13 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
         let acrylic = DWM_SYSTEMBACKDROP_TYPE(3);
         let rounded: i32 = 2;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const i32).cast(), 4);
-        let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&acrylic as *const DWM_SYSTEMBACKDROP_TYPE).cast(), 4);
+        let backdrop = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&acrylic as *const DWM_SYSTEMBACKDROP_TYPE).cast(), 4)
+            .and_then(|_| DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }));
+        if let Err(e) = backdrop {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+            return Err(format!("popup acrylic: {e}"));
+        }
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&rounded as *const i32).cast(), 4);
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 });
 
         let surface = match gpu::create_surface(gpu, hwnd, (w as u32, h as u32)) {
             Ok(surface) => surface,
@@ -253,10 +325,8 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
                 return Err(e);
             }
         };
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        // Taking the activation is what lets the pop-up notice that the user went elsewhere.
-        let _ = SetForegroundWindow(hwnd);
-        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), query, content_height, scroll: 0.0, hover: None };
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None };
         if popup.query.is_some() {
             popup.set_rows(rows);
         } else {
@@ -271,12 +341,89 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
 mod tests {
     use super::*;
 
+    #[test]
+    fn opening_a_menu_preserves_the_owner_activation() {
+        assert!(WINDOW_STYLE.contains(WS_EX_NOACTIVATE));
+    }
+
+    #[test]
+    fn query_text_accepts_chinese_and_surrogate_pairs_without_accepting_submit() {
+        let mut text = String::new();
+        let mut input = Utf16Assembler::default();
+        for unit in "找你😀".encode_utf16() { edit_query(&mut text, &mut input, unit); }
+        assert_eq!(text, "找你😀");
+        assert!(!edit_query(&mut text, &mut input, 13));
+        assert_eq!(text, "找你😀");
+        assert!(edit_query(&mut text, &mut input, 8));
+        assert_eq!(text, "找你");
+        assert!(!edit_query(&mut text, &mut input, 0xD83D));
+        edit_query(&mut text, &mut input, 8);
+        assert!(!edit_query(&mut text, &mut input, 0xDE00));
+        assert_eq!(text, "找");
+    }
+
     fn row(label: &str) -> Row {
         Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false }
     }
 
     fn rows() -> Vec<Row> {
         vec![row("a"), Row::separator(), row("b"), row("c")]
+    }
+
+    #[test]
+    fn dialog_buttons_are_separate_equal_and_hit_only_their_own_action() {
+        let rows = vec![Row { action: Some(Action::Cancel), ..row("Cancel") },
+                        Row { action: Some(Action::Confirm), ..row("Close") }];
+        let (rects, size) = dialog_buttons(DIALOG_WIDTH);
+        assert_eq!(rects[0].w, rects[1].w);
+        assert!(rects[0].x + rects[0].w < rects[1].x);
+        for (i, rect) in rects.iter().enumerate() {
+            assert_eq!(row_at(&rows, &rects, rect.x + rect.w / 2.0, rect.y + rect.h / 2.0), Some(i));
+            assert!(rect.y + rect.h <= size.1);
+        }
+        assert_eq!(step(&rows, None, true), Some(0), "Enter initially cancels");
+        assert_eq!(row_at(&rows, &rects, 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn confirmation_renders_the_question_and_both_buttons_at_two_scales() {
+        use nekominal_render::offscreen::{AdapterKind, OffscreenTarget, create_gpu, write_png};
+        let gpu = create_gpu(AdapterKind::Warp).expect("D3D11 WARP");
+        let glass = Glass::from_scheme(nekominal_model::themes::scheme("Tokyo Night"));
+        let rows = vec![Row { action: Some(Action::Cancel), ..row("取消") },
+                        Row { action: Some(Action::Confirm), ..row("關閉") }];
+        for scale in [1.0, 1.5] {
+            let height = DIALOG_HEADER + dialog_buttons(DIALOG_WIDTH).1.1;
+            let size = ((DIALOG_WIDTH * scale) as u32, (height * scale) as u32);
+            let target = OffscreenTarget::new(&gpu, size.0, size.1);
+            gpu.clear(&target.view, [0.03, 0.03, 0.03, 1.0]);
+            let mut ui = Ui::new(&gpu).expect("UI");
+            ui.begin_frame(size, scale);
+            let line_height = ui.line_height(13.0);
+            paint_confirmation(&mut ui, "關閉「專案終端機：測試一個很長的分頁名稱，確認對話框能自動換行而且不遮住按鈕」？",
+                               &rows, Some(0), DIALOG_WIDTH, glass);
+            ui.end_frame(&target.view);
+            let rgba = target.read_rgba(&gpu).expect("readback");
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/ui-test/confirmation-{scale}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            write_png(&path, size.0, size.1, &rgba).unwrap();
+            let ink = |rect: Rect| {
+                let mut count = 0;
+                for y in (rect.y * scale) as u32..((rect.y + rect.h) * scale) as u32 {
+                    for x in (rect.x * scale) as u32..((rect.x + rect.w) * scale) as u32 {
+                        let at = ((y * size.0 + x) * 4) as usize;
+                        if rgba[at..at + 3].iter().all(|c| *c > 150) { count += 1; }
+                    }
+                }
+                count
+            };
+            assert!(ink(Rect::new(16.0, 12.0, DIALOG_WIDTH - 32.0, 28.0)) > 30, "question missing");
+            assert!(ink(Rect::new(16.0, 16.0 + line_height, DIALOG_WIDTH - 32.0, line_height)) > 20, "wrapped text missing");
+            for rect in dialog_buttons(DIALOG_WIDTH).0 {
+                assert!(ink(Rect::new(rect.x + 12.0, DIALOG_HEADER + rect.y + 6.0, rect.w - 24.0, rect.h - 12.0)) > 10,
+                        "button label missing at {scale}x");
+            }
+        }
     }
 
     #[test]

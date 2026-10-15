@@ -31,6 +31,7 @@ pub const APP_MENU: &[MenuRow] = &[
     MenuRow::Backdrop,
     MenuRow::Opacity,
     MenuRow::Command(Command::ViewFullscreen),
+    MenuRow::Command(Command::AppNewWindow),
     MenuRow::Separator,
     MenuRow::Command(Command::AppSettings),
 ];
@@ -82,6 +83,7 @@ mod tests {
                 "<backdrop>",
                 "<opacity>",
                 "view.fullscreen",
+                "app.newWindow",
                 "-",
                 "app.settings",
             ]

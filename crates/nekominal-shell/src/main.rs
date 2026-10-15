@@ -7,6 +7,7 @@ mod find;
 mod gpu;
 mod layout;
 mod popup;
+mod status;
 mod tab;
 mod win;
 

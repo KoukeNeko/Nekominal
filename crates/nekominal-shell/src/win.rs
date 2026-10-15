@@ -1,6 +1,6 @@
 //! The Win32 side: the window class, the custom frame (the title bar is ours), and the messages handed to `App`.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use nekominal_input::MouseButton;
 use nekominal_model::settings::Backdrop;
@@ -26,7 +26,7 @@ use windows::{
                 IME_COMPOSITION_STRING, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
                 ImmSetCompositionWindow,
             },
-            Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
+            Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC_EX, ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent},
             WindowsAndMessaging::*,
         },
     },
@@ -43,11 +43,30 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 /// The timer that scrolls the view while a selection drag is held outside the pane.
 const DRAG_TIMER: usize = 1;
 
-thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
+pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
+
+thread_local! {
+    static APPS: RefCell<HashMap<isize, Rc<RefCell<App>>>> = RefCell::new(HashMap::new());
+    static RETIRED: RefCell<Vec<Rc<RefCell<App>>>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Runs `f` on the application unless it is not there yet or already busy (a message sent from inside a handler).
-fn with_app<T>(f: impl FnOnce(&mut App) -> T) -> Option<T> {
-    APP.with(|cell| cell.try_borrow_mut().ok().and_then(|mut app| app.as_mut().map(f)))
+fn with_app<T>(hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
+    let app = APPS.with(|apps| {
+        let apps = apps.borrow();
+        apps.get(&(hwnd.0 as isize)).cloned().or_else(|| {
+            let owner = unsafe { GetWindow(hwnd, GW_OWNER) }.ok()?;
+            apps.get(&(owner.0 as isize)).cloned()
+        })
+    })?;
+    let mut app = app.try_borrow_mut().ok()?;
+    Some(f(&mut app))
+}
+
+fn reap_closed_windows() {
+    // Drop UI and PTY resources outside window callbacks, while cleanup threads can still start.
+    let retired = RETIRED.with(|apps| std::mem::take(&mut *apps.borrow_mut()));
+    drop(retired);
 }
 
 fn lo(l: LPARAM) -> i32 {
@@ -56,6 +75,15 @@ fn lo(l: LPARAM) -> i32 {
 
 fn hi(l: LPARAM) -> i32 {
     i32::from(((l.0 >> 16) & 0xFFFF) as i16)
+}
+
+fn key_scan(vk_code: i32, scan: u16, extended: bool) -> (u16, bool) {
+    if scan != 0 || matches!(vk_code, nekominal_input::vk::VK_PACKET | nekominal_input::vk::VK_PROCESSKEY) {
+        return (scan, extended);
+    }
+    // Virtual-key-only input can omit the scan code; recover it using this window thread's keyboard layout.
+    let mapped = unsafe { MapVirtualKeyW(vk_code as u32, MAPVK_VK_TO_VSC_EX) };
+    ((mapped & 0xFF) as u16, extended || mapped >> 8 == 0xE0)
 }
 
 fn scale_of(hwnd: HWND) -> f32 {
@@ -140,7 +168,7 @@ fn composition_text(himc: HIMC, what: IME_COMPOSITION_STRING) -> String {
 
 /// Puts the composition and candidate windows of the input method at the cursor cell of the pane.
 fn place_ime(hwnd: HWND) {
-    let Some((x, y, height)) = with_app(|app| app.ime_anchor()).flatten() else { return };
+    let Some((x, y, height)) = with_app(hwnd, |app| app.ime_anchor()).flatten() else { return };
     // SAFETY: the context belongs to this window and is released below; the forms live through the calls.
     unsafe {
         let himc = ImmGetContext(hwnd);
@@ -178,7 +206,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_NCHITTEST => {
             let (x, y) = (lo(lparam), hi(lparam));
-            if !with_app(|app| app.is_fullscreen()).unwrap_or(false)
+            if !with_app(hwnd, |app| app.is_fullscreen()).unwrap_or(false)
                 && let Some(edge) = edge_hit(hwnd, x, y)
             {
                 return LRESULT(edge as isize);
@@ -186,7 +214,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let mut point = POINT { x, y };
             // SAFETY: a window handle of this thread.
             unsafe { let _ = ScreenToClient(hwnd, &mut point); };
-            match with_app(|app| app.hit_test(point.x, point.y)) {
+            match with_app(hwnd, |app| app.hit_test(point.x, point.y)) {
                 Some(Hit::Drag) => LRESULT(HTCAPTION as isize),
                 _ => LRESULT(HTCLIENT as isize),
             }
@@ -194,7 +222,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SIZE => {
             let size = client_size(hwnd);
             let caption = caption_px(hwnd);
-            with_app(|app| {
+            with_app(hwnd, |app| {
                 app.on_caption(caption);
                 app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize)
             });
@@ -207,19 +235,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             let scale = scale_of(hwnd);
-            with_app(|app| app.on_dpi(scale));
+            with_app(hwnd, |app| app.on_dpi(scale));
             LRESULT(0)
         }
         WM_PAINT => {
-            with_app(App::paint);
+            with_app(hwnd, App::paint);
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_CLOSE => {
+            if with_app(hwnd, App::request_close_window) == Some(true) {
+                unsafe { let _ = DestroyWindow(hwnd); }
+            }
+            LRESULT(0)
+        }
         WM_ACTIVATE => {
             let active = (wparam.0 & 0xFFFF) != 0;
-            with_app(|app| app.on_activate(active));
+            with_app(hwnd, |app| app.on_activate(active));
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -228,11 +262,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { let _ = TrackMouseEvent(&mut track); };
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
-            with_app(|app| app.on_mouse_move(lo(lparam), hi(lparam), time));
+            with_app(hwnd, |app| app.on_mouse_move(lo(lparam), hi(lparam), time));
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            with_app(App::on_mouse_leave);
+            with_app(hwnd, App::on_mouse_leave);
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
@@ -244,7 +278,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             };
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
-            match with_app(|app| app.on_button(lo(lparam), hi(lparam), button, down, time)) {
+            match with_app(hwnd, |app| app.on_button(lo(lparam), hi(lparam), button, down, time)) {
                 // The capture keeps the moves coming while a button is held outside the window (a selection drag),
                 // and a timer scrolls the view while the drag is held above or below the pane.
                 // SAFETY: calls on this window from its own thread.
@@ -263,15 +297,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_CAPTURECHANGED => {
             // SAFETY: stopping a timer of this window.
             unsafe { let _ = KillTimer(Some(hwnd), DRAG_TIMER); }
-            with_app(App::on_capture_lost);
+            with_app(hwnd, App::on_capture_lost);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == DRAG_TIMER => {
-            with_app(App::on_drag_tick);
+            with_app(hwnd, App::on_drag_tick);
             LRESULT(0)
         }
-        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(|app| app.cursor()).flatten().is_some() => {
-            let id = match with_app(|app| app.cursor()).flatten() {
+        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(hwnd, |app| app.cursor()).flatten().is_some() => {
+            let id = match with_app(hwnd, |app| app.cursor()).flatten() {
                 Some(Cursor::ResizeH) => IDC_SIZEWE,
                 Some(Cursor::ResizeV) => IDC_SIZENS,
                 _ => IDC_HAND,
@@ -288,7 +322,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             unsafe { let _ = ScreenToClient(hwnd, &mut p); }
             // SAFETY: plain query.
             let time = unsafe { GetMessageTime() } as u32;
-            with_app(|app| app.on_wheel(p.x, p.y, delta, time));
+            with_app(hwnd, |app| app.on_wheel(p.x, p.y, delta, time));
             LRESULT(0)
         }        // The input method composes into the terminal: its text is drawn inline at the cursor by the pane, so the
         // system's own composition window stays hidden (these messages are not passed on), and the candidate window
@@ -305,11 +339,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let flags = lparam.0 as u32;
                     if flags & GCS_RESULTSTR.0 != 0 {
                         let text = composition_text(himc, GCS_RESULTSTR);
-                        with_app(|app| app.on_ime_commit(&text));
+                        with_app(hwnd, |app| app.on_ime_commit(&text));
                     }
                     if flags & GCS_COMPSTR.0 != 0 {
                         let text = composition_text(himc, GCS_COMPSTR);
-                        with_app(|app| app.on_ime_preedit((!text.is_empty()).then_some(text)));
+                        with_app(hwnd, |app| app.on_ime_preedit((!text.is_empty()).then_some(text)));
                     }
                     let _ = ImmReleaseContext(hwnd, himc);
                 }
@@ -318,12 +352,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_IME_ENDCOMPOSITION => {
-            with_app(|app| app.on_ime_preedit(None));
+            with_app(hwnd, |app| app.on_ime_preedit(None));
             LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
+            if msg == WM_SYSKEYDOWN && wparam.0 == 0x73 {
+                let dismissed = with_app(hwnd, |app| {
+                    if !app.popup_keeps_owner_active() { return false; }
+                    app.close_popup();
+                    true
+                }).unwrap_or(false);
+                return if dismissed { LRESULT(0) } else { unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } };
+            }
             let (scan, extended, repeat) = (((lparam.0 >> 16) & 0xFF) as u16, (lparam.0 >> 24) & 1 == 1, (lparam.0 >> 30) & 1 == 1);
-            let handled = with_app(|app| app.on_key_down(wparam.0 as i32, scan, extended, repeat)).unwrap_or(false);
+            let (scan, extended) = key_scan(wparam.0 as i32, scan, extended);
+            let handled = with_app(hwnd, |app| app.on_key_down(wparam.0 as i32, scan, extended, repeat)).unwrap_or(false);
             // Alt+Space opens the system menu; every other Alt chord belongs to the terminal.
             if handled || (msg == WM_SYSKEYDOWN && wparam.0 != 0x20) {
                 return LRESULT(0);
@@ -334,14 +377,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // A lone Alt press and release must not start the (empty) window menu.
         WM_SYSKEYUP if wparam.0 != 0x20 => LRESULT(0),
         WM_CHAR => {
-            with_app(|app| app.on_char(wparam.0 as u16));
+            with_app(hwnd, |app| app.on_char(wparam.0 as u16));
             LRESULT(0)
         }
         WM_SYSCHAR => LRESULT(0),
         // The default answer to an Alt chord that matches no menu is a beep.
         WM_MENUCHAR => LRESULT((1isize) << 16),
         WM_WAKE => {
-            with_app(App::on_wake);
+            with_app(hwnd, App::on_wake);
+            LRESULT(0)
+        }
+        WM_NEW_WINDOW => {
+            if let Some(gpu) = with_app(hwnd, |app| app.shared_gpu()) {
+                if let Err(e) = create_window(Some(gpu)) { crate::util::log(&format!("new window: {e}")); }
+            }
             LRESULT(0)
         }
         WM_GETMINMAXINFO => {
@@ -350,8 +399,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_DESTROY => {
-            // SAFETY: ends the message loop of this thread.
-            unsafe { PostQuitMessage(0) };
+            let (app, last) = APPS.with(|apps| {
+                let mut apps = apps.borrow_mut();
+                let app = apps.remove(&(hwnd.0 as isize));
+                (app, apps.is_empty())
+            });
+            if let Some(app) = app {
+                RETIRED.with(|apps| apps.borrow_mut().push(app));
+                if last { unsafe { PostQuitMessage(0) }; }
+            }
             LRESULT(0)
         }
         // SAFETY: default handling of every other message.
@@ -382,8 +438,9 @@ pub(crate) fn set_backdrop(hwnd: HWND, backdrop: Backdrop, dark: bool) {
 pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     const VK_ESCAPE: i32 = 0x1B;
     match msg {
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_PAINT => {
-            with_app(App::popup_paint);
+            with_app(hwnd, App::popup_paint);
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
             LRESULT(0)
@@ -393,37 +450,41 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
             let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             // SAFETY: a valid request for this window.
             unsafe { let _ = TrackMouseEvent(&mut track); };
-            with_app(|app| app.popup_move(Some((lo(lparam), hi(lparam)))));
+            with_app(hwnd, |app| app.popup_move(Some((lo(lparam), hi(lparam)))));
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            with_app(|app| app.popup_move(None));
+            with_app(hwnd, |app| app.popup_move(None));
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            with_app(|app| app.popup_click(lo(lparam), hi(lparam)));
+            with_app(hwnd, |app| app.popup_click(lo(lparam), hi(lparam)));
             LRESULT(0)
         }
         WM_CHAR => {
-            with_app(|app| app.popup_char(wparam.0 as u16));
+            with_app(hwnd, |app| app.popup_char(wparam.0 as u16));
             LRESULT(0)
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
-            with_app(|app| app.popup_wheel(delta));
+            with_app(hwnd, |app| app.popup_wheel(delta));
             LRESULT(0)
         }
         WM_KEYDOWN => {
             let key = wparam.0 as i32;
             if key == VK_ESCAPE {
-                with_app(App::close_popup);
+                with_app(hwnd, App::close_popup);
             } else {
-                with_app(|app| app.popup_key(key));
+                with_app(hwnd, |app| app.popup_key(key, lparam.0 & (1 << 30) != 0));
             }
             LRESULT(0)
         }
         WM_ACTIVATE if (wparam.0 & 0xFFFF) == 0 => {
-            with_app(App::popup_deactivated);
+            with_app(hwnd, App::popup_deactivated);
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            with_app(hwnd, App::close_popup);
             LRESULT(0)
         }
         // SAFETY: default handling of every other message.
@@ -431,19 +492,9 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
     }
 }
 
-pub fn run() -> Result<(), String> {
-    // SAFETY: plain Win32 calls on the thread that owns the window.
+fn create_window(shared_gpu: Option<crate::gpu::Gpu>) -> Result<HWND, String> {
     unsafe {
-        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: module.into(),
-            lpszClassName: w!("NekominalShell"),
-            hCursor: LoadCursorW(None, IDC_ARROW).map_err(|e| e.to_string())?,
-            ..Default::default()
-        };
-        RegisterClassW(&class);
         // No GDI surface: the window shows the DirectComposition content only.
         let hwnd = CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP,
@@ -463,19 +514,72 @@ pub fn run() -> Result<(), String> {
         let scale = scale_of(hwnd);
         // The window was created at 1100x700 pixels; make that DIP.
         let _ = SetWindowPos(hwnd, None, 0, 0, (1100.0 * scale) as i32, (700.0 * scale) as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        let app = App::new(hwnd, client_size(hwnd), scale)?;
+        let app = match App::new(hwnd, client_size(hwnd), scale, shared_gpu) {
+            Ok(app) => app,
+            Err(e) => { let _ = DestroyWindow(hwnd); return Err(e); }
+        };
         set_backdrop(hwnd, app.backdrop(), app.dark());
-        APP.with(|cell| *cell.borrow_mut() = Some(app));
+        APPS.with(|apps| apps.borrow_mut().insert(hwnd.0 as isize, Rc::new(RefCell::new(app))));
         let _ = ShowWindow(hwnd, SW_SHOW);
         let caption = caption_px(hwnd);
-        with_app(|app| app.on_caption(caption));
-        with_app(|app| app.redraw());
+        with_app(hwnd, |app| app.on_caption(caption));
+        with_app(hwnd, |app| app.redraw());
+
+        Ok(hwnd)
+    }
+}
+
+pub fn run() -> Result<(), String> {
+    // SAFETY: plain Win32 calls on the thread that owns the window.
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(wndproc),
+            hInstance: module.into(),
+            lpszClassName: w!("NekominalShell"),
+            hCursor: LoadCursorW(None, IDC_ARROW).map_err(|e| e.to_string())?,
+            ..Default::default()
+        };
+        RegisterClassW(&class);
+        create_window(None)?;
 
         let mut message = MSG::default();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
+            reap_closed_windows();
         }
+        // PTY cleanup starts threads; release the app before Windows begins thread-local teardown.
+        let apps = APPS.with(|apps| std::mem::take(&mut *apps.borrow_mut()));
+        drop(apps);
+        reap_closed_windows();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_scan;
+    use nekominal_input::{physical_key, vk};
+    use nekominal_model::{commands::{self, Command}, keymap::{self, Modifiers}};
+
+    #[test]
+    fn virtual_key_only_paste_still_reaches_the_application_warning() {
+        let keymap = keymap::build_keymap(commands::default_bindings(), &Default::default()).keymap;
+        let (scan, extended) = key_scan(0x56, 0, false);
+        let key = physical_key(scan, extended).expect("physical V from the active layout");
+        let modifiers = Modifiers { ctrl: true, shift: true, ..Modifiers::default() };
+        assert_eq!(keymap.find(modifiers, key.name()), Some(Command::EditPaste));
+    }
+
+    #[test]
+    fn real_scan_codes_and_ime_are_preserved_and_extended_keys_are_recovered() {
+        assert_eq!(key_scan(0x5A, 0x2F, false), (0x2F, false));
+        assert_eq!(key_scan(0x25, 0x4B, true), (0x4B, true));
+        assert_eq!(key_scan(vk::VK_PACKET, 0, false), (0, false));
+        assert_eq!(key_scan(vk::VK_PROCESSKEY, 0, false), (0, false));
+        assert_eq!(key_scan(0x7A, 0, false), (0x57, false));
+        assert_eq!(key_scan(0xA3, 0, false), (0x1D, true));
+    }
 }
