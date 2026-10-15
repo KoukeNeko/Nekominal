@@ -1,29 +1,30 @@
-//! The device and the swap chain of a window: wgpu on a DirectComposition visual, premultiplied alpha, so the DWM
-//! backdrop (Mica or acrylic) shows through wherever the shell draws with alpha below one.
+//! The device and the swap chain of a window: Direct3D 11 on a DirectComposition visual, premultiplied alpha, so the
+//! DWM backdrop (Mica or acrylic) shows through wherever the shell draws with alpha below one.
 
+pub use nekominal_render::d3d::Gpu;
+use nekominal_render::d3d::AdapterKind;
 use windows::{
     Win32::{
         Foundation::HWND,
         Graphics::{
+            Direct3D11::{ID3D11RenderTargetView, ID3D11Texture2D},
             DirectComposition::{DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual},
-            Dxgi::IDXGIDevice,
+            Dxgi::{
+                Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC},
+                DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
+                IDXGIFactory2, IDXGISwapChain1,
+            },
         },
     },
     core::Interface,
 };
 
-pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
-
-pub struct Gpu {
-    _instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-}
+const BUFFERS: u32 = 2;
 
 pub struct Surface {
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    swap: IDXGISwapChain1,
+    target: Option<ID3D11RenderTargetView>,
+    size: (u32, u32),
     dcomp: IDCompositionDevice,
     // Dropping the target or the visual takes the content off the window.
     _target: IDCompositionTarget,
@@ -34,78 +35,82 @@ pub struct Surface {
 /// The device and a swap chain of `size` pixels for `hwnd`. The adapter is the low-power one (the integrated GPU
 /// where there are two): a terminal does not need the other, and it costs the battery.
 pub fn create(hwnd: HWND, size: (u32, u32)) -> Result<(Gpu, Surface), String> {
+    let gpu = Gpu::new(AdapterKind::Real)?;
+    let size = (size.0.max(1), size.1.max(1));
     // SAFETY: the DirectComposition objects are created for a window of this thread and kept in `Surface` for as long
-    // as the swap chain lives; wgpu AddRef()s the visual it is given.
+    // as the swap chain lives.
     unsafe {
+        let dxgi: IDXGIDevice = gpu.device.cast().map_err(|e| format!("IDXGIDevice: {e}"))?;
+        let factory: IDXGIFactory2 =
+            dxgi.GetAdapter().and_then(|a| a.GetParent()).map_err(|e| format!("IDXGIFactory2: {e}"))?;
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: size.0,
+            Height: size.1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: BUFFERS,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+            ..Default::default()
+        };
+        let swap = factory
+            .CreateSwapChainForComposition(&gpu.device, &desc, None)
+            .map_err(|e| format!("CreateSwapChainForComposition: {e}"))?;
         let dcomp: IDCompositionDevice =
-            DCompositionCreateDevice(None::<&IDXGIDevice>).map_err(|e| format!("DCompositionCreateDevice: {e}"))?;
+            DCompositionCreateDevice(&dxgi).map_err(|e| format!("DCompositionCreateDevice: {e}"))?;
         let target = dcomp.CreateTargetForHwnd(hwnd, true).map_err(|e| format!("CreateTargetForHwnd: {e}"))?;
         let visual = dcomp.CreateVisual().map_err(|e| format!("CreateVisual: {e}"))?;
+        visual.SetContent(&swap).map_err(|e| format!("SetContent: {e}"))?;
         target.SetRoot(&visual).map_err(|e| format!("SetRoot: {e}"))?;
-
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::DX12;
-        let instance = wgpu::Instance::new(desc);
-        let surface = instance
-            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CompositionVisual(visual.as_raw()))
-            .map_err(|e| format!("create_surface_unsafe: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            force_fallback_adapter: false,
-            compatible_surface: Some(&surface),
-            apply_limit_buckets: false,
-        }))
-        .map_err(|e| format!("request_adapter: {e}"))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: nekominal_render::Renderer::wanted_features(&adapter),
-            required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            ..Default::default()
-        }))
-        .map_err(|e| format!("request_device: {e}"))?;
-        let mut config = surface
-            .get_default_config(&adapter, size.0.max(1), size.1.max(1))
-            .ok_or("the surface has no default configuration")?;
-        config.format = FORMAT;
-        config.present_mode = wgpu::PresentMode::Fifo;
-        config.desired_maximum_frame_latency = 2;
-        config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
-        surface.configure(&device, &config);
-        Ok((
-            Gpu { _instance: instance, adapter, device, queue },
-            Surface { surface, config, dcomp, _target: target, _visual: visual, committed: false },
-        ))
+        let mut surface = Surface { swap, target: None, size, dcomp, _target: target, _visual: visual, committed: false };
+        surface.target = Some(surface.create_target(&gpu)?);
+        Ok((gpu, surface))
     }
 }
 
 impl Surface {
     pub fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        self.size
+    }
+
+    fn create_target(&self, gpu: &Gpu) -> Result<ID3D11RenderTargetView, String> {
+        // SAFETY: the back buffer and the device live through the calls.
+        unsafe {
+            let back: ID3D11Texture2D = self.swap.GetBuffer(0).map_err(|e| format!("GetBuffer: {e}"))?;
+            let mut view = None;
+            gpu.device.CreateRenderTargetView(&back, None, Some(&mut view)).map_err(|e| format!("CreateRenderTargetView: {e}"))?;
+            view.ok_or_else(|| "no render target view".into())
+        }
     }
 
     pub fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) {
         let size = (size.0.max(1), size.1.max(1));
-        if size != self.size() {
-            self.config.width = size.0;
-            self.config.height = size.1;
-            self.surface.configure(&gpu.device, &self.config);
+        if size == self.size {
+            return;
         }
-    }
-
-    /// The texture to draw the next frame into; `None` when the swap chain had to be reconfigured or is not ready.
-    pub fn acquire(&mut self, gpu: &Gpu) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&gpu.device, &self.config);
-                None
+        // Every reference to the back buffers has to go before they can be resized.
+        self.target = None;
+        // SAFETY: nothing is bound any more; the swap chain lives through the call.
+        unsafe {
+            gpu.context.OMSetRenderTargets(None, None);
+            gpu.context.Flush();
+            if self.swap.ResizeBuffers(BUFFERS, size.0, size.1, DXGI_FORMAT_UNKNOWN, Default::default()).is_err() {
+                return;
             }
-            _ => None,
         }
+        self.size = size;
+        self.target = self.create_target(gpu).ok();
     }
 
-    pub fn present(&mut self, gpu: &Gpu, frame: wgpu::SurfaceTexture) {
-        gpu.queue.present(frame);
+    /// The target to draw the next frame into; `None` when the swap chain is not usable.
+    pub fn acquire(&mut self) -> Option<ID3D11RenderTargetView> {
+        self.target.clone()
+    }
+
+    pub fn present(&mut self) {
+        // SAFETY: the swap chain is alive. A removed device shows up here; the window then keeps its last frame.
+        unsafe { self.swap.Present(1, Default::default()).ok().ok() };
         if !self.committed {
             // The first Commit shows the swap chain the visual was given.
             // SAFETY: the DirectComposition device is alive.

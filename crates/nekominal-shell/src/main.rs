@@ -1,4 +1,4 @@
-//! Nekominal with a self-drawn shell: a plain Win32 window whose content is a wgpu swap chain on a DirectComposition
+//! Nekominal with a self-drawn shell: a plain Win32 window whose content is a Direct3D 11 swap chain on a DirectComposition
 //! visual over a DWM backdrop. The chrome is drawn by `nekominal-ui`, the terminal panes by `nekominal-pane`.
 #![windows_subsystem = "windows"]
 

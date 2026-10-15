@@ -1,4 +1,4 @@
-//! The self-drawn UI layer: rounded rectangles, shadows, text and icon glyphs recorded in DIP and drawn with wgpu in
+//! The self-drawn UI layer: rounded rectangles, shadows, text and icon glyphs recorded in DIP and drawn with Direct3D 11 in
 //! one pass over whatever the target already holds (the terminal panes).
 //!
 //! A frame is `begin_frame`, any number of `rrect` / `shadow` / `text` / `icon` calls in painting order (with
@@ -12,11 +12,19 @@ use std::ops::Range;
 use bytemuck::{Pod, Zeroable};
 use nekominal_render::{
     atlas::AtlasTexture,
+    d3d::{
+        Attribute, DrawStates, Gpu, bind_textures, bind_uniforms, compile, constant_buffer, input_layout, pixel_shader,
+        set_shaders, vertex_shader, write_buffer,
+    },
     fonts::{CharClass, FaceId, FontChoice, FontConfig, FontStack, Style, is_cjk},
     gpu::{GLYPH_ATTRS, GlyphInstance, GrowBuffer, KIND_COLOR, KIND_MASK},
     raster::{GlyphKind, RasterOptions, Rasterizer},
 };
 use rustc_hash::FxHashMap;
+use windows::Win32::Graphics::{
+    Direct3D11::{ID3D11Buffer, ID3D11InputLayout, ID3D11PixelShader, ID3D11RenderTargetView, ID3D11VertexShader},
+    Dxgi::Common::{DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -65,8 +73,12 @@ struct QuadInstance {
     extra: [f32; 2],
 }
 
-const QUAD_ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-    0 => Float32x4, 1 => Float32x2, 2 => Unorm8x4, 3 => Unorm8x4, 4 => Float32x2
+const QUAD_ATTRS: [Attribute; 5] = [
+    Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
+    Attribute(DXGI_FORMAT_R32G32_FLOAT, 16),
+    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 24),
+    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 28),
+    Attribute(DXGI_FORMAT_R32G32_FLOAT, 32),
 ];
 
 #[repr(C)]
@@ -108,16 +120,17 @@ struct Cmd {
 }
 
 pub struct Ui {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    quad_pipeline: wgpu::RenderPipeline,
-    glyph_pipeline: wgpu::RenderPipeline,
-    uniform_buffer: wgpu::Buffer,
-    uniform_group: wgpu::BindGroup,
-    atlas_layout: wgpu::BindGroupLayout,
+    gpu: Gpu,
+    states: DrawStates,
+    quad_layout: ID3D11InputLayout,
+    quad_vs: ID3D11VertexShader,
+    quad_ps: ID3D11PixelShader,
+    glyph_layout: ID3D11InputLayout,
+    glyph_vs: ID3D11VertexShader,
+    glyph_ps: ID3D11PixelShader,
+    uniform_buffer: ID3D11Buffer,
     atlas_gray: AtlasTexture,
     atlas_rgba: AtlasTexture,
-    atlas_group: Option<(wgpu::BindGroup, u32, u32)>,
     quad_buffer: GrowBuffer,
     glyph_buffer: GrowBuffer,
     pub fonts: FontStack,
@@ -138,100 +151,25 @@ fn ui_fonts() -> FontConfig {
 }
 
 impl Ui {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Result<Self, String> {
-        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ui uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
-        });
-        let texture = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ui atlases"),
-            entries: &[texture(0), texture(1)],
-        });
-        let quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ui quad layout"),
-            bind_group_layouts: &[Some(&uniform_layout)],
-            immediate_size: 0,
-        });
-        let glyph_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ui glyph layout"),
-            bind_group_layouts: &[Some(&uniform_layout), Some(&atlas_layout)],
-            immediate_size: 0,
-        });
-        let module = |label, source: &str| {
-            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) })
-        };
-        let quad_module = module("ui quad", include_str!("quad.wgsl"));
-        let glyph_module = module("ui glyph", include_str!("glyph.wgsl"));
-        let pipeline = |label, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, stride, attrs: &'static [wgpu::VertexAttribute]| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout { array_stride: stride, step_mode: wgpu::VertexStepMode::Instance, attributes: attrs })],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let quad_pipeline = pipeline("ui quad", &quad_layout, &quad_module, std::mem::size_of::<QuadInstance>() as u64, &QUAD_ATTRS);
-        let glyph_pipeline = pipeline("ui glyph", &glyph_layout, &glyph_module, std::mem::size_of::<GlyphInstance>() as u64, &GLYPH_ATTRS);
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ui uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let uniform_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui uniforms"),
-            layout: &uniform_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
-        });
-        let vertex = wgpu::BufferUsages::VERTEX;
+    pub fn new(gpu: &Gpu) -> Result<Self, String> {
+        let quad_src = include_str!("quad.hlsl");
+        let glyph_src = include_str!("glyph.hlsl");
+        let quad_vs_code = compile(quad_src, "vs_main", "vs_5_0")?;
+        let glyph_vs_code = compile(glyph_src, "vs_main", "vs_5_0")?;
         Ok(Ui {
-            device: device.clone(),
-            queue: queue.clone(),
-            quad_pipeline,
-            glyph_pipeline,
-            uniform_buffer,
-            uniform_group,
-            atlas_layout,
-            atlas_gray: AtlasTexture::new(device, wgpu::TextureFormat::R8Unorm, 1, 512, 2048, "ui atlas r8"),
-            atlas_rgba: AtlasTexture::new(device, wgpu::TextureFormat::Rgba8Unorm, 4, 256, 1024, "ui atlas rgba"),
-            atlas_group: None,
-            quad_buffer: GrowBuffer::new(device, "ui quads", vertex, 4096),
-            glyph_buffer: GrowBuffer::new(device, "ui glyphs", vertex, 4096),
+            gpu: gpu.clone(),
+            states: DrawStates::new(gpu)?,
+            quad_layout: input_layout(gpu, &quad_vs_code, &QUAD_ATTRS)?,
+            quad_vs: vertex_shader(gpu, &quad_vs_code)?,
+            quad_ps: pixel_shader(gpu, &compile(quad_src, "fs_main", "ps_5_0")?)?,
+            glyph_layout: input_layout(gpu, &glyph_vs_code, &GLYPH_ATTRS)?,
+            glyph_vs: vertex_shader(gpu, &glyph_vs_code)?,
+            glyph_ps: pixel_shader(gpu, &compile(glyph_src, "fs_main", "ps_5_0")?)?,
+            uniform_buffer: constant_buffer(gpu, std::mem::size_of::<Uniforms>()),
+            atlas_gray: AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, 512, 2048),
+            atlas_rgba: AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, 256, 1024),
+            quad_buffer: GrowBuffer::new(gpu, std::mem::size_of::<QuadInstance>() as u32, 4096),
+            glyph_buffer: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 4096),
             fonts: FontStack::new(ui_fonts())?,
             raster: Rasterizer::new(),
             cache: FxHashMap::default(),
@@ -347,7 +285,7 @@ impl Ui {
             .filter(|r| r.width > 0 && r.height > 0)
             .and_then(|r| {
                 let atlas = if r.kind == GlyphKind::Color { &mut self.atlas_rgba } else { &mut self.atlas_gray };
-                let src = atlas.insert(&self.device, &self.queue, r.width, r.height, &r.data).ok()?;
+                let src = atlas.insert(&self.gpu, r.width, r.height, &r.data).ok()?;
                 let kind = if r.kind == GlyphKind::Color { KIND_COLOR } else { KIND_MASK };
                 Some(Bitmap { src: [src.0, src.1], size: [r.width as u16, r.height as u16], left: r.left, top: r.top, kind })
             });
@@ -426,65 +364,37 @@ impl Ui {
 
     // --- drawing ------------------------------------------------------------------------------------------------
 
-    fn ensure_atlas_group(&mut self) {
-        let (g, c) = (self.atlas_gray.generation, self.atlas_rgba.generation);
-        if matches!(&self.atlas_group, Some((_, gg, cc)) if (*gg, *cc) == (g, c)) {
-            return;
-        }
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui atlases"),
-            layout: &self.atlas_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.atlas_gray.view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.atlas_rgba.view) },
-            ],
-        });
-        self.atlas_group = Some((group, g, c));
-    }
-
     /// Draws everything recorded since `begin_frame` over `target` (loaded, not cleared).
-    pub fn end_frame(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    pub fn end_frame(&mut self, target: &ID3D11RenderTargetView) {
         if self.cmds.is_empty() {
             return;
         }
-        self.atlas_gray.flush(&self.queue);
-        self.atlas_rgba.flush(&self.queue);
-        self.ensure_atlas_group();
+        let gpu = &self.gpu;
+        self.atlas_gray.flush(gpu);
+        self.atlas_rgba.flush(gpu);
         let uniforms = Uniforms { viewport: [self.size.0 as f32, self.size.1 as f32], pad: [0.0; 2] };
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        self.quad_buffer.write(&self.device, &self.queue, bytemuck::cast_slice(&self.quads), self.quads.len() as u32);
-        self.glyph_buffer.write(&self.device, &self.queue, bytemuck::cast_slice(&self.glyphs), self.glyphs.len() as u32);
+        write_buffer(gpu, &self.uniform_buffer, bytemuck::bytes_of(&uniforms));
+        self.quad_buffer.write(gpu, bytemuck::cast_slice(&self.quads), self.quads.len() as u32);
+        self.glyph_buffer.write(gpu, bytemuck::cast_slice(&self.glyphs), self.glyphs.len() as u32);
 
-        let atlas = &self.atlas_group.as_ref().expect("atlas group").0;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("ui pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_bind_group(0, &self.uniform_group, &[]);
+        gpu.bind_target(target, [0, 0, self.size.0, self.size.1]);
+        gpu.begin_draws(&self.states);
+        self.states.set_blend(gpu, false);
+        bind_uniforms(gpu, &self.uniform_buffer);
+        bind_textures(gpu, &[&self.atlas_gray.view, &self.atlas_rgba.view]);
         for cmd in &self.cmds {
             let [x, y, w, h] = cmd.clip.unwrap_or([0, 0, self.size.0, self.size.1]);
             if w == 0 || h == 0 {
                 continue;
             }
-            pass.set_scissor_rect(x, y, w, h);
+            gpu.set_scissor([x, y, w, h]);
             if cmd.glyphs {
-                pass.set_pipeline(&self.glyph_pipeline);
-                pass.set_bind_group(1, atlas, &[]);
-                pass.set_vertex_buffer(0, self.glyph_buffer.buffer.slice(..));
+                set_shaders(gpu, &self.glyph_layout, &self.glyph_vs, &self.glyph_ps);
+                gpu.draw_instances_from(&self.glyph_buffer.buffer, self.glyph_buffer.stride, cmd.range.clone());
             } else {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_vertex_buffer(0, self.quad_buffer.buffer.slice(..));
+                set_shaders(gpu, &self.quad_layout, &self.quad_vs, &self.quad_ps);
+                gpu.draw_instances_from(&self.quad_buffer.buffer, self.quad_buffer.stride, cmd.range.clone());
             }
-            pass.draw(0..4, cmd.range.clone());
         }
     }
 }

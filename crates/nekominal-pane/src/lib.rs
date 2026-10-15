@@ -4,7 +4,7 @@
 //!   encoded for the program's current modes.
 //! * [`view`]: `Snapshot` -> `nekominal_render::GridView` adapter (colours stay symbolic).
 //! * [`draw::PaneRenderer`]: drives a `nekominal_render::Renderer` for one pane (snapshot, update, draw) on
-//!   whatever wgpu target the shell provides; usable headless.
+//!   whatever render target the shell provides; usable headless.
 
 pub mod draw;
 pub mod host;

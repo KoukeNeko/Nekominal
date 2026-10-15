@@ -1,6 +1,6 @@
 [package]
 name = "nekominal-render"
-description = "wgpu terminal grid renderer: font stack, glyph atlas, procedural glyphs, overlays"
+description = "Direct3D 11 terminal grid renderer: font stack, glyph atlas, procedural glyphs, overlays"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,12 +11,10 @@ rust-version.workspace = true
 offscreen = ["dep:png"]
 
 [dependencies]
-wgpu = { workspace = true }
 swash = { workspace = true }
 harfrust = { workspace = true }
 etagere = { workspace = true }
 bytemuck = { workspace = true }
-pollster = { workspace = true }
 png = { workspace = true, optional = true }
 memmap2 = { workspace = true }
 rustc-hash = { workspace = true }
@@ -29,6 +27,9 @@ nekominal-render = { workspace = true, features = ["offscreen"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
     "Win32_Graphics_DirectWrite",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -41,12 +42,3 @@ windows = { workspace = true, features = [
 ] }
 # #[implement] expands to ::windows_core paths; this is the 0.62 generation that `windows` uses.
 windows-core = "=0.62.2"
-
-[[bin]]
-name = "demo"
-path = "src/bin/demo.rs"
-required-features = ["offscreen"]
-
-[[bin]]
-name = "present"
-path = "src/bin/present.rs"

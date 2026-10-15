@@ -110,7 +110,7 @@ fn switching_between_opaque_and_translucent_leaves_no_stale_glyphs_behind() {
     let translucent = theme_with_opacity(Theme::campbell(), 0.6);
 
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, FORMAT, test_config()).expect("renderer");
+    let mut renderer = Renderer::new(&gpu, test_config()).expect("renderer");
     let mut pane = PaneState::new();
     let mut draw = |theme: &Theme| {
         renderer.set_theme(theme);
@@ -233,7 +233,7 @@ fn without_the_boost_translucency_changes_only_alpha_not_stroke_weight() {
 #[ignore = "prints timings"]
 fn update_cost() {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, FORMAT, test_config()).expect("renderer");
+    let mut renderer = Renderer::new(&gpu, test_config()).expect("renderer");
     let mut scene = Scene::new(140, 40);
     for row in 0..40 {
         for chunk in 0..9 {

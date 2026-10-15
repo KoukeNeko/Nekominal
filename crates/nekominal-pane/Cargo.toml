@@ -10,7 +10,7 @@ nekominal-pty = { workspace = true }
 nekominal-term = { workspace = true }
 nekominal-input = { workspace = true }
 nekominal-render = { workspace = true }
-wgpu = { workspace = true }
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D11"] }
 
 [dev-dependencies]
 nekominal-render = { workspace = true, features = ["offscreen"] }

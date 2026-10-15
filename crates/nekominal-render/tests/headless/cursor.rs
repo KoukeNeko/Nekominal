@@ -139,7 +139,7 @@ fn a_block_cursor_recolours_the_text_under_it() {
 #[test]
 fn blinking_a_bar_cursor_rebuilds_no_rows_and_a_block_cursor_rebuilds_one() {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, FORMAT, test_config()).expect("renderer");
+    let mut renderer = Renderer::new(&gpu, test_config()).expect("renderer");
     renderer.set_theme(&Theme::campbell());
     let mut pane = PaneState::new();
     let mut scene = Scene::new(20, 6);

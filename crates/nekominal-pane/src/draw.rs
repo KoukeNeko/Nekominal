@@ -1,9 +1,10 @@
 //! Drives one `nekominal_render::Renderer` for one pane. Knows nothing about the windowing toolkit: the shell
-//! hands it a wgpu texture view to draw into.
+//! hands it a render target view to draw into.
 
 use std::time::{Duration, Instant};
 
-use nekominal_render as r;
+use nekominal_render::{self as r, d3d::Gpu};
+use windows::Win32::Graphics::Direct3D11::ID3D11RenderTargetView;
 use nekominal_term::{Snapshot, TerminalCore, alacritty_terminal::sync::FairMutex};
 
 use crate::view;
@@ -34,26 +35,18 @@ pub struct Prepared {
 }
 
 impl PaneRenderer {
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        config: r::RendererConfig,
-        theme: r::Theme,
-    ) -> Result<Self, String> {
-        Self::new_sharing(device, queue, format, config, theme, None)
+    pub fn new(gpu: &Gpu, config: r::RendererConfig, theme: r::Theme) -> Result<Self, String> {
+        Self::new_sharing(gpu, config, theme, None)
     }
 
     /// Like [`PaneRenderer::new`], reusing the compiled pipelines of other (same device and format).
     pub fn new_sharing(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
+        gpu: &Gpu,
         config: r::RendererConfig,
         theme: r::Theme,
         other: Option<&PaneRenderer>,
     ) -> Result<Self, String> {
-        let mut renderer = r::Renderer::new_sharing(device, queue, format, config, other.map(|o| o.renderer.pipelines()))?;
+        let mut renderer = r::Renderer::new_sharing(gpu, config, other.map(|o| o.renderer.pipelines()))?;
         renderer.set_theme(&theme);
         Ok(Self {
             renderer,
@@ -190,29 +183,24 @@ impl PaneRenderer {
         }
     }
 
-    /// Records the pane into the `rect` (x, y, width, height in pixels) of a window-sized `target`. The pane paints its
+    /// Draws the pane into the `rect` (x, y, width, height in pixels) of a window-sized `target`. The pane paints its
     /// own background, so what the shell draws around it shows the backdrop. `clear` empties the target to transparent
     /// first: true for the first pane of a frame, false for the others.
-    pub fn draw_in(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, rect: [u32; 4], clear: bool) {
-        let clear = clear.then_some(wgpu::Color::TRANSPARENT);
-        self.renderer.draw(encoder, target, clear, &[r::PaneDraw { pane: &self.state, rect }], None);
+    pub fn draw_in(&mut self, target: &ID3D11RenderTargetView, rect: [u32; 4], clear: bool) {
+        let clear = clear.then_some([0.0; 4]);
+        self.renderer.draw(target, clear, &[r::PaneDraw { pane: &self.state, rect }]);
         self.force_draw = false;
     }
-    /// Records the pane into `target` (`size_px` is the texture size). Call after a `prepare` that asked for it.
-    pub fn draw(&mut self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, size_px: (u32, u32)) {
+
+    /// Draws the pane into `target` (`size_px` is the texture size). Call after a `prepare` that asked for it.
+    pub fn draw(&mut self, target: &ID3D11RenderTargetView, size_px: (u32, u32)) {
         let bg = self.theme.background;
         let clear = if self.theme.background_opacity < 1.0 {
-            wgpu::Color::TRANSPARENT
+            [0.0; 4]
         } else {
-            wgpu::Color { r: f64::from(bg.0) / 255.0, g: f64::from(bg.1) / 255.0, b: f64::from(bg.2) / 255.0, a: 1.0 }
+            [f32::from(bg.0) / 255.0, f32::from(bg.1) / 255.0, f32::from(bg.2) / 255.0, 1.0]
         };
-        self.renderer.draw(
-            encoder,
-            target,
-            Some(clear),
-            &[r::PaneDraw { pane: &self.state, rect: [0, 0, size_px.0, size_px.1] }],
-            None,
-        );
+        self.renderer.draw(target, Some(clear), &[r::PaneDraw { pane: &self.state, rect: [0, 0, size_px.0, size_px.1] }]);
         self.force_draw = false;
     }
 }

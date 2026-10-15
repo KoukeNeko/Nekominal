@@ -5,17 +5,15 @@
 use nekominal_pane::PaneRenderer;
 use nekominal_render::{
     self as r,
-    offscreen::{AdapterKind, OffscreenTarget, create_gpu},
+    offscreen::{AdapterKind, Gpu, OffscreenTarget, create_gpu},
 };
 use nekominal_term::{CoreConfig, TerminalCore, alacritty_terminal::sync::FairMutex};
-use std::sync::OnceLock;
 
-/// One WARP device for the whole test binary. Creating and destroying several DX12 devices concurrently in one
-/// process crashed intermittently (access violation 0xC0000005, 4 of 60 runs with the default parallel harness,
-/// 0 of 60 serial): never create more than one device per process, and never destroy it concurrently.
-fn gpu() -> &'static r::offscreen::GpuContext {
-    static GPU: OnceLock<r::offscreen::GpuContext> = OnceLock::new();
-    GPU.get_or_init(|| create_gpu(AdapterKind::Warp).expect("WARP adapter"))
+/// One WARP device per test thread: the immediate context of a device is not thread safe, and the tests run in
+/// parallel.
+fn gpu() -> Gpu {
+    thread_local! { static GPU: Gpu = create_gpu(AdapterKind::Warp).expect("WARP adapter"); }
+    GPU.with(Gpu::clone)
 }
 
 struct Rendered {
@@ -37,21 +35,16 @@ impl Rendered {
 fn render(bytes: &[u8], cols: usize, rows: usize) -> Rendered {
     let gpu = gpu();
     let theme = r::Theme::campbell();
-    let mut renderer =
-        PaneRenderer::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm, r::RendererConfig::default(), theme)
-            .expect("renderer");
+    let mut renderer = PaneRenderer::new(&gpu, r::RendererConfig::default(), theme).expect("renderer");
     let m = renderer.metrics();
     let term = FairMutex::new(TerminalCore::new(cols, rows, CoreConfig::default()));
     term.lock().feed(bytes);
     let prepared = renderer.prepare(&term);
     assert!(prepared.needs_draw);
     let size = (cols as u32 * m.width, rows as u32 * m.height);
-    let target = OffscreenTarget::new(&gpu.device, size.0, size.1, wgpu::TextureFormat::Bgra8Unorm);
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    renderer.draw(&mut encoder, &target.view, size);
-    target.encode_readback(&mut encoder);
-    gpu.queue.submit([encoder.finish()]);
-    let rgba = target.read_rgba(&gpu.device).expect("readback");
+    let target = OffscreenTarget::new(&gpu, size.0, size.1);
+    renderer.draw(&target.view, size);
+    let rgba = target.read_rgba(&gpu).expect("readback");
     Rendered { rgba, width: size.0, cell: (m.width, m.height) }
 }
 

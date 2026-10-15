@@ -1,4 +1,4 @@
-//! Nekominal terminal grid renderer spike (wgpu 30, DX12 first).
+//! Nekominal terminal grid renderer on Direct3D 11.
 //!
 //! Layering:
 //! * `cell`      input data model (cells, theme, overlays) - no GPU types
@@ -7,6 +7,7 @@
 //! * `raster`    swash rasterization (grayscale / LCD / color / synthetic styles)
 //! * `sprites`   procedural box drawing, blocks, braille, Powerline, underlines
 //! * `atlas`     etagere-packed R8 + RGBA8 glyph atlases
+//! * `d3d`       the device and the small Direct3D 11 helpers
 //! * `gpu`       instance structs, uniforms, pipelines
 //! * `renderer`  public `Renderer` / `PaneState` API; `rows` implements the update path
 //! * `offscreen` headless target, adapter selection and PNG output for tests (cargo feature `offscreen`)
@@ -14,6 +15,7 @@
 pub mod atlas;
 pub mod cell;
 pub mod contrast;
+pub mod d3d;
 pub mod fonts;
 pub mod gpu;
 #[cfg(windows)]

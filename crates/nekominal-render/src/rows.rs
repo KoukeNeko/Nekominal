@@ -99,18 +99,18 @@ impl Renderer {
         let PaneState { row_data, scratch, gpu, overlay_cpu, overlay_prev, .. } = pane;
         let gpu = gpu.as_mut().expect("pane gpu");
         {
-            let (d, q) = (&self.device, &self.queue);
+            let g = &self.gpu;
             if dirty[0] {
-                stats.uploaded_bytes += upload_stream(row_data, |r| &r.bg, scratch, &mut gpu.bg, d, q);
+                stats.uploaded_bytes += upload_stream(row_data, |r| &r.bg, scratch, &mut gpu.bg, g);
             }
             if dirty[1] {
-                stats.uploaded_bytes += upload_stream(row_data, |r| &r.glyphs, scratch, &mut gpu.glyphs, d, q);
+                stats.uploaded_bytes += upload_stream(row_data, |r| &r.glyphs, scratch, &mut gpu.glyphs, g);
             }
             if dirty[2] {
-                stats.uploaded_bytes += upload_stream(row_data, |r| &r.lcd, scratch, &mut gpu.lcd, d, q);
+                stats.uploaded_bytes += upload_stream(row_data, |r| &r.lcd, scratch, &mut gpu.lcd, g);
             }
             if dirty[3] {
-                stats.uploaded_bytes += upload_stream(row_data, |r| &r.deco, scratch, &mut gpu.deco, d, q);
+                stats.uploaded_bytes += upload_stream(row_data, |r| &r.deco, scratch, &mut gpu.deco, g);
             }
             stats.bg_instances = gpu.bg.count;
             stats.glyph_instances = gpu.glyphs.count;
@@ -121,7 +121,7 @@ impl Renderer {
         overlay_cpu.clear();
         build_overlay(&self.metrics, &theme, view, overlay_cpu);
         if force || overlay_cpu != overlay_prev {
-            gpu.overlay.write(&self.device, &self.queue, bytemuck::cast_slice(overlay_cpu), overlay_cpu.len() as u32);
+            gpu.overlay.write(&self.gpu, bytemuck::cast_slice(overlay_cpu), overlay_cpu.len() as u32);
             stats.uploaded_bytes += overlay_cpu.len() * 20;
             // An overlay that became empty (a blinking bar cursor going off) uploads nothing but still changes
             // the picture.
@@ -130,8 +130,8 @@ impl Renderer {
         }
         stats.overlay_instances = gpu.overlay.count;
         let t = std::time::Instant::now();
-        self.atlas_gray.flush(&self.queue);
-        self.atlas_rgba.flush(&self.queue);
+        self.atlas_gray.flush(&self.gpu);
+        self.atlas_rgba.flush(&self.gpu);
         self.stats.upload_time += t.elapsed();
         Ok(stats)
     }
@@ -741,14 +741,13 @@ impl Renderer {
 }
 
 /// Concatenate one instance stream of every row and upload it with a single
-/// `write_buffer`. Returns the number of bytes written.
+/// `Map`. Returns the number of bytes written.
 fn upload_stream<T: bytemuck::Pod>(
     rows: &[RowInstances],
     pick: fn(&RowInstances) -> &Vec<T>,
     scratch: &mut Vec<u8>,
     buf: &mut crate::gpu::GrowBuffer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    gpu: &crate::d3d::Gpu,
 ) -> usize {
     scratch.clear();
     let mut n = 0usize;
@@ -757,7 +756,7 @@ fn upload_stream<T: bytemuck::Pod>(
         scratch.extend_from_slice(bytemuck::cast_slice(v));
         n += v.len();
     }
-    buf.write(device, queue, scratch, n as u32);
+    buf.write(gpu, scratch, n as u32);
     scratch.len()
 }
 

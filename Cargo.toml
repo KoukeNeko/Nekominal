@@ -12,19 +12,14 @@ members = [
     "crates/nekominal-shell",
     "tools/winprobe",
     "tools/agent-probe",
-    "tools/ui-spike",
     "tools/d3d11-spike",
-    "crates/nekominal-winui-sys",
-    "crates/nekominal-app",
-    "crates/nekominal-slice",
     "crates/nekominal-pane",
-    "crates/nekominal-winui",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# windows-core/windows-bindgen 0.100 declare rust-version 1.95, wgpu 30.0.1 declares 1.87.
+# windows-core/windows-bindgen 0.100 declare rust-version 1.95.
 rust-version = "1.95"
 
 [workspace.dependencies]
@@ -56,7 +51,7 @@ memmap2 = "=0.9.10"
 rustc-hash = "=2.1.3"
 unicode-segmentation = "=1.13.3"
 
-# Win32 bindings. `windows` stays on 0.62.x because wgpu-hal 30 depends on ^0.62.
+# Win32 bindings. `windows` stays on 0.62.x (the generation the shell and the renderer are written against).
 # The 0.100 `windows-*` generation is used only by nekominal-winui-sys and nekominal-winui (declared per crate,
 # never here, because two generations of the same package name cannot share a workspace key).
 windows = { version = "=0.62.2" }
@@ -68,6 +63,6 @@ lto = "thin"
 opt-level = 3
 strip = true
 
-# Smaller debug builds: the full debuginfo of wgpu and the WinUI bindings is several GB.
+# Smaller debug builds.
 [profile.dev]
 debug = "line-tables-only"

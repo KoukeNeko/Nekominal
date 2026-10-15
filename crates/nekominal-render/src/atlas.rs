@@ -5,15 +5,20 @@
 //! shader fetches with `textureLoad`, so growing the texture never invalidates
 //! cached glyph positions and no sampler/filtering can blur glyph edges.
 //!
-//! Uploads: measured `queue.write_texture` at ~28 us per call on DX12 versus ~4 us
-//! to rasterize a glyph, so inserts only write the CPU shadow and extend a dirty
-//! rectangle; `flush` issues one `write_texture` per frame.
+//! Uploads cost far more per call than rasterizing a glyph, so inserts only write the CPU shadow and extend a
+//! dirty rectangle; `flush` issues one `UpdateSubresource` per frame.
 
 use etagere::{BucketedAtlasAllocator, size2};
+use windows::Win32::Graphics::{
+    Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
+    Dxgi::Common::DXGI_FORMAT,
+};
+
+use crate::d3d::{Gpu, atlas_texture, copy_texture, upload_texels};
 
 pub struct AtlasTexture {
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
+    pub texture: ID3D11Texture2D,
+    pub view: ID3D11ShaderResourceView,
     alloc: BucketedAtlasAllocator,
     /// CPU mirror of the texture (row pitch = size * bytes_per_texel).
     shadow: Vec<u8>,
@@ -21,9 +26,8 @@ pub struct AtlasTexture {
     dirty: Option<(u32, u32, u32, u32)>,
     pub size: u32,
     max_size: u32,
-    format: wgpu::TextureFormat,
+    format: DXGI_FORMAT,
     bytes_per_texel: u32,
-    label: &'static str,
     /// Bumped whenever `texture` is replaced so bind groups can be rebuilt.
     pub generation: u32,
     pub clears: u32,
@@ -35,15 +39,8 @@ pub struct AtlasTexture {
 pub struct AtlasFull;
 
 impl AtlasTexture {
-    pub fn new(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        bytes_per_texel: u32,
-        initial: u32,
-        max_size: u32,
-        label: &'static str,
-    ) -> Self {
-        let (texture, view) = create_texture(device, format, initial, label);
+    pub fn new(gpu: &Gpu, format: DXGI_FORMAT, bytes_per_texel: u32, initial: u32, max_size: u32) -> Self {
+        let (texture, view) = atlas_texture(gpu, format, initial);
         AtlasTexture {
             texture,
             view,
@@ -54,7 +51,6 @@ impl AtlasTexture {
             max_size,
             format,
             bytes_per_texel,
-            label,
             generation: 0,
             clears: 0,
             grows: 0,
@@ -79,13 +75,7 @@ impl AtlasTexture {
     }
 
     /// Reserve `w x h` texels, growing the texture (up to `max_size`) if needed.
-    fn allocate(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        w: u32,
-        h: u32,
-    ) -> Result<(u32, u32), AtlasFull> {
+    fn allocate(&mut self, gpu: &Gpu, w: u32, h: u32) -> Result<(u32, u32), AtlasFull> {
         loop {
             if let Some(a) = self.alloc.allocate(size2(w as i32, h as i32)) {
                 return Ok((a.rectangle.min.x as u32, a.rectangle.min.y as u32));
@@ -93,31 +83,15 @@ impl AtlasTexture {
             if self.size >= self.max_size {
                 return Err(AtlasFull);
             }
-            self.grow(device, queue, (self.size * 2).min(self.max_size));
+            self.grow(gpu, (self.size * 2).min(self.max_size));
         }
     }
 
-    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, new_size: u32) {
+    fn grow(&mut self, gpu: &Gpu, new_size: u32) {
         // The old texture must be complete before the GPU-side copy.
-        self.flush(queue);
-        let (texture, view) = create_texture(device, self.format, new_size, self.label);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("atlas grow") });
-        encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d { width: self.size, height: self.size, depth_or_array_layers: 1 },
-        );
-        queue.submit([encoder.finish()]);
+        self.flush(gpu);
+        let (texture, view) = atlas_texture(gpu, self.format, new_size);
+        copy_texture(gpu, &texture, &self.texture);
         // Grow the shadow keeping existing rows (pitch changes).
         let bpt = self.bytes_per_texel as usize;
         let (old, new) = (self.size as usize, new_size as usize);
@@ -136,16 +110,9 @@ impl AtlasTexture {
     }
 
     /// Copy a bitmap into the shadow and mark it dirty. Returns its atlas position.
-    pub fn insert(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        w: u32,
-        h: u32,
-        data: &[u8],
-    ) -> Result<(u16, u16), AtlasFull> {
+    pub fn insert(&mut self, gpu: &Gpu, w: u32, h: u32, data: &[u8]) -> Result<(u16, u16), AtlasFull> {
         debug_assert_eq!(data.len() as u32, w * h * self.bytes_per_texel);
-        let (x, y) = self.allocate(device, queue, w, h)?;
+        let (x, y) = self.allocate(gpu, w, h)?;
         let bpt = self.bytes_per_texel as usize;
         let pitch = self.size as usize * bpt;
         let row_bytes = w as usize * bpt;
@@ -160,46 +127,10 @@ impl AtlasTexture {
         Ok((x as u16, y as u16))
     }
 
-    /// Upload everything inserted since the last flush with a single `write_texture`.
-    pub fn flush(&mut self, queue: &wgpu::Queue) {
-        let Some((x0, y0, x1, y1)) = self.dirty.take() else { return };
-        let bpt = self.bytes_per_texel;
-        let pitch = self.size * bpt;
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x: x0, y: y0, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            &self.shadow,
-            wgpu::TexelCopyBufferLayout {
-                offset: (y0 * pitch + x0 * bpt) as u64,
-                bytes_per_row: Some(pitch),
-                rows_per_image: Some(y1 - y0),
-            },
-            wgpu::Extent3d { width: x1 - x0, height: y1 - y0, depth_or_array_layers: 1 },
-        );
+    /// Upload everything inserted since the last flush with a single `UpdateSubresource`.
+    pub fn flush(&mut self, gpu: &Gpu) {
+        let Some(rect) = self.dirty.take() else { return };
+        upload_texels(gpu, &self.texture, &self.shadow, self.size * self.bytes_per_texel, self.bytes_per_texel, rect);
         self.flushes += 1;
     }
-}
-
-fn create_texture(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    size: u32,
-    label: &'static str,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
 }

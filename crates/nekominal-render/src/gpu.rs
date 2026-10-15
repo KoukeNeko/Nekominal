@@ -1,6 +1,9 @@
 //! GPU-side types: instance layouts, uniforms, pipelines, growable buffers.
 
 use bytemuck::{Pod, Zeroable};
+use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
+
+use crate::d3d::{Attribute, DrawStates, Gpu, compile, dynamic_buffer, input_layout, pixel_shader, vertex_shader, write_buffer};
 
 /// One solid rectangle in pane pixels. 20 bytes.
 #[repr(C)]
@@ -72,175 +75,82 @@ pub fn gamma_ratios(gamma: f32) -> [f32; 4] {
     [r[0] * NORM13, r[1] * NORM24, r[2] * NORM13, r[3] * NORM24]
 }
 
-/// Buffer that is rewritten wholesale each time and only reallocated when the
-/// payload outgrows it (power-of-two growth).
+
+/// Instance buffer that is rewritten wholesale each time and only reallocated when the payload outgrows it
+/// (power-of-two growth).
 pub struct GrowBuffer {
-    pub buffer: wgpu::Buffer,
+    pub buffer: ID3D11Buffer,
+    pub stride: u32,
     capacity: u64,
-    usage: wgpu::BufferUsages,
-    label: &'static str,
     pub count: u32,
 }
 
 impl GrowBuffer {
-    pub fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages, capacity: u64) -> Self {
+    pub fn new(gpu: &Gpu, stride: u32, capacity: u64) -> Self {
         let capacity = capacity.max(256).next_power_of_two();
-        GrowBuffer { buffer: Self::alloc(device, label, usage, capacity), capacity, usage, label, count: 0 }
+        GrowBuffer { buffer: dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity), stride, capacity, count: 0 }
     }
 
-    fn alloc(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages, size: u64) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size,
-            usage: usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    }
-
-    pub fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], count: u32) {
+    pub fn write(&mut self, gpu: &Gpu, bytes: &[u8], count: u32) {
         self.count = count;
         if bytes.is_empty() {
             return;
         }
         if bytes.len() as u64 > self.capacity {
             self.capacity = (bytes.len() as u64).next_power_of_two();
-            self.buffer = Self::alloc(device, self.label, self.usage, self.capacity);
+            self.buffer = dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, self.capacity);
         }
-        queue.write_buffer(&self.buffer, 0, bytes);
+        write_buffer(gpu, &self.buffer, bytes);
     }
 
     pub fn capacity(&self) -> u64 {
         self.capacity
     }
+
+    /// Draws every instance written.
+    pub fn draw(&self, gpu: &Gpu) {
+        if self.count > 0 {
+            gpu.draw_instances(&self.buffer, self.stride, self.count);
+        }
+    }
 }
 
-pub const RECT_ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x4, 1 => Unorm8x4];
-pub const GLYPH_ATTRS: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![0 => Sint32x2, 1 => Uint16x2, 2 => Uint16x2, 3 => Unorm8x4, 4 => Uint32];
+pub const RECT_ATTRS: [Attribute; 2] = [Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 0), Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 16)];
+pub const GLYPH_ATTRS: [Attribute; 5] = [
+    Attribute(DXGI_FORMAT_R32G32_SINT, 0),
+    Attribute(DXGI_FORMAT_R16G16_UINT, 8),
+    Attribute(DXGI_FORMAT_R16G16_UINT, 12),
+    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 16),
+    Attribute(DXGI_FORMAT_R32_UINT, 20),
+];
 
+/// Shaders, input layouts and blend state of the renderer.
 pub struct Pipelines {
-    pub uniform_layout: wgpu::BindGroupLayout,
-    pub atlas_layout: wgpu::BindGroupLayout,
-    pub rect: wgpu::RenderPipeline,
-    pub glyph: wgpu::RenderPipeline,
-    /// Present only when the device supports dual-source blending.
-    pub glyph_lcd: Option<wgpu::RenderPipeline>,
+    pub states: DrawStates,
+    pub rect_layout: ID3D11InputLayout,
+    pub rect_vs: ID3D11VertexShader,
+    pub rect_ps: ID3D11PixelShader,
+    pub glyph_layout: ID3D11InputLayout,
+    pub glyph_vs: ID3D11VertexShader,
+    pub glyph_ps: ID3D11PixelShader,
+    pub glyph_lcd_ps: ID3D11PixelShader,
 }
 
 impl Pipelines {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, dual_source: bool) -> Self {
-        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nk uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let tex_entry = |binding| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
-        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nk atlases"),
-            entries: &[tex_entry(0), tex_entry(1)],
-        });
-        let rect_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("nk rect layout"),
-            bind_group_layouts: &[Some(&uniform_layout)],
-            immediate_size: 0,
-        });
-        let glyph_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("nk glyph layout"),
-            bind_group_layouts: &[Some(&uniform_layout), Some(&atlas_layout)],
-            immediate_size: 0,
-        });
-
-        let rect_src = include_str!("shaders/rect.wgsl");
-        let glyph_src = include_str!("shaders/glyph.wgsl");
-        let rect_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nk rect"),
-            source: wgpu::ShaderSource::Wgsl(rect_src.into()),
-        });
-        let glyph_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nk glyph"),
-            source: wgpu::ShaderSource::Wgsl(glyph_src.into()),
-        });
-
-        let premul = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
-        let make = |label: &str,
-                    layout: &wgpu::PipelineLayout,
-                    module: &wgpu::ShaderModule,
-                    fs: &str,
-                    stride: u64,
-                    attrs: &'static [wgpu::VertexAttribute],
-                    blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: attrs,
-                    })],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some(fs),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-
-        let rect = make("nk rect", &rect_layout, &rect_module, "fs_main", 20, &RECT_ATTRS, premul);
-        let glyph = make("nk glyph", &glyph_layout, &glyph_module, "fs_main", 24, &GLYPH_ATTRS, premul);
-
-        let glyph_lcd = dual_source.then(|| {
-            let src =
-                format!("enable dual_source_blending;\n{}\n{}", glyph_src, include_str!("shaders/glyph_lcd_fs.wgsl"));
-            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("nk glyph lcd"),
-                source: wgpu::ShaderSource::Wgsl(src.into()),
-            });
-            let blend = wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Src1,
-                    dst_factor: wgpu::BlendFactor::OneMinusSrc1,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::Zero,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            };
-            make("nk glyph lcd", &glyph_layout, &module, "fs_lcd", 24, &GLYPH_ATTRS, Some(blend))
-        });
-
-        Pipelines { uniform_layout, atlas_layout, rect, glyph, glyph_lcd }
+    pub fn new(gpu: &Gpu) -> Result<Self, String> {
+        let rect_src = include_str!("shaders/rect.hlsl");
+        let glyph_src = include_str!("shaders/glyph.hlsl");
+        let rect_vs_code = compile(rect_src, "vs_main", "vs_5_0")?;
+        let glyph_vs_code = compile(glyph_src, "vs_main", "vs_5_0")?;
+        Ok(Pipelines {
+            states: DrawStates::new(gpu)?,
+            rect_layout: input_layout(gpu, &rect_vs_code, &RECT_ATTRS)?,
+            rect_vs: vertex_shader(gpu, &rect_vs_code)?,
+            rect_ps: pixel_shader(gpu, &compile(rect_src, "fs_main", "ps_5_0")?)?,
+            glyph_layout: input_layout(gpu, &glyph_vs_code, &GLYPH_ATTRS)?,
+            glyph_vs: vertex_shader(gpu, &glyph_vs_code)?,
+            glyph_ps: pixel_shader(gpu, &compile(glyph_src, "fs_main", "ps_5_0")?)?,
+            glyph_lcd_ps: pixel_shader(gpu, &compile(glyph_src, "fs_lcd", "ps_5_0")?)?,
+        })
     }
 }

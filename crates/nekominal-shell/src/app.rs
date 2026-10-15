@@ -146,7 +146,7 @@ impl App {
             .ok_or("no shell was found")?;
 
         let (gpu, surface) = gpu::create(hwnd, size_px)?;
-        let ui = Ui::new(&gpu.device, &gpu.queue, gpu::FORMAT)?;
+        let ui = Ui::new(&gpu)?;
         let mut app = App {
             hwnd,
             gpu,
@@ -246,7 +246,7 @@ impl App {
     /// A pane that will have about `size_px` pixels: its renderer and the session of the profile.
     fn make_entry(&self, id: PaneId, size_px: (u32, u32)) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
-        let view = PaneRenderer::new_sharing(&self.gpu.device, &self.gpu.queue, gpu::FORMAT, self.renderer_config(), self.theme.clone(), sibling)?;
+        let view = PaneRenderer::new_sharing(&self.gpu, self.renderer_config(), self.theme.clone(), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
         let hwnd = self.hwnd.0 as isize;
         let wake: nekominal_pane::Wake = Arc::new(move || {
@@ -821,12 +821,10 @@ impl App {
 
     pub fn paint(&mut self) {
         let size = self.surface.size();
-        let Some(frame) = self.surface.acquire(&self.gpu) else {
+        let Some(view) = self.surface.acquire() else {
             self.redraw();
             return;
         };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
 
         let mut first = true;
         if let Some(tab) = self.tabs.get_mut(self.selected) {
@@ -834,28 +832,19 @@ impl App {
                 let Some(entry) = tab.entry_mut(id) else { continue };
                 entry.view.prepare(&entry.pane.term);
                 let rect = [entry.rect.x.max(0) as u32, entry.rect.y.max(0) as u32, entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32];
-                entry.view.draw_in(&mut encoder, &view, rect, first);
+                entry.view.draw_in(&view, rect, first);
                 first = false;
             }
         }
         if first {
             // Nothing to draw: the target still has to be cleared to transparent.
-            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
-                })],
-                ..Default::default()
-            }));
+            self.gpu.clear(&view, [0.0; 4]);
         }
 
         self.ui.begin_frame(size, self.scale);
         self.paint_chrome();
-        self.ui.end_frame(&mut encoder, &view);
-        self.gpu.queue.submit([encoder.finish()]);
-        self.surface.present(&self.gpu, frame);
+        self.ui.end_frame(&view);
+        self.surface.present();
     }
 
     fn paint_chrome(&mut self) {

@@ -4,15 +4,20 @@
 //! ```text
 //! renderer.set_theme(&theme);                       // rarely
 //! renderer.update_pane(&mut pane, &grid_view);      // CPU: dirty rows only
-//! renderer.draw(&mut encoder, &target, size, clear, &[PaneDraw{..}]);
+//! renderer.draw(&target, clear, &[PaneDraw{..}]);
 //! ```
 
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use windows::Win32::Graphics::{
+    Direct3D11::{ID3D11Buffer, ID3D11RenderTargetView},
+    Dxgi::Common::{DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM},
+};
 
 use crate::atlas::{AtlasFull, AtlasTexture};
 use crate::cell::{CellFlags, Theme};
+use crate::d3d::{Gpu, bind_textures, bind_uniforms, constant_buffer, set_shaders, write_buffer};
 use crate::fonts::{CellMetrics, FontConfig, FontStack, Style, compute_metrics};
 use crate::gpu::{self, GlyphInstance, GrowBuffer, Pipelines, RectInstance, Uniforms};
 use crate::raster::{GlyphKind, RasterOptions, Rasterizer};
@@ -176,8 +181,7 @@ pub(crate) struct PaneGpu {
     pub overlay: GrowBuffer,
     /// One rect covering the whole pane viewport with the theme background.
     pub pane_bg: GrowBuffer,
-    pub uniforms: wgpu::Buffer,
-    pub uniform_bg: wgpu::BindGroup,
+    pub uniforms: ID3D11Buffer,
 }
 
 /// Per-pane CPU caches + GPU buffers. One per terminal viewport.
@@ -237,15 +241,12 @@ pub struct PaneDraw<'a> {
 pub(crate) type LigatureCache = FxHashMap<(Box<str>, Style), Option<Arc<[u16]>>>;
 
 pub struct Renderer {
-    pub(crate) device: wgpu::Device,
-    pub(crate) queue: wgpu::Queue,
-    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) gpu: Gpu,
     pub cfg: RendererConfig,
     pub(crate) theme: Arc<Theme>,
     pub(crate) pipelines: Arc<Pipelines>,
     pub(crate) atlas_gray: AtlasTexture,
     pub(crate) atlas_rgba: AtlasTexture,
-    atlas_bind_group: Option<(wgpu::BindGroup, u32, u32)>,
     pub fonts: FontStack,
     pub(crate) raster: Rasterizer,
     pub(crate) metrics: CellMetrics,
@@ -271,12 +272,10 @@ impl Renderer {
     /// `device` should have been created with `Features::DUAL_SOURCE_BLENDING`
     /// when the adapter offers it (see [`Renderer::wanted_features`]).
     pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
+        gpu: &Gpu,
         cfg: RendererConfig,
     ) -> Result<Self, String> {
-        Self::new_sharing(device, queue, format, cfg, None)
+        Self::new_sharing(gpu, cfg, None)
     }
 
     /// The compiled pipelines, to give to the next renderer of the same device and format.
@@ -286,36 +285,32 @@ impl Renderer {
 
     /// Like [`Renderer::new`], reusing the pipelines of another renderer instead of compiling them again.
     pub fn new_sharing(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
+        gpu: &Gpu,
         cfg: RendererConfig,
         shared: Option<Arc<Pipelines>>,
     ) -> Result<Self, String> {
         let mut init_timings = Vec::new();
-        let lcd_supported = device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
+        // Dual-source blending is part of feature level 11.
+        let lcd_supported = true;
         let t = std::time::Instant::now();
-        let pipelines = shared.unwrap_or_else(|| Arc::new(Pipelines::new(device, format, lcd_supported)));
-        init_timings.push(("pipelines (WGSL -> DXIL/FXC, 3 pipelines)", t.elapsed()));
+        let pipelines = match shared {
+            Some(shared) => shared,
+            None => Arc::new(Pipelines::new(gpu)?),
+        };
+        init_timings.push(("pipelines (HLSL, 3 pixel shaders)", t.elapsed()));
         let t = std::time::Instant::now();
-        let max_dim = device.limits().max_texture_dimension_2d.min(cfg.atlas_max);
-        let atlas_gray =
-            AtlasTexture::new(device, wgpu::TextureFormat::R8Unorm, 1, cfg.atlas_initial, max_dim, "nk atlas r8");
-        let atlas_rgba =
-            AtlasTexture::new(device, wgpu::TextureFormat::Rgba8Unorm, 4, cfg.atlas_initial, max_dim, "nk atlas rgba");
+        let atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, cfg.atlas_initial, cfg.atlas_max);
+        let atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, cfg.atlas_initial, cfg.atlas_max);
         init_timings.push(("atlas textures", t.elapsed()));
         let t = std::time::Instant::now();
         let fonts = FontStack::new(cfg.fonts.clone())?;
         init_timings.push(("FontStack::new (DirectWrite locator + primary faces)", t.elapsed()));
         let mut r = Renderer {
-            device: device.clone(),
-            queue: queue.clone(),
-            format,
+            gpu: gpu.clone(),
             theme: Arc::new(Theme::campbell()),
             pipelines,
             atlas_gray,
             atlas_rgba,
-            atlas_bind_group: None,
             fonts,
             raster: Rasterizer::new(),
             metrics: CellMetrics {
@@ -347,10 +342,6 @@ impl Renderer {
         r.recompute_metrics()?;
         r.init_timings.push(("cell metrics", t.elapsed()));
         Ok(r)
-    }
-
-    pub fn wanted_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-        adapter.features() & (wgpu::Features::DUAL_SOURCE_BLENDING | wgpu::Features::TIMESTAMP_QUERY)
     }
 
     fn recompute_metrics(&mut self) -> Result<(), String> {
@@ -430,28 +421,17 @@ impl Renderer {
 
     /// Rebuild every GPU object on a new device (device lost / adapter change).
     /// CPU state (fonts, metrics, theme) is kept; atlases are re-rasterized on demand.
-    pub fn recreate_gpu(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        self.device = device.clone();
-        self.queue = queue.clone();
-        self.lcd_supported = device.features().contains(wgpu::Features::DUAL_SOURCE_BLENDING);
-        self.pipelines = Arc::new(Pipelines::new(device, self.format, self.lcd_supported));
-        let max_dim = device.limits().max_texture_dimension_2d.min(self.cfg.atlas_max);
-        self.atlas_gray =
-            AtlasTexture::new(device, wgpu::TextureFormat::R8Unorm, 1, self.cfg.atlas_initial, max_dim, "nk atlas r8");
-        self.atlas_rgba = AtlasTexture::new(
-            device,
-            wgpu::TextureFormat::Rgba8Unorm,
-            4,
-            self.cfg.atlas_initial,
-            max_dim,
-            "nk atlas rgba",
-        );
-        self.atlas_bind_group = None;
+    pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
+        self.gpu = gpu.clone();
+        self.pipelines = Arc::new(Pipelines::new(gpu)?);
+        self.atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, self.cfg.atlas_initial, self.cfg.atlas_max);
+        self.atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, self.cfg.atlas_initial, self.cfg.atlas_max);
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
         self.gpu_gen += 1;
         self.epoch += 1;
+        Ok(())
     }
 
     pub(crate) fn raster_options(&self) -> RasterOptions {
@@ -470,35 +450,22 @@ impl Renderer {
             GlyphKind::Lcd | GlyphKind::Color => &mut self.atlas_rgba,
         };
         let t = std::time::Instant::now();
-        let r = atlas.insert(&self.device, &self.queue, w, h, data);
+        let r = atlas.insert(&self.gpu, w, h, data);
         self.stats.upload_time += t.elapsed();
         let (x, y) = r?;
         Ok([x, y])
     }
 
     pub(crate) fn pane_gpu(&self) -> PaneGpu {
-        let device = &self.device;
-        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nk pane uniforms"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nk pane uniform bg"),
-            layout: &self.pipelines.uniform_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() }],
-        });
-        let vb = wgpu::BufferUsages::VERTEX;
+        let gpu = &self.gpu;
         PaneGpu {
-            bg: GrowBuffer::new(device, "nk bg", vb, 4096),
-            glyphs: GrowBuffer::new(device, "nk glyphs", vb, 8192),
-            lcd: GrowBuffer::new(device, "nk lcd", vb, 8192),
-            deco: GrowBuffer::new(device, "nk deco", vb, 4096),
-            overlay: GrowBuffer::new(device, "nk overlay", vb, 1024),
-            pane_bg: GrowBuffer::new(device, "nk pane bg", vb, 256),
-            uniforms,
-            uniform_bg,
+            bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096),
+            glyphs: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192),
+            lcd: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192),
+            deco: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096),
+            overlay: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 1024),
+            pane_bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 256),
+            uniforms: constant_buffer(gpu, std::mem::size_of::<Uniforms>()),
         }
     }
 
@@ -513,117 +480,55 @@ impl Renderer {
         }
     }
 
-    fn ensure_atlas_bind_group(&mut self) {
-        let (g, c) = (self.atlas_gray.generation, self.atlas_rgba.generation);
-        if let Some((_, gg, cc)) = &self.atlas_bind_group
-            && *gg == g
-            && *cc == c
-        {
-            return;
-        }
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nk atlas bg"),
-            layout: &self.pipelines.atlas_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&self.atlas_gray.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.atlas_rgba.view),
-                },
-            ],
-        });
-        self.atlas_bind_group = Some((bg, g, c));
-    }
-
-    /// Record the render pass for one or more panes. The target is cleared to
-    /// `clear` (or loaded when `None`). Call `update_pane` for every pane first.
+    /// Draws one or more panes into `target`, which is cleared to `clear` (or kept when `None`). Call
+    /// `update_pane` for every pane first.
     ///
     /// With a translucent theme (`background_opacity < 1`) the target is a premultiplied-alpha surface and
-    /// `clear` must be `wgpu::Color::TRANSPARENT`: the pane background rect carries the opacity, and an opaque
-    /// clear color underneath would defeat it.
-    pub fn draw(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clear: Option<wgpu::Color>,
-        panes: &[PaneDraw<'_>],
-        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
-    ) {
-        self.ensure_atlas_bind_group();
-        for p in panes {
-            if let Some(gpu) = &p.pane.gpu {
-                let u = self.uniforms_for(p.rect[2], p.rect[3]);
-                self.queue.write_buffer(&gpu.uniforms, 0, bytemuck::bytes_of(&u));
-                let bg = self.theme.background;
-                let rect = RectInstance {
-                    rect: [0.0, 0.0, p.rect[2] as f32, p.rect[3] as f32],
-                    color: [bg.0, bg.1, bg.2, (self.theme.background_opacity.clamp(0.0, 1.0) * 255.0).round() as u8],
-                };
-                self.queue.write_buffer(&gpu.pane_bg.buffer, 0, bytemuck::bytes_of(&rect));
-            }
+    /// `clear` must be transparent: the pane background rect carries the opacity, and an opaque clear color
+    /// underneath would defeat it.
+    pub fn draw(&mut self, target: &ID3D11RenderTargetView, clear: Option<[f32; 4]>, panes: &[PaneDraw<'_>]) {
+        let gpu = &self.gpu;
+        self.atlas_gray.flush(gpu);
+        self.atlas_rgba.flush(gpu);
+        if let Some(color) = clear {
+            gpu.clear(target, color);
         }
-        let atlas_bg = &self.atlas_bind_group.as_ref().expect("atlas bind group").0;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("nk terminal pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: match clear {
-                        Some(c) => wgpu::LoadOp::Clear(c),
-                        None => wgpu::LoadOp::Load,
-                    },
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: timestamps,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
+        let pipes = &self.pipelines;
+        gpu.begin_draws(&pipes.states);
+        bind_textures(gpu, &[&self.atlas_gray.view, &self.atlas_rgba.view]);
         for p in panes {
-            let Some(gpu) = &p.pane.gpu else { continue };
+            let Some(pane) = &p.pane.gpu else { continue };
             let [x, y, w, h] = p.rect;
-            pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
-            pass.set_scissor_rect(x, y, w, h);
+            let uniforms = self.uniforms_for(w, h);
+            write_buffer(gpu, &pane.uniforms, bytemuck::bytes_of(&uniforms));
+            let bg = self.theme.background;
+            let rect = RectInstance {
+                rect: [0.0, 0.0, w as f32, h as f32],
+                color: [bg.0, bg.1, bg.2, (self.theme.background_opacity.clamp(0.0, 1.0) * 255.0).round() as u8],
+            };
+            // One instance in a buffer sized for more: the others are never drawn.
+            write_buffer(gpu, &pane.pane_bg.buffer, bytemuck::bytes_of(&rect));
 
-            pass.set_pipeline(&self.pipelines.rect);
-            pass.set_bind_group(0, &gpu.uniform_bg, &[]);
-            pass.set_vertex_buffer(0, gpu.pane_bg.buffer.slice(..20));
-            pass.draw(0..4, 0..1);
-            if gpu.bg.count > 0 {
-                pass.set_vertex_buffer(0, gpu.bg.buffer.slice(..));
-                pass.draw(0..4, 0..gpu.bg.count);
+            gpu.bind_target(target, [x, y, w, h]);
+            bind_uniforms(gpu, &pane.uniforms);
+
+            pipes.states.set_blend(gpu, false);
+            set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            gpu.draw_instances(&pane.pane_bg.buffer, pane.pane_bg.stride, 1);
+            pane.bg.draw(gpu);
+
+            set_shaders(gpu, &pipes.glyph_layout, &pipes.glyph_vs, &pipes.glyph_ps);
+            pane.glyphs.draw(gpu);
+            if pane.lcd.count > 0 {
+                pipes.states.set_blend(gpu, true);
+                set_shaders(gpu, &pipes.glyph_layout, &pipes.glyph_vs, &pipes.glyph_lcd_ps);
+                pane.lcd.draw(gpu);
+                pipes.states.set_blend(gpu, false);
             }
 
-            pass.set_pipeline(&self.pipelines.glyph);
-            pass.set_bind_group(1, atlas_bg, &[]);
-            if gpu.glyphs.count > 0 {
-                pass.set_vertex_buffer(0, gpu.glyphs.buffer.slice(..));
-                pass.draw(0..4, 0..gpu.glyphs.count);
-            }
-            if gpu.lcd.count > 0
-                && let Some(lcd) = &self.pipelines.glyph_lcd
-            {
-                pass.set_pipeline(lcd);
-                pass.set_vertex_buffer(0, gpu.lcd.buffer.slice(..));
-                pass.draw(0..4, 0..gpu.lcd.count);
-            }
-
-            pass.set_pipeline(&self.pipelines.rect);
-            pass.set_bind_group(0, &gpu.uniform_bg, &[]);
-            if gpu.deco.count > 0 {
-                pass.set_vertex_buffer(0, gpu.deco.buffer.slice(..));
-                pass.draw(0..4, 0..gpu.deco.count);
-            }
-            if gpu.overlay.count > 0 {
-                pass.set_vertex_buffer(0, gpu.overlay.buffer.slice(..));
-                pass.draw(0..4, 0..gpu.overlay.count);
-            }
+            set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            pane.deco.draw(gpu);
+            pane.overlay.draw(gpu);
         }
     }
 }

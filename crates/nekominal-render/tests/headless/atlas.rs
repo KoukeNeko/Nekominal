@@ -44,7 +44,7 @@ fn cjk_scene(chars: &[char], cols: usize) -> Scene {
 
 fn new_renderer(cfg: RendererConfig, theme: &Theme) -> Renderer {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, FORMAT, cfg).expect("renderer");
+    let mut renderer = Renderer::new(&gpu, cfg).expect("renderer");
     renderer.set_theme(theme);
     renderer
 }

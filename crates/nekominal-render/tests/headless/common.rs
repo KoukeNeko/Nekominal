@@ -2,10 +2,9 @@
 //! builder, rendering to RGBA bytes, and golden-image comparison.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 use nekominal_render::fonts::FontConfig;
-use nekominal_render::offscreen::{AdapterKind, GpuContext, OffscreenTarget, create_gpu, write_png};
+use nekominal_render::offscreen::{AdapterKind, Gpu, OffscreenTarget, create_gpu, write_png};
 use nekominal_render::{
     Cell, CellFlags, CursorView, GridView, Highlight, PaneDraw, PaneState, Preedit, Renderer, RendererConfig, RowSpan,
     Theme, UpdateStats,
@@ -15,14 +14,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use nekominal_render::{Color, Rgb, Underline};
 
-/// One WARP device for the whole test binary. Creating and destroying several DX12 devices concurrently in
-/// one process crashed intermittently (access violation 0xC0000005), so tests never make a second one.
-pub fn gpu() -> &'static GpuContext {
-    static GPU: OnceLock<GpuContext> = OnceLock::new();
-    GPU.get_or_init(|| create_gpu(AdapterKind::Warp).expect("WARP adapter"))
+/// One WARP device per test thread: the immediate context of a device is not thread safe, and the tests run in
+/// parallel.
+pub fn gpu() -> Gpu {
+    thread_local! { static GPU: Gpu = create_gpu(AdapterKind::Warp).expect("WARP adapter"); }
+    GPU.with(Gpu::clone)
 }
-
-pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 /// Consolas ships with every desktop Windows, so the goldens do not depend on an optional font. CJK, emoji and
 /// symbols still come from the default chains (Microsoft JhengHei, Segoe UI Emoji, Segoe UI Symbol).
@@ -178,7 +175,7 @@ pub fn render(scene: &Scene, theme: &Theme, cfg: RendererConfig) -> Frame {
 /// Like `render`, but also hands back the renderer so tests can ask for metrics and LCD state.
 pub fn render_with(scene: &Scene, theme: &Theme, cfg: RendererConfig) -> (Frame, Renderer) {
     let gpu = gpu();
-    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, FORMAT, cfg).expect("renderer");
+    let mut renderer = Renderer::new(&gpu, cfg).expect("renderer");
     renderer.set_theme(theme);
     let mut pane = PaneState::new();
     let stats = update(&mut renderer, &mut pane, scene);
@@ -210,19 +207,16 @@ pub fn draw_frame(renderer: &mut Renderer, pane: &PaneState, theme: &Theme, cols
     let gpu = gpu();
     let m = renderer.metrics();
     let (width, height) = (cols as u32 * m.width, rows as u32 * m.height);
-    let target = OffscreenTarget::new(&gpu.device, width, height, FORMAT);
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let target = OffscreenTarget::new(&gpu, width, height);
     // The same clear rule as `PaneRenderer::draw`.
     let clear = if theme.background_opacity < 1.0 {
-        wgpu::Color::TRANSPARENT
+        [0.0; 4]
     } else {
         let bg = theme.background;
-        wgpu::Color { r: f64::from(bg.0) / 255.0, g: f64::from(bg.1) / 255.0, b: f64::from(bg.2) / 255.0, a: 1.0 }
+        [f32::from(bg.0) / 255.0, f32::from(bg.1) / 255.0, f32::from(bg.2) / 255.0, 1.0]
     };
-    renderer.draw(&mut encoder, &target.view, Some(clear), &[PaneDraw { pane, rect: [0, 0, width, height] }], None);
-    target.encode_readback(&mut encoder);
-    gpu.queue.submit([encoder.finish()]);
-    let rgba = target.read_rgba(&gpu.device).expect("readback");
+    renderer.draw(&target.view, Some(clear), &[PaneDraw { pane, rect: [0, 0, width, height] }]);
+    let rgba = target.read_rgba(&gpu).expect("readback");
     Frame { rgba, width, height, cell: (m.width, m.height) }
 }
 

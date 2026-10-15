@@ -1,6 +1,6 @@
 [package]
 name = "nekominal-shell"
-description = "Nekominal with a self-drawn shell: a Win32 window, DirectComposition, wgpu and nekominal-ui, no WinUI"
+description = "Nekominal with a self-drawn shell: a Win32 window, DirectComposition, Direct3D 11 and nekominal-ui, no WinUI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,13 +17,13 @@ nekominal-input = { workspace = true }
 nekominal-render = { workspace = true }
 nekominal-pane = { workspace = true }
 nekominal-ui = { workspace = true }
-pollster = { workspace = true }
-wgpu = { workspace = true }
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D11",
     "Win32_Graphics_DirectComposition",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Globalization",
     "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",

@@ -3,33 +3,21 @@
 use nekominal_render::offscreen::{AdapterKind, OffscreenTarget, create_gpu, write_png};
 use nekominal_ui::{Color, Rect, Ui};
 
-const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 const SCALE: f32 = 1.5;
 const BACKGROUND: Color = Color::rgb(20, 22, 34);
 const PANEL: Color = Color::rgb(60, 64, 96);
 
 fn render(draw: impl FnOnce(&mut Ui), size: (u32, u32)) -> Vec<u8> {
-    let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a DX12 adapter");
-    let mut ui = Ui::new(&gpu.device, &gpu.queue, FORMAT).expect("ui");
-    let target = OffscreenTarget::new(&gpu.device, size.0, size.1, FORMAT);
-    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a D3D11 adapter");
+    let mut ui = Ui::new(&gpu).expect("ui");
+    let target = OffscreenTarget::new(&gpu, size.0, size.1);
     // Clear to the background the way the terminal pass would, then draw the UI over it.
-    let [r, g, b, _] = BACKGROUND.0.map(|c| f64::from(c) / 255.0);
-    drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: &target.view,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }), store: wgpu::StoreOp::Store },
-        })],
-        ..Default::default()
-    }));
+    let [r, g, b, _] = BACKGROUND.0.map(|c| f32::from(c) / 255.0);
+    gpu.clear(&target.view, [r, g, b, 1.0]);
     ui.begin_frame(size, SCALE);
     draw(&mut ui);
-    ui.end_frame(&mut encoder, &target.view);
-    target.encode_readback(&mut encoder);
-    gpu.queue.submit([encoder.finish()]);
-    target.read_rgba(&gpu.device).expect("readback")
+    ui.end_frame(&target.view);
+    target.read_rgba(&gpu).expect("readback")
 }
 
 fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 3] {
@@ -81,8 +69,8 @@ fn rounded_rectangles_text_and_clips_land_where_they_are_told() {
 
 #[test]
 fn text_is_measured_the_way_it_is_drawn() {
-    let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a DX12 adapter");
-    let mut ui = Ui::new(&gpu.device, &gpu.queue, FORMAT).expect("ui");
+    let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a D3D11 adapter");
+    let mut ui = Ui::new(&gpu).expect("ui");
     ui.begin_frame((100, 100), SCALE);
     let measured = ui.measure("Nekominal 設定", 14.0, false);
     let drawn = ui.text(0.0, 0.0, "Nekominal 設定", 14.0, Color::rgb(255, 255, 255), false);
