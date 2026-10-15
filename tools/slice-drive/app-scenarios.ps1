@@ -13,6 +13,7 @@
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-StatusExit       # a program that ends with an error in the middle of a progress report shows an error
+#   Scenario-Toolbar          # bar tiers at 1440/1000/700/500 DIP, the menu of the "..." button, the split rows of the tab menu
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -211,11 +212,14 @@ function Scenario-Silence {
         $control = Test-WitnessPositive
         $results += Check-True 'positive control: the witness hears one MessageBeep' $control.Seen $control.Text
         $audible = $control.Seen
+        # The split buttons are on the bar from 1200 DIP.
+        Set-WindowWidth 1300
         # The beep of the control has to fade out before the baseline of the first row is taken.
         for ($i = 0; $i -lt 20; $i++) { Reset-SoundWitness; Start-Sleep -Milliseconds 600; if ((Get-SoundPeak) -lt $global:WitnessThreshold) { break } }
         # A row: the trigger and whether it sends Alt+character to Windows (WM_SYSCHAR, then WM_MENUCHAR).
         $rows = [ordered]@{
             'toolbar split right button' = @{ Do = { Click-Name (Nk-Tip 'pane.splitRight' 'Alt+Shift+D') -Class 'Button' }; AltChar = $false }
+            'menu button, split right row' = @{ Do = { Click-Name (Nk-Text 'menu.app') -Class 'Button'; Start-Sleep -Milliseconds 500; Click-Name (Nk-Tip 'pane.splitRight' 'Alt+Shift+D') }; AltChar = $false }
             'palette: split down'        = @{ Do = { Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 500; Type-Unicode (Nk-Text 'pane.splitDown') 40; Press 0x0D }; AltChar = $false }
             'Alt+Shift+D'                = @{ Do = { Chord @(0x12, 0x10) 0x44 }; AltChar = $true }
             'Alt+Shift+S'                = @{ Do = { Chord @(0x12, 0x10) 0x53 }; AltChar = $true }
@@ -275,7 +279,11 @@ function Get-Slider([int]$Index = 0) {
 function Select-Radio([string]$Name) { (Get-Element $Name 'RadioButton').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
 
 # Opens the quick appearance flyout (background material and opacity).
-function Open-AppearanceFlyout { Click-Name (Nk-Text 'settings.appearance') -Class 'Button' }
+function Open-AppearanceFlyout {
+    Click-Name (Nk-Text 'menu.app') -Class 'Button'; Start-Sleep -Milliseconds 600
+    # The row closes the menu, and the flyout opens under the same button once it is gone.
+    Click-Name (Nk-Text 'menu.opacity') 'left' 900
+}
 
 function Rgb([string]$Text) { [int[]]($Text -split ',') }
 # How far apart two mean colours are: the sum of the differences of the channels.
@@ -642,6 +650,138 @@ function Scenario-Status {
     } -Pattern -NoShot
 }
 
+# The controls on the right of the bar that are there now, by name (the split pair, the palette and the menu button).
+function Bar-Right {
+    $names = (Nk-Tip 'pane.splitRight' 'Alt+Shift+D'), (Nk-Tip 'pane.splitDown' 'Alt+Shift+S'), (Nk-Tip 'app.palette' 'Ctrl+Shift+P'), (Nk-Text 'menu.app')
+    @($names | Where-Object { $e = Get-Element $_ 'Button'; $e -and -not $e.Current.IsOffscreen })
+}
+
+# The rows of the menu in order as UI Automation shows them: name, and whether it is enabled and checked (toggle rows).
+function Menu-Rows {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $rows = foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+        if ($e.Current.ClassName -in 'MenuFlyoutItem', 'ToggleMenuFlyoutItem', 'MenuFlyoutSubItem') {
+            $on = $null; $p = $null
+            if ($e.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$p)) { $on = ($p.Current.ToggleState -eq 'On') }
+            [pscustomobject]@{ Name = $e.Current.Name; Enabled = $e.Current.IsEnabled; Checked = $on; Y = $e.Current.BoundingRectangle.Y; X = $e.Current.BoundingRectangle.X }
+        }
+    }
+    @($rows | Sort-Object Y)
+}
+
+# Opens the menu of the "..." button and returns its rows.
+function Open-Menu { Click-Name (Nk-Text 'menu.app') -Class 'Button'; Start-Sleep -Milliseconds 700; Menu-Rows }
+
+# Toolbar tiers and the menu: the right-hand group shows 4, 2, 1 and 1 controls at 1440, 1000, 700 and 500 DIP, holds its
+# tier for 24 DIP while the window shrinks, and nothing clips at 500 DIP while the drag area keeps its 48 DIP. The menu
+# holds the same rows in the same order at every width, with the shortcuts of the live keymap, and each row works. The
+# tab menu splits the pane of its own tab.
+function Scenario-Toolbar {
+    Run-App 'toolbar' @{ confirmClose = $false; keybindings = @{ 'edit.find' = 'Ctrl+Shift+Y' } } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        New-Tab; New-Tab
+        $scale = Get-Scale
+        $split = Nk-Tip 'pane.splitRight' 'Alt+Shift+D'; $down = Nk-Tip 'pane.splitDown' 'Alt+Shift+S'; $palette = Nk-Tip 'app.palette' 'Ctrl+Shift+P'; $menu = Nk-Text 'menu.app'
+        $shown = [ordered]@{ '1440' = @($split, $down, $palette, $menu); '1000' = @($palette, $menu); '700' = @($menu); '500' = @($menu) }
+        $expected = @(
+            (Nk-Tip 'tab.new' 'Ctrl+Shift+T'), (Nk-Tip 'pane.splitRight' 'Alt+Shift+D'), (Nk-Tip 'pane.splitDown' 'Alt+Shift+S'),
+            (Nk-Tip 'pane.zoom' 'Ctrl+Shift+Z'), (Nk-Tip 'pane.close' 'Ctrl+Shift+W'), (Nk-Tip 'edit.find' 'Ctrl+Shift+Y'),
+            (Nk-Tip 'app.palette' 'Ctrl+Shift+P'), (Nk-Text 'settings.backdrop'), (Nk-Text 'menu.opacity'),
+            (Nk-Tip 'view.fullscreen' 'F11'), (Nk-Tip 'app.settings' 'Ctrl+,')
+        )
+        # the xaml numbers of the cluster: margin 8 and padding 2 on its left
+        $xaml = [IO.File]::ReadAllText((Join-Path $PSScriptRoot '..\..\crates\nekominal-app\src\xaml\shell.xaml'))
+        $clusterMargin = [double]([regex]::Match($xaml, 'x:Name="ToolCluster"[^>]*Padding="(\d+)" Margin="(\d+),').Groups[2].Value)
+        $clusterPadding = [double]([regex]::Match($xaml, 'x:Name="ToolCluster"[^>]*Padding="(\d+)" Margin="(\d+),').Groups[1].Value)
+        foreach ($key in $shown.Keys) {
+            $w = [int]$key
+            Set-WindowWidth $w
+            $win = Win-Rect
+            $bar = @(Bar-Right)
+            '{0} DIP: right group {1}' -f $w, ($bar -join ' | ')
+            $results.Add((Check "$w DIP shows $($shown[$key].Count) controls on the right" ($shown[$key] -join '|') ($bar -join '|')))
+            $rows = @(Open-Menu)
+            $results.Add((Check "$w DIP: the menu holds the same rows in the same order" ($expected -join '|') (($rows | ForEach-Object { $_.Name }) -join '|')))
+            Press 0x1B; Start-Sleep -Milliseconds 400
+            # nothing sticks out of the window, the controls do not overlap the caption buttons, the drag area keeps 48 DIP
+            $edge = $win.Right
+            $captions = @(([System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)).FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, 'Minimize'))) | Where-Object { -not $_.Current.IsOffscreen })
+            $captionLeft = if ($captions.Count) { ($captions | ForEach-Object { $_.Current.BoundingRectangle.X } | Measure-Object -Minimum).Minimum } else { $edge }
+            $menuButton = (Get-Element $menu 'Button').Current.BoundingRectangle
+            $results.Add((Check-True "$w DIP: the menu button ends left of the caption buttons" ($menuButton.X + $menuButton.Width -le $captionLeft) "button ends at $($menuButton.X + $menuButton.Width), captions start at $captionLeft"))
+            $chips = @(Get-Chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) })
+            $plate = (Get-Element (Nk-Text 'tab.all') 'Button').Current.BoundingRectangle
+            $clusterLeft = (@($bar | ForEach-Object { (Get-Element $_ 'Button').Current.BoundingRectangle.X } | Measure-Object -Minimum).Minimum) - $clusterPadding * $scale
+            $dragDip = ($clusterLeft - $clusterMargin * $scale - ($plate.X + $plate.Width)) / $scale
+            '   drag area {0:N1} DIP, menu button ends {1:N1} DIP left of the caption buttons' -f $dragDip, (($captionLeft - $menuButton.X - $menuButton.Width) / $scale)
+            $results.Add((Check-True "$w DIP: the drag area keeps 48 DIP" ($dragDip -ge 47.5) ('{0:N1} DIP' -f $dragDip)))
+            $results.Add((Check-True "$w DIP: the plate is whole and left of the controls" ($plate.X + $plate.Width -le $clusterLeft -and $plate.X -ge $win.Left) "plate $($plate.X)..$($plate.X + $plate.Width), group from $clusterLeft"))
+            Shot-Safe (Shot-Path "toolbar-$w") | Out-Null
+        }
+        # a window that shrinks keeps its tier for 24 DIP, one that grows does not wait: the same width has the tier of its direction
+        Set-WindowWidth 1440; Set-WindowWidth 1190
+        $results.Add((Check '1190 DIP, shrunk from 1440, still has the wide tier' 4 @(Bar-Right).Count))
+        Set-WindowWidth 1100; Set-WindowWidth 1190
+        $results.Add((Check '1190 DIP, grown from 1100, has the medium tier' 2 @(Bar-Right).Count))
+        Set-WindowWidth 1000; Set-WindowWidth 790
+        $results.Add((Check '790 DIP, shrunk from 1000, still has the medium tier' 2 @(Bar-Right).Count))
+        Set-WindowWidth 700; Set-WindowWidth 790
+        $results.Add((Check '790 DIP, grown from 700, has the narrow tier' 1 @(Bar-Right).Count))
+        # what each row does, at the wide tier
+        Set-WindowWidth 1440
+        $rows = Open-Menu
+        $zoom = $rows | Where-Object { $_.Name -eq (Nk-Tip 'pane.zoom' 'Ctrl+Shift+Z') }
+        $results.Add((Check 'with one pane the zoom row is off' $false $zoom.Enabled))
+        $opacityRow = $rows | Where-Object { $_.Name -eq (Nk-Text 'menu.opacity') }
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Split-Right
+        $zoomName = Nk-Tip 'pane.zoom' 'Ctrl+Shift+Z'
+        $rows = Open-Menu; $zoom = $rows | Where-Object { $_.Name -eq $zoomName }
+        $results.Add((Check 'with two panes it is on and unchecked' 'True False' ('{0} {1}' -f $zoom.Enabled, $zoom.Checked)))
+        Click-Name $zoomName 'left' 900
+        $rows = Open-Menu; $zoom = $rows | Where-Object { $_.Name -eq $zoomName }
+        $results.Add((Check 'after zooming it is checked and one pane shows' 'True 1' ('{0} {1}' -f $zoom.Checked, (Count-Panes))))
+        Click-Name $zoomName 'left' 900
+        $results.Add((Check 'choosing it again brings the panes back' 2 (Count-Panes)))
+        # background material: a radio group, the current one marked; a choice changes the backdrop
+        Open-Menu | Out-Null
+        Click-Name (Nk-Text 'settings.backdrop'); Start-Sleep -Milliseconds 700
+        $current = @(Menu-Rows | Where-Object { $_.Name -in (Nk-Text 'backdrop.acrylic'), (Nk-Text 'backdrop.mica'), (Nk-Text 'backdrop.micaAlt'), (Nk-Text 'backdrop.none') })
+        $results.Add((Check 'the submenu lists the four backdrops and only Acrylic is marked' (((Nk-Text 'backdrop.acrylic') + '|True|' + (Nk-Text 'backdrop.mica') + '|False|' + (Nk-Text 'backdrop.micaAlt') + '|False|' + (Nk-Text 'backdrop.none') + '|False')) (($current | Sort-Object Y | ForEach-Object { "$($_.Name)|$($_.Checked)" }) -join '|')))
+        $mark = Log-Mark
+        Click-Name (Nk-Text 'backdrop.mica') 'left' 1000
+        $results.Add((Check 'choosing Mica sets the system backdrop once' 1 (@(Log-Since $mark | Where-Object { $_ -match 'system backdrop set: Mica$' }).Count)))
+        Open-Menu | Out-Null
+        Click-Name (Nk-Text 'settings.backdrop'); Start-Sleep -Milliseconds 700
+        $current = @(Menu-Rows | Where-Object { $_.Name -in (Nk-Text 'backdrop.acrylic'), (Nk-Text 'backdrop.mica') })
+        $results.Add((Check 'the menu then marks Mica' 'False True' (($current | Sort-Object Y | ForEach-Object { $_.Checked }) -join ' ')))
+        Press 0x1B; Press 0x1B; Start-Sleep -Milliseconds 500
+        # the opacity row opens the appearance flyout under the menu button
+        Open-AppearanceFlyout
+        $slider = Get-Slider 0
+        $button = (Get-Element $menu 'Button').Current.BoundingRectangle
+        $box = $slider.Current.BoundingRectangle
+        $results.Add((Check-True 'the opacity row opens the flyout under the menu button, its right edge on the button' ($box.Y -gt $button.Y + $button.Height -and [Math]::Abs(($box.X + $box.Width) - ($button.X + $button.Width)) -lt 40 * $scale) "slider $($box.X)..$($box.X + $box.Width) at $($box.Y), button $($button.X)..$($button.X + $button.Width)"))
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        # find and settings, which have no button any more, are two steps away
+        Open-Menu | Out-Null; Click-Name (Nk-Tip 'edit.find' 'Ctrl+Shift+Y') 'left' 900
+        $results.Add((Check 'find, from the menu, opens the find bar' $true ([bool](Get-Element (Nk-Text 'edit.find') 'TextBox'))))
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        Open-Menu | Out-Null; Click-Name (Nk-Tip 'app.settings' 'Ctrl+,') 'left' 1200
+        $results.Add((Check 'settings, from the menu, opens the settings page' $true ([bool](Get-Element (Nk-Text 'settings.appearance') 'NavigationViewItem'))))
+        Chord @(0x11) 0xBC; Start-Sleep -Milliseconds 800
+        # the tab menu splits the pane of its own tab, shown or not
+        $chips = @(Get-Chips | Sort-Object Index)
+        $first = Get-ElementRect $chips[0].Name
+        Click-At ($first.X + 40) ($first.Y + 16) 'right' 900
+        $results.Add((Check 'the menu of a tab has both split rows' $true ([bool]((Get-Element (Nk-Text 'pane.splitRight')) -and (Get-Element (Nk-Text 'pane.splitDown'))))))
+        $before = Count-Panes
+        Click-Name (Nk-Text 'pane.splitDown') 'left' 1200; Wait-Prompt | Out-Null
+        $results.Add((Check 'splitting from the menu of the first tab shows that tab with one more pane' '1 2' ('{0} {1}' -f (Selected-Tab), (Count-Panes))))
+        Assert-Results $results 'toolbar'
+    } -NoShot
+}
 # A program that reported progress and then ended with an error shows an error, not the work it was doing: the exit
 # clears the progress and a failed exit outranks it. The program is a profile of its own (it keeps its last screen).
 function Scenario-StatusExit {
@@ -1292,4 +1432,4 @@ function Scenario-Restart {
         Check 'opening the settings file names the file and starts nothing' $true ([bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*restart-appdata\\Nekominal\\settings\.json'))
     }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-StatusExit; Scenario-Titles; Scenario-Close; Scenario-Panes }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes }
