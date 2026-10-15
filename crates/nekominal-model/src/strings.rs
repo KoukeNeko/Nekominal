@@ -170,6 +170,9 @@ texts! {
 
     // A setting that was changed and could not be put in effect: the InfoBar names it, the row of the opacity says it.
     SettingNotApplied "setting.notApplied" "未套用" "Not applied";
+    // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
+    SettingInvalid "setting.invalid" "設定檔值無效" "Invalid value in file";
+    SettingsProblems "settings.problems" "問題" "Problems";
     LabelValue "common.labelValue" "{0}：{1}" "{0}: {1}";
 
     // Messages: what happened, and the recovery when there is one.
@@ -177,6 +180,21 @@ texts! {
     StatusSpawnFailed "status.spawnFailed" "無法啟動 {0}：{1}" "Cannot start {0}: {1}";
     StatusNoProfile "status.noProfile" "找不到可用的設定檔" "No usable profile found";
     StatusSettingsProblems "status.settingsProblems" "設定 JSON 有 {0} 個問題" "Settings file has {0} problems";
+    // What a value of the settings file should have been (the key comes before it, see `LabelValue`).
+    ProblemNumber "problem.number" "需要 {0} 到 {1} 的數字" "Needs a number from {0} to {1}";
+    ProblemBool "problem.bool" "需要 true 或 false" "Needs true or false";
+    ProblemText "problem.text" "需要文字" "Needs text";
+    ProblemObject "problem.object" "需要物件" "Needs an object";
+    ProblemArray "problem.array" "需要陣列" "Needs an array";
+    ProblemTextOrList "problem.textOrList" "需要文字或文字陣列" "Needs text or an array of text";
+    ProblemFontFamily "problem.fontFamily" "需要字型名稱的陣列或以逗號分隔的文字" "Needs an array of font names or a comma separated text";
+    ProblemOneOf "problem.oneOf" "需要 {0} 其中之一" "Needs one of {0}";
+    ProblemRequired "problem.required" "必填" "Required";
+    ProblemUnknownTheme "problem.unknownTheme" "找不到「{0}」" "No color scheme \"{0}\"";
+    ProblemUnknownCommand "problem.unknownCommand" "找不到命令" "No such command";
+    ProblemBadShortcut "problem.badShortcut" "「{0}」不是有效的快速鍵" "\"{0}\" is not a valid shortcut";
+    ProblemUnparsable "problem.unparsable" "無法解析：{0}" "Cannot parse: {0}";
+    ProblemJsonObject "problem.jsonObject" "需要是 JSON 物件" "Needs to be a JSON object";
     StatusSettingsSaveFailed "status.settingsSaveFailed" "無法儲存設定：{0}" "Cannot save settings: {0}";
     StatusSettingsLoadFailed "status.settingsLoadFailed" "無法讀取設定：{0}" "Cannot read settings: {0}";
     StatusOpenFailed "status.openFailed" "無法開啟 {0}：{1}" "Cannot open {0}: {1}";

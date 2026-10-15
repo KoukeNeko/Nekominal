@@ -7,7 +7,11 @@
 
 use std::{collections::BTreeMap, fmt};
 
-use crate::{commands::Command, strings::Lang};
+use crate::{
+    commands::Command,
+    settings::{Expected, Problem},
+    strings::Lang,
+};
 
 /// What a key types, which decides whether a bare press of it can be a shortcut at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,8 +266,8 @@ pub struct Keymap {
 #[derive(Debug)]
 pub struct BuiltKeymap {
     pub keymap: Keymap,
-    /// Human-readable problems in the user's bindings; those entries are ignored.
-    pub problems: Vec<String>,
+    /// What is wrong with the user's bindings; those entries are ignored.
+    pub problems: Vec<Problem>,
 }
 
 /// Combines the default bindings with the `keybindings` of the settings. A command present in `overrides`
@@ -278,14 +282,14 @@ pub fn build_keymap<'a>(
 
     for (id, texts) in overrides {
         let Some(command) = Command::from_id(id) else {
-            problems.push(format!("keybindings.{id}：找不到命令"));
+            problems.push(Problem::new(format!("keybindings.{id}"), Expected::KnownCommand));
             continue;
         };
         let mut shortcuts = Vec::new();
         for text in texts {
             match Shortcut::parse(text) {
                 Some(shortcut) => shortcuts.push(shortcut),
-                None => problems.push(format!("keybindings.{id}：「{text}」不是有效的快速鍵")),
+                None => problems.push(Problem::new(format!("keybindings.{id}"), Expected::Shortcut(text.clone()))),
             }
         }
         overridden.push(command);
@@ -632,8 +636,10 @@ mod tests {
             ]),
         );
         assert_eq!(built.problems.len(), 2);
-        assert!(built.problems[0].contains("pane.close") && built.problems[0].contains("???"));
-        assert!(built.problems[1].contains("tab.new") && built.problems[1].contains("nonsense+"));
+        assert_eq!(built.problems[0], Problem::new("keybindings.pane.close", Expected::Shortcut("???".into())));
+        assert_eq!(built.problems[1], Problem::new("keybindings.tab.new", Expected::Shortcut("nonsense+".into())));
+        assert_eq!(built.problems[0].text(Lang::ZhTw), "keybindings.pane.close：「???」不是有效的快速鍵");
+        assert_eq!(built.problems[1].text(Lang::EnUs), "keybindings.tab.new: \"nonsense+\" is not a valid shortcut");
         assert!(built.keymap.shortcuts(Command::TabNew).is_empty());
         assert_eq!(built.keymap.shortcut_text(Command::PaneClose), "Ctrl+Q");
     }
@@ -645,7 +651,7 @@ mod tests {
             &overrides(&[("paste", &["Ctrl+V"]), ("tab.new", &["Ctrl+T"])]),
         );
         assert_eq!(built.problems.len(), 1);
-        assert!(built.problems[0].contains("keybindings.paste"));
+        assert_eq!(built.problems[0], Problem::new("keybindings.paste", Expected::KnownCommand));
         assert_eq!(built.keymap.shortcut_text(Command::TabNew), "Ctrl+T");
     }
 

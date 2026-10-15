@@ -391,17 +391,88 @@ pub fn strip_json_comments(text: &str) -> String {
 #[derive(Debug)]
 pub struct Parsed {
     pub settings: Settings,
-    /// Human-readable problems; the affected values fall back to defaults.
-    pub problems: Vec<String>,
+    /// What was wrong with the file; the affected values fall back to defaults.
+    pub problems: Vec<Problem>,
+}
+
+/// What a value of `settings.json` should have been.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Expected {
+    Number { min: f64, max: f64 },
+    Bool,
+    Text,
+    Object,
+    Array,
+    TextOrList,
+    FontFamily,
+    /// One of these names.
+    OneOf(Vec<String>),
+    Required,
+    /// A colour scheme that exists; this is the name that was not found.
+    KnownTheme(String),
+    KnownCommand,
+    /// A shortcut that can be read; this is the text that could not be.
+    Shortcut(String),
+    /// The whole file is not JSON; this is what the parser said.
+    Parsable(String),
+    JsonObject,
+}
+
+impl Expected {
+    /// The sentence in `lang`: the string table has one for each kind.
+    pub fn text(&self, lang: Lang) -> String {
+        match self {
+            Expected::Number { min, max } => Text::ProblemNumber.format(lang, &[min, max]),
+            Expected::Bool => Text::ProblemBool.get(lang).to_owned(),
+            Expected::Text => Text::ProblemText.get(lang).to_owned(),
+            Expected::Object => Text::ProblemObject.get(lang).to_owned(),
+            Expected::Array => Text::ProblemArray.get(lang).to_owned(),
+            Expected::TextOrList => Text::ProblemTextOrList.get(lang).to_owned(),
+            Expected::FontFamily => Text::ProblemFontFamily.get(lang).to_owned(),
+            Expected::OneOf(names) => {
+                let separator = match lang {
+                    Lang::ZhTw => "、",
+                    Lang::EnUs => ", ",
+                };
+                Text::ProblemOneOf.format(lang, &[&names.join(separator)])
+            }
+            Expected::Required => Text::ProblemRequired.get(lang).to_owned(),
+            Expected::KnownTheme(name) => Text::ProblemUnknownTheme.format(lang, &[name]),
+            Expected::KnownCommand => Text::ProblemUnknownCommand.get(lang).to_owned(),
+            Expected::Shortcut(text) => Text::ProblemBadShortcut.format(lang, &[text]),
+            Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
+            Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),
+        }
+    }
+}
+
+/// A value of `settings.json` that was not valid and was replaced by its default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    /// The dotted key of the value (`font.size`, `profiles[0].program`); empty when the whole file is the problem.
+    pub key: String,
+    pub expected: Expected,
+}
+
+impl Problem {
+    pub fn new(key: impl Into<String>, expected: Expected) -> Problem {
+        Problem { key: key.into(), expected }
+    }
+
+    /// "font.size: Needs a number from 6 to 72", or the sentence alone when the whole file is the problem.
+    pub fn text(&self, lang: Lang) -> String {
+        let sentence = self.expected.text(lang);
+        if self.key.is_empty() { sentence } else { Text::LabelValue.format(lang, &[&self.key, &sentence]) }
+    }
 }
 
 #[derive(Default)]
-struct Problems(Vec<String>);
+struct Problems(Vec<Problem>);
 
 impl Problems {
-    fn fail(&mut self, path: &str, key: &str, requirement: &str) {
+    fn fail(&mut self, path: &str, key: &str, expected: Expected) {
         let prefix = if path.is_empty() { String::new() } else { format!("{path}.") };
-        self.0.push(format!("{prefix}{key}：{requirement}"));
+        self.0.push(Problem::new(format!("{prefix}{key}"), expected));
     }
 }
 
@@ -411,7 +482,7 @@ fn number(source: &Map<String, Value>, key: &str, fallback: f64, (min, max): (f6
         Some(value) => match value.as_f64() {
             Some(n) if n.is_finite() && n >= min && n <= max => n,
             _ => {
-                problems.fail(path, key, &format!("需要 {min} 到 {max} 的數字"));
+                problems.fail(path, key, Expected::Number { min, max });
                 fallback
             }
         },
@@ -423,7 +494,7 @@ fn boolean(source: &Map<String, Value>, key: &str, fallback: bool, path: &str, p
         None => fallback,
         Some(Value::Bool(value)) => *value,
         Some(_) => {
-            problems.fail(path, key, "需要 true 或 false");
+            problems.fail(path, key, Expected::Bool);
             fallback
         }
     }
@@ -434,7 +505,7 @@ fn text(source: &Map<String, Value>, key: &str, fallback: &str, path: &str, prob
         None => fallback.to_owned(),
         Some(Value::String(value)) => value.clone(),
         Some(_) => {
-            problems.fail(path, key, "需要文字");
+            problems.fail(path, key, Expected::Text);
             fallback.to_owned()
         }
     }
@@ -446,8 +517,8 @@ fn one_of<T: Copy>(source: &Map<String, Value>, key: &str, allowed: &[(&str, T)]
         Some(value) => match value.as_str().and_then(|s| allowed.iter().find(|(name, _)| *name == s)) {
             Some((_, found)) => *found,
             None => {
-                let names: Vec<&str> = allowed.iter().map(|(name, _)| *name).collect();
-                problems.fail(path, key, &format!("需要 {} 其中之一", names.join("、")));
+                let names = allowed.iter().map(|(name, _)| (*name).to_owned()).collect();
+                problems.fail(path, key, Expected::OneOf(names));
                 fallback
             }
         },
@@ -459,7 +530,7 @@ fn section(source: &Map<String, Value>, key: &str, path: &str, problems: &mut Pr
         None => Map::new(),
         Some(Value::Object(map)) => map.clone(),
         Some(_) => {
-            problems.fail(path, key, "需要物件");
+            problems.fail(path, key, Expected::Object);
             Map::new()
         }
     }
@@ -484,7 +555,7 @@ fn font_families(source: &Map<String, Value>, fallback: &[String], problems: &mu
     match parsed.map(|names| names.into_iter().filter(|n| !n.is_empty()).collect::<Vec<_>>()) {
         Some(names) if !names.is_empty() => names,
         _ => {
-            problems.fail("font", "family", "需要字型名稱的陣列或以逗號分隔的文字");
+            problems.fail("font", "family", Expected::FontFamily);
             fallback.to_vec()
         }
     }
@@ -493,19 +564,19 @@ fn font_families(source: &Map<String, Value>, fallback: &[String], problems: &mu
 fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<CustomProfile> {
     let Some(value) = source.get("profiles") else { return Vec::new() };
     let Value::Array(entries) = value else {
-        problems.0.push("profiles：需要陣列".to_owned());
+        problems.fail("", "profiles", Expected::Array);
         return Vec::new();
     };
     let mut profiles = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
         let path = format!("profiles[{index}]");
         let Value::Object(map) = entry else {
-            problems.0.push(format!("{path}：需要物件"));
+            problems.fail("", &path, Expected::Object);
             continue;
         };
         let program = text(map, "program", "", &path, problems);
         if program.is_empty() {
-            problems.0.push(format!("{path}.program：必填"));
+            problems.fail(&path, "program", Expected::Required);
             continue;
         }
         let name = text(map, "name", &program, &path, problems);
@@ -530,7 +601,7 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
 fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTreeMap<String, Vec<String>> {
     let Some(value) = source.get("keybindings") else { return BTreeMap::new() };
     let Value::Object(map) = value else {
-        problems.0.push("keybindings：需要物件".to_owned());
+        problems.fail("", "keybindings", Expected::Object);
         return BTreeMap::new();
     };
     let mut bindings = BTreeMap::new();
@@ -546,7 +617,7 @@ fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTr
             Value::Array(items) if items.iter().all(Value::is_string) => {
                 bindings.insert(id.clone(), items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect());
             }
-            _ => problems.0.push(format!("keybindings.{id}：需要文字或文字陣列")),
+            _ => problems.fail("keybindings", id, Expected::TextOrList),
         }
     }
     bindings
@@ -561,10 +632,12 @@ pub fn parse(source: Option<&str>) -> Parsed {
     };
     let document: Value = match serde_json::from_str(&strip_json_comments(source)) {
         Ok(value) => value,
-        Err(error) => return Parsed { settings: defaults, problems: vec![format!("設定檔無法解析：{error}")] },
+        Err(error) => {
+            return Parsed { settings: defaults, problems: vec![Problem::new("", Expected::Parsable(error.to_string()))] };
+        }
     };
     let Value::Object(root) = document else {
-        return Parsed { settings: defaults, problems: vec!["設定檔需要是 JSON 物件".to_owned()] };
+        return Parsed { settings: defaults, problems: vec![Problem::new("", Expected::JsonObject)] };
     };
 
     let mut problems = Problems::default();
@@ -581,7 +654,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let theme = if themes::is_known(&theme_name) {
         theme_name
     } else {
-        problems.0.push(format!("theme：找不到「{theme_name}」"));
+        problems.fail("", "theme", Expected::KnownTheme(theme_name));
         d.theme.clone()
     };
 
@@ -769,8 +842,43 @@ mod tests {
         assert_eq!(s.theme, Settings::default().theme);
         assert!(!s.copy_on_select);
         assert_eq!(result.problems.len(), 4);
-        let all = result.problems.join("\n");
-        assert!(all.contains("font.size") && all.contains("cursor.style"));
+        let keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["theme", "font.size", "cursor.style", "copyOnSelect"]);
+    }
+
+    #[test]
+    fn a_problem_is_data_that_each_language_says_in_its_own_words() {
+        let result = parsed(r#"{ "font": { "size": 400 }, "cursor": { "style": "star" }, "theme": "Nope", "copyOnSelect": "yes", "appearance": 3, "profiles": [ { "name": "x" } ] }"#);
+        let says = |lang| result.problems.iter().map(|p| p.text(lang)).collect::<Vec<_>>();
+        assert_eq!(
+            says(Lang::ZhTw),
+            [
+                "appearance：需要物件",
+                "theme：找不到「Nope」",
+                "font.size：需要 6 到 72 的數字",
+                "cursor.style：需要 block、bar、underline 其中之一",
+                "profiles[0].program：必填",
+                "copyOnSelect：需要 true 或 false",
+            ]
+        );
+        assert_eq!(
+            says(Lang::EnUs),
+            [
+                "appearance: Needs an object",
+                "theme: No color scheme \"Nope\"",
+                "font.size: Needs a number from 6 to 72",
+                "cursor.style: Needs one of block, bar, underline",
+                "profiles[0].program: Required",
+                "copyOnSelect: Needs true or false",
+            ]
+        );
+        assert!(says(Lang::EnUs).iter().all(|text| text.chars().all(|c| !('\u{2E80}'..='\u{9FFF}').contains(&c))), "no Chinese in English");
+        // A file that is not JSON, or not an object, is one problem about the whole file: no key.
+        let broken = parsed(r#"{ "theme": "#);
+        assert_eq!(broken.problems.len(), 1);
+        assert_eq!(broken.problems[0].key, "");
+        assert!(broken.problems[0].text(Lang::EnUs).starts_with("Cannot parse: "));
+        assert_eq!(parsed("[1]").problems[0].text(Lang::ZhTw), "需要是 JSON 物件");
     }
 
     #[test]
