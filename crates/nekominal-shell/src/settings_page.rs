@@ -1,0 +1,562 @@
+//! The settings page: a section list on the left, the rows of the section on the right, a search line above them.
+//!
+//! The page is a display list. `build` turns the state of the page and the settings into rectangles with what is drawn
+//! in them and what they do when pressed (`Part`), so that drawing and hit testing read the same geometry. The rows are
+//! those of `settings_ui::TABLE`; nothing here knows what a setting means. Pure apart from the text measure the caller
+//! hands in.
+
+use nekominal_model::{
+    commands::Command,
+    keymap::Keymap,
+    profiles::Profile,
+    settings::Settings,
+    settings_ui::{self, Control, Descriptor, Range, Section, Value},
+    strings::{Lang, Text},
+    themes,
+};
+use nekominal_ui::Rect;
+
+/// Width of the section list, and where its first entry starts below the top of the page, in DIP.
+pub const NAV_WIDTH: f32 = 200.0;
+pub const NAV_TOP: f32 = 16.0;
+pub const NAV_ITEM: f32 = 40.0;
+const PAD: f32 = 24.0;
+const CONTENT_MAX: f32 = 720.0;
+const TITLE_Y: f32 = 16.0;
+const SEARCH_Y: f32 = 56.0;
+const SEARCH_HEIGHT: f32 = 36.0;
+const CONTENT_TOP: f32 = 108.0;
+const ROW: f32 = 52.0;
+const ROW_GAP: f32 = 4.0;
+const CONTROL: f32 = 28.0;
+const SWITCH: (f32, f32) = (44.0, 24.0);
+const SLIDER_WIDTH: f32 = 200.0;
+const THUMB: f32 = 16.0;
+const FIELD_WIDTH: f32 = 280.0;
+const TILE: (f32, f32) = (148.0, 64.0);
+const TILE_GAP: f32 = 12.0;
+const RADIO_ROW: f32 = 36.0;
+const RESET_ROOM: f32 = 32.0;
+
+/// What the page remembers between frames.
+#[derive(Clone, Debug, Default)]
+pub struct Page {
+    /// The index of the section shown in `Section::ALL`; a query shows what it finds in every section instead.
+    pub section: usize,
+    pub query: String,
+    /// How far the rows are scrolled up, in DIP.
+    pub scroll: f32,
+    /// The row with the keyboard, as an index into the entries on show.
+    pub focus: Option<usize>,
+    pub hover: Option<Part>,
+    /// The slider held by the pointer.
+    pub drag: Option<&'static str>,
+    /// The text field being typed in: the id of its row and what it holds so far.
+    pub editing: Option<(&'static str, String)>,
+}
+
+/// What a rectangle does when it is pressed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Part {
+    Nav(usize),
+    Search,
+    /// Opens the settings file.
+    File,
+    Toggle(&'static str),
+    Option(&'static str, usize),
+    Minus(&'static str),
+    Plus(&'static str),
+    Slider(&'static str),
+    Field(&'static str),
+    /// The color scheme at this index of `themes::theme_names`.
+    Tile(usize),
+    /// The profile at this index.
+    Profile(usize),
+    Reset(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tone {
+    Text,
+    Quiet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fill {
+    Nav { selected: bool, hover: bool },
+    Row { focus: bool },
+    Button { selected: bool, hover: bool },
+    Field { editing: bool },
+    Switch { on: bool, hover: bool },
+    Track,
+    Accent,
+    Knob,
+    Radio { on: bool, hover: bool },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Visual {
+    None,
+    Plate(Fill),
+    Line,
+    Label { text: String, size: f32, tone: Tone, bold: bool, align: Align },
+    Glyph { ch: char, size: f32, tone: Tone },
+    /// A color scheme: its background with its name and a few of its colours.
+    Tile { scheme: usize, selected: bool, hover: bool },
+    Caret,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Item {
+    pub rect: Rect,
+    pub part: Option<Part>,
+    pub visual: Visual,
+    /// The rectangle moves with the scrolling and is cut off at the rows' area.
+    pub scrolls: bool,
+}
+
+/// A row on show.
+#[derive(Clone, Copy, Debug)]
+pub enum Entry {
+    Setting(&'static Descriptor),
+    Key(Command),
+}
+
+pub struct Frame {
+    pub items: Vec<Item>,
+    /// Where the rows show, in the coordinates of the window.
+    pub viewport: Rect,
+    /// The height of all the rows together.
+    pub content_height: f32,
+    /// The rectangle of each entry, scrolled to the top.
+    pub rows: Vec<Rect>,
+    pub entries: Vec<Entry>,
+}
+
+pub struct View<'a> {
+    pub lang: Lang,
+    pub settings: &'a Settings,
+    pub keymap: &'a Keymap,
+    pub profiles: &'a [Profile],
+    /// The area of the page in the coordinates of the window, in DIP.
+    pub area: Rect,
+}
+
+impl Frame {
+    /// What is under a point of the window.
+    pub fn part_at(&self, scroll: f32, x: f32, y: f32) -> Option<Part> {
+        self.items.iter().rev().find_map(|item| {
+            let part = item.part?;
+            let rect = self.on_screen(item, scroll);
+            let visible = !item.scrolls || self.viewport.contains(x, y);
+            (visible && rect.contains(x, y)).then_some(part)
+        })
+    }
+
+    pub fn on_screen(&self, item: &Item, scroll: f32) -> Rect {
+        if item.scrolls { Rect::new(item.rect.x, item.rect.y - scroll, item.rect.w, item.rect.h) } else { item.rect }
+    }
+
+    /// The scroll offset that shows entry `i` whole, moving as little as possible from `scroll`.
+    pub fn reveal(&self, i: usize, scroll: f32) -> f32 {
+        let Some(row) = self.rows.get(i) else { return scroll };
+        let top = row.y - self.viewport.y;
+        let bottom = top + row.h;
+        let view = self.viewport.h;
+        if top < scroll {
+            top
+        } else if bottom > scroll + view {
+            bottom - view
+        } else {
+            scroll
+        }
+    }
+
+    pub fn max_scroll(&self) -> f32 {
+        (self.content_height - self.viewport.h).max(0.0)
+    }
+}
+
+/// The rows on show: the matches of the query, or the section.
+pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
+    if !page.query.trim().is_empty() {
+        return settings_ui::search(&page.query, lang, keymap)
+            .into_iter()
+            .map(|row| match row {
+                settings_ui::Row::Setting(descriptor) => Entry::Setting(descriptor),
+                settings_ui::Row::Key(command) => Entry::Key(command),
+            })
+            .collect();
+    }
+    let section = Section::ALL[page.section.min(Section::ALL.len() - 1)];
+    if section == Section::Keys {
+        settings_ui::key_rows().map(Entry::Key).collect()
+    } else {
+        settings_ui::in_section(section).map(Entry::Setting).collect()
+    }
+}
+
+/// What a row says at its right: the option, the number, the name of the scheme or profile.
+pub fn value_text(row: &Descriptor, settings: &Settings, profiles: &[Profile], lang: Lang) -> String {
+    match (row.control, (row.get)(settings)) {
+        (Control::Toggle, Value::Bool(on)) => (if on { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned(),
+        (Control::Choice(options), Value::Index(i)) => options.get(i).map(|text| text.get(lang).to_owned()).unwrap_or_default(),
+        (Control::Slider(_), Value::Number(n)) => format!("{n:.0}%"),
+        (Control::Number(range), Value::Number(n)) => number_text(range, n),
+        (Control::Profiles, Value::Text(id)) => profiles.iter().find(|p| p.id == id).map_or(id, |p| p.name.clone()),
+        (_, Value::Text(text)) => text,
+        _ => String::new(),
+    }
+}
+
+fn number_text(range: Range, n: f64) -> String {
+    if range.step.fract() == 0.0 { format!("{n:.0}") } else { format!("{n:.2}") }
+}
+
+/// The value one step (or one large step) after or before the one the row has.
+pub fn stepped(row: &Descriptor, settings: &Settings, profiles: &[Profile], forward: bool, large: bool) -> Option<Value> {
+    let step: isize = if forward { 1 } else { -1 };
+    let cycle = |len: usize, at: usize| (at as isize + step).rem_euclid(len.max(1) as isize) as usize;
+    Some(match (row.control, (row.get)(settings)) {
+        (Control::Toggle, Value::Bool(on)) => Value::Bool(!on),
+        (Control::Choice(options), Value::Index(i)) => Value::Index(cycle(options.len(), i)),
+        (Control::Slider(range) | Control::Number(range), Value::Number(n)) => {
+            let amount = if large { range.large } else { range.step };
+            // Rounded to hundredths so that repeated steps of 0.05 do not drift.
+            let moved = (n + step as f64 * amount).clamp(range.min, range.max);
+            Value::Number((moved * 100.0).round() / 100.0)
+        }
+        (Control::Themes, Value::Text(name)) => {
+            let names: Vec<&str> = themes::theme_names().collect();
+            let at = names.iter().position(|n| *n == name).unwrap_or(0);
+            Value::Text(names[cycle(names.len(), at)].to_owned())
+        }
+        (Control::Profiles, Value::Text(id)) => {
+            let at = profiles.iter().position(|p| p.id == id).unwrap_or(0);
+            Value::Text(profiles.get(cycle(profiles.len(), at))?.id.clone())
+        }
+        _ => return None,
+    })
+}
+
+/// The number a pointer at `x` chooses on a slider whose track is `track` wide, on the grid of the steps of `range`.
+pub fn slider_value(range: Range, track: Rect, x: f32) -> f64 {
+    let share = f64::from(((x - track.x) / track.w).clamp(0.0, 1.0));
+    let steps = (share * (range.max - range.min) / range.step).round();
+    (range.min + steps * range.step).clamp(range.min, range.max)
+}
+/// The track of a slider inside the rectangle that takes its presses.
+pub fn slider_track(area: Rect) -> Rect {
+    Rect::new(area.x + THUMB / 2.0, area.y + (area.h - 4.0) / 2.0, area.w - THUMB, 4.0)
+}
+
+fn item(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, visual: Visual, scrolls: bool) {
+    items.push(Item { rect, part, visual, scrolls });
+}
+
+fn label(text: impl Into<String>, size: f32, tone: Tone, bold: bool, align: Align) -> Visual {
+    Visual::Label { text: text.into(), size, tone, bold, align }
+}
+
+pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) -> f32) -> Frame {
+    let lang = view.lang;
+    let Rect { x: ox, y: oy, w: width, h: height } = view.area;
+    let mut items = Vec::new();
+    let hover = page.hover;
+
+    // The section list.
+    item(&mut items, Rect::new(ox + NAV_WIDTH - 1.0, oy, 1.0, height), None, Visual::Line, false);
+    for (i, section) in Section::ALL.iter().enumerate() {
+        let rect = Rect::new(ox + 12.0, oy + NAV_TOP + i as f32 * NAV_ITEM, NAV_WIDTH - 24.0, NAV_ITEM - 4.0);
+        let selected = page.query.trim().is_empty() && i == page.section;
+        let part = Part::Nav(i);
+        item(&mut items, rect, Some(part), Visual::Plate(Fill::Nav { selected, hover: hover == Some(part) }), false);
+        let tone = if selected { Tone::Text } else { Tone::Quiet };
+        item(&mut items, Rect::new(rect.x + 14.0, rect.y, rect.w - 28.0, rect.h), None, label(section.text().get(lang), 13.0, tone, false, Align::Left), false);
+    }
+
+    let x0 = ox + NAV_WIDTH + PAD;
+    let x1 = (ox + width - PAD).min(x0 + CONTENT_MAX);
+    let content_width = (x1 - x0).max(0.0);
+
+    // The title, the button for the file, the search line.
+    let searching = !page.query.trim().is_empty();
+    let title = if searching { Text::SettingsSearch } else { Section::ALL[page.section.min(Section::ALL.len() - 1)].text() };
+    item(&mut items, Rect::new(x0, oy + TITLE_Y, content_width, 32.0), None, label(title.get(lang), 20.0, Tone::Text, true, Align::Left), false);
+    let file_text = Text::SettingsFile.get(lang);
+    let file_width = measure(file_text, 13.0, false) + 24.0;
+    let file = Rect::new(x1 - file_width, oy + TITLE_Y + 2.0, file_width, CONTROL);
+    item(&mut items, file, Some(Part::File), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::File) }), false);
+    item(&mut items, file, None, label(file_text, 13.0, Tone::Text, false, Align::Center), false);
+    let search = Rect::new(x0, oy + SEARCH_Y, content_width, SEARCH_HEIGHT);
+    item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
+    item(&mut items, Rect::new(search.x + 12.0, search.y, 20.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 14.0, tone: Tone::Quiet }, false);
+    let text_x = search.x + 40.0;
+    if page.query.is_empty() {
+        item(&mut items, Rect::new(text_x + 6.0, search.y, search.w - 58.0, search.h), None, label(Text::SettingsSearch.get(lang), 13.0, Tone::Quiet, false, Align::Left), false);
+    } else {
+        item(&mut items, Rect::new(text_x, search.y, search.w - 52.0, search.h), None, label(page.query.as_str(), 13.0, Tone::Text, false, Align::Left), false);
+    }
+    if page.editing.is_none() {
+        let caret = text_x + measure(&page.query, 13.0, false) + 1.0;
+        item(&mut items, Rect::new(caret, search.y + 8.0, 1.5, search.h - 16.0), None, Visual::Caret, false);
+    }
+
+    // The rows.
+    let entries = entries(page, lang, view.keymap);
+    let top = oy + CONTENT_TOP;
+    let viewport = Rect::new(ox + NAV_WIDTH, top, (width - NAV_WIDTH).max(0.0), (oy + height - top).max(0.0));
+    let mut rows = Vec::new();
+    let mut y = top;
+    if entries.is_empty() {
+        item(&mut items, Rect::new(x0, y, content_width, ROW), None, label(Text::SettingsEmpty.get(lang), 13.0, Tone::Quiet, false, Align::Left), true);
+        y += ROW;
+    }
+    let theme_names: Vec<&str> = themes::theme_names().collect();
+    for (n, entry) in entries.iter().enumerate() {
+        let focus = page.focus == Some(n);
+        let start = y;
+        match *entry {
+            Entry::Key(command) => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                item(&mut items, Rect::new(rect.x + 16.0, rect.y, rect.w - 32.0, rect.h), None, label(command.label(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let mut right = rect.x + rect.w - 16.0;
+                for shortcut in view.keymap.shortcuts(command).iter().rev() {
+                    let text = shortcut.to_string();
+                    let chip = Rect::new(right - measure(&text, 12.0, false) - 20.0, rect.y + (rect.h - 24.0) / 2.0, measure(&text, 12.0, false) + 20.0, 24.0);
+                    item(&mut items, chip, None, Visual::Plate(Fill::Button { selected: false, hover: false }), true);
+                    item(&mut items, chip, None, label(text, 12.0, Tone::Quiet, false, Align::Center), true);
+                    right = chip.x - 6.0;
+                }
+                y += ROW;
+            }
+            Entry::Setting(row) => {
+                let id = row.id;
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                let mid = rect.y + (rect.h - CONTROL) / 2.0;
+                let right = rect.x + rect.w - 16.0 - RESET_ROOM;
+                let value = (row.get)(view.settings);
+                // A toggle is pressed anywhere on its row.
+                let row_part = matches!(row.control, Control::Toggle).then_some(Part::Toggle(id));
+                item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
+                item(&mut items, Rect::new(rect.x + 16.0, rect.y, (rect.w - 32.0 - RESET_ROOM) / 2.0, rect.h), None, label(row.label(lang), 13.0, Tone::Text, false, Align::Left), true);
+                if row.is_modified(view.settings) {
+                    let reset = Rect::new(rect.x + rect.w - 16.0 - 24.0, rect.y + (rect.h - 24.0) / 2.0, 24.0, 24.0);
+                    let part = Part::Reset(id);
+                    item(&mut items, reset, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                    item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                }
+                match (row.control, value) {
+                    (Control::Toggle, Value::Bool(on)) => {
+                        let switch = Rect::new(right - SWITCH.0, rect.y + (rect.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
+                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(Part::Toggle(id)) }), true);
+                        let knob = 18.0;
+                        let knob_x = if on { switch.x + switch.w - knob - 3.0 } else { switch.x + 3.0 };
+                        item(&mut items, Rect::new(knob_x, switch.y + (switch.h - knob) / 2.0, knob, knob), None, Visual::Plate(Fill::Knob), true);
+                        y += ROW;
+                    }
+                    (Control::Choice(options), Value::Index(chosen)) => {
+                        let mut at = right;
+                        for (i, option) in options.iter().enumerate().rev() {
+                            let text = option.get(lang);
+                            let w = measure(text, 13.0, false) + 24.0;
+                            let button = Rect::new(at - w, mid, w, CONTROL);
+                            let part = Part::Option(id, i);
+                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: i == chosen, hover: hover == Some(part) }), true);
+                            item(&mut items, button, None, label(text, 13.0, if i == chosen { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                            at = button.x - 6.0;
+                        }
+                        y += ROW;
+                    }
+                    (Control::Slider(range), Value::Number(n)) => {
+                        let value_box = Rect::new(right - 48.0, rect.y, 48.0, rect.h);
+                        item(&mut items, value_box, None, label(format!("{n:.0}%"), 13.0, Tone::Quiet, false, Align::Right), true);
+                        let track = Rect::new(value_box.x - 12.0 - SLIDER_WIDTH, rect.y + (rect.h - 4.0) / 2.0, SLIDER_WIDTH, 4.0);
+                        let share = (((n - range.min) / (range.max - range.min)) as f32).clamp(0.0, 1.0);
+                        item(&mut items, Rect::new(track.x - THUMB / 2.0, rect.y, track.w + THUMB, rect.h), Some(Part::Slider(id)), Visual::None, true);
+                        item(&mut items, track, None, Visual::Plate(Fill::Track), true);
+                        item(&mut items, Rect::new(track.x, track.y, track.w * share, track.h), None, Visual::Plate(Fill::Accent), true);
+                        item(&mut items, Rect::new(track.x + track.w * share - THUMB / 2.0, rect.y + (rect.h - THUMB) / 2.0, THUMB, THUMB), None, Visual::Plate(Fill::Knob), true);
+                        y += ROW;
+                    }
+                    (Control::Number(range), Value::Number(n)) => {
+                        let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
+                        let value_box = Rect::new(plus.x - 72.0, mid, 72.0, CONTROL);
+                        let minus = Rect::new(value_box.x - CONTROL, mid, CONTROL, CONTROL);
+                        for (button, part, ch) in [(minus, Part::Minus(id), '\u{E738}'), (plus, Part::Plus(id), '\u{E710}')] {
+                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                            item(&mut items, button, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
+                        }
+                        item(&mut items, value_box, None, label(number_text(range, n), 13.0, Tone::Text, false, Align::Center), true);
+                        y += ROW;
+                    }
+                    (Control::Text, Value::Text(text)) => {
+                        let field = Rect::new(right - FIELD_WIDTH, mid, FIELD_WIDTH, CONTROL);
+                        let editing = page.editing.as_ref().filter(|(edit_id, _)| *edit_id == id).map(|(_, text)| text.clone());
+                        item(&mut items, field, Some(Part::Field(id)), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
+                        let inner = Rect::new(field.x + 10.0, field.y, field.w - 20.0, field.h);
+                        if let Some(text) = editing {
+                            let caret = inner.x + measure(&text, 13.0, false).min(inner.w) + 1.0;
+                            item(&mut items, inner, None, label(text, 13.0, Tone::Text, false, Align::Left), true);
+                            item(&mut items, Rect::new(caret, field.y + 6.0, 1.5, field.h - 12.0), None, Visual::Caret, true);
+                        } else {
+                            item(&mut items, inner, None, label(text, 13.0, Tone::Quiet, false, Align::Left), true);
+                        }
+                        y += ROW;
+                    }
+                    (Control::Themes, Value::Text(current)) => {
+                        y += ROW;
+                        let columns = (((content_width + TILE_GAP) / (TILE.0 + TILE_GAP)).floor() as usize).max(1);
+                        for (i, name) in theme_names.iter().enumerate() {
+                            let (col, line) = (i % columns, i / columns);
+                            let tile = Rect::new(x0 + col as f32 * (TILE.0 + TILE_GAP), y + line as f32 * (TILE.1 + TILE_GAP), TILE.0, TILE.1);
+                            let part = Part::Tile(i);
+                            item(&mut items, tile, Some(part), Visual::Tile { scheme: i, selected: *name == current, hover: hover == Some(part) }, true);
+                        }
+                        y += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP);
+                    }
+                    (Control::Profiles, Value::Text(current)) => {
+                        y += ROW;
+                        let chosen = view.profiles.iter().position(|p| p.id == current).unwrap_or(0);
+                        for (i, profile) in view.profiles.iter().enumerate() {
+                            let line = Rect::new(x0, y, content_width, RADIO_ROW - ROW_GAP);
+                            let part = Part::Profile(i);
+                            item(&mut items, line, Some(part), Visual::Plate(Fill::Row { focus: false }), true);
+                            let radio = Rect::new(line.x + 16.0, line.y + (line.h - 16.0) / 2.0, 16.0, 16.0);
+                            item(&mut items, radio, None, Visual::Plate(Fill::Radio { on: i == chosen, hover: hover == Some(part) }), true);
+                            item(&mut items, Rect::new(line.x + 44.0, line.y, line.w - 60.0, line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
+                            y += RADIO_ROW;
+                        }
+                    }
+                    _ => y += ROW,
+                }
+            }
+        }
+        rows.push(Rect::new(x0, start, content_width, y - start));
+    }
+    Frame { items, viewport, content_height: y - top + PAD, rows, entries }
+}
+
+#[cfg(test)]
+mod tests {
+    use nekominal_model::{commands::default_bindings, keymap::build_keymap, settings_ui::Section};
+
+    use super::*;
+
+    fn keymap() -> Keymap {
+        build_keymap(default_bindings(), &Default::default()).keymap
+    }
+
+    fn frame(page: &Page, settings: &Settings) -> Frame {
+        let keymap = keymap();
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
+    }
+
+    fn row(id: &str) -> &'static Descriptor {
+        settings_ui::find(id).expect("the row exists")
+    }
+
+    #[test]
+    fn a_section_shows_exactly_its_rows_and_the_shortcuts_page_shows_the_commands() {
+        let settings = Settings::default();
+        for (i, section) in Section::ALL.iter().enumerate() {
+            let page = Page { section: i, ..Page::default() };
+            let shown = frame(&page, &settings).entries.len();
+            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() };
+            assert_eq!(shown, expected, "{section:?}");
+        }
+    }
+
+    #[test]
+    fn a_query_finds_rows_across_the_sections_and_a_nonsense_query_finds_none() {
+        let settings = Settings::default();
+        let found = frame(&Page { query: "opacity".into(), ..Page::default() }, &settings);
+        assert!(found.entries.iter().any(|e| matches!(e, Entry::Setting(row) if row.id == "appearance.opacity")));
+        assert!(frame(&Page { query: "zzzzqqq".into(), ..Page::default() }, &settings).entries.is_empty());
+    }
+
+    #[test]
+    fn every_control_is_reachable_by_a_part_inside_the_rows_area() {
+        let settings = Settings::default();
+        for i in 0..Section::ALL.len() {
+            let page = Page { section: i, ..Page::default() };
+            let frame = frame(&page, &settings);
+            for entry in &frame.entries {
+                let Entry::Setting(row) = entry else { continue };
+                let part = frame.items.iter().filter_map(|item| item.part).any(|part| match part {
+                    Part::Toggle(id) | Part::Option(id, _) | Part::Plus(id) | Part::Slider(id) | Part::Field(id) => id == row.id,
+                    Part::Tile(_) => matches!(row.control, Control::Themes),
+                    // The profile rows come from the profiles found at run time; there are none in this test.
+                    Part::Profile(_) => false,
+                    _ => false,
+                });
+                assert!(part || matches!(row.control, Control::Profiles), "{} has nothing to press", row.id);
+            }
+        }
+    }
+
+    #[test]
+    fn a_toggle_is_pressed_anywhere_on_its_row_and_a_choice_by_its_option() {
+        let settings = Settings::default();
+        let page = Page { section: 1, ..Page::default() };
+        let frame = frame(&page, &settings);
+        let at = frame.entries.iter().position(|e| matches!(e, Entry::Setting(row) if row.id == "copyOnSelect")).unwrap();
+        let rect = frame.rows[at];
+        assert_eq!(frame.part_at(0.0, rect.x + 40.0, rect.y + 10.0), Some(Part::Toggle("copyOnSelect")));
+        let at = frame.entries.iter().position(|e| matches!(e, Entry::Setting(row) if row.id == "rightClick")).unwrap();
+        let rect = frame.rows[at];
+        let option = frame.items.iter().find(|item| item.part == Some(Part::Option("rightClick", 1))).unwrap();
+        assert!(rect.contains(option.rect.x + 2.0, option.rect.y + 2.0));
+        assert_eq!(frame.part_at(0.0, option.rect.x + 2.0, option.rect.y + 2.0), Some(Part::Option("rightClick", 1)));
+    }
+
+    #[test]
+    fn rows_scrolled_out_of_the_area_cannot_be_pressed_and_reveal_scrolls_the_least() {
+        let settings = Settings::default();
+        let frame = frame(&Page::default(), &settings);
+        // A point over the title bar of the page is not in the rows' area, whatever scrolled there.
+        let above = frame.viewport.y - 5.0;
+        assert_eq!(frame.part_at(200.0, 400.0, above), None);
+        let last = frame.rows.len() - 1;
+        let scroll = frame.reveal(last, 0.0);
+        assert!(scroll > 0.0 && scroll <= frame.max_scroll());
+        assert_eq!(frame.reveal(0, scroll), 0.0);
+        assert_eq!(frame.reveal(last, scroll), scroll);
+    }
+
+    #[test]
+    fn stepping_moves_a_value_by_its_step_wraps_a_choice_and_stays_in_range() {
+        let settings = Settings::default();
+        let opacity = row("appearance.opacity");
+        assert_eq!(stepped(opacity, &settings, &[], true, false), Some(Value::Number(73.0)));
+        assert_eq!(stepped(opacity, &settings, &[], false, true), Some(Value::Number(67.0)));
+        let backdrop = row("appearance.backdrop");
+        assert_eq!(stepped(backdrop, &settings, &[], false, false), Some(Value::Index(3)), "before the first option is the last one");
+        let size = row("font.size");
+        let mut small = Settings::default();
+        (size.set)(&mut small, Value::Number(1.0));
+        assert_eq!(stepped(size, &small, &[], false, false), Some((size.get)(&small)), "the lower bound holds");
+        assert_eq!(stepped(row("font.family"), &settings, &[], true, false), None, "a text row has no step");
+        assert_eq!(stepped(row("copyOnSelect"), &settings, &[], true, false), Some(Value::Bool(!settings.copy_on_select)));
+    }
+
+    #[test]
+    fn a_slider_takes_the_number_under_the_pointer_on_the_grid_of_its_steps() {
+        let range = Range { min: 20.0, max: 100.0, step: 1.0, large: 5.0 };
+        let track = Rect::new(100.0, 0.0, 200.0, 4.0);
+        assert_eq!(slider_value(range, track, 100.0), 20.0);
+        assert_eq!(slider_value(range, track, 300.0), 100.0);
+        assert_eq!(slider_value(range, track, 200.0), 60.0);
+        assert_eq!(slider_value(range, track, 50.0), 20.0, "left of the track is the minimum");
+        assert_eq!(slider_value(range, track, 900.0), 100.0);
+    }
+}

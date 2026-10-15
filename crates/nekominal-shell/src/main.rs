@@ -13,6 +13,7 @@ mod layout;
 mod logic;
 mod open;
 mod popup;
+mod settings_page;
 mod status;
 mod tab;
 mod win;

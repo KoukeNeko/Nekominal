@@ -687,37 +687,60 @@ function Next-SavedSettings {
     if (Test-Path $path) { Get-Content $path -Raw | ConvertFrom-Json } else { $null }
 }
 
-# The settings list from the menu shortcut, the palette entries for a colour scheme and for a setting, and what they keep.
+# The settings page: it opens from the keyboard, its rows are driven by the keys and the pointer, what they change is kept
+# in the settings file, and a screen reader is told of its rows. The palette opens it at a row and sets a colour scheme.
 function Scenario-NextSettings {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    # The geometry the pointer needs is the page's own: read from its source, not copied.
+    $source = Get-Content (Join-Path $PSScriptRoot '../../crates/nekominal-shell/src/settings_page.rs') -Raw
+    $constant = { param($name) if ($source -notmatch "const $name`: f32 = ([0-9.]+);") { throw "$name not found" }; [double]$Matches[1] }
+    $navTop = & $constant 'NAV_TOP'; $navItem = & $constant 'NAV_ITEM'
     Run-Next {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $rows = {
+            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } |
+                ForEach-Object { $_.Current.Name })
+        }
         Next-Line 'echo ONE'
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900     # Ctrl+Shift+O (Ctrl+, is taken by the Zhuyin IME)
-        $popup = Next-PopupWindow
-        Next-Check 'settings.opens' ($popup -ne [IntPtr]::Zero) 'Ctrl+Shift+O opens the settings list'
-        if ($popup -eq [IntPtr]::Zero) { throw 'settings list missing; no keys sent on' }
-        $rect = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$rect)
-        Next-Check 'settings.is-drawn' ((Next-LightPixels ($rect.Left + 10) ($rect.Top + 10) ($rect.Right - $rect.Left - 20) ($rect.Bottom - $rect.Top - 20)) -gt 100) 'the list shows its rows, not just its backdrop'
-        Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 500
-        Press 0x27; Press 0x27; Press 0x27; Start-Sleep -Milliseconds 500    # Right x3: three steps up
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900          # Ctrl+Shift+O (Ctrl+, is taken by the Zhuyin IME)
+        $listed = & $rows
+        Next-Check 'settings.opens' ($listed -contains 'Background opacity') "the page lists its rows: $($listed.Count) rows"
+        $r = Win-Rect; $s = Get-Scale
+        $shot = if ($env:NEXT_SHOT) { Join-Path (Split-Path $env:NEXT_SHOT) 'settings-page.png' } else { Join-Path $env:TEMP 'settings-page.png' }
+        [void](ShotRegion $shot ($r.Left + 8) ($r.Top + [int](48 * $s)) ($r.Right - $r.Left - 16) ($r.Bottom - $r.Top - [int](48 * $s) - 8))
+        Next-Check 'settings.is-drawn' ((Next-LightPixels ($r.Left + 240) ($r.Top + [int](150 * $s)) 600 300) -gt 100) 'the rows show text, not just a backdrop'
+        Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300     # Down x3: the opacity row
+        Press 0x27; Press 0x27; Press 0x27; Start-Sleep -Milliseconds 500     # Right x3
         $saved = Next-SavedSettings
         Next-Check 'settings.right-steps-the-value-and-keeps-it' ($saved -and $saved.appearance.opacity -eq 0.75) "opacity in the file: $($saved.appearance.opacity)"
         Press 0x0D; Start-Sleep -Milliseconds 500                             # Enter: one more
-        $saved = Next-SavedSettings
-        Next-Check 'settings.enter-steps-it-and-stays-open' ($saved.appearance.opacity -eq 0.76 -and (Next-PopupWindow) -ne [IntPtr]::Zero) "opacity $($saved.appearance.opacity), the list is still open"
-        Press 0x1B; Start-Sleep -Milliseconds 500
+        Next-Check 'settings.enter-steps-it' ((Next-SavedSettings).appearance.opacity -eq 0.76) "opacity $((Next-SavedSettings).appearance.opacity)"
+        Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 500              # the search line
+        $listed = & $rows
+        Next-Check 'settings.search-narrows-the-rows' ($listed.Count -ge 1 -and $listed.Count -lt 5 -and $listed -contains 'Background opacity') "$($listed.Count) rows match: $($listed -join ', ')"
+        Press 0x28; Press 0x25; Start-Sleep -Milliseconds 500                 # Down to the first match, Left: one back
+        Next-Check 'settings.left-steps-back' ((Next-SavedSettings).appearance.opacity -eq 0.75) "opacity $((Next-SavedSettings).appearance.opacity)"
+        Press 0x1B; Start-Sleep -Milliseconds 400                             # Esc: clears the search, the page stays
+        Next-Check 'settings.escape-clears-the-search' ((& $rows).Count -gt 5) 'all the rows of the section are back'
+        $terminal = @{ X = [int]($r.Left + 100 * $s); Y = [int]($r.Top + ($navTop + 1.5 * $navItem + 48) * $s) }
+        Click-At $terminal.X $terminal.Y; Start-Sleep -Milliseconds 500       # the second section of the list
+        $listed = & $rows
+        Next-Check 'settings.section-list-switches-the-rows' ($listed -contains 'Copy on select' -and $listed -notcontains 'Background opacity') "rows now: $($listed.Count)"
+        Press 0x09; Start-Sleep -Milliseconds 400                             # Tab: the next section
+        Next-Check 'settings.tab-switches-sections' ((& $rows) -notcontains 'Copy on select') 'the third section has other rows'
+        Press 0x1B; Start-Sleep -Milliseconds 600                             # Esc: closes the page
+        Next-Line 'echo AFTER'
+        Next-Check 'settings.escape-closes' ((Next-Text) -match 'AFTER' -and (& $rows).Count -eq 0) 'the terminal takes the typing again'
         Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900              # palette
         Type-Unicode 'color scheme: nord' 30; Start-Sleep -Milliseconds 500
         Press 0x0D; Start-Sleep -Milliseconds 800
-        $saved = Next-SavedSettings
-        Next-Check 'settings.palette-sets-the-colour-scheme' ($saved.theme -eq 'Nord') "theme in the file: $($saved.theme)"
+        Next-Check 'settings.palette-sets-the-colour-scheme' ((Next-SavedSettings).theme -eq 'Nord') "theme in the file: $((Next-SavedSettings).theme)"
         Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900
         Type-Unicode 'settings: language' 30; Start-Sleep -Milliseconds 500
-        Press 0x0D; Start-Sleep -Milliseconds 800
-        $popup = Next-PopupWindow
-        Next-Check 'settings.palette-opens-the-row' ($popup -ne [IntPtr]::Zero) 'a settings entry of the palette opens the list'
-        Press 0x1B; Start-Sleep -Milliseconds 400
-        Next-Line 'echo AFTER'
-        Next-Check 'settings.escape-closes' ((Next-Text) -match 'AFTER') 'after Esc the pane takes the typing again'
+        Press 0x0D; Start-Sleep -Milliseconds 900
+        Next-Check 'settings.palette-opens-the-row' ((& $rows) -contains 'Language') 'a settings entry of the palette opens the page at its section'
+        Press 0x1B; Start-Sleep -Milliseconds 500
         Press 0x4E @(0x11, 0x10); Start-Sleep -Milliseconds 900              # Ctrl+Shift+N: the profiles
         Next-Check 'profiles.list-opens' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'Ctrl+Shift+N lists the profiles'
         Press 0x28; Press 0x0D; Start-Sleep -Milliseconds 1800
