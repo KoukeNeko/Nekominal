@@ -104,40 +104,73 @@ impl Glass {
         with_alpha(self.background, 0.45)
     }
 
-    /// Surface of floating panels (palette, find bar, quick flyout): the scheme background, nearly opaque so
-    /// text stays readable over whatever the backdrop shows.
+    /// Surface of floating panels (palette, find bar, the settings drawer): the scheme background, nearly opaque so
+    /// text stays readable over whatever the backdrop shows. The alpha is fixed: it does not follow the opacity of the
+    /// terminal, so a panel is as readable at 20 % as at 100 %.
     pub fn panel(&self) -> Color {
-        with_alpha(self.background, 0.88)
+        with_alpha(self.background, PANEL_ALPHA)
+    }
+
+    /// What the panel looks like over `backdrop`, which is whatever shows through it (the wallpaper, the terminal).
+    pub fn panel_over(&self, backdrop: Color) -> Color {
+        backdrop.mix(Color { a: 255, ..self.background }, PANEL_ALPHA)
+    }
+
+    /// `color` moved toward black or white, as far as it takes, until it has `min` contrast on the panel over every
+    /// backdrop of [`WORST_BACKDROPS`]; a colour that has it already is left alone. The panel over the backdrop that is
+    /// closest in brightness to the colour decides, and moving the colour only widens its distance to the others.
+    fn legible(&self, color: Color, min: f32) -> Color {
+        let rgb = |c: Color| r::Rgb(c.r, c.g, c.b);
+        let ratio = |color: Color, panel: Color| r::contrast::contrast_ratio(rgb(color), rgb(panel));
+        let mut color = Color { a: 255, ..color };
+        for _ in 0..3 {
+            let worst = WORST_BACKDROPS
+                .iter()
+                .map(|backdrop| self.panel_over(Color::rgb(*backdrop)))
+                .min_by(|a, b| ratio(color, *a).total_cmp(&ratio(color, *b)))
+                .unwrap_or(self.background);
+            if ratio(color, worst) >= min {
+                break;
+            }
+            let moved = r::contrast::ensure_min_contrast(rgb(color), rgb(worst), min);
+            color = Color { r: moved.0, g: moved.1, b: moved.2, a: 255 };
+        }
+        color
     }
 
     pub fn panel_border(&self) -> Color {
         with_alpha(self.overlay(), if self.light { 0.14 } else { 0.18 })
     }
 
-    /// Text on the settings drawer.
+    /// Text on the settings drawer: the foreground, moved only as far as it takes to read ([`MIN_DRAWER_TEXT_CONTRAST`])
+    /// on the panel over any backdrop.
     pub fn panel_text(&self) -> Color {
-        self.foreground
+        self.legible(self.foreground, MIN_DRAWER_TEXT_CONTRAST)
     }
 
-    /// Secondary text on the settings drawer: the foreground moved toward the background, but opaque, so it does not
-    /// depend on what shows through the panel.
+    /// Secondary text on the settings drawer: the text toward the background, opaque (what shows through the panel does
+    /// not tint it), and still legible.
     pub fn panel_text_secondary(&self) -> Color {
-        self.foreground.mix(self.background, 0.35)
+        let text = self.panel_text();
+        let softer = self.legible(text.mix(self.background, 0.35), MIN_DRAWER_TEXT_CONTRAST);
+        // Solving for legibility can land a step past the text itself when the text is at the floor: never stronger.
+        let distance = |color: Color| (color.luminance() - self.background.luminance()).abs();
+        if distance(softer) > distance(text) { text } else { softer }
     }
 
-    /// The outline of a control on the settings drawer.
+    /// The outline of a control on the settings drawer ([`MIN_DRAWER_CONTROL_CONTRAST`]).
     pub fn panel_outline(&self) -> Color {
-        self.foreground.mix(self.background, 0.5)
+        self.legible(self.foreground.mix(self.background, 0.5), MIN_DRAWER_CONTROL_CONTRAST)
     }
 
     /// The accent of a choice that is on (its outline and check mark) and of the bar of a modified row.
     pub fn panel_accent(&self) -> Color {
-        self.mark(self.accent)
+        self.legible(self.mark(self.accent), MIN_DRAWER_CONTROL_CONTRAST)
     }
 
-    /// The tag of a row whose value in the settings file was not valid.
+    /// The tag of a row whose value in the settings file was not valid: text, so as legible as the other text.
     pub fn panel_warning(&self) -> Color {
-        self.mark(self.warning)
+        self.legible(self.mark(self.warning), MIN_DRAWER_TEXT_CONTRAST)
     }
 }
 
@@ -162,6 +195,21 @@ pub fn opacity_control(backdrop: Backdrop, setting: f64) -> (f64, bool) {
     let shown = (f64::from(terminal_opacity(backdrop, setting)) * 100.0).round();
     (shown, backdrop != Backdrop::None)
 }
+
+/// How opaque the floating panels are. Fixed, so that what a panel says stays readable whatever the terminal behind it
+/// shows, and so that moving the opacity slider does not change the panel it is on. Measured over a striped window (the
+/// worst thing that can show through): the contrast of the text of the drawer changed by 0.10 between a background
+/// opacity of 20 % and 100 % at an alpha of 0.88, by 0.06 at 0.92 and by 0.00 at 0.96.
+pub const PANEL_ALPHA: f32 = 0.92;
+
+/// What the window can have behind a panel: white and black, the saturated primaries and secondaries. The contrast of
+/// the drawer is solved for these (a wallpaper is between them).
+pub const WORST_BACKDROPS: [u32; 8] = [0xFFFFFF, 0x000000, 0xFF0000, 0x00FF00, 0x0000FF, 0x00FFFF, 0xFF00FF, 0xFFFF00];
+
+/// Lowest contrast of the text of the drawer against its panel (WCAG normal text, AA), and of the outline of a control
+/// and of the mark of a choice that is on (WCAG non-text contrast), over any backdrop.
+pub const MIN_DRAWER_TEXT_CONTRAST: f32 = 4.5;
+pub const MIN_DRAWER_CONTROL_CONTRAST: f32 = 3.0;
 
 /// Lowest contrast between a status mark and the background it sits on (WCAG non-text contrast).
 pub const MIN_MARK_CONTRAST: f32 = 3.0;
@@ -275,6 +323,109 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    fn rgb(color: Color) -> r::Rgb {
+        r::Rgb(color.r, color.g, color.b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        r::contrast::contrast_ratio(rgb(a), rgb(b))
+    }
+
+    /// Backdrops the rule was not solved for: every mix of 0, 128 and 255 in the three channels (27 colours, among them
+    /// white, black and the saturated ones).
+    fn backdrops() -> Vec<Color> {
+        let levels = [0u32, 128, 255];
+        let mut all = Vec::new();
+        for red in levels {
+            for green in levels {
+                for blue in levels {
+                    all.push(Color::rgb(red << 16 | green << 8 | blue));
+                }
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn drawer_text_and_controls_read_on_the_panel_over_every_backdrop_for_every_scheme() {
+        for scheme in &SCHEMES {
+            let glass = Glass::from_scheme(scheme);
+            for backdrop in backdrops() {
+                let panel = glass.panel_over(backdrop);
+                let at = format!("{} over #{:02X}{:02X}{:02X}", scheme.name, backdrop.r, backdrop.g, backdrop.b);
+                for (role, color) in [
+                    ("text", glass.panel_text()),
+                    ("secondary text", glass.panel_text_secondary()),
+                    ("warning", glass.panel_warning()),
+                ] {
+                    let ratio = contrast(color, panel);
+                    assert!(ratio >= MIN_DRAWER_TEXT_CONTRAST - 0.01, "{at}: {role} {ratio:.2}");
+                }
+                for (role, color) in [("outline", glass.panel_outline()), ("accent", glass.panel_accent())] {
+                    let ratio = contrast(color, panel);
+                    assert!(ratio >= MIN_DRAWER_CONTROL_CONTRAST - 0.01, "{at}: {role} {ratio:.2}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_panel_fill_is_one_fixed_alpha_and_panel_over_is_that_fill_composited() {
+        for scheme in &SCHEMES {
+            let glass = Glass::from_scheme(scheme);
+            assert_eq!(glass.panel().a, (PANEL_ALPHA * 255.0).round() as u8, "{}", scheme.name);
+            let backdrop = Color::rgb(0x336699);
+            let alpha = f32::from(glass.panel().a) / 255.0;
+            let by_hand =
+                |top: u8, under: u8| (f32::from(top) * alpha + f32::from(under) * (1.0 - alpha)).round() as i32;
+            let over = glass.panel_over(backdrop);
+            for (got, expected) in [
+                (over.r, by_hand(glass.background.r, backdrop.r)),
+                (over.g, by_hand(glass.background.g, backdrop.g)),
+                (over.b, by_hand(glass.background.b, backdrop.b)),
+            ] {
+                assert!((i32::from(got) - expected).abs() <= 1, "{}", scheme.name);
+            }
+        }
+    }
+
+    #[test]
+    fn tokyo_night_secondary_text_on_a_white_wallpaper_was_3_6_to_1_and_now_reads() {
+        let glass = Glass::from_scheme(themes::scheme("Tokyo Night"));
+        // The measured value of the rule before the drawer took its own: the foreground a third of the way to the
+        // background on a panel of alpha 0.88 over white (the study estimated about 3.9 for an alpha blend; the opaque
+        // mix measures 3.6).
+        let old_panel = Color::rgb(0xFFFFFF).mix(glass.background, 0.88);
+        let before = contrast(glass.foreground.mix(glass.background, 0.35), old_panel);
+        assert!((3.5..3.7).contains(&before), "{before:.2}");
+        let panel = glass.panel_over(Color::rgb(0xFFFFFF));
+        let after = contrast(glass.panel_text_secondary(), panel);
+        assert!(after >= MIN_DRAWER_TEXT_CONTRAST - 0.01, "{after:.2}");
+        assert!(contrast(glass.panel_text(), panel) > 7.0, "the primary text reads without a change");
+    }
+
+    #[test]
+    fn a_colour_that_reads_already_is_left_alone_and_the_others_move_toward_the_light_or_the_dark_by_the_same_rule() {
+        let tokyo = Glass::from_scheme(themes::scheme("Tokyo Night"));
+        assert_eq!(tokyo.panel_text(), Color { a: 255, ..tokyo.foreground }, "no per-scheme hack: it already reads");
+        let dark = Glass::from_scheme(themes::scheme("Solarized Dark"));
+        assert!(
+            dark.panel_text().luminance() > dark.foreground.luminance(),
+            "a dull foreground on a dark panel gets lighter"
+        );
+        let light = Glass::from_scheme(themes::scheme("Solarized Light"));
+        assert!(light.panel_text().luminance() < light.foreground.luminance(), "and on a light panel darker");
+        for scheme in &SCHEMES {
+            let glass = Glass::from_scheme(scheme);
+            let panel = glass.panel_over(Color::rgb(if glass.light { 0x000000 } else { 0xFFFFFF }));
+            assert!(
+                contrast(glass.panel_text_secondary(), panel) <= contrast(glass.panel_text(), panel) + 0.01,
+                "{}: the secondary text is never stronger than the text",
+                scheme.name
+            );
         }
     }
 

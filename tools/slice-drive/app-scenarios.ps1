@@ -20,6 +20,7 @@
 #   Scenario-DrawerPages      # settings file problems, profiles, agents, advanced
 #   Scenario-DrawerKeys       # the shortcuts page: recording, conflicts, Replace, reset, restore all
 #   Scenario-FirstWrite       # the first rewrite of settings.json keeps the original as settings.json.orig
+#   Scenario-DrawerGlass      # the text of the drawer measured over the striped window at 20 % and 100 % background opacity
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -1950,9 +1951,55 @@ function Scenario-FirstWrite {
         Assert-Results $results 'drawer-orig'
     } -NoShot
 }
+# The text of the drawer must not depend on the opacity of the background: over the striped window (the worst thing that can
+# show through a panel) the contrast of the text of a row, measured in the picture as the brightest ink pixel against the
+# darkest pixel of the region, is taken with the opacity at 20 % and at 100 %, for a dark and a light scheme.
+function Region-Contrast([string]$Png, [int]$X, [int]$Y, [int]$W, [int]$H) {
+    $bmp = [System.Drawing.Bitmap]::FromFile($Png)
+    try {
+        $lin = { param($c) $v = $c / 255.0; if ($v -le 0.04045) { $v / 12.92 } else { [Math]::Pow(($v + 0.055) / 1.055, 2.4) } }
+        $min = 2.0; $max = -1.0
+        for ($yy = $Y; $yy -lt [Math]::Min($Y + $H, $bmp.Height); $yy++) {
+            for ($xx = $X; $xx -lt [Math]::Min($X + $W, $bmp.Width); $xx++) {
+                $c = $bmp.GetPixel($xx, $yy)
+                $l = 0.2126 * (& $lin $c.R) + 0.7152 * (& $lin $c.G) + 0.0722 * (& $lin $c.B)
+                if ($l -lt $min) { $min = $l }; if ($l -gt $max) { $max = $l }
+            }
+        }
+        [pscustomobject]@{ Min = $min; Max = $max; Contrast = ($max + 0.05) / ($min + 0.05) }
+    } finally { $bmp.Dispose() }
+}
+function Scenario-DrawerGlass {
+    foreach ($theme in 'Tokyo Night', 'One Half Light') {
+        $name = 'drawer-glass-' + ($theme -replace ' ', '-').ToLower()
+        Run-App $name @{ theme = $theme; confirmClose = $false } {
+            First-Prompt
+            Open-Drawer
+            $results = [System.Collections.Generic.List[string]]::new()
+            $slider = Get-Slider 0
+            $label = Get-ElementRect (Nk-Text 'settings.opacity') 'TextBlock'
+            $window = Win-Rect; $margin = $script:PatternMargin
+            Move-To ($window.Left + 120) ($window.Top + 600); Start-Sleep -Milliseconds 400
+            $measure = {
+                param($percent, $shot)
+                Set-Slider $percent 0; Start-Sleep -Milliseconds 1600
+                Shot-WithPattern (Shot-Path $shot) | Out-Null
+                Region-Contrast (Shot-Path $shot) ($label.X - ($window.Left - $margin)) ($label.Y - ($window.Top - $margin)) $label.W $label.H
+            }
+            $low = & $measure 20 "$name-20"
+            $high = & $measure 100 "$name-100"
+            'theme {0}: text contrast over the striped window: opacity 20% {1:N2} (ink {2:N3}, darkest {3:N3}) | 100% {4:N2} (ink {5:N3}, darkest {6:N3})' -f $theme, $low.Contrast, $low.Max, $low.Min, $high.Contrast, $high.Max, $high.Min
+            $delta = [Math]::Abs($low.Contrast - $high.Contrast)
+            $results.Add((Check-True "the text contrast of a row changes by at most 0.1 between 20 % and 100 % opacity ($theme)" ($delta -le 0.1) ('{0:N3}' -f $delta)))
+            $results.Add((Check-True "and the text reads at both (at least 4.5:1) ($theme)" (($low.Contrast -ge 4.5) -and ($high.Contrast -ge 4.5)) ('{0:N2} / {1:N2}' -f $low.Contrast, $high.Contrast)))
+            Close-Drawer
+            Assert-Results $results $name
+        } -Pattern -NoShot
+    }
+}
 function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass }
