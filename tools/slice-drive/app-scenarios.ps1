@@ -21,6 +21,7 @@
 #   Scenario-DrawerKeys       # the shortcuts page: recording, conflicts, Replace, reset, restore all
 #   Scenario-FirstWrite       # the first rewrite of settings.json keeps the original as settings.json.orig
 #   Scenario-DrawerGlass      # the text of the drawer measured over the striped window at 20 % and 100 % background opacity
+#   Scenario-DrawerWidths     # the drawer at 1440/1000/700/500 DIP of window and in English: width rule, margins, no resize
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -1997,9 +1998,59 @@ function Scenario-DrawerGlass {
         } -Pattern -NoShot
     }
 }
+# The width of the drawer at 1440, 1000, 700 and 500 DIP of window: 480 DIP while the window leaves room for it and its 8
+# DIP margins, never wider than the window less the margins; always inside the window, its right edge 8 DIP from the edge
+# of the window and the terminal under it not resized. Pictures of each width in docs/screenshots.
+function Scenario-DrawerWidths {
+    Run-App 'drawer-widths' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $scale = Get-Scale
+        foreach ($width in 1440, 1000, 700, 500) {
+            Set-WindowWidth $width
+            $mark = Log-Mark
+            Open-Drawer
+            $window = Win-Rect
+            $search = (Drawer-Search).Current.BoundingRectangle
+            # The terminal area is as wide as the body the drawer floats in. The search box has 16 DIP of the sheet on each
+            # side, and the sheet a 1 DIP border.
+            $body = Terminal-Rect
+            $bodyDip = $body.W / $scale
+            $drawerDip = $search.Width / $scale + 34
+            $right = (($body.X + $body.W) - ($search.X + $search.Width)) / $scale - 17
+            $expected = [Math]::Max(320, [Math]::Min(480, $bodyDip - 16))
+            'at {0} DIP of window (body {1:N1}): drawer {2:N1} DIP wide, {3:N1} DIP from the right edge of the body' -f $width, $bodyDip, $drawerDip, $right
+            $results.Add((Check-True "$width DIP: the drawer is the width the rule gives (480, or the window less 16, at least 320)" ([Math]::Abs($drawerDip - $expected) -le 2) ('{0:N1} vs {1:N1}' -f $drawerDip, $expected)))
+            $results.Add((Check-True "$width DIP: its right edge is 8 DIP inside the window" ([Math]::Abs($right - 8) -le 1.5) ('{0:N1} DIP' -f $right)))
+            $results.Add((Check-True "$width DIP: it fits inside the window" ($search.X -ge $window.Left)))
+            $move = Win-Rect; Move-To ($move.Left + 150) ($move.Top + 600); Start-Sleep -Milliseconds 400
+            Shot-Safe (Shot-Path "drawer-width-$width") | Out-Null
+            Close-Drawer
+            $results.Add((Check "$width DIP: opening and closing it gave the pane no other grid" 0 (Grid-Lines $mark).Count))
+        }
+        Assert-Results $results 'drawer-widths'
+    } -NoShot
+    # English: the strip of sections is longer than the sheet, and the rows have longer labels.
+    Run-App 'drawer-english' @{ language = 'en-US'; confirmClose = $false } {
+        First-Prompt
+        Open-Drawer
+        # The strip fits at the default width: the last chip ends inside the viewport (a chip cut by it is clipped to it).
+        $last = (Get-Element (Nk-Text 'settings.advanced' -Lang en) 'ToggleButton').Current.BoundingRectangle
+        $viewport = (Get-Element (Nk-Text 'settings.search' -Lang en) 'TextBox').Current.BoundingRectangle
+        Assert-Results @((Check-True 'English: the last section chip is whole inside the strip' ($last.X + $last.Width -le $viewport.X + $viewport.Width - 1) ('chip ends {0:N1}, strip ends {1:N1}' -f ($last.X + $last.Width), ($viewport.X + $viewport.Width)))) 'drawer-english'
+        $window = Win-Rect; Move-To ($window.Left + 150) ($window.Top + 600); Start-Sleep -Milliseconds 400
+        Shot-Safe (Shot-Path 'drawer-en-appearance') | Out-Null
+        foreach ($s in 'settings.terminal', 'settings.profiles', 'settings.agents', 'settings.keys', 'settings.advanced') {
+            Click-Name (Nk-Text $s -Lang en) -Class 'ToggleButton'; Start-Sleep -Milliseconds 700
+            Move-To ($window.Left + 150) ($window.Top + 600); Start-Sleep -Milliseconds 300
+            Shot-Safe (Shot-Path ('drawer-en-' + ($s -replace 'settings\.', ''))) | Out-Null
+        }
+        Close-Drawer
+    } -NoShot
+}
 function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
