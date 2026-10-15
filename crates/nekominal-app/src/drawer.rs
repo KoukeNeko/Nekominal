@@ -321,9 +321,10 @@ impl Drawer {
                     }
                     Row::Key(command) => self.extras.borrow().key_row(*command),
                 };
-                if let Some(element) = shown
-                    && let Ok(element) = element.cast::<UIElement>()
-                {
+                let Some(row) = shown else { continue };
+                // A hit says which section it is in.
+                drawer_rows::set_section_tag(&row, Some(t(hit.section().text())));
+                if let Ok(element) = row.cast::<UIElement>() {
                     let _ = children.Append(&element);
                     count += 1;
                 }
@@ -331,12 +332,14 @@ impl Drawer {
         } else {
             let section = self.current.get();
             for row in rows.iter().filter(|row| row.descriptor.section == section) {
+                drawer_rows::set_section_tag(&row.root, None);
                 if let Ok(element) = row.root.cast::<UIElement>() {
                     let _ = children.Append(&element);
                     count += 1;
                 }
             }
             for element in self.extras.borrow().section_rows(section) {
+                drawer_rows::set_section_tag(&element, None);
                 if let Ok(element) = element.cast::<UIElement>() {
                     let _ = children.Append(&element);
                     count += 1;

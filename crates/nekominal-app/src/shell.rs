@@ -2453,6 +2453,14 @@ impl Shell {
                         self.select_index(index);
                     }
                 }
+                Command::TabSelectLeft | Command::TabSelectRight => {
+                    let count = self.tabs.borrow().len();
+                    if let Some(index) =
+                        Command::tab_neighbour(self.selected.get(), count, command == Command::TabSelectRight)
+                    {
+                        self.select_index(index);
+                    }
+                }
                 Command::TabNextNeedsResponse => {
                     let waiting: Vec<bool> = self.tabs.borrow().iter().map(|tab| tab.needs_response()).collect();
                     if let Some(index) = logic::next_waiting(&waiting, self.selected.get()) {

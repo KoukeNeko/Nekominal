@@ -11,6 +11,7 @@
 #   Scenario-Tabs             # position plate, chip widths, edge counts, reveal, list of every tab, MRU Ctrl+Tab, closing back
 #   Scenario-TabWidths        # every chip has one width, which selecting, retitling, splitting and hovering leave alone
 #   Scenario-TabDragScroll    # a chip dragged to the edge of the strip scrolls it: tab 3 to the 25th of 30, Esc puts it back
+#   Scenario-TabNav           # Ctrl+PageDown and Ctrl+PageUp, Ctrl+Tab still by use, the section tags of a search of the drawer
 #   Scenario-TabKeys          # arrow keys, Space, Enter, F2 and a double click on chips, the rename box, the tooltip
 #   Scenario-TabDrag          # dragging an unselected chip of a compressed strip moves it by the widths of the layout the press made
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
@@ -1118,6 +1119,51 @@ function Scenario-TabDragScroll {
         $results.Add((Check 'Esc during a drag puts every chip back in its place' ($held -join ' ') ((& $order) -join ' ')))
         $results.Add((Check 'and the tab is still the one shown' ([array]::IndexOf($held, 't10') + 1) (Selected-Tab)))
         Assert-Results $results 'tab drag scroll'
+    } -NoShot
+}
+
+# Positional tab navigation and the section tags of the search of the drawer. Ctrl+PageDown and Ctrl+PageUp go to the tab on
+# the right and on the left of the selected one, round the ends, while Ctrl+Tab still follows the order of use; both are in
+# the palette. A search of the drawer says the section of each row it finds, a section does not.
+function Scenario-TabNav {
+    Run-App 'tab-nav' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Name-Tab 't1'
+        foreach ($n in 2..5) { New-Tab; Name-Tab "t$n" }
+        Select-By-List 't3'
+        Chord @(0x11) 0x22; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'Ctrl+PageDown goes to the tab on the right' 4 (Selected-Tab)))
+        Chord @(0x11) 0x22; Chord @(0x11) 0x22; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'and from the last one to the first' 1 (Selected-Tab)))
+        Chord @(0x11) 0x21; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'Ctrl+PageUp goes from the first to the last' 5 (Selected-Tab)))
+        Chord @(0x11) 0x21; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'and to the tab on the left' 4 (Selected-Tab)))
+        # Ctrl+Tab is still the order of use: t4 was used last, then t5, so one press goes to t5
+        Chord @(0x11) 0x09; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'Ctrl+Tab goes to the tab used before, not to the one on the right' 5 (Selected-Tab)))
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
+        Type-Unicode (Nk-Text 'tab.selectRight') 40; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'the palette lists the command' 1 @(Get-Items).Count))
+        Press 0x0D; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'and runs it' 1 (Selected-Tab)))
+        # the drawer: a search says the section of what it finds
+        Open-Drawer
+        # The name of a section is also the text of its button in the strip: that is the one that is always there.
+        $section = { param($id) @(Get-ElementsByName (Nk-Text $id) 'TextBlock').Count }
+        $base = & $section 'settings.terminal'; $baseKeys = & $section 'settings.keys'
+        $results.Add((Check 'a section shows its rows without the name of the section: only its button has it' 1 $base))
+        Type-Unicode (Nk-Text 'settings.bellVisual').Substring(0, 2) 40; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'a search says where each row is: the two bell rows are in the terminal section' ($base + 2) (& $section 'settings.terminal')))
+        $window = Win-Rect; Move-To ($window.Left + 200) ($window.Top + 500); Start-Sleep -Milliseconds 400; Shot-Safe (Shot-Path 'drawer-search-tags') | Out-Null
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        Type-Unicode (Nk-Text 'tab.new') 40; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'and a shortcut says it is in the shortcuts' $true ((& $section 'settings.keys') -gt $baseKeys)))
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        $results.Add((Check 'clearing the search takes the names away' $baseKeys (& $section 'settings.keys')))
+        Close-Drawer
+        Assert-Results $results 'tab navigation'
     } -NoShot
 }
 
@@ -2457,4 +2503,4 @@ function Get-ElementsByName([string]$Name, [string]$Class = '') {
     $all = if ($Name -eq '*') { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) } else { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Name))) }
     foreach ($e in $all) { if (-not $Class -or $e.Current.ClassName.EndsWith($Class)) { $e } }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-TabDragScroll; Scenario-TabKeys; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-TitleFormat; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabWidths; Scenario-TabDrag; Scenario-TabDragScroll; Scenario-TabKeys; Scenario-TabNav; Scenario-Status; Scenario-Unread; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-TitleFormat; Scenario-Close; Scenario-Panes; Scenario-Drawer; Scenario-DrawerRows; Scenario-DrawerPages; Scenario-DrawerKeys; Scenario-FirstWrite; Scenario-DrawerGlass; Scenario-DrawerWidths }

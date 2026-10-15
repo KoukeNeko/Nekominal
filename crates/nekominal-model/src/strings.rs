@@ -61,6 +61,8 @@ texts! {
     TabNext "tab.next" "下一個分頁" "Next tab";
     TabPrevious "tab.previous" "上一個分頁" "Previous tab";
     TabGoto "tab.goto" "切換到分頁 {0}" "Go to tab {0}";
+    TabSelectLeft "tab.selectLeft" "切換到左側分頁" "Go to tab on the left";
+    TabSelectRight "tab.selectRight" "切換到右側分頁" "Go to tab on the right";
     TabNextNeedsResponse "tab.nextNeedsResponse" "下一個需要回應的分頁" "Next tab needing a response";
     TabMoveLeft "tab.moveLeft" "向左移動分頁" "Move tab left";
     TabMoveRight "tab.moveRight" "向右移動分頁" "Move tab right";

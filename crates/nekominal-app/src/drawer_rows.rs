@@ -46,11 +46,15 @@ const ROW_XAML: &str = r#"
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <TextBlock x:Name="Label" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                  Foreground="{StaticResource NkPanelText}"/>
+      <!-- The section of the row, said while the sheet shows what a search found and not a section. -->
+      <TextBlock x:Name="SectionTag" Grid.Column="1" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed"
+                 Foreground="{StaticResource NkPanelTextSecondary}"/>
       <!-- Said of a row whose value in the settings file was not valid. -->
-      <TextBlock x:Name="Tag" Grid.Column="1" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed"
+      <TextBlock x:Name="Tag" Grid.Column="2" FontSize="12" VerticalAlignment="Center" Visibility="Collapsed"
                  Foreground="{StaticResource NkPanelWarning}"/>
     </Grid>
     <Border x:Name="Slot" @SLOT@/>
@@ -260,6 +264,15 @@ pub fn build(drawer: &Rc<Drawer>, shell: &Rc<Shell>) -> Result<()> {
     *drawer.rows.borrow_mut() = rows;
     *drawer.extras.borrow_mut() = Extras::build(shell);
     Ok(())
+}
+
+/// Says the section of a row after its label (`Some`), or nothing (`None`): a search finds rows of every section, and
+/// each says where it is; a section shows its own rows and needs no tag.
+pub(crate) fn set_section_tag(row: &FrameworkElement, section: Option<&str>) {
+    if let Ok(tag) = find::<TextBlock>(row, "SectionTag") {
+        let _ = tag.SetText(section.unwrap_or_default());
+        let _ = ui(&tag).and_then(|tag| tag.SetVisibility(visibility(section.is_some())));
+    }
 }
 
 pub(crate) fn row_frame(label: &str, wide: bool) -> Result<(FrameworkElement, Border, UIElement, Button)> {

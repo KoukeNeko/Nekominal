@@ -16,6 +16,10 @@ pub enum Command {
     /// One-based tab number, 1 to 9; 9 is the last tab (see [`Command::tab_goto_index`]). Other numbers are not
     /// commands: they have no id of their own.
     TabGoto(u8),
+    /// The tab to the left or to the right of the selected one in the strip, wrapping at the ends. `TabNext` and
+    /// `TabPrevious` follow the order of use instead.
+    TabSelectLeft,
+    TabSelectRight,
     /// The next tab in strip order after the selected one, wrapping, that has a pane waiting for the user.
     TabNextNeedsResponse,
     TabMoveLeft,
@@ -71,6 +75,8 @@ impl Command {
         Command::TabGoto(7),
         Command::TabGoto(8),
         Command::TabGoto(9),
+        Command::TabSelectLeft,
+        Command::TabSelectRight,
         Command::TabNextNeedsResponse,
         Command::TabMoveLeft,
         Command::TabMoveRight,
@@ -130,6 +136,8 @@ impl Command {
             Command::TabGoto(8) => "tab.goto8",
             Command::TabGoto(9) => "tab.goto9",
             Command::TabGoto(_) => "tab.goto",
+            Command::TabSelectLeft => "tab.selectLeft",
+            Command::TabSelectRight => "tab.selectRight",
             Command::TabNextNeedsResponse => "tab.nextNeedsResponse",
             Command::TabMoveLeft => "tab.moveLeft",
             Command::TabMoveRight => "tab.moveRight",
@@ -188,6 +196,8 @@ impl Command {
             Command::TabNext => Text::TabNext,
             Command::TabPrevious => Text::TabPrevious,
             Command::TabGoto(_) => Text::TabGoto,
+            Command::TabSelectLeft => Text::TabSelectLeft,
+            Command::TabSelectRight => Text::TabSelectRight,
             Command::TabNextNeedsResponse => Text::TabNextNeedsResponse,
             Command::TabMoveLeft => Text::TabMoveLeft,
             Command::TabMoveRight => Text::TabMoveRight,
@@ -258,6 +268,8 @@ impl Command {
             Command::TabGoto(7) => &["Ctrl+Shift+7"],
             Command::TabGoto(8) => &["Ctrl+Shift+8"],
             Command::TabGoto(9) => &["Ctrl+Shift+9"],
+            Command::TabSelectLeft => &["Ctrl+PageUp"],
+            Command::TabSelectRight => &["Ctrl+PageDown"],
             Command::TabNextNeedsResponse => &["Ctrl+Shift+U"],
             Command::TabProfiles => &["Ctrl+Shift+N"],
             Command::PaneSplitRight => &["Alt+Shift+D", "Alt+Shift+="],
@@ -320,6 +332,18 @@ impl Command {
             1..=8 => Some(usize::from(number) - 1).filter(|index| *index < count),
             _ => None,
         }
+    }
+
+    /// The tab (zero-based) to the left or to the right of `index` among `count` tabs, wrapping at the ends. `None`
+    /// when there is no other tab.
+    pub fn tab_neighbour(index: usize, count: usize, right: bool) -> Option<usize> {
+        (count > 1).then(|| {
+            if right {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            }
+        })
     }
 
     /// The `TabGoto` number whose shortcut selects tab `index` of `count`, for showing it next to the tab.
@@ -440,9 +464,11 @@ mod tests {
             Command::AppearanceOpacityUp => 36,
             Command::AppearanceOpacityDown => 37,
             Command::TabNextNeedsResponse => 38,
+            Command::TabSelectLeft => 39,
+            Command::TabSelectRight => 40,
         }
     }
-    const VARIANTS: usize = 39;
+    const VARIANTS: usize = 41;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -777,6 +803,8 @@ mod tests {
             Command::TabNext
             | Command::TabPrevious
             | Command::TabGoto(_)
+            | Command::TabSelectLeft
+            | Command::TabSelectRight
             | Command::TabMoveLeft
             | Command::TabMoveRight
             | Command::PaneFocus(_)
@@ -833,6 +861,44 @@ mod tests {
         assert_eq!(Command::tab_goto_index(9, 0), None);
         assert_eq!(Command::tab_goto_index(0, 5), None);
         assert_eq!(Command::tab_goto_index(10, 12), None);
+    }
+
+    #[test]
+    fn the_tab_to_the_left_or_the_right_wraps_at_the_ends_and_needs_another_tab() {
+        assert_eq!(Command::tab_neighbour(0, 3, true), Some(1));
+        assert_eq!(Command::tab_neighbour(2, 3, true), Some(0));
+        assert_eq!(Command::tab_neighbour(0, 3, false), Some(2));
+        assert_eq!(Command::tab_neighbour(2, 3, false), Some(1));
+        assert_eq!(Command::tab_neighbour(0, 2, true), Some(1));
+        assert_eq!(Command::tab_neighbour(1, 2, true), Some(0));
+        assert_eq!(Command::tab_neighbour(0, 1, true), None);
+        assert_eq!(Command::tab_neighbour(0, 0, false), None);
+    }
+
+    #[test]
+    fn the_positional_tab_keys_are_free_of_the_commands_and_of_what_programs_need() {
+        use crate::keybindings::{clash, needed_by_programs};
+        let keymap = build_keymap(default_bindings(), &BTreeMap::new()).keymap;
+        for (command, text) in [
+            (Command::TabSelectLeft, "Ctrl+PageUp"),
+            (Command::TabSelectRight, "Ctrl+PageDown"),
+        ] {
+            assert_eq!(command.default_shortcuts(), [text]);
+            let chord = Shortcut::parse(text).expect("a shortcut");
+            assert!(!needed_by_programs(chord), "{text}");
+            assert_eq!(clash(&keymap, chord, command), None, "{text}");
+            assert_eq!(
+                keymap.find(chord.mods, chord.key.code()),
+                Some(command),
+                "{text}"
+            );
+        }
+        // Ctrl+Tab and Ctrl+Shift+Tab stay the order of use, and the scrolling of Ctrl+Shift+PageUp is not touched.
+        assert_eq!(Command::TabNext.default_shortcuts(), ["Ctrl+Tab"]);
+        assert_eq!(
+            Command::ScrollPageUp.default_shortcuts(),
+            ["Ctrl+Shift+PageUp"]
+        );
     }
 
     #[test]
