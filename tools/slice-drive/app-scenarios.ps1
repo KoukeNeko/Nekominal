@@ -646,6 +646,16 @@ function Scenario-Status {
         $results.Add((Check-True 'the window was reported inactive' (@($lines | Where-Object { $_ -match 'window active = false' }).Count -ge 1)))
         $results.Add((Check 'no taskbar flash failed' 0 (@($lines | Where-Object { $_ -match 'taskbar flash:' }).Count)))
         [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 600
+        # the title an agent reported names the tab for as long as the agent runs, also after its finished report was seen
+        $titleOf = { Chip-Title (Get-Chips | Where-Object { $_.Index -eq 8 }) }
+        $plain = & $titleOf
+        $agentTitle = 'Fix the build'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($agentTitle))
+        Type-Line ($esc + (& $report "state=done:id=x:app=claude:title=$encoded") + 'Start-Sleep 60'); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'an agent title names the tab' $agentTitle (& $titleOf)))
+        $results.Add((Check 'and the finished report, seen at once, leaves the name as it is' '' ((Get-Chips | Where-Object { $_.Index -eq 8 }).Status)))
+        Chord @(0x11) 0x43; Start-Sleep -Milliseconds 2500
+        $results.Add((Check 'at the prompt, with the agent gone, the tab is named by the rules again' $plain (& $titleOf)))
         'ended in {0:N0} s' -f ((Get-Date) - $start).TotalSeconds
         Assert-Results $results 'status'
     } -Pattern -NoShot
