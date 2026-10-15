@@ -5,7 +5,7 @@
 #   Reset-SoundWitness                   forgets the peaks seen so far
 #   Get-SoundPeak                        the largest endpoint peak since the last reset (0..1)
 #   Measure-Peak { ... } [-WindowMs 1500]  runs the block and returns the largest peak up to WindowMs after it ($null: baseline not quiet)
-#   Test-WitnessPositive                 plays ONE MessageBeep and reports whether the meter saw it (calibration, audible)
+#   Test-WitnessPositive                 plays ONE MessageBeep and returns @{ Seen; Peak; Text }: did the meter see it (calibration, audible)
 #
 # The meter sees every sound any process renders to the default endpoint, so the baseline must be quiet; a
 # nonzero baseline makes Measure-Peak return $null (inconclusive) instead of a pass.
@@ -91,10 +91,13 @@ function Measure-Peak([scriptblock]$Action, [int]$WindowMs = 1500) {
     [SoundWitness]::Take()
 }
 
+# Plays ONE MessageBeep (audible) and reports whether the meter saw it. A witness that cannot hear a known sound
+# (a virtual endpoint that stops its engine while nothing renders to it, a muted device) proves nothing when it hears
+# none from the app: a scenario that relies on it checks `.Seen` first.
 function Test-WitnessPositive {
     [void][SoundWitness]::Take(); Start-Sleep -Milliseconds 700; [void][SoundWitness]::Take()
     [void][SoundWitness]::MessageBeep(0)
     Start-Sleep -Milliseconds 1200
     $peak = [SoundWitness]::Take()
-    'positive control (one MessageBeep): peak {0:E2}, seen: {1}' -f $peak, ($peak -ge $global:WitnessThreshold)
+    [pscustomobject]@{ Peak = $peak; Seen = ($peak -ge $global:WitnessThreshold); Text = ('positive control (one MessageBeep): peak {0:E2}, seen: {1}' -f $peak, ($peak -ge $global:WitnessThreshold)) }
 }

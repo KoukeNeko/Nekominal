@@ -12,6 +12,7 @@
 #   Scenario-Titles           # default tab titles: folders, collisions, program titles, bidi cleaning
 #   Scenario-Panes            # pane count and zoom marks on a chip, the corner label of a zoomed pane, warning line of an unfocused pane
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
+#   Scenario-StatusExit       # a program that ends with an error in the middle of a progress report shows an error
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -50,8 +51,10 @@ function Name-Tab([string]$Title) {
 }
 
 # Every run is started with NEKOMINAL_NO_LAUNCH: a link or the settings file is logged where it would be opened, and no
-# browser or editor starts.
+# browser or editor starts. The interface language is zh-TW unless the settings say otherwise, so that the names of
+# elements (Nk-Text) are the same on every machine.
 function Run-App([string]$Name, [hashtable]$Settings = @{}, [scriptblock]$Script, [switch]$Pattern, [switch]$NoShot, [hashtable]$Env = @{}) {
+    if (-not $Settings.ContainsKey('language')) { $Settings = $Settings + @{ language = 'zh-TW' } }
     $params = @{ Name = $Name; OutDir = $global:NkShots; Settings = $Settings; Script = $Script; SettleMs = 3500; Env = (@{ NEKOMINAL_NO_LAUNCH = '1' } + $Env) }
     if ($Pattern) { $params['Pattern'] = $true }
     if ($NoShot) { $params['NoShot'] = $true }
@@ -98,9 +101,10 @@ function Scenario-TabsSplits {
         $a = Get-ElementRect 'build'; $c = Get-ElementRect 'claude'
         Drag-To ($a.X + 30) ($a.Y + 16) ($c.X + $c.W - 10) ($c.Y + 16) 25 25; Start-Sleep -Milliseconds 700   # reorder
         Shot-Safe (Shot-Path 'tab-reorder')
+        Click-Name 'logs'; Type-Line 'Start-Sleep 60'; Start-Sleep -Milliseconds 800                        # a running command: closing asks
         $l = Get-ElementRect 'logs'; Click-At ($l.X + 40) ($l.Y + 16) 'middle' 1200                            # middle click closes
         Shot-Safe (Shot-Path 'tab-middle-click-confirm')                                                       # a running shell asks first
-        Click-Name '關閉' -Class 'Button'; Start-Sleep -Milliseconds 1200; Shot-Safe (Shot-Path 'tab-middle-closed')
+        Click-Name (Nk-Text 'common.close') -Class 'Button'; Start-Sleep -Milliseconds 1200; Shot-Safe (Shot-Path 'tab-middle-closed')
     } -NoShot
     # The picture that stands for tabs and splits.
     Run-App 'tabs-splits' @{} {
@@ -119,12 +123,14 @@ function Scenario-Overlays {
         Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'overlay-palette')
         Type-Unicode '分割' 60; Start-Sleep -Milliseconds 500; Shot-Safe (Shot-Path 'overlay-palette-filter'); Press 0x1B; Start-Sleep -Milliseconds 500
         Chord @(0x11, 0x10) 0x46; Start-Sleep -Milliseconds 700; Type-Unicode 'red' 60; Start-Sleep -Milliseconds 600; Shot-Safe (Shot-Path 'overlay-find'); Press 0x1B; Start-Sleep -Milliseconds 500
-        Click-Name '外觀' -Class 'Button'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'overlay-appearance-flyout'); Press 0x1B; Start-Sleep -Milliseconds 500
-        $t = Get-ElementRect 'pwsh'; Click-At ($t.X + 40) ($t.Y + 16) 'right' 900; Shot-Safe (Shot-Path 'overlay-tab-menu'); Press 0x1B; Start-Sleep -Milliseconds 500
+        Open-AppearanceFlyout; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'overlay-appearance-flyout'); Press 0x1B; Start-Sleep -Milliseconds 500
+        $t = Get-ElementRect (Get-Chips | Select-Object -First 1).Name; Click-At ($t.X + 40) ($t.Y + 16) 'right' 900; Shot-Safe (Shot-Path 'overlay-tab-menu'); Press 0x1B; Start-Sleep -Milliseconds 500
+        # Closing asks only when work would end: a command runs.
+        Type-Line 'Start-Sleep 60'; Start-Sleep -Milliseconds 800
         Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200; Shot-Safe (Shot-Path 'overlay-close-dialog'); Press 0x1B; Start-Sleep -Milliseconds 500
         Chord @(0x11, 0x10) 0x4F; Start-Sleep -Milliseconds 1200
-        Click-Name '外觀' -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-appearance')
-        Click-Name '快速鍵' -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-keys')
+        Click-Name (Nk-Text 'settings.appearance') -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-appearance')
+        Click-Name (Nk-Text 'settings.keys') -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-keys')
     } -NoShot
 }
 
@@ -133,7 +139,7 @@ function Scenario-Inactive {
         Fill-Terminal
         Shot-WithPattern (Shot-Path 'inactive-1-active')
         # Our own pattern window becomes the active one, outside the app rectangle: the app stays fully visible.
-        [void][P]::SetWindowPos($script:PatternHwnd, [IntPtr]::Zero, 40, 1300, 300, 200, 0x0040)
+        if (-not (Move-PatternAway)) { throw 'no corner of the screen is free of the app window' }
         [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 1500
         $r = Win-Rect; $ap = [uint32]$script:App.Id
         $visible = ([D]::PidAt([int](($r.Left + $r.Right) / 2), [int](($r.Top + $r.Bottom) / 2)) -eq $ap) -and ([D]::PidAt($r.Left + 20, $r.Top + 20) -eq $ap) -and ([D]::PidAt($r.Right - 20, $r.Bottom - 20) -eq $ap)
@@ -192,58 +198,89 @@ function Scenario-Perf {
 }
 
 # Silence: the witness (sound-witness.ps1) watches the default render endpoint while each trigger of the matrix runs;
-# a row passes when the peak stays below $global:WitnessThreshold. Then Alt+Space must still open the system menu and
-# holding Alt+Shift+D for two seconds must add exactly one pane. Audible only when a row fails.
+# a row passes when the peak stays below $global:WitnessThreshold. The witness first has to hear one MessageBeep (the
+# positive control, audible once), or no row proves anything and the scenario fails. The log must show a WM_MENUCHAR
+# (answered with MNC_CLOSE) for every Alt+character row and none for the others. Then Alt+Space must still open the
+# system menu and holding Alt+Shift+D for two seconds must add exactly one pane.
 function Scenario-Silence {
     . (Join-Path $PSScriptRoot 'sound-witness.ps1')
     Run-App 'silence' @{} {
         First-Prompt
-        Start-SoundWitness
+        Start-SoundWitness | Out-Null
+        $results = @()
+        $control = Test-WitnessPositive
+        $results += Check-True 'positive control: the witness hears one MessageBeep' $control.Seen $control.Text
+        $audible = $control.Seen
+        # The beep of the control has to fade out before the baseline of the first row is taken.
+        for ($i = 0; $i -lt 20; $i++) { Reset-SoundWitness; Start-Sleep -Milliseconds 600; if ((Get-SoundPeak) -lt $global:WitnessThreshold) { break } }
+        # A row: the trigger and whether it sends Alt+character to Windows (WM_SYSCHAR, then WM_MENUCHAR).
         $rows = [ordered]@{
-            'toolbar split right button' = { Click-Name '向右分割窗格 (Alt+Shift+D)' -Class 'Button' }
-            'palette: split down'        = { Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 500; Type-Unicode '向下分割' 40; Press 0x0D }
-            'Alt+Shift+D'                = { Chord @(0x12, 0x10) 0x44 }
-            'Alt+Shift+S'                = { Chord @(0x12, 0x10) 0x53 }
-            'Alt+Shift+='                = { Chord @(0x12, 0x10) 0xBB }
-            'Alt+Shift+-'                = { Chord @(0x12, 0x10) 0xBD }
-            'Alt+Left'                   = { Chord @(0x12) 0x25 }
-            'Alt+Shift+Left'             = { Chord @(0x12, 0x10) 0x25 }
-            'Alt tap, then x'            = { Press 0x12; Press 0x58; Press 0x1B }
-            'Alt+x'                      = { Chord @(0x12) 0x58 }
-            'Ctrl+Shift+Z'               = { Chord @(0x11, 0x10) 0x5A; Chord @(0x11, 0x10) 0x5A }
-            'Ctrl+Shift+T'               = { Chord @(0x11, 0x10) 0x54 }
+            'toolbar split right button' = @{ Do = { Click-Name (Nk-Tip 'pane.splitRight' 'Alt+Shift+D') -Class 'Button' }; AltChar = $false }
+            'palette: split down'        = @{ Do = { Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 500; Type-Unicode (Nk-Text 'pane.splitDown') 40; Press 0x0D }; AltChar = $false }
+            'Alt+Shift+D'                = @{ Do = { Chord @(0x12, 0x10) 0x44 }; AltChar = $true }
+            'Alt+Shift+S'                = @{ Do = { Chord @(0x12, 0x10) 0x53 }; AltChar = $true }
+            'Alt+Shift+='                = @{ Do = { Chord @(0x12, 0x10) 0xBB }; AltChar = $true }
+            'Alt+Shift+-'                = @{ Do = { Chord @(0x12, 0x10) 0xBD }; AltChar = $true }
+            'Alt+Left'                   = @{ Do = { Chord @(0x12) 0x25 }; AltChar = $false }
+            'Alt+Shift+Left'             = @{ Do = { Chord @(0x12, 0x10) 0x25 }; AltChar = $false }
+            'Alt tap, then x'            = @{ Do = { Press 0x12; Press 0x58; Press 0x1B }; AltChar = $false }
+            'Alt+x'                      = @{ Do = { Chord @(0x12) 0x58 }; AltChar = $true }
+            'Ctrl+Shift+Z'               = @{ Do = { Chord @(0x11, 0x10) 0x5A; Chord @(0x11, 0x10) 0x5A }; AltChar = $false }
+            'Ctrl+Shift+T'               = @{ Do = { Chord @(0x11, 0x10) 0x54 }; AltChar = $false }
         }
         foreach ($name in $rows.Keys) {
-            $peak = Measure-Peak $rows[$name]
-            $verdict = if ($null -eq $peak) { 'INCONCLUSIVE' } elseif ($peak -lt $global:WitnessThreshold) { 'quiet' } else { 'SOUND' }
-            '{0,-28} {1,-12} peak {2:E1}' -f $name, $verdict, $peak
+            $mark = Log-Mark
+            $peak = Measure-Peak $rows[$name].Do
+            $answered = @(Log-Since $mark | Where-Object { $_ -match 'WM_MENUCHAR #\d+ answered with MNC_CLOSE' }).Count
+            $quiet = $null -ne $peak -and $peak -lt $global:WitnessThreshold
+            $detail = if ($null -eq $peak) { 'inconclusive: the endpoint was not quiet before the row' } elseif (-not $audible) { 'inconclusive: the witness did not hear its positive control' } else { 'peak {0:E1}' -f $peak }
+            $results += Check-True "$name is quiet" ($quiet -and $audible) $detail
+            $results += Check-True "$name raises WM_MENUCHAR $(if ($rows[$name].AltChar) { 'and it is answered' } else { 'never' })" $(if ($rows[$name].AltChar) { $answered -ge 1 } else { $answered -eq 0 }) "$answered answered in the log"
         }
+        $script:menu = $false
         $menuPeak = Measure-Peak { Chord @(0x12) 0x20; Start-Sleep -Milliseconds 500; $script:menu = [Menus]::MenuIsOpen(); Press 0x1B }
-        'Alt+Space: system menu open = {0}, peak {1:E1}' -f $script:menu, $menuPeak
+        $results += Check-True 'Alt+Space still opens the system menu' $script:menu
+        $results += Check-True 'and is quiet' ($audible -and $null -ne $menuPeak -and $menuPeak -lt $global:WitnessThreshold) ('peak {0:E1}' -f $menuPeak)
         Chord @(0x11, 0x10) 0x54; Wait-Prompt | Out-Null
         $before = Count-Panes
         Hold-Chord @(0x12, 0x10) 0x44 2000
         Start-Sleep -Milliseconds 800
-        'hold Alt+Shift+D for 2 s: panes {0} -> {1}' -f $before, (Count-Panes)
-        $menuchar = @(Select-String -Path $script:LogFile -Pattern 'WM_MENUCHAR').Count
-        'WM_MENUCHAR lines in the log: {0}' -f $menuchar
+        $results += Check 'holding Alt+Shift+D for 2 s adds exactly one pane' ($before + 1) (Count-Panes)
+        Assert-Results $results 'silence'
     } -NoShot
 }
 
 function Log-Mark { @(Get-Content -LiteralPath $script:LogFile).Count }
 function Log-Since([int]$Mark) { $all = @(Get-Content -LiteralPath $script:LogFile); if ($all.Count -gt $Mark) { $all[$Mark..($all.Count - 1)] } else { @() } }
 function Log-Ms([string]$Line) { [double]$Line.Substring(0, 9).Trim() }
+# How many elements have this class name, or a class name that ends with it after a dot (XAML controls report their
+# full name: 'Microsoft.UI.Xaml.Controls.InfoBar').
 function Count-Class([string]$Class) {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, $Class)
-    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond).Count
+    $count = 0
+    foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+        $name = $e.Current.ClassName
+        if ($name -eq $Class -or $name.EndsWith(".$Class")) { $count++ }
+    }
+    $count
 }
+# Whether a confirmation dialog is open. A dialog lives in a Popup of its own, which UI Automation names by its title;
+# what every dialog of the app has is a Cancel button.
+function Dialog-Open { [bool](Get-Element (Nk-Text 'common.cancel') 'Button') }
 function Get-Slider([int]$Index = 0) {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Slider)
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)[$Index]
 }
 function Select-Radio([string]$Name) { (Get-Element $Name 'RadioButton').GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
+
+# Opens the quick appearance flyout (background material and opacity).
+function Open-AppearanceFlyout { Click-Name (Nk-Text 'settings.appearance') -Class 'Button' }
+
+function Rgb([string]$Text) { [int[]]($Text -split ',') }
+# How far apart two mean colours are: the sum of the differences of the channels.
+function Rgb-Distance([string]$A, [string]$B) { $x = Rgb $A; $y = Rgb $B; [Math]::Abs($x[0] - $y[0]) + [Math]::Abs($x[1] - $y[1]) + [Math]::Abs($x[2] - $y[2]) }
+function Slider-Value($Slider) { $Slider.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value }
 
 # Background opacity: a live change on an idle terminal changes its background (pixels over the striped window), a
 # replay of 200 slider events makes no SetSystemBackdrop call, at most one apply per frame and one save and shows no
@@ -254,16 +291,25 @@ function Scenario-Opacity {
     Run-App 'opacity' @{ appearance = @{ opacity = 0.55 } } {
         First-Prompt
         Type-Line 'Clear-Host'; Wait-Prompt | Out-Null
-        $r0 = Win-Rect
-        Click-Name '外觀' -Class 'Button'; Start-Sleep -Milliseconds 1200
-        # 1. idle terminal: no key, no output between the two pictures
-        $shot = { param($name) Shot-WithPattern (Shot-Path $name) | Out-Null; Region-Average (Shot-Path $name) 190 600 300 150 }
+        $results = @()
+        Open-AppearanceFlyout; Start-Sleep -Milliseconds 1200
+        # 1. idle terminal: no key, no output between the pictures. The sampled region is a part of the first terminal
+        # (blank after Clear-Host), found from its UI Automation rectangle, in the pixels of the picture.
+        $shot = {
+            param($name)
+            Shot-WithPattern (Shot-Path $name) | Out-Null
+            $window = Win-Rect; $margin = $script:PatternMargin
+            $region = Terminal-Region 0.35 0.6 300 150 ($window.Left - $margin) ($window.Top - $margin)
+            Region-Average (Shot-Path $name) $region.X $region.Y $region.W $region.H
+        }
         $a = & $shot 'opacity-live-55'
         Set-Slider 25 0; Start-Sleep -Milliseconds 1500
         $b = & $shot 'opacity-live-25'
         Set-Slider 100 0; Start-Sleep -Milliseconds 1500
         $c = & $shot 'opacity-live-100'
         'idle terminal, mean RGB of its background: 55% {0} | 25% {1} | 100% {2}' -f $a, $b, $c
+        $apart = (Rgb-Distance $a $b), (Rgb-Distance $b $c), (Rgb-Distance $a $c)
+        $results += Check-True 'the background of an idle terminal follows the slider (55, 25 and 100 % all differ)' (($apart | Measure-Object -Minimum).Minimum -ge 6) "distances $($apart -join ', ')"
         Set-Slider 55 0; Start-Sleep -Milliseconds 1500
         # 2. replay of 200 slider events
         $mark = Log-Mark
@@ -274,31 +320,62 @@ function Scenario-Opacity {
         Start-Sleep -Milliseconds 1500
         $lines = @(Log-Since $mark)
         $applies = @($lines | Where-Object { $_ -match 'opacity applied' })
-        $gaps = for ($i = 1; $i -lt $applies.Count; $i++) { (Log-Ms $applies[$i]) - (Log-Ms $applies[$i - 1]) }
-        'replay: 200 value changes in {0} ms -> {1} applies (shortest gap {2:N1} ms), {3} SetSystemBackdrop, {4} saves, {5} apply errors, InfoBar {6}, dialog {7}' -f $replayMs, $applies.Count, ($gaps | Measure-Object -Minimum).Minimum, @($lines | Where-Object { $_ -match 'system backdrop set' }).Count, @($lines | Where-Object { $_ -match 'settings saved' }).Count, @($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:' }).Count, (Count-Class 'InfoBar'), (Count-Class 'ContentDialog')
-        # 3. twenty backdrop switches
+        $gaps = @(for ($i = 1; $i -lt $applies.Count; $i++) { (Log-Ms $applies[$i]) - (Log-Ms $applies[$i - 1]) })
+        $shortest = if ($gaps.Count) { ($gaps | Measure-Object -Minimum).Minimum } else { [double]::PositiveInfinity }
+        'replay: 200 value changes in {0} ms -> {1} applies (shortest gap {2:N1} ms)' -f $replayMs, $applies.Count, $shortest
+        $results += Check-True 'a replay of 200 value changes applies at least the last one and far fewer than 200' ($applies.Count -ge 1 -and $applies.Count -lt 100) "$($applies.Count) applies"
+        $results += Check-True 'and applies at most once per frame (no two applies closer than 5 ms)' ($shortest -ge 5) "shortest gap $shortest ms"
+        $results += Check-True 'the last value is the one applied' ($applies.Count -ge 1 -and $applies[-1] -match 'opacity applied 0\.96$') "$($applies[-1])"
+        $results += Check 'it never sets the system backdrop' 0 (@($lines | Where-Object { $_ -match 'system backdrop set' }).Count)
+        $results += Check-True 'it saves at most once' (@($lines | Where-Object { $_ -match 'settings saved' }).Count -le 1) "$(@($lines | Where-Object { $_ -match 'settings saved' }).Count) saves"
+        $results += Check 'it logs no apply error' 0 (@($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:' }).Count)
+        $results += Check 'it shows no InfoBar' 0 (Count-Class 'InfoBar')
+        $results += Check 'and no dialog' $false (Dialog-Open)
+        $file = Join-Path (Join-Path (Join-Path (Split-Path $script:LogFile) 'opacity-appdata') 'Nekominal') 'settings.json'
+        $results += Check 'the last value is what was saved' 0.96 ((Get-Content $file -Raw | ConvertFrom-Json).appearance.opacity)
+        # 3. twenty backdrop switches: the system backdrop is replaced once per change of kind, nothing fails
         $mark = Log-Mark
-        $names = '壓克力', 'Mica', 'Mica Alt', '無'
+        $names = (Nk-Text 'backdrop.acrylic'), (Nk-Text 'backdrop.mica'), (Nk-Text 'backdrop.micaAlt'), (Nk-Text 'backdrop.none')
         foreach ($i in 0..19) { Select-Radio $names[$i % 4]; Start-Sleep -Milliseconds 150 }
         Start-Sleep -Milliseconds 800
         $lines = @(Log-Since $mark)
-        '20 backdrop switches: {0} SetSystemBackdrop, {1} full applies, {2} errors' -f @($lines | Where-Object { $_ -match 'system backdrop set' }).Count, @($lines | Where-Object { $_ -match 'glass: scheme' }).Count, @($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:|rror' }).Count
+        # The window starts on Acrylic, which is the first choice: 19 of the 20 choices change the kind.
+        $results += Check '20 backdrop choices replace the system backdrop once per change of kind' 19 (@($lines | Where-Object { $_ -match 'system backdrop set' }).Count)
+        $results += Check 'and log no error' 0 (@($lines | Where-Object { $_ -match 'apply_glass:|apply_opacity:|rror' }).Count)
+        $results += Check 'and show no InfoBar' 0 (Count-Class 'InfoBar')
         # 4. backdrop None: the slider is off and reads 100%, the saved value (the last one of the replay) stays
-        Select-Radio '無'; Start-Sleep -Milliseconds 1500
+        Select-Radio (Nk-Text 'backdrop.none'); Start-Sleep -Milliseconds 1500
         $s = Get-Slider 0
-        $file = Join-Path (Join-Path (Join-Path (Split-Path $script:LogFile) 'opacity-appdata') 'Nekominal') 'settings.json'
-        'backdrop None: slider enabled={0} value={1}, saved settings: {2}' -f $s.Current.IsEnabled, $s.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value, ((Get-Content $file -Raw) -replace '\s+', ' ')
-        Select-Radio '壓克力'; Start-Sleep -Milliseconds 800
-        'back to Acrylic: slider enabled={0} value={1}' -f (Get-Slider 0).Current.IsEnabled, (Get-Slider 0).GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value
+        $saved = (Get-Content $file -Raw | ConvertFrom-Json).appearance
+        'backdrop None: slider enabled={0} value={1}, saved appearance: {2}' -f $s.Current.IsEnabled, (Slider-Value $s), ($saved | ConvertTo-Json -Compress)
+        $results += Check 'backdrop None turns the slider off' $false $s.Current.IsEnabled
+        $results += Check 'and shows 100 %' 100 (Slider-Value $s)
+        $results += Check 'and keeps the saved opacity' 0.96 $saved.opacity
+        Select-Radio (Nk-Text 'backdrop.acrylic'); Start-Sleep -Milliseconds 800
+        $results += Check 'back to Acrylic the slider is on' $true (Get-Slider 0).Current.IsEnabled
+        $results += Check 'and shows the saved opacity' 96 (Slider-Value (Get-Slider 0))
         Press 0x1B; Start-Sleep -Milliseconds 500
+        Assert-Results $results 'opacity'
     } -Pattern -NoShot
 }
 
 function Plate-Text {
-    $plate = Get-Element '所有分頁' 'Button'
+    $plate = Get-Element (Nk-Text 'tab.all') 'Button'
     if (-not $plate) { return $null }
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
     ($plate.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join ''
+}
+
+# The tab shown now (one-based), from the last "selected tab" line of the log.
+function Selected-Tab {
+    $line = Select-String -Path $script:LogFile -Pattern 'selected tab (\d+)' | Select-Object -Last 1
+    if ($line) { [int]$line.Matches[0].Groups[1].Value } else { 0 }
+}
+
+# Presses the position plate, which opens the list of every tab.
+function Open-TabList {
+    $r = (Get-Element (Nk-Text 'tab.all') 'Button').Current.BoundingRectangle
+    Click-At ([int]($r.X + $r.Width / 2)) ([int]($r.Y + $r.Height / 2)) 'left' 800
 }
 
 # The chips of the strip as UI Automation shows them (one per tab: a named container with a position in its set).
@@ -325,88 +402,160 @@ function Get-EdgeCounts {
     @($left, $right)
 }
 
+# The horizontal scroll offset of the tab strip in DIP, from the scroll pattern of its ScrollViewer.
+function Strip-Offset {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $scroll = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+    $pattern = $scroll.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)
+    $visible = $pattern.Current.HorizontalViewSize
+    if ($visible -ge 100) { return 0.0 }
+    $viewport = $scroll.Current.BoundingRectangle.Width / (Get-Scale)
+    $pattern.Current.HorizontalScrollPercent / 100 * ($viewport * 100 / $visible - $viewport)
+}
+# The strip as it is now, in DIP, with the checks the width algorithm and the position plate promise: the plate says
+# `current / total` (or the total alone on a narrow strip), shown plus hidden chips are all of them, the selected chip
+# is in view with 12 DIP to a hidden neighbour, an unselected chip is 48 to 216 DIP wide and the selected one at least
+# 100. Returns the checks; the line describing the strip is written out too.
+function Measure-Strip([int]$N, [int]$W) {
+    $scale = Get-Scale
+    $chips = @(Get-Chips); $plate = Plate-Text; $edges = Get-EdgeCounts; $selected = Selected-Tab
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $scroll = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+    $v = $scroll.Current.BoundingRectangle
+    # A chip is visible when any part of it lies inside the strip's viewport; the UIA rectangle of a chip that is
+    # scrolled out is empty (infinite).
+    $shown = @($chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.X + $_.Rect.Width -gt $v.X + 0.5 -and $_.Rect.X -lt $v.X + $v.Width - 0.5 })
+    $sel = $chips | Where-Object { $_.Index -eq $selected } | Select-Object -First 1
+    $left = $null; $right = $null
+    if ($sel -and -not [double]::IsInfinity($sel.Rect.Width)) { $left = ($sel.Rect.X - $v.X) / $scale; $right = ($v.X + $v.Width - $sel.Rect.X - $sel.Rect.Width) / $scale }
+    $widths = $chips | Sort-Object Index | ForEach-Object { if ([double]::IsInfinity($_.Rect.Width)) { $null } else { $_.Rect.Width / $scale } }
+    'N={0,2} W={1,4}: plate "{2}" | selected {3}, chips {4}, visible {5} + hidden {6}+{7} | selected margins {8:N0}/{9:N0} DIP | widths {10}' -f $N, $W, $plate, $selected, $chips.Count, $shown.Count, $edges[0], $edges[1], $left, $right, (($widths | ForEach-Object { if ($null -eq $_) { '-' } else { [int]$_ } }) -join ',')
+    $label = "N=$N W=$W"
+    if ($N -lt 2) { Check-True "$label a single tab has no plate" ($null -eq $plate) "plate '$plate'" }
+    else { Check-True "$label the plate says the position or the total" ($plate -in "$selected / $N", "$N") "plate '$plate', selected tab $selected" }
+    Check "$label there is a chip for every tab" $N $chips.Count
+    Check "$label visible and hidden chips are all of them" $N ($shown.Count + $edges[0] + $edges[1])
+    Check-True "$label the selected chip is in view" ($null -ne $left -and $left -ge -0.7 -and $right -ge -0.7) "margins $left / $right"
+    Check-True "$label with 12 DIP to a hidden neighbour" ((($edges[0] -eq 0) -or ($left -ge 11.3)) -and (($edges[1] -eq 0) -or ($right -ge 11.3))) "margins $left / $right, hidden $($edges -join '+')"
+    # Only a chip clear of both edges of the viewport has its own width: UI Automation clips the rectangle of one cut by an edge to the part that shows, so it ends at the edge.
+    $whole = @($chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.X -gt $v.X + 0.7 -and $_.Rect.X + $_.Rect.Width -lt $v.X + $v.Width - 0.7 })
+    $narrow = @($whole | Where-Object { $_.Rect.Width / $scale -lt $(if ($_.Index -eq $selected) { 99 } else { 47.3 }) })
+    $wide = @($whole | Where-Object { $_.Rect.Width / $scale -gt 216.7 })
+    Check-True "$label chips are at least 48 DIP wide (the selected one 100) and at most 216" ($narrow.Count -eq 0 -and $wide.Count -eq 0) "narrow: $(($narrow | ForEach-Object { $_.Index }) -join ','), wide: $(($wide | ForEach-Object { $_.Index }) -join ',')"
+}
+
 # Tab awareness: the position plate, the width algorithm, the edge counts, the selected chip in view, the list of every
 # tab, most-recently-used Ctrl+Tab and closing back to the tab used before. One run grows the tab count to 30 and
-# measures every window width at 1, 2, 5, 12 and 30 tabs.
+# measures every window width at 1, 2, 5, 12 and 30 tabs. A tab in a folder named like a markup extension must be
+# in the list and picked by it.
 function Scenario-Tabs {
-    Run-App 'tabs' @{ confirmClose = $false } {
-        First-Prompt
-        Name-Tab 'aaa'
-        # the single tab has no plate
-        foreach ($w in 800, 988, 1920) { Set-WindowWidth $w; 'N= 1 W={0,4}: plate present = {1}, chips {2}' -f $w, ($null -ne (Get-Element '所有分頁' 'Button')), @(Get-Chips).Count }
-        Set-WindowWidth 988
-        New-Tab; Name-Tab 'bbb'; New-Tab; Name-Tab 'ccc'
-        # most recently used: select aaa, bbb, ccc in turn, then Ctrl+Tab once and with Ctrl held for two presses
-        foreach ($name in 'aaa', 'bbb', 'ccc') { Click-Name $name; Start-Sleep -Milliseconds 300 }
-        Chord @(0x11) 0x09; Start-Sleep -Milliseconds 500
-        $tap = Plate-Text
-        [D]::Key(0x11, $false); Start-Sleep -Milliseconds 100
-        Press 0x09; Press 0x09; Start-Sleep -Milliseconds 200
-        [D]::Key(0x11, $true); Start-Sleep -Milliseconds 500
-        'MRU after aaa, bbb, ccc: Ctrl+Tab tap -> {0} (want 2 / 3, bbb); Ctrl held, Tab twice -> {1} (want 1 / 3, aaa)' -f $tap, (Plate-Text)
-        # closing the selected tab goes back to the one used before it, not to a neighbour
-        Click-Name 'ccc'; Start-Sleep -Milliseconds 300; Click-Name 'aaa'; Start-Sleep -Milliseconds 300; Click-Name 'bbb'; Start-Sleep -Milliseconds 300
-        $b = Get-ElementRect 'bbb'; Click-At ($b.X + 40) ($b.Y + 16) 'middle' 1000
-        'closed bbb (selected, after aaa): plate {0} (want 1 / 2, aaa)' -f (Plate-Text)
-        Name-Tab 'claude one'
-        $measure = {
-            param($n, $w)
-            $chips = @(Get-Chips); $plate = Plate-Text; $edges = Get-EdgeCounts
-            $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-            $scroll = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
-            $v = $scroll.Current.BoundingRectangle
-            # a chip is visible when any part of it lies inside the strip's viewport; the UIA rectangle of a chip that is
-            # scrolled out is empty (infinite)
-            $shown = @($chips | Where-Object { -not [double]::IsInfinity($_.Rect.Width) -and $_.Rect.X + $_.Rect.Width -gt $v.X + 0.5 -and $_.Rect.X -lt $v.X + $v.Width - 0.5 })
-            $sel = $chips | Where-Object { ($plate -match '^(\d+) / ' -and $_.Index -eq [int]$Matches[1]) -or ($plate -eq "$n" -and $_.Index -eq $n) -or ($null -eq $plate -and $_.Index -eq 1) } | Select-Object -First 1
-            $margin = if ($sel -and -not [double]::IsInfinity($sel.Rect.Width)) { '{0:N0}/{1:N0}' -f (($sel.Rect.X - $v.X) / 1.5), (($v.X + $v.Width - $sel.Rect.X - $sel.Rect.Width) / 1.5) } else { '?' }
-            $widthsDip = ($chips | Sort-Object Index | ForEach-Object { if ([double]::IsInfinity($_.Rect.Width)) { '-' } else { [int]($_.Rect.Width / 1.5) } }) -join ','
-            'N={0,2} W={1,4}: plate "{2}" | chips {3}, visible {4} + hidden {5}+{6} = {7} | selected margins {8} DIP | widths {9}' -f $n, $w, $plate, $chips.Count, $shown.Count, $edges[0], $edges[1], ($shown.Count + $edges[0] + $edges[1]), $margin, $widthsDip
-        }
-        $targets = 2, 5, 12, 30
-        $widths = 800, 988, 1200, 1920
-        $count = 2
-        foreach ($n in $targets) {
-            while ($count -lt $n) { New-Tab; $count++; if ($count -in 8, 20) { Name-Tab "claude $count" } }
-            foreach ($w in $widths) {
-                Set-WindowWidth $w
-                & $measure $n $w
-            }
-        }
-        # the selected chip scrolls into view: first tab, then the last, then a middle one
-        Set-WindowWidth 988
-        foreach ($target in 1, 30, 14) {
-            $mark = Log-Mark
-            $watch = [Diagnostics.Stopwatch]::StartNew()
-            $plateButton = Get-Element '所有分頁' 'Button'
-            $pr = $plateButton.Current.BoundingRectangle
-            Click-At ([int]($pr.X + $pr.Width / 2)) ([int]($pr.Y + $pr.Height / 2)) 'left' 900
-            # Up and Down move the selection of the list (clamped at the ends): row 1, the last row, or row 14.
-            $ups = if ($target -eq 30) { 0 } else { 40 }
-            $downs = switch ($target) { 1 { 0 } 30 { 40 } default { $target - 1 } }
-            foreach ($i in 1..$ups) { if ($ups) { Press 0x26 @() 20 20 } }
-            foreach ($i in 1..$downs) { if ($downs) { Press 0x28 @() 20 20 } }
-            Start-Sleep -Milliseconds 300
+    $global:NkGuidDir = Join-Path ([IO.Path]::GetTempPath()) '{nk-3F2504E0-4F89-41D3-9A0C-0305E82C3301}'
+    [void][IO.Directory]::CreateDirectory($global:NkGuidDir)
+    try {
+        Run-App 'tabs' @{ confirmClose = $false } {
+            $results = [System.Collections.Generic.List[string]]::new()
+            First-Prompt
+            Name-Tab 'aaa'
+            # the single tab has no plate
+            foreach ($w in 800, 988, 1920) { Set-WindowWidth $w; Measure-Strip 1 $w | ForEach-Object { if ($_ -like 'ok *' -or $_ -like 'FAIL*') { $results.Add($_) } else { $_ } } }
+            Set-WindowWidth 988
+            New-Tab; Name-Tab 'bbb'; New-Tab; Name-Tab 'ccc'
+            # most recently used: select aaa, bbb, ccc in turn, then Ctrl+Tab once and with Ctrl held for two presses
+            foreach ($name in 'aaa', 'bbb', 'ccc') { Click-Name $name; Start-Sleep -Milliseconds 300 }
+            Chord @(0x11) 0x09; Start-Sleep -Milliseconds 500
+            $results.Add((Check 'Ctrl+Tab, tapped, goes to the tab used before (bbb)' 2 (Selected-Tab)))
+            [D]::Key(0x11, $false); Start-Sleep -Milliseconds 100
+            Press 0x09; Press 0x09; Start-Sleep -Milliseconds 200
+            [D]::Key(0x11, $true); Start-Sleep -Milliseconds 500
+            $results.Add((Check 'Ctrl held, Tab twice, goes two back in the order of use (aaa)' 1 (Selected-Tab)))
+            # closing the selected tab goes back to the one used before it, not to a neighbour
+            Click-Name 'ccc'; Start-Sleep -Milliseconds 300; Click-Name 'aaa'; Start-Sleep -Milliseconds 300; Click-Name 'bbb'; Start-Sleep -Milliseconds 300
+            $b = Get-ElementRect 'bbb'; Click-At ($b.X + 40) ($b.Y + 16) 'middle' 1000
+            $results.Add((Check 'closing bbb (selected, aaa before it) shows aaa, and leaves two tabs' '1 2' ('{0} {1}' -f (Selected-Tab), @(Get-Chips).Count)))
+            Name-Tab 'claude one'
+            # a folder named like a markup extension: its tab is in the list, and Enter on its row picks that tab
+            $folder = Split-Path $global:NkGuidDir -Leaf
+            New-Tab; Type-Line "Set-Location -LiteralPath '$global:NkGuidDir'"; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 700
+            $chips = @(Get-Chips | Sort-Object Index)
+            $results.Add((Check 'a tab in a folder named like a markup extension is called by the folder' $folder (Chip-Title $chips[-1])))
+            Open-TabList
+            $results.Add((Check 'the list has a row for every tab, none dropped' $chips.Count (@(Get-Items).Count)))
+            Type-Unicode 'nk-3F25' 40; Start-Sleep -Milliseconds 600
+            $results.Add((Check 'the folder name narrows the list to its tab' 1 (@(Get-Items).Count)))
             Press 0x0D; Start-Sleep -Milliseconds 700
-            $log = (Log-Since $mark | Where-Object { $_ -match 'selected tab|strip scrolled|tab list' } | ForEach-Object { $_.Trim() -replace '\s+ms\s+', 'ms ' }) -join ' | '
-            'list -> tab {0}: {1} | {2}' -f $target, (& $measure 30 988), $log
-        }
-        # filtering the list of 30 tabs
-        $mark = Log-Mark
-        $plateButton = Get-Element '所有分頁' 'Button'; $pr = $plateButton.Current.BoundingRectangle
-        Click-At ([int]($pr.X + $pr.Width / 2)) ([int]($pr.Y + $pr.Height / 2)) 'left' 700
-        $all = @(Get-Items).Count
-        Type-Unicode 'cla' 60; Start-Sleep -Milliseconds 700
-        $rows = @(Get-Items)
-        'list of 30: {0} rows; after typing cla: {1} rows ({2}); {3}' -f $all, $rows.Count, (($rows | ForEach-Object { $_.Current.Name }) -join ' / '), ((Log-Since $mark | Where-Object { $_ -match 'tab list' }) -join ' | ')
-        Press 0x1B; Start-Sleep -Milliseconds 400
-        # the palette gets one go-to entry per tab
-        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
-        Type-Unicode '切換到分頁：claude' 40; Start-Sleep -Milliseconds 600
-        'palette rows for "切換到分頁：claude": {0}' -f (@(Get-Items).Count)
-        Press 0x1B; Start-Sleep -Milliseconds 400
-        Shot-Safe (Shot-Path 'tabs-30') | Out-Null
-    } -NoShot
+            $results.Add((Check 'Enter on that row selects that tab' $chips.Count (Selected-Tab)))
+            Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 800
+            $results.Add((Check 'closing it leaves the two tabs' 2 (@(Get-Chips).Count)))
+            $targets = 2, 5, 12, 30
+            $widths = 800, 988, 1200, 1920
+            $count = 2
+            foreach ($n in $targets) {
+                while ($count -lt $n) { New-Tab; $count++; if ($count -in 8, 20) { Name-Tab "claude $count" } }
+                foreach ($w in $widths) {
+                    Set-WindowWidth $w
+                    Measure-Strip $n $w | ForEach-Object { if ($_ -like 'ok *' -or $_ -like 'FAIL*') { $results.Add($_) } else { $_ } }
+                }
+            }
+            # the selected chip scrolls into view within 200 ms: first tab, then the last, then a middle one
+            Set-WindowWidth 988
+            foreach ($target in 1, 30, 14) {
+                $mark = Log-Mark
+                Open-TabList
+                # Up and Down move the selection of the list (clamped at the ends): row 1, the last row, or row 14.
+                $ups = if ($target -eq 30) { 0 } else { 40 }
+                $downs = switch ($target) { 1 { 0 } 30 { 40 } default { $target - 1 } }
+                foreach ($i in 1..$ups) { if ($ups) { Press 0x26 @() 20 20 } }
+                foreach ($i in 1..$downs) { if ($downs) { Press 0x28 @() 20 20 } }
+                Start-Sleep -Milliseconds 300
+                Press 0x0D; Start-Sleep -Milliseconds 700
+                $log = @(Log-Since $mark | Where-Object { $_ -match 'selected tab|strip scrolled|tab list' } | ForEach-Object { $_.Trim() -replace '\s+ms\s+', 'ms ' })
+                'list -> tab {0}: {1}' -f $target, ($log -join ' | ')
+                $results.Add((Check "list: row $target selects tab $target" $target (Selected-Tab)))
+                $picked = @(Log-Since $mark | Where-Object { $_ -match 'selected tab' })[-1]
+                $scrolled = @(Log-Since $mark | Where-Object { $_ -match 'strip scrolled' })
+                if ($scrolled.Count -gt 0) {
+                    $delay = (Log-Ms $scrolled[-1]) - (Log-Ms $picked)
+                    $results.Add((Check-True "list: the strip scrolls to tab $target within 200 ms of the choice" ($delay -le 200) "$delay ms"))
+                }
+                Measure-Strip 30 988 | ForEach-Object { if ($_ -like 'ok *' -or $_ -like 'FAIL*') { $results.Add($_) } else { $_ } }
+            }
+            # a strip the user scrolled away stays where it is when a program reports a folder (and so renames the tab)
+            $scrollEl = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd).FindFirst([System.Windows.Automation.TreeScope]::Descendants, (New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ScrollViewer')))
+            $box = $scrollEl.Current.BoundingRectangle
+            $placed = Strip-Offset
+            Move-To ([int]($box.X + $box.Width / 2)) ([int]($box.Y + $box.Height / 2)); Start-Sleep -Milliseconds 300
+            Mouse-Wheel 8; Start-Sleep -Milliseconds 800
+            $scrolled = Strip-Offset
+            Type-Line 'Set-Location C:\Windows'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 1200
+            $kept = Strip-Offset
+            'strip offset: {0:N0} after the list, {1:N0} after the wheel, {2:N0} after a folder report' -f $placed, $scrolled, $kept
+            $results.Add((Check-True 'the wheel scrolled the strip away from the selected tab' ($scrolled -lt $placed - 100) "$placed -> $scrolled"))
+            $results.Add((Check-True 'and a folder report that renames the tab does not snap it back' ([Math]::Abs($kept - $scrolled) -lt 2) "$scrolled -> $kept"))
+            # filtering the list of 30 tabs, the time from the first key to the rows            $mark = Log-Mark
+            Open-TabList
+            $titles = @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ })
+            $results.Add((Check 'the list of 30 has 30 rows' 30 (@(Get-Items).Count)))
+            Type-Unicode 'cla' 60; Start-Sleep -Milliseconds 700
+            $rows = @(Get-Items)
+            $expected = @($titles | Where-Object { $_ -match '(?i)c.*l.*a' })
+            'list of 30 after typing cla: {0} rows ({1})' -f $rows.Count, (($rows | ForEach-Object { $_.Current.Name }) -join ' / ')
+            $results.Add((Check 'typing cla keeps the rows whose tab matches' $expected.Count $rows.Count))
+            $times = @(Log-Since $mark | Where-Object { $_ -match 'tab list: \d+ rows in [\d.]+ ms' } | ForEach-Object { [double]([regex]::Match($_, 'rows in ([\d.]+) ms').Groups[1].Value) })
+            'tab list timings: ' + ($times -join ', ') + ' ms'
+            $results.Add((Check-True 'the list builds in under 100 ms (30 rows, then the filtered ones)' ($times.Count -ge 2 -and ($times | Measure-Object -Maximum).Maximum -lt 100) "$($times -join ', ') ms"))
+            Press 0x1B; Start-Sleep -Milliseconds 400
+            # the palette gets one go-to entry per tab
+            Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
+            Type-Unicode (Nk-Text 'palette.gotoTab' @('claude')) 40; Start-Sleep -Milliseconds 600
+            $goto = @($titles | Where-Object { $_ -match '(?i)c.*l.*a.*u.*d.*e' })
+            $results.Add((Check "the palette has an entry for each of the tabs called claude" $goto.Count (@(Get-Items).Count)))
+            Press 0x1B; Start-Sleep -Milliseconds 400
+            Shot-Safe (Shot-Path 'tabs-30') | Out-Null
+            Assert-Results $results 'tabs'
+        } -NoShot
+    } finally {
+        [IO.Directory]::Delete($global:NkGuidDir, $true)
+    }
 }
 
 # Status marks: what a tab shows for OSC 7501, OSC 9 / 777 and BEL, read from the chips' accessible status (the
@@ -417,6 +566,7 @@ function Scenario-Status {
         First-Prompt
         Name-Tab 'aaa'
         Set-WindowWidth 1400
+        $results = [System.Collections.Generic.List[string]]::new()
         $esc = '$e=[char]27;$a=[char]7;'
         $report = { param($fields) $esc + 'Write-Host -NoNewline "$e]7501;' + $fields + '$a";' }
         $start = Get-Date
@@ -428,103 +578,207 @@ function Scenario-Status {
         New-Tab; Name-Tab 'note-tab'; Type-Line ($esc + 'Start-Sleep 4; Write-Host -NoNewline "$e]777;notify;Claude;needs$([char]0x202E) input$a"'); Start-Sleep -Milliseconds 300
         New-Tab; Name-Tab 'last'
         Start-Sleep -Milliseconds 6000
-        $show = { param($label) foreach ($c in Get-Chips | Sort-Object Index) { '{0} {1,2} {2,-14} status "{3}"' -f $label, $c.Index, $c.Name.Split('，')[0], $c.Status } }
+        # The state of every tab in words ('' for a tab at rest), by title.
+        $states = { $s = [ordered]@{}; foreach ($c in Get-Chips | Sort-Object Index) { $s[(Chip-Title $c)] = $c.Status }; $s }
+        $show = { param($label) $s = & $states; foreach ($title in $s.Keys) { '{0} {1,-14} status "{2}"' -f $label, $title, $s[$title] } }
+        $expect = {
+            param($label, $wanted)
+            $s = & $states
+            foreach ($title in $wanted.Keys) { $results.Add((Check "$label`: $title" $wanted[$title] $s[$title])) }
+        }
+        $blocked = Nk-Text 'agent.blocked'; $working = Nk-Text 'agent.working'; $done = Nk-Text 'agent.done'; $failed = Nk-Text 'agent.error'
+        $bell = Nk-Text 'agent.bell'; $note = Nk-Text 'agent.notification'
         & $show 'hidden tabs:'
+        $results.Add((Check 'there are eight tabs' 8 @(Get-Chips).Count))
+        & $expect 'hidden tabs' ([ordered]@{ 'aaa' = ''; 'blocked-tab' = $blocked; 'working-tab' = $working; 'done-tab' = $done; 'error-tab' = $failed; 'bell-tab' = $bell; 'note-tab' = $note; 'last' = '' })
         Shot-Safe (Shot-Path 'status-marks') | Out-Null
-        # a blocked agent is still blocked when the tab is looked at; a finished one is seen at once
-        Click-Name 'blocked-tab，等待輸入'; Start-Sleep -Milliseconds 500
-        Click-Name 'done-tab，已完成'; Start-Sleep -Milliseconds 500
-        Click-Name 'error-tab，錯誤'; Start-Sleep -Milliseconds 500
-        Click-Name 'note-tab，通知'; Start-Sleep -Milliseconds 500
+        # a blocked agent is still blocked when the tab is looked at; a finished one, a failed one, a bell and a note are seen at once
+        foreach ($look in @(@('blocked-tab', $blocked), @('done-tab', $done), @('error-tab', $failed), @('note-tab', $note))) {
+            Click-Name (Nk-Text 'tab.nameStatus' @($look[0], $look[1])); Start-Sleep -Milliseconds 500
+        }
         & $show 'after looking at blocked, done, error, note:'
+        & $expect 'after looking' ([ordered]@{ 'blocked-tab' = $blocked; 'working-tab' = $working; 'done-tab' = ''; 'error-tab' = ''; 'bell-tab' = $bell; 'note-tab' = '' })
         # working ends at the next prompt: the report is gone once the command returns
         Click-Name 'last' | Out-Null; Start-Sleep -Milliseconds 500
         Type-Line ($esc + (& $report 'state=working:id=x') + 'Start-Sleep 4'); Start-Sleep -Milliseconds 1500
         $during = (Get-Chips | Where-Object { $_.Index -eq 8 }).Status
         Start-Sleep -Milliseconds 5000
-        'working in the pane in view: while the command runs "{0}", after the next prompt "{1}"' -f $during, (Get-Chips | Where-Object { $_.Index -eq 8 }).Status
+        $after = (Get-Chips | Where-Object { $_.Index -eq 8 }).Status
+        'working in the pane in view: while the command runs "{0}", after the next prompt "{1}"' -f $during, $after
+        $results.Add((Check 'working shows while the command runs' $working $during))
+        $results.Add((Check 'and is gone at the next prompt' '' $after))
+        # a program that reported progress and was interrupted (Ctrl+C) leaves no spinner behind: the prompt clears it
+        Type-Line ($esc + 'Write-Host -NoNewline "$e]9;4;1;40$a"; Start-Sleep 60'); Start-Sleep -Milliseconds 1500
+        $results.Add((Check 'a progress report shows the tab as working' $working ((Get-Chips | Where-Object { $_.Index -eq 8 }).Status)))
+        Chord @(0x11) 0x43; Start-Sleep -Milliseconds 2500
+        $results.Add((Check 'and Ctrl+C, with the prompt back, takes it away' '' ((Get-Chips | Where-Object { $_.Index -eq 8 }).Status)))
         # the bell in the pane in view, then in an inactive window twice within a second
         $mark = Log-Mark
         Click-Name 'last' | Out-Null; Start-Sleep -Milliseconds 500
         Type-Line ($esc + 'Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 1200
         Type-Line ($esc + 'Start-Sleep 3; Write-Host -NoNewline $a; Start-Sleep -Milliseconds 300; Write-Host -NoNewline $a; Start-Sleep 3; Write-Host -NoNewline $a')
-        [void][P]::SetWindowPos($script:PatternHwnd, [IntPtr]::Zero, 40, 1300, 300, 200, 0x0040)
+        if (-not (Move-PatternAway)) { throw 'no corner of the screen is free of the app window' }
         [D]::ForceForeground($script:PatternHwnd); Start-Sleep -Milliseconds 9000
+        $lines = @(Log-Since $mark)
+        $decisions = @($lines | Where-Object { $_ -match 'bell in pane' } | ForEach-Object {
+            $m = [regex]::Match($_, 'chip: (true|false), taskbar_flash: (true|false), sound: (true|false)')
+            [pscustomobject]@{ Chip = $m.Groups[1].Value; Flash = $m.Groups[2].Value; Sound = $m.Groups[3].Value }
+        })
         'bell decisions (watching, then inactive: first, second within a second, a later one):'
-        Log-Since $mark | Where-Object { $_ -match 'bell in pane|taskbar flash|window active' } | ForEach-Object { 'log: ' + $_.Trim() }
+        $lines | Where-Object { $_ -match 'bell in pane|taskbar flash|window active' } | ForEach-Object { 'log: ' + $_.Trim() }
+        $results.Add((Check 'four bells were decided' 4 $decisions.Count))
+        if ($decisions.Count -eq 4) {
+            $got = ($decisions | ForEach-Object { "chip=$($_.Chip) flash=$($_.Flash) sound=$($_.Sound)" })
+            $results.Add((Check 'a bell in the pane in view of the active window does nothing' 'chip=false flash=false sound=false' $got[0]))
+            $results.Add((Check 'in an inactive window the first marks the tab and flashes the taskbar' 'chip=true flash=true sound=false' $got[1]))
+            $results.Add((Check 'the second, within a second, flashes nothing' 'chip=true flash=false sound=false' $got[2]))
+            $results.Add((Check 'a later one flashes again' 'chip=true flash=true sound=false' $got[3]))
+        }
+        $results.Add((Check-True 'the window was reported inactive' (@($lines | Where-Object { $_ -match 'window active = false' }).Count -ge 1)))
+        $results.Add((Check 'no taskbar flash failed' 0 (@($lines | Where-Object { $_ -match 'taskbar flash:' }).Count)))
         [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 600
         'ended in {0:N0} s' -f ((Get-Date) - $start).TotalSeconds
+        Assert-Results $results 'status'
     } -Pattern -NoShot
 }
 
+# A program that reported progress and then ended with an error shows an error, not the work it was doing: the exit
+# clears the progress and a failed exit outranks it. The program is a profile of its own (it keeps its last screen).
+function Scenario-StatusExit {
+    $command = '[Console]::Out.Write([string][char]27 + "]9;4;1;40" + [char]7); Start-Sleep 9; exit 3'
+    $broken = @{ id = 'broken'; name = 'broken'; program = 'pwsh.exe'; args = @('-NoProfile', '-Command', $command) }
+    Run-App 'status-exit' @{ defaultProfile = 'broken'; profiles = @($broken) } {
+        $status = { (Get-Chips | Select-Object -First 1).Status }
+        $during = $null
+        for ($i = 0; $i -lt 20 -and $during -ne (Nk-Text 'agent.working'); $i++) { Start-Sleep -Milliseconds 250; $during = & $status }
+        # The program ends nine seconds after it started.
+        for ($i = 0; $i -lt 60 -and (& $status) -eq (Nk-Text 'agent.working'); $i++) { Start-Sleep -Milliseconds 250 }
+        Start-Sleep -Milliseconds 500
+        Assert-Results @(
+            (Check 'while the program reports progress the tab is working' (Nk-Text 'agent.working') $during),
+            (Check 'once it ended with code 3 the tab shows an error' (Nk-Text 'agent.error') (& $status)),
+            (Check-True 'and the pane says how it ended' ((Get-TerminalText) -like ('*' + (Nk-Text 'status.exited' @(3)) + '*')) (Get-TerminalText))
+        ) 'status (exit)'
+    } -NoShot
+}
+
 # Default tab titles: five tabs in different folders get five names, two folders called src get their parents, a title
-# a program sets wins until it is generic again and a bidirectional override is cleaned out.
+# a program sets wins until it is generic again and a bidirectional override is cleaned out of titles and folder names.
 function Scenario-Titles {
     $global:NkCjk = Join-Path ([IO.Path]::GetTempPath()) 'nk-title-測試資料夾'
+    # A folder whose name holds U+202E (right-to-left override): the folder name must reach the chip without it.
+    $global:NkRlo = Join-Path ([IO.Path]::GetTempPath()) "nk-title-evil$([char]0x202E)gnp.exe"
     [void][IO.Directory]::CreateDirectory($global:NkCjk)
+    [void][IO.Directory]::CreateDirectory($global:NkRlo)
     try {
         Run-App 'titles' @{ confirmClose = $false } {
             First-Prompt
-            $names = { (Get-Chips | Sort-Object Index | ForEach-Object { $_.Name }) -join ' | ' }
-            $go = { param($dir) New-Tab; Type-Line "Set-Location '$dir'"; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 400 }
+            # Ten tabs: wide enough that every chip is on screen to be clicked.
+            Set-WindowWidth 1900
+            $results = [System.Collections.Generic.List[string]]::new()
+            $titles = { @(Get-Chips | Sort-Object Index | ForEach-Object { Chip-Title $_ }) }
+            $names = { (& $titles) -join ' | ' }
+            $go = { param($dir) New-Tab; Type-Line "Set-Location -LiteralPath '$dir'"; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 400 }
             'first tab, nothing typed yet: ' + (& $names)
             foreach ($dir in 'C:\Windows', 'C:\Windows\System32', 'C:\', 'C:\Users\Public') { & $go $dir }
             'five folders: ' + (& $names)
-            & $go (Join-Path $env:USERPROFILE 'Desktop\Nekominal\crates\nekominal-app\src')
-            & $go (Join-Path $env:USERPROFILE 'Desktop\Nekominal\crates\nekominal-model\src')
+            $five = & $titles
+            $results.Add((Check 'tabs in four folders are called by their last folder' 'Windows|System32|C:|Public' ($five[1..4] -join '|')))
+            $results.Add((Check 'and the five tabs have five different names' 5 @($five | Select-Object -Unique).Count))
+            & $go (Join-Path $global:NkRoot 'crates\nekominal-app\src')
+            & $go (Join-Path $global:NkRoot 'crates\nekominal-model\src')
             'two src folders: ' + (& $names)
+            $src = & $titles
+            $results.Add((Check 'two folders called src are told apart by the folder above' 'nekominal-app/src|nekominal-model/src' ($src[5..6] -join '|')))
             & $go $global:NkCjk
             'a folder with a CJK name: ' + (& $names)
+            $results.Add((Check 'a folder with a CJK name is shown whole' 'nk-title-測試資料夾' ((& $titles)[-1])))
+            & $go $global:NkRlo
+            'a folder with U+202E in its name: ' + (& $names)
+            $results.Add((Check 'a folder name with U+202E reaches the chip without it' "nk-title-evilgnp.exe" ((& $titles)[-1])))
             # a title the program set wins over the folder, a generic one does not
             Type-Line '$Host.UI.RawUI.WindowTitle = "build"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
             'program title "build": ' + (& $names)
+            $results.Add((Check 'a title the program set wins over the folder' 'build' ((& $titles)[-1])))
             Type-Line '$Host.UI.RawUI.WindowTitle = "pwsh.exe"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
             'program title "pwsh.exe" (generic): ' + (& $names)
+            $results.Add((Check 'the name of the shell itself is no title: the folder shows again' 'nk-title-evilgnp.exe' ((& $titles)[-1])))
             Type-Line '$Host.UI.RawUI.WindowTitle = "pay$([char]0x202E)load"'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
             'program title with U+202E: ' + (& $names)
+            $results.Add((Check 'a program title with U+202E is cleaned' 'payload' ((& $titles)[-1])))
+            Type-Line '$Host.UI.RawUI.WindowTitle = "x" * 1000'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
+            $results.Add((Check 'a title of 1000 characters is cut to 120' ('x' * 120) ((& $titles)[-1])))
             # a name the user gives is kept, an empty name hands the title back to the rules
             $rename = { param($chipName, $text)
                 $r = Get-ElementRect $chipName; Click-At ($r.X + 30) ($r.Y + 16) 'right' 800
-                Click-Name '重新命名分頁' | Out-Null; Start-Sleep -Milliseconds 800
+                Click-Name (Nk-Text 'tab.rename') | Out-Null; Start-Sleep -Milliseconds 800
                 if ($text) { Type-Unicode $text 40 } else { Press 0x08 }
                 Press 0x0D; Start-Sleep -Milliseconds 800 }
             & $rename 'Windows' 'fixed'
             'renamed the tab of C:\Windows "fixed": ' + (& $names)
+            $results.Add((Check 'a name the user gave is shown' 'fixed' ((& $titles)[1])))
             Click-Name 'fixed' | Out-Null; Start-Sleep -Milliseconds 400
             Type-Line 'Set-Location C:\Users'; Wait-Prompt | Out-Null; Start-Sleep -Milliseconds 500
             'after cd C:\Users in it: ' + (& $names)
+            $results.Add((Check 'and kept when the folder changes' 'fixed' ((& $titles)[1])))
             & $rename 'fixed' ''
             'name cleared: ' + (& $names)
+            $results.Add((Check 'an emptied name hands the title back to the folder' 'Users' ((& $titles)[1])))
+            Assert-Results $results 'titles'
         }
     } finally {
         [IO.Directory]::Delete($global:NkCjk, $true)
+        [IO.Directory]::Delete($global:NkRlo, $true)
     }
 }
 
 # Closing: a tab at its prompt closes without asking, a running command asks and the dialog names the tab, the
-# middle button closes when it comes up (not when it goes down), a shell that exits cleanly closes its pane and a
-# program profile that exits cleanly keeps its last screen.
+# middle button closes when it comes up (not when it goes down), a shell that exits cleanly closes its pane (also one a
+# custom profile starts) and a program profile that exits cleanly keeps its last screen.
 function Scenario-Close {
-    $agent = @{ id = 'agent'; name = 'agent'; program = 'cmd.exe'; args = @('/c', 'echo final-screen-text') }
+    # hostname.exe stands for an agent: a program that prints something and ends with code 0.
+    $agent = @{ id = 'agent'; name = 'agent'; program = 'hostname.exe'; args = @() }
     Run-App 'close' @{ defaultProfile = 'agent'; profiles = @($agent) } {
         Start-Sleep -Milliseconds 3000
-        'program profile exited with 0: window still open = {0}, tabs {1}, text has output = {2}, text has status = {3}' -f (-not $script:App.HasExited), @(Get-Chips).Count, ((Get-TerminalText) -match 'final-screen-text'), ((Get-TerminalText) -match '已結束，代碼 0')
+        $text = Get-TerminalText
+        Assert-Results @(
+            (Check 'a program profile that exited with 0 leaves the window open' $false $script:App.HasExited),
+            (Check 'and its tab' 1 @(Get-Chips).Count),
+            (Check-True 'and its last screen' ($text -match [regex]::Escape([Environment]::MachineName)) "text: $text"),
+            (Check-True 'and the line that says it ended' ($text -like ('*' + (Nk-Text 'status.exited' @(0)) + '*')) "text: $text")
+        ) 'close (program profile)'
+    } -NoShot
+    # A custom profile for a shell is a shell: typing exit closes its pane like it does for a built-in one.
+    Run-App 'close-custom-shell' @{ profiles = @(@{ id = 'custom-pwsh'; name = 'custom-pwsh'; program = 'pwsh.exe'; args = @('-NoLogo') }) } {
+        First-Prompt
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
+        Type-Unicode (Nk-Text 'palette.newTabWith' @('custom-pwsh')) 40; Start-Sleep -Milliseconds 500; Press 0x0D
+        Wait-Prompt | Out-Null
+        $before = @(Get-Chips).Count
+        Type-Line 'exit'; Start-Sleep -Milliseconds 1800
+        Assert-Results @(
+            (Check 'a second tab was opened with the custom shell profile' 2 $before),
+            (Check 'typing exit in it closes its tab' 1 @(Get-Chips).Count),
+            (Check 'and the window stays' $false $script:App.HasExited)
+        ) 'close (custom shell)'
     } -NoShot
     Run-App 'close-shell' @{} {
         First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
         New-Tab
         Type-Line 'exit'; Start-Sleep -Milliseconds 1500
-        'typed exit in a shell tab: tabs {0} (want 1)' -f @(Get-Chips).Count
+        $results.Add((Check 'typing exit in a shell tab closes it' 1 @(Get-Chips).Count))
         New-Tab
-        $dialogs = { Count-Class 'ContentDialog' }
+        $dialogs = { Dialog-Open }
         Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200
-        'closed a tab at its prompt: dialog {0}, tabs {1} (want 0 and 1)' -f (& $dialogs), @(Get-Chips).Count
+        $results.Add((Check 'closing a tab at its prompt asks nothing' 'False 1' ('{0} {1}' -f (& $dialogs), @(Get-Chips).Count)))
         New-Tab
         Type-Line '$Host.UI.RawUI.WindowTitle = "deploy"; Start-Sleep 60'; Start-Sleep -Milliseconds 1200
         Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200
-        'closed a tab with a running command: dialog {0}, title found = {1} (want 1 and True), tabs {2}' -f (& $dialogs), [bool](Get-Element '關閉「deploy」？'), @(Get-Chips).Count
+        $named = [bool](Get-Element (Nk-Text 'dialog.closeTab' @('deploy')))
+        $results.Add((Check 'closing a tab with a running command asks, naming the tab' 'True True 2' ('{0} {1} {2}' -f (& $dialogs), $named, @(Get-Chips).Count)))
         Press 0x1B; Start-Sleep -Milliseconds 600
-        'cancelled: tabs {0} (want 2)' -f @(Get-Chips).Count
+        $results.Add((Check 'cancelling keeps the tab' 2 @(Get-Chips).Count))
         # the middle button: down does nothing, up over the chip closes
         New-Tab
         $chips = @(Get-Chips); $r = Get-ElementRect $chips[-1].Name
@@ -532,10 +786,10 @@ function Scenario-Close {
         [D]::Mouse(0x0020, 0); Start-Sleep -Milliseconds 800
         $afterDown = @(Get-Chips).Count
         [D]::Mouse(0x0040, 0); Start-Sleep -Milliseconds 1200
-        'middle button: tabs after down {0}, after up {1} (want 3 then 2)' -f $afterDown, @(Get-Chips).Count
+        $results.Add((Check 'the middle button closes when it comes up, not when it goes down' '3 2' ('{0} {1}' -f $afterDown, @(Get-Chips).Count)))
+        Assert-Results $results 'close (shell)'
     } -NoShot
 }
-
 # Closing the window ends every session, so it asks like closing a tab does: with a command running the window stays and the
 # question counts the sessions, Cancel keeps everything, Close ends the window; an idle shell closes without a question.
 function Scenario-CloseWindow {
@@ -547,11 +801,11 @@ function Scenario-CloseWindow {
         [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 1500
         $script:App.Refresh()
         $results += Check 'closing the window with a command running keeps it open' $false $script:App.HasExited
-        $results += Check 'and asks about the running session' $true ([bool](Get-Element '關閉 1 個執行中的工作階段？'))
+        $results += Check 'and asks about the running session' $true ([bool](Get-Element (Nk-Text 'dialog.closeSessions' @(1))))
         Press 0x1B; Start-Sleep -Milliseconds 800
         $results += Check 'Cancel keeps the window and the command' $false $script:App.HasExited
         [void]$script:App.CloseMainWindow(); Start-Sleep -Milliseconds 1200
-        Click-Name '關閉' -Class 'Button'
+        Click-Name (Nk-Text 'common.close') -Class 'Button'
         $results += Check 'Close ends the window' $true ($script:App.WaitForExit(5000))
         $results
         if ($results -like 'FAIL*') { throw 'close-window: a check failed' }
@@ -569,25 +823,33 @@ function Scenario-CloseWindow {
 # is zoomed, a press on it brings the others back), and an unfocused pane that rang has a warning line over its top
 # edge until it is focused (the focus line and the warning line are never on the same pane).
 function Scenario-Panes {
-    Run-App 'panes' @{} {
+    Run-App 'panes' @{ theme = 'Tokyo Night' } {
         First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $textCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
         $texts = {
-            $chip = Get-Chips | Select-Object -First 1
-            $e = Get-Element $chip.Name
-            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
-            ($e.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join '|'
+            $e = Get-Element (Get-Chips | Select-Object -First 1).Name
+            @($e.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond) | ForEach-Object { $_.Current.Name })
         }
-        '1 pane: chip texts "{0}", panes {1}' -f (& $texts), (Count-Panes)
+        '1 pane: chip texts "{0}", panes {1}' -f ((& $texts) -join '|'), (Count-Panes)
+        $results.Add((Check 'a tab with one pane shows no count' 0 @((& $texts) | Where-Object { $_ -match '^\d+$' }).Count))
         Split-Right; Split-Down
-        '3 panes: chip texts "{0}", panes {1}' -f (& $texts), (Count-Panes)
+        '3 panes: chip texts "{0}", panes {1}' -f ((& $texts) -join '|'), (Count-Panes)
+        $results.Add((Check 'three panes show their count' 1 @((& $texts) | Where-Object { $_ -eq '3' }).Count))
+        $results.Add((Check 'and are three terminals' 3 (Count-Panes)))
         Chord @(0x11, 0x10) 0x5A; Start-Sleep -Milliseconds 900
-        $badge = Get-Element '已縮放'
-        $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Text)
-        'zoomed: corner label present = {0}, text "{1}", chip texts "{2}"' -f [bool]$badge, (($badge.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond) | ForEach-Object { $_.Current.Name }) -join ''), (& $texts)
+        $badge = Get-Element (Nk-Text 'tab.zoomed')
+        $badgeText = if ($badge) { (@($badge.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCond) | ForEach-Object { $_.Current.Name })) -join '' } else { '' }
+        'zoomed: corner label present = {0}, text "{1}", chip texts "{2}"' -f [bool]$badge, $badgeText, ((& $texts) -join '|')
+        $results.Add((Check 'zooming shows the corner label' $true ([bool]$badge)))
+        $results.Add((Check-True 'which says which pane of three' ($badgeText -match '^[123] / 3$') "text '$badgeText'"))
+        $results.Add((Check 'and the chip keeps its count' 1 @((& $texts) | Where-Object { $_ -eq '3' }).Count))
+        $results.Add((Check 'only the zoomed pane is a terminal on screen' 1 (Count-Panes)))
         Shot-Safe (Shot-Path 'panes-zoomed') | Out-Null
         $b = $badge.Current.BoundingRectangle
         Click-At ([int]($b.X + $b.Width / 2)) ([int]($b.Y + $b.Height / 2)) 'left' 900
-        'pressed the label: corner label present = {0}, panes shown {1}' -f [bool](Get-Element '已縮放'), (Count-Panes)
+        'pressed the label: corner label present = {0}, panes shown {1}' -f [bool](Get-Element (Nk-Text 'tab.zoomed')), (Count-Panes)
+        $results.Add((Check 'pressing the label brings the other panes back' 'False 3' ('{0} {1}' -f [bool](Get-Element (Nk-Text 'tab.zoomed')), (Count-Panes))))
         # a bell in the pane that is not focused
         $esc = '$e=[char]27;$a=[char]7;'
         Type-Line ($esc + 'Start-Sleep 3; Write-Host -NoNewline $a'); Start-Sleep -Milliseconds 300
@@ -597,21 +859,28 @@ function Scenario-Panes {
         $rects = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $termCond) | ForEach-Object { $_.Current.BoundingRectangle })
         $ringing = $rects | Sort-Object { $_.Y * 10000 + $_.X } | Select-Object -Last 1
         $win = Win-Rect
+        # The first rows of the pane, left to right at 40 px from its edge: the warning line is the first 2 DIP.
         $sample = {
             param($rect, $path)
             Shot-Safe $path | Out-Null
             $bmp = [System.Drawing.Bitmap]::FromFile($path)
             try {
                 $x = [int]($rect.X - $win.Left + 40); $y0 = [int]($rect.Y - $win.Top)
-                (0..4 | ForEach-Object { $c = $bmp.GetPixel($x, $y0 + $_); '({0},{1},{2})' -f $c.R, $c.G, $c.B }) -join ' '
+                @(0..4 | ForEach-Object { $c = $bmp.GetPixel($x, $y0 + $_); ,@([int]$c.R, [int]$c.G, [int]$c.B) })
             } finally { $bmp.Dispose() }
         }
-        'top rows of the pane that rang (unfocused): ' + (& $sample $ringing (Shot-Path 'panes-warning'))
+        $show = { param($rows) ($rows | ForEach-Object { '({0},{1},{2})' -f $_[0], $_[1], $_[2] }) -join ' ' }
+        $rang = & $sample $ringing (Shot-Path 'panes-warning')
+        'top rows of the pane that rang (unfocused): ' + (& $show $rang)
+        $results.Add((Check-True 'the pane that rang has a warning (amber) line on its top edge' ($rang[0][0] - $rang[0][2] -gt 40) (& $show $rang)))
+        $results.Add((Check-True 'and the line is thin: the rows below are not amber' ($rang[4][0] - $rang[4][2] -lt 40) (& $show $rang)))
         Click-At ([int]($ringing.X + $ringing.Width / 2)) ([int]($ringing.Y + $ringing.Height / 2)) 'left' 900
-        'top rows of it once focused: ' + (& $sample $ringing (Shot-Path 'panes-focused'))
+        $focused = & $sample $ringing (Shot-Path 'panes-focused')
+        'top rows of it once focused: ' + (& $show $focused)
+        $results.Add((Check-True 'focusing it takes the warning line away and puts the focus (accent) line there' ($focused[0][2] - $focused[0][0] -gt 40) (& $show $focused)))
+        Assert-Results $results 'panes'
     } -NoShot
 }
-
 function Get-Items {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'ListViewItem')
@@ -1023,4 +1292,4 @@ function Scenario-Restart {
         Check 'opening the settings file names the file and starts nothing' $true ([bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*restart-appdata\\Nekominal\\settings\.json'))
     }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-Titles; Scenario-Close; Scenario-Panes }
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-Status; Scenario-StatusExit; Scenario-Titles; Scenario-Close; Scenario-Panes }

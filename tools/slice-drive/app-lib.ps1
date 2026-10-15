@@ -169,9 +169,10 @@ function Count-Panes {
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond).Count
 }
 
-# Sets the width of the window in DIP (the app runs at 150%: DIP * 1.5 pixels), keeping its position and height. The
-# outer rectangle is wider than the visible one by the invisible frame, which is kept.
-function Set-WindowWidth([int]$Dip, [double]$Scale = 1.5) {
+# Sets the width of the window in DIP (DIP * the scale of the window's monitor pixels), keeping its position and
+# height. The outer rectangle is wider than the visible one by the invisible frame, which is kept.
+function Set-WindowWidth([int]$Dip, [double]$Scale = 0) {
+    if ($Scale -le 0) { $Scale = Get-Scale }
     $visible = Win-Rect
     $outer = New-Object D+RECT
     [void][D]::GetWindowRect($script:Hwnd, [ref]$outer)
@@ -262,13 +263,29 @@ function Shot-WithPattern([string]$Path) {
 # two corners.
 function Shot-Inactive([string]$Path) {
     $ph = $script:PatternHwnd
-    [void][P]::SetWindowPos($ph, [IntPtr]::Zero, 3300, 1700, 320, 220, 0x0040)
+    if (-not (Move-PatternAway 320 220)) { return 'inactive shot skipped: no free corner of the screen' }
     [D]::ForceForeground($ph); Start-Sleep -Milliseconds 1200
     $r = Win-Rect; $cx = [int](($r.Left + $r.Right) / 2); $cy = [int](($r.Top + $r.Bottom) / 2); $app = [uint32]$script:App.Id
     if ([D]::PidAt($cx, $cy) -eq $app -and [D]::PidAt($r.Left + 20, $r.Top + 20) -eq $app -and [D]::PidAt($r.Right - 20, $r.Bottom - 20) -eq $app) { Shot $Path } else { 'inactive shot skipped' }
 }
 
 function Stop-Pattern { if ($script:PatternProc -and -not $script:PatternProc.HasExited) { $script:PatternProc.Kill() } }
+
+# Moves the pattern window (this script's own) to a corner of the screen that the app window does not cover, so that
+# it can take the focus from the app without hiding any of it. False when every corner is covered.
+function Move-PatternAway([int]$W = 300, [int]$H = 200) {
+    $left = [D]::GetSystemMetrics(76); $top = [D]::GetSystemMetrics(77)
+    $right = $left + [D]::GetSystemMetrics(78); $bottom = $top + [D]::GetSystemMetrics(79)
+    $app = Win-Rect
+    foreach ($spot in @(@($left, ($bottom - $H)), @(($right - $W), ($bottom - $H)), @(($right - $W), $top), @($left, $top))) {
+        $x = $spot[0]; $y = $spot[1]
+        if ($x + $W -le $app.Left -or $x -ge $app.Right -or $y + $H -le $app.Top -or $y -ge $app.Bottom) {
+            [void][P]::SetWindowPos($script:PatternHwnd, [IntPtr]::Zero, $x, $y, $W, $H, 0x0040)
+            return $true
+        }
+    }
+    $false
+}
 
 Add-Type @'
 using System; using System.Runtime.InteropServices;
@@ -360,3 +377,59 @@ function Region-Diff([string]$PathA, [string]$PathB, [int]$X, [int]$Y, [int]$W, 
 
 # True while the mouse cursor over the app is the hand (the arrow otherwise).
 function Cursor-IsHand { [D]::CursorHandle() -eq [D]::LoadCursor([IntPtr]::Zero, [IntPtr]32649) }
+
+# --- checks that fail a scenario -----------------------------------------------------------------------------------------------
+
+# One line per check for a condition: ok, or FAIL with the detail that shows why.
+function Check-True([string]$Name, [bool]$Ok, [string]$Detail = '') {
+    '{0} {1}{2}' -f $(if ($Ok) { 'ok  ' } else { 'FAIL' }), $Name, $(if ($Ok -or -not $Detail) { '' } else { " | $Detail" })
+}
+
+# Throws when any line of `$Results` is a FAIL, after the lines themselves have been written, so a scenario that
+# found a mismatch fails (and says what) instead of printing numbers for somebody to read.
+function Assert-Results($Results, [string]$Scenario) {
+    $Results
+    $failed = @($Results | Where-Object { $_ -like 'FAIL*' })
+    if ($failed.Count -gt 0) { throw "$Scenario`: $($failed.Count) of $(@($Results).Count) checks failed" }
+}
+
+# --- the strings of the app ------------------------------------------------------------------------------------------------------
+
+# A string of the interface in Traditional Chinese (the scenarios run with language zh-TW), read from the one table
+# the app is built from (crates/nekominal-model/src/strings.rs), so a scenario names an element by the words the app
+# shows instead of by a copy of them. `{0}`, `{1}` are filled from $With.
+function Nk-Text([string]$Id, [object[]]$With = @()) {
+    if (-not $script:NkStrings) {
+        $table = Join-Path $PSScriptRoot '..\..\crates\nekominal-model\src\strings.rs'
+        $script:NkStrings = @{}
+        foreach ($m in [regex]::Matches([IO.File]::ReadAllText($table), '(?m)^\s*\w+\s+"([^"]+)"\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)";')) {
+            $script:NkStrings[$m.Groups[1].Value] = $m.Groups[2].Value.Replace('\"', '"')
+        }
+        if ($script:NkStrings.Count -lt 100) { throw "read only $($script:NkStrings.Count) strings from $table" }
+    }
+    $text = $script:NkStrings[$Id]
+    if ($null -eq $text) { throw "the table of strings has no '$Id'" }
+    for ($i = 0; $i -lt $With.Count; $i++) { $text = $text.Replace("{$i}", [string]$With[$i]) }
+    $text
+}
+
+# The tooltip (and accessible name) of a button that has a command: its label and the shortcut in brackets.
+function Nk-Tip([string]$Id, [string]$Shortcut) { "$(Nk-Text $Id) ($Shortcut)" }
+
+# The title of a chip, without the state its accessible name adds (title and state joined as tab.nameStatus says).
+function Chip-Title($Chip) {
+    if (-not $Chip.Status) { return $Chip.Name }
+    $pattern = '^' + [regex]::Escape((Nk-Text 'tab.nameStatus' @('<0>', $Chip.Status))).Replace('<0>', '(.*)') + '$'
+    if ($Chip.Name -match $pattern) { $Matches[1] } else { $Chip.Name }
+}
+
+# A rectangle of the first terminal, as a part of its width and height, in the pixels of a screenshot that starts at
+# ($OriginX, $OriginY) on the screen: where to sample a region that the shell does not draw into.
+function Terminal-Region([double]$Fx, [double]$Fy, [int]$W, [int]$H, [int]$OriginX, [int]$OriginY) {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NekominalTerminal')
+    $pane = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if (-not $pane) { throw 'no terminal pane' }
+    $r = $pane.Current.BoundingRectangle
+    @{ X = [int]($r.X + $r.Width * $Fx - $OriginX); Y = [int]($r.Y + $r.Height * $Fy - $OriginY); W = $W; H = $H }
+}

@@ -24,6 +24,7 @@ public static class D {
   [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr inst, IntPtr name);
   [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint thread);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
   [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -105,6 +106,9 @@ function Start-App([string]$Exe, [string]$Log, [string]$Layout, [string]$ExtraAr
     # The Claude Code host exports NO_COLOR and SetEnvironmentVariable($null) leaves an empty entry behind in the
     # snapshot ProcessStartInfo takes: drop it explicitly, or pwsh strips every ANSI sequence.
     [void]$psi.Environment.Remove('NO_COLOR')
+    # Nothing of the host that drives the test (an agent session) reaches the app or the shells in it: $Env below
+    # puts back what a scenario asks for.
+    foreach ($k in @($psi.Environment.Keys | Where-Object { $_ -match '^(CLAUDE|ANTHROPIC|MCP_)' })) { [void]$psi.Environment.Remove($k) }
     if ($Log) { $psi.Environment['SPIKE_LOG'] = $Log }
     if ($Layout) { $psi.Environment['SPIKE_LAYOUT'] = $Layout }
     # A $null value removes the variable from the child's environment.
@@ -141,6 +145,9 @@ function Win-Rect {
     if ([D]::DwmGetWindowAttribute($script:Hwnd, 9, [ref]$r, 16) -ne 0) { [void][D]::GetWindowRect($script:Hwnd, [ref]$r) }
     $r
 }
+
+# Physical pixels per DIP of the app window (1.5 at 150 %), from the DPI of the window itself.
+function Get-Scale { [double][D]::GetDpiForWindow($script:Hwnd) / 96.0 }
 
 function Get-Layout {
     $h = @{}
