@@ -609,6 +609,21 @@ fn the_hidden_primary_screen_ends_up_as_if_it_had_been_shown() {
 }
 
 #[test]
+fn kitty_flags_set_with_equals_survive_a_narrowing_resize_on_the_alternate_screen() {
+    let mut core = core(40, 10);
+    feed(&mut core, "\x1b[>5u\x1b[?1049h\x1b[>1u\x1b[=8;2u");
+    assert_eq!(core.kitty_flags(), 9);
+    core.resize(30, 10);
+    assert_eq!(core.kitty_flags(), 9, "union-set bits survive");
+    feed(&mut core, "\x1b[=1;3u");
+    assert_eq!(core.kitty_flags(), 8, "difference clears bit 1");
+    core.resize(20, 10);
+    assert_eq!(core.kitty_flags(), 8, "a cleared bit does not come back from the stack");
+    feed(&mut core, "\x1b[?1049l");
+    assert_eq!(core.kitty_flags(), 5, "the main screen's stack is untouched");
+}
+
+#[test]
 fn resizing_while_scrolled_back_keeps_the_view_valid() {
     let mut core = core(40, 6);
     for i in 0..60 {

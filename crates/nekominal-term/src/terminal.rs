@@ -994,6 +994,9 @@ impl TerminalCore {
     /// clears the blank grid that goes inactive; the alternate grid then returns, cut or padded to the new size and
     /// not reflowed, with its content and cursor as the program left them.
     fn resize_hidden_primary(&mut self, target: TermDims) {
+        // `swap_alt` loads the kitty bits from the top of the stack, and `CSI = flags ; mode u` changes the bits
+        // without touching the stack: the swaps below would turn the program's flags into the stack's.
+        let kitty = ansi::KeyboardModes::from_bits_truncate(self.kitty_flags());
         let blank = Grid::new(self.term.screen_lines(), self.term.columns(), 0);
         let mut alternate = mem::replace(self.term.grid_mut(), blank);
         self.term.swap_alt();
@@ -1003,6 +1006,7 @@ impl TerminalCore {
         self.term.swap_alt();
         alternate.resize(false, target.screen_lines, target.columns);
         *self.term.grid_mut() = alternate;
+        self.term.set_keyboard_mode(kitty, ansi::KeyboardModesApplyBehavior::Replace);
     }
 
     pub fn scroll_display(&mut self, scroll: Scroll) {
