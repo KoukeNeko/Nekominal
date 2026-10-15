@@ -11,6 +11,15 @@
     <SolidColorBrush x:Key="NkAccent" Color="#FF7AA2F7"/>
     <SolidColorBrush x:Key="NkInk" Color="#FF1A1B26"/>
     <SolidColorBrush x:Key="NkPanel" Color="#E01A1B26"/>
+    <!-- The settings drawer: its text, the outline of its controls, the accent of a choice that is on, the lift of a
+         selected chip and the edge of the panel. glass.rs gives each its colour. -->
+    <SolidColorBrush x:Key="NkPanelText" Color="#FFC0CAF5"/>
+    <SolidColorBrush x:Key="NkPanelTextSecondary" Color="#FF9AA5CE"/>
+    <SolidColorBrush x:Key="NkPanelOutline" Color="#FF7982A9"/>
+    <SolidColorBrush x:Key="NkPanelAccent" Color="#FF7AA2F7"/>
+    <SolidColorBrush x:Key="NkPanelBorder" Color="#2EFFFFFF"/>
+    <SolidColorBrush x:Key="NkSelected" Color="#29FFFFFF"/>
+    <SolidColorBrush x:Key="NkSelectedBorder" Color="#38FFFFFF"/>
 
     <!-- The one corner radius (design.rs CORNER_RADIUS fills the placeholder). ControlCornerRadius and
          OverlayCornerRadius are the keys WinUI's own controls read: buttons, text boxes, combo boxes, the
@@ -57,6 +66,250 @@
                   <VisualState x:Name="Disabled">
                     <VisualState.Setters>
                       <Setter Target="Presenter.Opacity" Value="0.4"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- The controls of the settings drawer. A choice that is on has a 2 DIP outline in the accent and a check mark, so
+         it never depends on its colour; the 1 DIP outline of every choice is NkPanelOutline. The check mark keeps its
+         room when it is off (opacity, not visibility), so a choice does not change its width when it is picked. -->
+    <Style x:Key="NkSegment" TargetType="ToggleButton">
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="MinWidth" Value="0"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="CornerRadius" Value="{StaticResource NkCornerRadius}"/>
+      <Setter Property="Foreground" Value="{StaticResource NkPanelText}"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="HorizontalContentAlignment" Value="Center"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="UseSystemFocusVisuals" Value="True"/>
+      <Setter Property="FocusVisualMargin" Value="-3"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Grid x:Name="Hit" Background="Transparent">
+              <Border x:Name="Plate" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent"
+                      BorderBrush="{StaticResource NkPanelOutline}" BorderThickness="1"/>
+              <Border x:Name="Ring" CornerRadius="{TemplateBinding CornerRadius}" BorderBrush="{StaticResource NkPanelAccent}"
+                      BorderThickness="2" Visibility="Collapsed" IsHitTestVisible="False"/>
+              <StackPanel Orientation="Horizontal" Spacing="4" Margin="6,0,10,0" HorizontalAlignment="Stretch"
+                          VerticalAlignment="Center">
+                <FontIcon x:Name="Check" Glyph="&#xE73E;" FontSize="11" Width="12" Opacity="0"
+                          Foreground="{StaticResource NkPanelAccent}"/>
+                <ContentPresenter x:Name="Presenter" Foreground="{TemplateBinding Foreground}"
+                                  FontSize="{TemplateBinding FontSize}" HorizontalAlignment="Left"
+                                  VerticalAlignment="Center"/>
+              </StackPanel>
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Normal"/>
+                  <VisualState x:Name="PointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkHover}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Pressed">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkPressed}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Disabled">
+                    <VisualState.Setters>
+                      <Setter Target="Hit.Opacity" Value="0.4"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Checked">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkSelected}"/>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Check.Opacity" Value="1"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkSelected}"/>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Check.Opacity" Value="1"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPressed">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkPressed}"/>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Check.Opacity" Value="1"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedDisabled">
+                    <VisualState.Setters>
+                      <Setter Target="Hit.Opacity" Value="0.4"/>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkSelected}"/>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Check.Opacity" Value="1"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- A section of the drawer: the chip of the tab strip (32 DIP high, the selected one lifted). -->
+    <Style x:Key="NkChip" TargetType="ToggleButton">
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="MinWidth" Value="0"/>
+      <Setter Property="Padding" Value="12,0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="CornerRadius" Value="{StaticResource NkCornerRadius}"/>
+      <Setter Property="Foreground" Value="{StaticResource NkPanelText}"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="UseSystemFocusVisuals" Value="True"/>
+      <Setter Property="FocusVisualMargin" Value="-3"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Grid x:Name="Hit" Background="Transparent">
+              <Border x:Name="Plate" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent"
+                      BorderBrush="Transparent" BorderThickness="1"/>
+              <ContentPresenter x:Name="Presenter" Foreground="{TemplateBinding Foreground}"
+                                FontSize="{TemplateBinding FontSize}" Margin="{TemplateBinding Padding}"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Normal"/>
+                  <VisualState x:Name="PointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkHover}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Pressed">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkPressed}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Checked">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkSelected}"/>
+                      <Setter Target="Plate.BorderBrush" Value="{StaticResource NkSelectedBorder}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkSelected}"/>
+                      <Setter Target="Plate.BorderBrush" Value="{StaticResource NkSelectedBorder}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPressed">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkPressed}"/>
+                      <Setter Target="Plate.BorderBrush" Value="{StaticResource NkSelectedBorder}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- A colour scheme tile: 80 x 56 DIP in the colours of the scheme (the button's own background), with the check
+         mark on a square badge (the radius token would make a 16 DIP badge a circle). -->
+    <Style x:Key="NkTile" TargetType="ToggleButton">
+      <Setter Property="Width" Value="80"/>
+      <Setter Property="Height" Value="56"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="CornerRadius" Value="{StaticResource NkCornerRadius}"/>
+      <Setter Property="UseSystemFocusVisuals" Value="True"/>
+      <Setter Property="FocusVisualMargin" Value="-3"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Grid x:Name="Hit" Background="Transparent">
+              <Border x:Name="Plate" CornerRadius="{TemplateBinding CornerRadius}" Background="{TemplateBinding Background}"
+                      BorderBrush="{StaticResource NkPanelOutline}" BorderThickness="1"/>
+              <ContentPresenter x:Name="Presenter" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+              <Border x:Name="Ring" CornerRadius="{TemplateBinding CornerRadius}" BorderBrush="{StaticResource NkPanelAccent}"
+                      BorderThickness="2" Visibility="Collapsed" IsHitTestVisible="False"/>
+              <Grid x:Name="Badge" Width="16" Height="16" Margin="0,5,5,0" HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Visibility="Collapsed" IsHitTestVisible="False">
+                <Rectangle Fill="{StaticResource NkPanelAccent}"/>
+                <FontIcon Glyph="&#xE73E;" FontSize="10" Foreground="{StaticResource NkInk}"/>
+              </Grid>
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Normal"/>
+                  <VisualState x:Name="PointerOver"/>
+                  <VisualState x:Name="Pressed"/>
+                  <VisualState x:Name="Checked">
+                    <VisualState.Setters>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Badge.Visibility" Value="Visible"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Badge.Visibility" Value="Visible"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="CheckedPressed">
+                    <VisualState.Setters>
+                      <Setter Target="Ring.Visibility" Value="Visible"/>
+                      <Setter Target="Badge.Visibility" Value="Visible"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- A button with a word on it (the footer of the drawer, Replace, Cancel). -->
+    <Style x:Key="NkButton" TargetType="Button">
+      <Setter Property="Height" Value="32"/>
+      <Setter Property="Padding" Value="12,0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="CornerRadius" Value="{StaticResource NkCornerRadius}"/>
+      <Setter Property="Foreground" Value="{StaticResource NkPanelText}"/>
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="UseSystemFocusVisuals" Value="True"/>
+      <Setter Property="FocusVisualMargin" Value="-3"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Grid x:Name="Hit" Background="Transparent">
+              <Border x:Name="Plate" CornerRadius="{TemplateBinding CornerRadius}" Background="Transparent"
+                      BorderBrush="{StaticResource NkPanelOutline}" BorderThickness="1"/>
+              <ContentPresenter x:Name="Presenter" Foreground="{TemplateBinding Foreground}"
+                                FontSize="{TemplateBinding FontSize}" Margin="{TemplateBinding Padding}"
+                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Normal"/>
+                  <VisualState x:Name="PointerOver">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkHover}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Pressed">
+                    <VisualState.Setters>
+                      <Setter Target="Plate.Background" Value="{StaticResource NkPressed}"/>
+                    </VisualState.Setters>
+                  </VisualState>
+                  <VisualState x:Name="Disabled">
+                    <VisualState.Setters>
+                      <Setter Target="Hit.Opacity" Value="0.4"/>
                     </VisualState.Setters>
                   </VisualState>
                 </VisualStateGroup>

@@ -15,6 +15,7 @@
 #   Scenario-Status           # tab status marks for OSC 7501 / 9 / 777 and BEL, bell decisions with the window active and not
 #   Scenario-StatusExit       # a program that ends with an error in the middle of a progress report shows an error
 #   Scenario-Toolbar          # bar tiers at 1440/1000/700/500 DIP, the menu of the "..." button, the split rows of the tab menu
+#   Scenario-Drawer           # the settings drawer: open and close, no resize, focus, Esc steps, search in both languages
 #   Scenario-All
 #
 # Every scenario goes through run-app.ps1, so the safety rules there apply: input only while the foreground window
@@ -130,9 +131,11 @@ function Scenario-Overlays {
         # Closing asks only when work would end: a command runs.
         Type-Line 'Start-Sleep 60'; Start-Sleep -Milliseconds 800
         Chord @(0x11, 0x10) 0x57; Start-Sleep -Milliseconds 1200; Shot-Safe (Shot-Path 'overlay-close-dialog'); Press 0x1B; Start-Sleep -Milliseconds 500
-        Chord @(0x11, 0x10) 0x4F; Start-Sleep -Milliseconds 1200
-        Click-Name (Nk-Text 'settings.appearance') -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-appearance')
-        Click-Name (Nk-Text 'settings.keys') -Class 'NavigationViewItem'; Start-Sleep -Milliseconds 900; Shot-Safe (Shot-Path 'settings-keys')
+        # The settings drawer floats over the terminal; the pointer is moved off the caption buttons so that no snap layout
+        # flyout is in the picture.
+        Open-Drawer; $window = Win-Rect; Move-To ($window.Left + 200) ($window.Top + 500); Start-Sleep -Milliseconds 500
+        Shot-Safe (Shot-Path 'settings-appearance')
+        Click-Name (Nk-Text 'settings.keys') -Class 'ToggleButton'; Start-Sleep -Milliseconds 900; Move-To ($window.Left + 200) ($window.Top + 500); Shot-Safe (Shot-Path 'settings-keys')
     } -NoShot
 }
 
@@ -291,6 +294,37 @@ function Rgb([string]$Text) { [int[]]($Text -split ',') }
 function Rgb-Distance([string]$A, [string]$B) { $x = Rgb $A; $y = Rgb $B; [Math]::Abs($x[0] - $y[0]) + [Math]::Abs($x[1] - $y[1]) + [Math]::Abs($x[2] - $y[2]) }
 function Slider-Value($Slider) { $Slider.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current.Value }
 
+# --- the settings drawer ---------------------------------------------------------------------------------------------------
+# Polls until the condition holds (UI Automation sees a change a little after it is made).
+function Wait-Until([scriptblock]$Condition, [int]$TimeoutMs = 5000) {
+    $end = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::UtcNow -lt $end) { if (& $Condition) { return $true }; Start-Sleep -Milliseconds 80 }
+    $false
+}
+function Focused-Name { try { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name } catch { '' } }
+function Focused-Class { try { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.ClassName } catch { '' } }
+# The search box is the one element of the drawer that is always there while it is open (a hidden drawer is not in the tree).
+function Drawer-Search { Get-Element (Nk-Text 'settings.search') 'TextBox' }
+function Drawer-Open { [bool](Drawer-Search) }
+# Ctrl+Shift+O, not Ctrl+,: the Bopomofo input method of this machine takes the comma chord as punctuation.
+function Open-Drawer { Chord @(0x11, 0x10) 0x4F; [void](Wait-Until { Drawer-Open }); Start-Sleep -Milliseconds 400 }
+function Close-Drawer { Press 0x1B; [void](Wait-Until { -not (Drawer-Open) }); Start-Sleep -Milliseconds 400 }
+# The state of a toggle button found by its name: On or Off.
+function Toggle-State([string]$Name) {
+    $e = Get-Element $Name 'ToggleButton'
+    if ($e) { [string]$e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState }
+}
+# The lines of the log since $Mark that say the first pane was given another grid (a resize of its ConPTY follows each).
+function Grid-Lines([int]$Mark) { @(Log-Since $Mark | Where-Object { $_ -match 'pane 1 grid ' }) }
+# The rectangle of the first terminal pane on the screen, and a click on it (at its left, where the drawer is not).
+function Terminal-Rect {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NekominalTerminal')
+    $b = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond).Current.BoundingRectangle
+    @{ X = [int]$b.X; Y = [int]$b.Y; W = [int]$b.Width; H = [int]$b.Height }
+}
+function Click-Terminal { $r = Terminal-Rect; Click-At ($r.X + 120) ($r.Y + [int]($r.H / 2)) 'left' 500 }
+
 # Background opacity: a live change on an idle terminal changes its background (pixels over the striped window), a
 # replay of 200 slider events makes no SetSystemBackdrop call, at most one apply per frame and one save and shows no
 # InfoBar or dialog, backdrop None turns the slider off without touching the saved value, and 20 backdrop
@@ -394,7 +428,8 @@ function Get-Chips {
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'NamedContainerAutomationPeer')
     foreach ($e in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
         $p = $e.GetCurrentPropertyValue($pos)
-        if ($p -is [int]) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Status = $e.Current.ItemStatus; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
+        # Any other named container (the drawer) reports the default position, -1.
+        if ($p -is [int] -and $p -ge 1) { [pscustomobject]@{ Index = $p; Name = $e.Current.Name; Status = $e.Current.ItemStatus; Rect = $e.Current.BoundingRectangle; Offscreen = $e.Current.IsOffscreen } }
     }
 }
 
@@ -780,8 +815,8 @@ function Scenario-Toolbar {
         $results.Add((Check 'find, from the menu, opens the find bar' $true ([bool](Get-Element (Nk-Text 'edit.find') 'TextBox'))))
         Press 0x1B; Start-Sleep -Milliseconds 500
         Open-Menu | Out-Null; Click-Name (Nk-Tip 'app.settings' 'Ctrl+,') 'left' 1200
-        $results.Add((Check 'settings, from the menu, opens the settings page' $true ([bool](Get-Element (Nk-Text 'settings.appearance') 'NavigationViewItem'))))
-        Chord @(0x11) 0xBC; Start-Sleep -Milliseconds 800
+        $results.Add((Check 'settings, from the menu, opens the settings drawer' $true (Drawer-Open)))
+        Press 0x1B; Start-Sleep -Milliseconds 800
         # the tab menu splits the pane of its own tab, shown or not
         $chips = @(Get-Chips | Sort-Object Index)
         $first = Get-ElementRect $chips[0].Name
@@ -1489,4 +1524,90 @@ function Scenario-Restart {
         Check 'opening the settings file names the file and starts nothing' $true ([bool]($lines -match 'not opened \(NEKOMINAL_NO_LAUNCH is set\): .*restart-appdata\\Nekominal\\settings\.json'))
     }
 }
-function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes }
+# The settings drawer, first half: it opens by the shortcut, the menu and the palette and closes by Esc, the close button and
+# the shortcut; it floats over the terminal without resizing it (no new grid of the first pane in the log), leaves the tab
+# strip and the terminals usable while it is open, gives the focus back to the pane it came from; Esc steps back one thing
+# at a time (the search first); the search finds a row by its label in both languages; the sections are there.
+function Scenario-Drawer {
+    Run-App 'drawer' @{ confirmClose = $false } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        $search = Nk-Text 'settings.search'
+        $mark = Log-Mark
+        Open-Drawer
+        $results.Add((Check 'Ctrl+Shift+O opens the drawer' $true (Drawer-Open)))
+        $results.Add((Check 'the focus is in its search box' $search (Focused-Name)))
+        $sections = 'settings.appearance', 'settings.terminal', 'settings.profiles', 'settings.agents', 'settings.keys', 'settings.advanced'
+        $results.Add((Check 'the six sections are there, in order' (($sections | ForEach-Object { Nk-Text $_ }) -join '|') ((@($sections | ForEach-Object { Get-Element (Nk-Text $_) 'ToggleButton' } | Where-Object { $_ } | Sort-Object { $_.Current.BoundingRectangle.X } | ForEach-Object { $_.Current.Name })) -join '|')))
+        $results.Add((Check 'the first section is chosen' 'On' (Toggle-State (Nk-Text 'settings.appearance'))))
+        Close-Drawer
+        $results.Add((Check 'Esc closes it' $false (Drawer-Open)))
+        $results.Add((Check 'and the focus is back in the terminal' 'NekominalTerminal' (Focused-Class)))
+        Type-Line 'echo typed-after-esc'
+        $results.Add((Check 'what is typed then reaches the terminal' $true (Wait-Text 'typed-after-esc' 6000)))
+        $results.Add((Check 'opening and closing it did not give the pane another grid' 0 (Grid-Lines $mark).Count))
+
+        # the menu and the close button
+        Open-Menu | Out-Null; Click-Name (Nk-Tip 'app.settings' 'Ctrl+,') 'left' 800
+        $results.Add((Check 'the menu row opens it' $true (Wait-Until { Drawer-Open })))
+        Click-Name (Nk-Text 'common.close') -Class 'Button'; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'the close button closes it' $false (Drawer-Open)))
+        $results.Add((Check 'and the focus is back in the terminal' 'NekominalTerminal' (Focused-Class)))
+
+        # the palette lists a row of the table and opens the drawer there
+        Chord @(0x11, 0x10) 0x50; Start-Sleep -Milliseconds 700
+        Type-Unicode (Nk-Text 'palette.setting' @((Nk-Text 'settings.opacity'))) 40; Start-Sleep -Milliseconds 500; Press 0x0D; Start-Sleep -Milliseconds 900
+        $results.Add((Check 'the palette entry of a setting opens the drawer on that row' (Nk-Text 'settings.opacity') (Focused-Name)))
+        Close-Drawer
+
+        # the shortcut when it is open: in the drawer it closes, from the terminal it brings the focus to the drawer
+        Open-Drawer; Chord @(0x11, 0x10) 0x4F; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'the shortcut again, with the focus in the drawer, closes it' $false (Drawer-Open)))
+        Open-Drawer; Click-Terminal
+        $results.Add((Check 'it stays open while the terminal has the focus' $true (Drawer-Open)))
+        $results.Add((Check 'and the focus is in the terminal' 'NekominalTerminal' (Focused-Class)))
+        Type-Line 'echo typed-while-open'
+        $results.Add((Check 'typing reaches the terminal while the drawer is open' $true (Wait-Text 'typed-while-open' 6000)))
+        Chord @(0x11, 0x10) 0x4F; Start-Sleep -Milliseconds 700
+        $results.Add((Check 'the shortcut from the terminal puts the focus in the search box' $search (Focused-Name)))
+        $results.Add((Check 'and the drawer stays' $true (Drawer-Open)))
+        # the tab strip stays usable
+        New-Tab
+        $results.Add((Check 'a new tab opens while the drawer is open' 2 @(Get-Chips).Count))
+        $first = (Get-Chips | Sort-Object Index | Select-Object -First 1)
+        $r = Get-ElementRect $first.Name; Click-At ($r.X + 40) ($r.Y + 16) 'left' 700
+        $results.Add((Check 'a chip can be clicked and selects its tab' 1 (Selected-Tab)))
+        $results.Add((Check 'and the drawer is still open' $true (Drawer-Open)))
+        Close-Drawer
+
+        # Esc steps back one thing at a time
+        Open-Drawer
+        Type-Unicode 'zzqq' 40; Start-Sleep -Milliseconds 500
+        $results.Add((Check 'a search without a match says so' $true ([bool](Get-Element (Nk-Text 'settings.empty')))))
+        Press 0x1B; Start-Sleep -Milliseconds 500
+        $value = (Drawer-Search).GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+        $results.Add((Check 'the first Esc clears the search and keeps the drawer' 'True|' ((Drawer-Open).ToString() + '|' + $value)))
+        Close-Drawer
+        $results.Add((Check 'the second Esc closes it' $false (Drawer-Open)))
+
+        # the search finds a row by its label
+        Open-Drawer
+        Type-Unicode (Nk-Text 'settings.opacity').Substring(2) 40; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'the search finds the opacity slider by part of its label (zh-TW)' $true ([bool](Get-Slider 0))))
+        Close-Drawer
+        Assert-Results $results 'drawer'
+    } -NoShot
+    Run-App 'drawer-en' @{ language = 'en-US' } {
+        First-Prompt
+        $results = [System.Collections.Generic.List[string]]::new()
+        Open-Drawer
+        $en = { param($id) Nk-Text $id -Lang en }
+        $results.Add((Check 'the interface is English' $true ([bool](Get-Element (& $en 'settings.search') 'TextBox'))))
+        $results.Add((Check 'the sections are in English' (@('settings.appearance', 'settings.terminal', 'settings.profiles', 'settings.agents', 'settings.keys', 'settings.advanced' | ForEach-Object { & $en $_ }) -join '|') ((@('settings.appearance', 'settings.terminal', 'settings.profiles', 'settings.agents', 'settings.keys', 'settings.advanced' | ForEach-Object { Get-Element (& $en $_) 'ToggleButton' } | Where-Object { $_ } | Sort-Object { $_.Current.BoundingRectangle.X } | ForEach-Object { $_.Current.Name })) -join '|')))
+        Type-Unicode 'opacity' 40; Start-Sleep -Milliseconds 600
+        $results.Add((Check 'the search finds the opacity slider by its English label' (& $en 'settings.opacity') ((Get-Slider 0).Current.Name)))
+        Close-Drawer
+        Assert-Results $results 'drawer-en'
+    } -NoShot
+}
+function Scenario-All { Scenario-Glass; Scenario-BlurProof; Scenario-TabsSplits; Scenario-Overlays; Scenario-Inactive; Scenario-Ime; Scenario-Perf; Scenario-Silence; Scenario-Opacity; Scenario-Tabs; Scenario-TabDrag; Scenario-Status; Scenario-StatusExit; Scenario-Toolbar; Scenario-Titles; Scenario-Close; Scenario-Panes; Scenario-Drawer }

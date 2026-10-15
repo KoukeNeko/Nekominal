@@ -397,17 +397,19 @@ function Assert-Results($Results, [string]$Scenario) {
 
 # A string of the interface in Traditional Chinese (the scenarios run with language zh-TW), read from the one table
 # the app is built from (crates/nekominal-model/src/strings.rs), so a scenario names an element by the words the app
-# shows instead of by a copy of them. `{0}`, `{1}` are filled from $With.
-function Nk-Text([string]$Id, [object[]]$With = @()) {
+# shows instead of by a copy of them. `{0}`, `{1}` are filled from $With; -Lang en gives the English text, for a run
+# whose settings say language en-US.
+function Nk-Text([string]$Id, [object[]]$With = @(), [string]$Lang = 'zh') {
     if (-not $script:NkStrings) {
         $table = Join-Path $PSScriptRoot '..\..\crates\nekominal-model\src\strings.rs'
-        $script:NkStrings = @{}
+        $script:NkStrings = @{}; $script:NkStringsEn = @{}
         foreach ($m in [regex]::Matches([IO.File]::ReadAllText($table), '(?m)^\s*\w+\s+"([^"]+)"\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)";')) {
             $script:NkStrings[$m.Groups[1].Value] = $m.Groups[2].Value.Replace('\"', '"')
+            $script:NkStringsEn[$m.Groups[1].Value] = $m.Groups[3].Value.Replace('\"', '"')
         }
         if ($script:NkStrings.Count -lt 100) { throw "read only $($script:NkStrings.Count) strings from $table" }
     }
-    $text = $script:NkStrings[$Id]
+    $text = if ($Lang -eq 'en') { $script:NkStringsEn[$Id] } else { $script:NkStrings[$Id] }
     if ($null -eq $text) { throw "the table of strings has no '$Id'" }
     for ($i = 0; $i -lt $With.Count; $i++) { $text = $text.Replace("{$i}", [string]$With[$i]) }
     $text

@@ -213,7 +213,7 @@ pub enum Backdrop {
 }
 
 impl Backdrop {
-    /// The choices in the order every list of them shows (the quick flyout, the settings page).
+    /// The choices in the order every list of them shows (the quick flyout, the settings drawer).
     pub const ALL: [Backdrop; 4] = [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None];
 
     /// Position in [`Backdrop::ALL`], the selected index of a list of the choices.

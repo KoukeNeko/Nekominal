@@ -5,6 +5,7 @@
 use nekominal_model::commands::Command;
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, PasteSettings, Settings};
+use nekominal_model::settings_ui::Range;
 use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
 use nekominal_term::alacritty_terminal::term::Osc52;
@@ -802,6 +803,120 @@ pub fn osc52_for(policy: Osc52Policy) -> Osc52 {
 /// The emulator setup of a new pane.
 pub fn core_config(settings: &Settings) -> CoreConfig {
     CoreConfig { osc52: osc52_for(settings.osc52), ..CoreConfig::default() }
+}
+
+// -------------------------------------------------------------------------------------------------
+// The settings drawer
+// -------------------------------------------------------------------------------------------------
+
+/// What a change of the settings puts in effect at once. The rest is read when it is used (a paste, a close) or when a
+/// new pane starts.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Effects {
+    /// The colour scheme or the backdrop: the chrome and the terminals are painted again.
+    pub glass: bool,
+    /// The size, the family or the line height of the font.
+    pub font: bool,
+    pub osc52: bool,
+}
+
+/// What `now` changes of the screen compared with `before`. The opacity is not part of it: it has its own way.
+pub fn effects(before: &Settings, now: &Settings) -> Effects {
+    Effects {
+        glass: before.theme != now.theme || before.appearance.backdrop != now.appearance.backdrop,
+        font: before.font.size != now.font.size
+            || before.font.family != now.font.family
+            || before.font.line_height != now.font.line_height,
+        osc52: before.osc52 != now.osc52,
+    }
+}
+
+/// Width of the drawer, the narrowest it gets and the space between it and the edges of the window, in DIP.
+pub const DRAWER_WIDTH: f64 = 480.0;
+pub const DRAWER_MIN_WIDTH: f64 = 320.0;
+pub const DRAWER_MARGIN: f64 = 8.0;
+
+/// The width of the drawer in a body of `body_width` DIP: 480, less when the window is narrower than that plus its
+/// margins, never under 320.
+pub fn drawer_width(body_width: f64) -> f64 {
+    (body_width - 2.0 * DRAWER_MARGIN).clamp(DRAWER_MIN_WIDTH, DRAWER_WIDTH)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrow {
+    Left,
+    Right,
+    Up,
+    Down,
+    Home,
+    End,
+}
+
+/// The item a navigation key moves to, from `current` among `count` items laid out `columns` to a row (a row of
+/// choices is `columns == count`, a list is 1). `None` when the key leads nowhere: the first item and Left, the last
+/// row and Down.
+pub fn roving_target(current: usize, count: usize, columns: usize, key: Arrow) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let columns = columns.clamp(1, count);
+    let target = match key {
+        Arrow::Left => current.checked_sub(1)?,
+        Arrow::Right => current + 1,
+        Arrow::Up => current.checked_sub(columns)?,
+        Arrow::Down => current + columns,
+        Arrow::Home => 0,
+        Arrow::End => count - 1,
+    };
+    (target < count && target != current).then_some(target)
+}
+
+/// Which colour scheme tile the user points at: the one under the pointer or the one with the keyboard focus,
+/// whichever of the two happened last. The scheme is previewed while there is one and put back when there is none.
+#[derive(Debug, Default)]
+pub struct Peek {
+    hover: Option<usize>,
+    focus: Option<usize>,
+    hover_latest: bool,
+}
+
+impl Peek {
+    pub fn hovered(&mut self, tile: Option<usize>) {
+        self.hover = tile;
+        self.hover_latest |= tile.is_some();
+    }
+
+    pub fn focused(&mut self, tile: Option<usize>) {
+        self.focus = tile;
+        if tile.is_some() {
+            self.hover_latest = false;
+        }
+    }
+
+    pub fn tile(&self) -> Option<usize> {
+        if self.hover_latest { self.hover.or(self.focus) } else { self.focus.or(self.hover) }
+    }
+
+    pub fn clear(&mut self) {
+        *self = Peek::default();
+    }
+}
+
+/// A number as a row shows it: whole numbers without a fraction, the others with at most two decimals.
+pub fn number_text(value: f64) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    if rounded.fract() == 0.0 { format!("{rounded:.0}") } else { format!("{rounded:.2}").trim_end_matches('0').to_owned() }
+}
+
+/// The number typed into a field; `None` when the text is not one.
+pub fn parse_number(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// `value` moved by `steps` steps of `range`, kept inside it and free of floating point drift.
+pub fn step_number(value: f64, steps: i32, range: Range) -> f64 {
+    let moved = ((value + f64::from(steps) * range.step) * 1e6).round() / 1e6;
+    moved.clamp(range.min, range.max)
 }
 
 #[cfg(test)]
@@ -1703,5 +1818,113 @@ mod tests {
         assert_eq!(divider_px(1.5), 2);
         assert_eq!(divider_px(2.0), 2);
         assert_eq!(divider_px(0.0), 1);
+    }
+
+    #[test]
+    fn a_change_of_the_settings_puts_in_effect_only_what_it_changes() {
+        use nekominal_model::settings::{Backdrop, Osc52Policy};
+        let before = Settings::default();
+        let after = |change: fn(&mut Settings)| {
+            let mut now = before.clone();
+            change(&mut now);
+            effects(&before, &now)
+        };
+        assert_eq!(after(|_| {}), Effects::default());
+        assert_eq!(after(|s| s.theme = "Nord".into()), Effects { glass: true, ..Effects::default() });
+        assert_eq!(after(|s| s.appearance.backdrop = Backdrop::Mica), Effects { glass: true, ..Effects::default() });
+        assert_eq!(after(|s| s.font.size = 16.0), Effects { font: true, ..Effects::default() });
+        assert_eq!(after(|s| s.font.line_height = 1.3), Effects { font: true, ..Effects::default() });
+        assert_eq!(after(|s| s.font.family = vec!["Fira Code".into()]), Effects { font: true, ..Effects::default() });
+        assert_eq!(after(|s| s.osc52 = Osc52Policy::Off), Effects { osc52: true, ..Effects::default() });
+        // The opacity has its own way (the next frame applies it), and the rest is read where it is used.
+        assert_eq!(after(|s| s.appearance.opacity = 0.5), Effects::default());
+        assert_eq!(after(|s| s.confirm_close = false), Effects::default());
+        assert_eq!(after(|s| s.scrollback = 500), Effects::default());
+    }
+
+    #[test]
+    fn the_drawer_is_480_wide_and_gives_way_to_a_narrow_window_down_to_320() {
+        assert_eq!(drawer_width(1440.0), 480.0);
+        assert_eq!(drawer_width(1000.0), 480.0);
+        assert_eq!(drawer_width(700.0), 480.0);
+        assert_eq!(drawer_width(496.0), 480.0, "480 plus both margins fits exactly");
+        assert_eq!(drawer_width(495.0), 479.0);
+        assert_eq!(drawer_width(400.0), 384.0);
+        assert_eq!(drawer_width(336.0), 320.0);
+        assert_eq!(drawer_width(200.0), 320.0, "never narrower than 320");
+        assert_eq!(drawer_width(0.0), 320.0, "before the first layout");
+        for width in (0..2000).step_by(7) {
+            let drawer = drawer_width(f64::from(width));
+            assert!((DRAWER_MIN_WIDTH..=DRAWER_WIDTH).contains(&drawer));
+            assert!(drawer + 2.0 * DRAWER_MARGIN <= f64::from(width) || drawer == DRAWER_MIN_WIDTH, "{width}");
+        }
+    }
+
+    #[test]
+    fn navigation_keys_move_through_a_row_a_list_and_a_grid() {
+        use Arrow::*;
+        // A row of four choices: sideways only, and the ends stay put.
+        assert_eq!(roving_target(0, 4, 4, Right), Some(1));
+        assert_eq!(roving_target(3, 4, 4, Right), None);
+        assert_eq!(roving_target(0, 4, 4, Left), None);
+        assert_eq!(roving_target(2, 4, 4, Left), Some(1));
+        assert_eq!(roving_target(1, 4, 4, Down), None);
+        assert_eq!(roving_target(1, 4, 4, Up), None);
+        assert_eq!(roving_target(2, 4, 4, Home), Some(0));
+        assert_eq!(roving_target(0, 4, 4, End), Some(3));
+        assert_eq!(roving_target(0, 4, 4, Home), None, "already there");
+        // A list: up and down.
+        assert_eq!(roving_target(1, 3, 1, Down), Some(2));
+        assert_eq!(roving_target(1, 3, 1, Up), Some(0));
+        assert_eq!(roving_target(2, 3, 1, Down), None);
+        // Ten colour tiles in five columns: Down from Tokyo Night (0) is Nord (5).
+        assert_eq!(roving_target(0, 10, 5, Down), Some(5));
+        assert_eq!(roving_target(5, 10, 5, Up), Some(0));
+        assert_eq!(roving_target(7, 10, 5, Down), None);
+        assert_eq!(roving_target(4, 10, 5, Right), Some(5), "the end of a row continues in the next");
+        assert_eq!(roving_target(0, 0, 5, Right), None);
+        assert_eq!(roving_target(0, 1, 5, Down), None, "fewer items than columns");
+    }
+
+    #[test]
+    fn the_peek_follows_whichever_of_pointer_and_focus_moved_last() {
+        let mut peek = Peek::default();
+        assert_eq!(peek.tile(), None);
+        peek.focused(Some(2));
+        assert_eq!(peek.tile(), Some(2));
+        peek.hovered(Some(5));
+        assert_eq!(peek.tile(), Some(5), "the pointer moved last");
+        peek.focused(Some(3));
+        assert_eq!(peek.tile(), Some(3), "now the keyboard did");
+        peek.focused(None);
+        assert_eq!(peek.tile(), Some(5), "the pointer is still on a tile");
+        peek.hovered(None);
+        assert_eq!(peek.tile(), None, "left the grid: the committed scheme is put back");
+        peek.hovered(Some(1));
+        peek.clear();
+        assert_eq!(peek.tile(), None);
+    }
+
+    #[test]
+    fn numbers_are_shown_short_typed_loosely_and_stepped_without_drift() {
+        assert_eq!(number_text(14.0), "14");
+        assert_eq!(number_text(1.1), "1.1");
+        assert_eq!(number_text(1.05), "1.05");
+        assert_eq!(number_text(1.1500000000000001), "1.15");
+        assert_eq!(number_text(10000.0), "10000");
+        assert_eq!(parse_number(" 16 "), Some(16.0));
+        assert_eq!(parse_number("1.25"), Some(1.25));
+        for text in ["", "x", "1e999", "NaN", "inf", "1,5"] {
+            assert_eq!(parse_number(text), None, "{text:?}");
+        }
+        let line_height = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
+        assert_eq!(step_number(1.1, 1, line_height), 1.15);
+        assert_eq!(step_number(1.1, -2, line_height), 1.0);
+        assert_eq!(step_number(1.95, 3, line_height), 2.0, "stays inside the range");
+        let mut value = 1.0;
+        for _ in 0..20 {
+            value = step_number(value, 1, line_height);
+        }
+        assert_eq!(value, 2.0, "twenty steps of 0.05 land on 2 exactly");
     }
 }

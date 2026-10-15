@@ -113,6 +113,27 @@ impl Glass {
     pub fn panel_border(&self) -> Color {
         with_alpha(self.overlay(), if self.light { 0.14 } else { 0.18 })
     }
+
+    /// Text on the settings drawer.
+    pub fn panel_text(&self) -> Color {
+        self.foreground
+    }
+
+    /// Secondary text on the settings drawer: the foreground moved toward the background, but opaque, so it does not
+    /// depend on what shows through the panel.
+    pub fn panel_text_secondary(&self) -> Color {
+        self.foreground.mix(self.background, 0.35)
+    }
+
+    /// The outline of a control on the settings drawer.
+    pub fn panel_outline(&self) -> Color {
+        self.foreground.mix(self.background, 0.5)
+    }
+
+    /// The accent of a choice that is on (its outline and check mark) and of the bar of a modified row.
+    pub fn panel_accent(&self) -> Color {
+        self.mark(self.accent)
+    }
 }
 
 /// Alpha of the tint over the top bar. The terminal body is painted with the opacity setting; the bar uses

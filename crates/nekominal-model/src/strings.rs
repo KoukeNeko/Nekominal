@@ -155,6 +155,11 @@ texts! {
     CommonCancel "common.cancel" "取消" "Cancel";
     CommonRetry "common.retry" "重試" "Retry";
     CommonAuto "common.auto" "自動" "Automatic";
+    // A row of the settings drawer that differs from its default: the button that puts it back, and the two buttons that
+    // step a number.
+    CommonRestoreDefault "common.restoreDefault" "還原預設" "Restore default";
+    CommonDecrease "common.decrease" "減少" "Decrease";
+    CommonIncrease "common.increase" "增加" "Increase";
 
     // Confirmations: titles that name the action, answered by the buttons above.
     DialogPasteLines "dialog.pasteLines" "貼上 {0} 行？" "Paste {0} lines?";
@@ -182,14 +187,12 @@ texts! {
     // Settings drawer: sections, then one row label per setting followed by its choices.
     SettingsSearch "settings.search" "搜尋設定" "Search settings";
     SettingsEmpty "settings.empty" "沒有符合的設定" "No matching settings";
-    SettingsGeneral "settings.general" "一般" "General";
     SettingsAppearance "settings.appearance" "外觀" "Appearance";
     SettingsTerminal "settings.terminal" "終端機" "Terminal";
     SettingsProfiles "settings.profiles" "設定檔" "Profiles";
     SettingsAgents "settings.agents" "代理程式" "Agents";
     SettingsKeys "settings.keys" "快速鍵" "Shortcuts";
     SettingsAdvanced "settings.advanced" "進階" "Advanced";
-    SettingsAbout "settings.about" "關於" "About";
     // The two choices of a row that is on or off (and the "off" of the clipboard row).
     ToggleOn "toggle.on" "開" "On";
     ToggleOff "toggle.off" "關" "Off";

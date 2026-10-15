@@ -117,7 +117,7 @@ function Scenario-Overlays {
         Copy-Item (Join-Path $global:NkWork "$n.png") (Join-Path $global:NkShots "$n.png") -Force -ErrorAction SilentlyContinue
     }
     Check $log 'palette opened' 'overlay None -> Palette'
-    Check $log 'settings opened' 'overlay None -> Settings'
+    Check $log 'settings opened' 'drawer opened'
 }
 
 function Run-All {

@@ -16,6 +16,7 @@ use nekominal_model::{
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, Settings},
+    settings_ui::{Descriptor, Value},
     store,
     strings::{Lang, Text},
     themes::{self},
@@ -45,7 +46,7 @@ use crate::pane_view::{Look, PaneRequest, PaneView};
 use crate::tab::Tab;
 use crate::util::*;
 use crate::window;
-use crate::{clipboard, findbar, palette, settings_page};
+use crate::{clipboard, drawer, findbar, palette};
 
 const SHELL_XAML: &str = include_str!("xaml/shell.xaml");
 
@@ -62,7 +63,6 @@ pub enum Overlay {
     /// The palette as the list of every tab.
     Tabs,
     Find,
-    Settings,
 }
 
 struct Ui {
@@ -146,7 +146,8 @@ pub struct Shell {
     last_alert: Cell<Option<Instant>>,
     palette: RefCell<Option<Rc<palette::Palette>>>,
     find: RefCell<Option<Rc<findbar::FindBar>>>,
-    settings_page: RefCell<Option<Rc<settings_page::SettingsPage>>>,
+    /// The settings drawer. It is not an `Overlay`: it floats over the terminal without taking the keyboard from it.
+    drawer: RefCell<Option<Rc<drawer::Drawer>>>,
     discovery: RefCell<Option<mpsc::Receiver<Vec<nekominal_pty::profiles::Profile>>>>,
     revokers: RefCell<Vec<EventRevoker>>,
     rendering: RefCell<Option<EventRevoker>>,
@@ -375,7 +376,7 @@ pub fn launch() -> Result<()> {
         last_alert: Cell::new(None),
         palette: RefCell::new(None),
         find: RefCell::new(None),
-        settings_page: RefCell::new(None),
+        drawer: RefCell::new(None),
         discovery: RefCell::new(Some(rx)),
         revokers: RefCell::new(Vec::new()),
         rendering: RefCell::new(None),
@@ -472,6 +473,11 @@ impl Shell {
         i18n::lang()
     }
 
+    /// The grid under the top bar that holds the terminals and, above them, the overlays and the drawer.
+    pub fn body(&self) -> &Grid {
+        &self.ui.body
+    }
+
     fn set_profiles(self: &Rc<Self>, found: &[nekominal_pty::profiles::Profile]) {
         *self.discovered.borrow_mut() = found.iter().map(discovered).collect();
         self.merge_profiles();
@@ -503,13 +509,19 @@ impl Shell {
         map.Lookup(&IReference::from(key).cast::<windows_core::IInspectable>()?)?.cast()
     }
 
-    /// Recolours the whole chrome from the colour scheme and applies backdrop and opacity.
+    /// Recolours the whole chrome from the colour scheme of the settings and applies backdrop and opacity.
     pub fn apply_glass(self: &Rc<Self>) -> Result<()> {
-        let (scheme_name, backdrop, setting_opacity) = {
+        let scheme_name = self.settings.borrow().theme.clone();
+        self.apply_scheme(&scheme_name)
+    }
+
+    /// The same with the colour scheme `scheme_name`, which is what the drawer shows while a tile is pointed at.
+    fn apply_scheme(self: &Rc<Self>, scheme_name: &str) -> Result<()> {
+        let (backdrop, setting_opacity) = {
             let s = self.settings.borrow();
-            (s.theme.clone(), s.appearance.backdrop, s.appearance.opacity)
+            (s.appearance.backdrop, s.appearance.opacity)
         };
-        let scheme = themes::scheme(&scheme_name);
+        let scheme = themes::scheme(scheme_name);
         let glass = Glass::from_scheme(scheme);
         self.glass.set(glass);
         for (key, color) in [
@@ -522,6 +534,13 @@ impl Shell {
             ("NkAccent", glass.accent),
             ("NkInk", themes::Color { a: 255, ..glass.background }),
             ("NkPanel", glass.panel()),
+            ("NkPanelText", glass.panel_text()),
+            ("NkPanelTextSecondary", glass.panel_text_secondary()),
+            ("NkPanelOutline", glass.panel_outline()),
+            ("NkPanelAccent", glass.panel_accent()),
+            ("NkPanelBorder", glass.panel_border()),
+            ("NkSelected", glass.chip_selected()),
+            ("NkSelectedBorder", glass.chip_selected_border()),
         ] {
             self.palette_brush(key)?.SetColor(xaml_color(color))?;
         }
@@ -544,9 +563,6 @@ impl Shell {
             tab.set_glass(glass);
         }
         self.restyle_strip_fades(&glass)?;
-        if let Some(page) = self.settings_page.borrow().as_ref() {
-            page.restyle(&glass);
-        }
         log(&format!(
             "glass: scheme '{}' light={} backdrop={backdrop:?} opacity={opacity:.2} bar tint alpha {:.2}",
             scheme.name,
@@ -628,11 +644,49 @@ impl Shell {
         self.settings_changed();
     }
 
-    pub fn set_font_size(self: &Rc<Self>, size: f64) {
-        self.settings.borrow_mut().font.size = size.clamp(settings::FONT_SIZE_RANGE.0, settings::FONT_SIZE_RANGE.1);
-        self.zoom_steps.set(0);
-        self.apply_font();
-        self.save_due.set(Some(Instant::now() + SAVE_DELAY));
+    /// Shows the colour scheme `name` without keeping it (a tile of the drawer is pointed at), or, with `None`, puts the
+    /// scheme of the settings back.
+    pub fn peek_theme(self: &Rc<Self>, name: Option<&str>) {
+        let applied = match name {
+            Some(name) => self.apply_scheme(name),
+            None => self.apply_glass(),
+        };
+        if let Err(e) = applied {
+            log(&format!("peek {name:?}: {e}"));
+        }
+    }
+
+    /// A row of the drawer changed: the value goes into the settings, what it changes is put in effect, and the save is
+    /// scheduled. The opacity takes the way of the sliders (applied by the next frame, saved once it rests).
+    pub fn change_setting(self: &Rc<Self>, row: &Descriptor, value: Value) {
+        if row.id == "appearance.opacity" {
+            if let Value::Number(percent) = value {
+                self.set_opacity(percent / 100.0);
+            }
+            return;
+        }
+        let before = self.settings.borrow().clone();
+        (row.set)(&mut self.settings.borrow_mut(), value);
+        let now = self.settings.borrow().clone();
+        if now == before {
+            return;
+        }
+        log(&format!("setting {} changed", row.id));
+        let effects = logic::effects(&before, &now);
+        if effects.glass {
+            self.settings_changed();
+        } else {
+            self.save_due.set(Some(Instant::now() + SAVE_DELAY));
+        }
+        if effects.font {
+            self.apply_font_settings(&before);
+        }
+        if effects.osc52 {
+            self.apply_osc52();
+        }
+        if !effects.glass {
+            self.sync_drawer();
+        }
     }
 
     fn apply_font(&self) {
@@ -648,7 +702,7 @@ impl Shell {
     /// Brings the quick appearance flyout in line with the settings (without feeding the change back).
     pub fn sync_appearance_controls(&self) {
         let backdrop = self.settings.borrow().appearance.backdrop;
-        let (percent, enabled) = glass::opacity_control(backdrop, self.opacity_latest());
+        let (percent, enabled, value) = self.opacity_display();
         self.syncing_controls.set(true);
         if self.ui.backdrop_choice.SelectedIndex().ok() != Some(backdrop.index()) {
             let _ = self.ui.backdrop_choice.SetSelectedIndex(backdrop.index());
@@ -659,15 +713,28 @@ impl Shell {
             let _ = range.SetValue(percent);
         }
         let _ = self.ui.opacity_slider.cast::<Control>().and_then(|slider| slider.SetIsEnabled(enabled));
-        let value = if self.opacity_apply.borrow().shows_label() {
+        let _ = self.ui.opacity_value.SetText(&value);
+        self.syncing_controls.set(false);
+        self.sync_drawer();
+    }
+
+    /// What the controls show of the opacity: the percent, whether the slider can be moved, and its label.
+    pub fn opacity_display(&self) -> (f64, bool, String) {
+        let backdrop = self.settings.borrow().appearance.backdrop;
+        let (percent, enabled) = glass::opacity_control(backdrop, self.opacity_latest());
+        let label = if self.opacity_apply.borrow().shows_label() {
             t(Text::SettingNotApplied).to_owned()
         } else {
             format!("{percent:.0}%")
         };
-        let _ = self.ui.opacity_value.SetText(&value);
-        self.syncing_controls.set(false);
-        if let Some(page) = self.settings_page.borrow().as_ref() {
-            page.sync();
+        (percent, enabled, label)
+    }
+
+    /// Brings the drawer, when there is one, in line with the settings.
+    fn sync_drawer(&self) {
+        let drawer = self.drawer.borrow().clone();
+        if let Some(drawer) = drawer {
+            drawer.sync();
         }
     }
 
@@ -958,6 +1025,10 @@ impl Shell {
     // ---------------------------------------------------------------------------------------------
 
     fn tick(self: &Rc<Self>) {
+        let drawer = self.drawer.borrow().clone();
+        if let Some(drawer) = drawer {
+            drawer.tick();
+        }
         self.apply_pending_opacity();
         if self.reveal_pending.take() {
             let offset = self.reveal_selected();
@@ -1897,16 +1968,10 @@ impl Shell {
         log(&format!("settings reloaded from {}: {problems} problems", path.display()));
     }
 
-    /// Brings what is on screen in line with `self.settings`, which were `before`.
-    fn apply_loaded_settings(self: &Rc<Self>, before: &Settings) {
+    /// The font of the settings reaches every pane: the renderer takes a new size at once, a new family or line
+    /// height needs a new renderer. `before` is what the settings were.
+    fn apply_font_settings(&self, before: &Settings) {
         let now = self.settings.borrow().clone();
-        // The colours, the backdrop and the opacity: what a slider asked for and was not applied yet is dropped.
-        *self.pending_opacity.borrow_mut() = logic::PendingOpacity::default();
-        if let Err(e) = self.apply_glass() {
-            log(&format!("apply_glass: {e}"));
-        }
-        self.sync_appearance_controls();
-        // The font: the renderer takes a new size at once, a new family or line height needs a new renderer.
         self.zoom_steps.set(0);
         self.look.font_pt.set(now.font.size as f32);
         self.look.line_height.set(now.font.line_height as f32);
@@ -1915,9 +1980,30 @@ impl Shell {
         for tab in self.tabs.borrow().iter() {
             for pane in tab.panes.borrow().iter() {
                 pane.apply_look(new_renderer);
-                pane.pane.set_osc52(logic::osc52_for(now.osc52));
             }
         }
+    }
+
+    /// What a program may do with the clipboard (OSC 52) reaches the panes that are running.
+    fn apply_osc52(&self) {
+        let policy = logic::osc52_for(self.settings.borrow().osc52);
+        for tab in self.tabs.borrow().iter() {
+            for pane in tab.panes.borrow().iter() {
+                pane.pane.set_osc52(policy);
+            }
+        }
+    }
+
+    /// Brings what is on screen in line with `self.settings`, which were `before`.
+    fn apply_loaded_settings(self: &Rc<Self>, before: &Settings) {
+        // The colours, the backdrop and the opacity: what a slider asked for and was not applied yet is dropped.
+        *self.pending_opacity.borrow_mut() = logic::PendingOpacity::default();
+        if let Err(e) = self.apply_glass() {
+            log(&format!("apply_glass: {e}"));
+        }
+        self.sync_appearance_controls();
+        self.apply_font_settings(before);
+        self.apply_osc52();
         // The shortcuts show in tooltips and menus, and the profiles of the file may differ.
         self.set_tooltips();
         *self.pane_menu.borrow_mut() = None;
@@ -2034,11 +2120,6 @@ impl Shell {
         if let Some(f) = self.find.borrow().as_ref() {
             f.show(which == Overlay::Find);
         }
-        if let Some(s) = self.settings_page.borrow().as_ref() {
-            s.show(which == Overlay::Settings);
-        }
-        // The settings page takes the place of the terminals; the others float above them.
-        let _ = ui(&self.ui.terminal_area).and_then(|area| area.SetVisibility(visibility(which != Overlay::Settings)));
         log(&format!("overlay {previous:?} -> {which:?}"));
         match which {
             Overlay::None => self.focus_active_pane(),
@@ -2057,11 +2138,30 @@ impl Shell {
                     f.focus();
                 }
             }
-            Overlay::Settings => {
-                if let Some(s) = self.settings_page.borrow().as_ref() {
-                    s.focus();
-                }
-            }
+        }
+    }
+
+    /// The settings drawer: made the first time it is wanted, because it needs a live `XamlRoot`.
+    fn ensure_drawer(self: &Rc<Self>) -> Option<Rc<drawer::Drawer>> {
+        self.ensure_overlays();
+        self.drawer.borrow().clone()
+    }
+
+    /// Opens the drawer, at the row `target` names when there is one. Open already, it takes the focus.
+    pub fn open_settings(self: &Rc<Self>, target: Option<&str>) {
+        if let Some(drawer) = self.ensure_drawer() {
+            drawer.open(target);
+        }
+    }
+
+    /// The command and the menu row: closed, the drawer opens; open and focused, it closes; open and not focused (the
+    /// focus is in a terminal), the focus goes to it.
+    fn toggle_settings(self: &Rc<Self>) {
+        let Some(drawer) = self.ensure_drawer() else { return };
+        if drawer.is_open() && drawer.has_focus() {
+            drawer.close();
+        } else {
+            drawer.open(None);
         }
     }
 
@@ -2073,6 +2173,12 @@ impl Shell {
     /// The overlays need a live `XamlRoot`, so they are built the first time one opens.
     fn ensure_overlays(self: &Rc<Self>) {
         let build = || -> Result<()> {
+            // The drawer goes first: the palette and the find bar are above it.
+            if self.drawer.borrow().is_none() {
+                let drawer = drawer::Drawer::build(self)?;
+                self.ui.body.cast::<Panel>()?.Children()?.Append(&drawer.root)?;
+                *self.drawer.borrow_mut() = Some(drawer);
+            }
             if self.palette.borrow().is_none() {
                 let palette = palette::Palette::build(self)?;
                 self.ui.body.cast::<Panel>()?.Children()?.Append(&palette.root)?;
@@ -2082,11 +2188,6 @@ impl Shell {
                 let bar = findbar::FindBar::build(self)?;
                 self.ui.body.cast::<Panel>()?.Children()?.Append(&bar.root)?;
                 *self.find.borrow_mut() = Some(bar);
-            }
-            if self.settings_page.borrow().is_none() {
-                let page = settings_page::SettingsPage::build(self)?;
-                self.ui.body.cast::<Panel>()?.Children()?.Append(&page.root)?;
-                *self.settings_page.borrow_mut() = Some(page);
             }
             Ok(())
         };
@@ -2198,7 +2299,7 @@ impl Shell {
                 }
                 Command::EditFind => self.toggle_overlay(Overlay::Find),
                 Command::AppPalette => self.toggle_overlay(Overlay::Palette),
-                Command::AppSettings => self.toggle_overlay(Overlay::Settings),
+                Command::AppSettings => self.toggle_settings(),
                 Command::ViewFullscreen => {
                     let appw = app_window(&self.window)?;
                     let fullscreen = appw.Presenter()?.Kind()? == AppWindowPresenterKind::FullScreen;
@@ -2258,7 +2359,7 @@ impl Shell {
                 }
             }
             PaletteAction::SetColorScheme(name) => self.set_theme(&name),
-            PaletteAction::OpenSetting(_) => self.toggle_overlay(Overlay::Settings),
+            PaletteAction::OpenSetting(id) => self.open_settings(Some(&id)),
         }
     }
 
