@@ -476,6 +476,8 @@ pub struct TerminalCore {
     /// first. Held by `LineId`, so they stay on their text while it scrolls into the scrollback, go when the
     /// scrollback trims them, and all go with the ids when the buffer is rewritten.
     prompts: Vec<LineId>,
+    /// The first bytes of a character whose last bytes the next `feed` brings (see `incomplete_utf8_tail`).
+    utf8_tail: Vec<u8>,
 }
 
 /// How far the scrollback may overshoot its cap between two `enforce_scrollback` calls. One feed chunk adds
@@ -489,6 +491,29 @@ const MAX_LINK_ROWS: i32 = 50;
 /// `feed` hands the parsers at most this many bytes at a time, so the scrollback can be trimmed (and the
 /// trimmed lines counted) before it outgrows `HISTORY_SLACK`.
 const FEED_CHUNK: usize = 1024;
+
+/// How many bytes at the end of `bytes` are the start of a UTF-8 character whose end is not there yet (0 to 3).
+///
+/// The parsers lose the byte that follows a character they were handed in two pieces, so a read that ends inside a
+/// character would drop the first byte of the next one. `feed` holds those bytes back and joins them to the next read
+/// instead. Bytes that can never become a character are not held: the parsers handle them as they are.
+fn incomplete_utf8_tail(bytes: &[u8]) -> usize {
+    let length = bytes.len();
+    for back in 1..=length.min(3) {
+        let byte = bytes[length - back];
+        if byte & 0xC0 == 0x80 {
+            continue; // a continuation byte: the lead byte is further back
+        }
+        let needed = match byte {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => return 0,
+        };
+        return if back < needed { back } else { 0 };
+    }
+    0
+}
 
 /// Bytes one scrollback row of `columns` cells occupies.
 fn history_row_bytes(columns: usize) -> usize {
@@ -538,6 +563,7 @@ impl TerminalCore {
             line_base: 0,
             line_epoch: 0,
             prompts: Vec::new(),
+            utf8_tail: Vec::new(),
         }
     }
 
@@ -559,10 +585,22 @@ impl TerminalCore {
         self.flush_expired_sync(Instant::now());
         let received = bytes.len();
         let filtered = self.guard.filter(bytes);
-        let bytes: &[u8] = &filtered;
+        let joined;
+        let bytes: &[u8] = if self.utf8_tail.is_empty() {
+            &filtered[..]
+        } else {
+            joined = [self.utf8_tail.as_slice(), &filtered[..]].concat();
+            &joined
+        };
+        let held = incomplete_utf8_tail(bytes);
+        let (bytes, tail) = bytes.split_at(bytes.len() - held);
+        self.utf8_tail = tail.to_vec();
         let mut pos = 0;
         while pos < bytes.len() {
-            let end = (pos + FEED_CHUNK).min(bytes.len());
+            let mut end = (pos + FEED_CHUNK).min(bytes.len());
+            if end < bytes.len() {
+                end -= incomplete_utf8_tail(&bytes[pos..end]);
+            }
             let consumed = self.sniffer.advance(&bytes[pos..end]);
             self.advance_emulator(&bytes[pos..pos + consumed]);
             self.pump();
@@ -1111,6 +1149,7 @@ impl TerminalCore {
     /// the new program starts on a clear screen: it draws only the cells it means to, and anything left there would
     /// stay.
     pub fn reset_for_new_session(&mut self) {
+        self.utf8_tail.clear();
         self.feed(b"\x1b[?1049l\x1b[!p\x1b[?25h\x1b[0m\x1b[H\x1b[2J");
         self.reset_keyboard_modes();
         if self.agent.clear() {

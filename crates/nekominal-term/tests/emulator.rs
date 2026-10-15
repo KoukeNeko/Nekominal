@@ -624,6 +624,29 @@ fn kitty_flags_set_with_equals_survive_a_narrowing_resize_on_the_alternate_scree
 }
 
 #[test]
+fn a_character_cut_in_two_by_the_end_of_a_read_is_parsed_whole() {
+    let text = "аб 你好😀 e\u{301}0\u{323}x\x1b[31mred\x1b[0m 世界!";
+    let mut whole = core(40, 3);
+    feed(&mut whole, text);
+    for cut in 1..text.len() {
+        let mut split = core(40, 3);
+        split.feed(&text.as_bytes()[..cut]);
+        split.feed(&text.as_bytes()[cut..]);
+        assert_eq!(snap(&mut split).text(), snap(&mut whole).text(), "cut at byte {cut}");
+        assert_eq!(split.cursor_cell(), whole.cursor_cell(), "cut at byte {cut}");
+    }
+    // A feed that is cut inside a character in more than two pieces, and a character at the 1024-byte chunk edge.
+    let mut pieces = core(40, 3);
+    for byte in "你好".as_bytes() {
+        pieces.feed(&[*byte]);
+    }
+    assert_eq!(snap(&mut pieces).text(), "你好");
+    let mut long = core(2000, 2);
+    feed(&mut long, &format!("{}e\u{301}0\u{323}x", "x".repeat(1022)));
+    assert_eq!(long.cursor_cell(), (0, 1025), "no character is lost where the feed is cut into chunks");
+}
+
+#[test]
 fn resizing_while_scrolled_back_keeps_the_view_valid() {
     let mut core = core(40, 6);
     for i in 0..60 {
