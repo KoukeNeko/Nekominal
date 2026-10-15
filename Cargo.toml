@@ -10,6 +10,7 @@ members = [
     "crates/nekominal-render",
     "tools/winprobe",
     "tools/agent-probe",
+    "tools/ui-spike",
     "crates/nekominal-winui-sys",
     "crates/nekominal-app",
     "crates/nekominal-slice",
