@@ -2,6 +2,7 @@
 //! terminal setup (OSC 52 policy, when a paste asks first). Kept apart from the WinUI code so they can be tested
 //! without a window.
 
+use nekominal_model::commands::Command;
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::{OPACITY_RANGE, Osc52Policy, PasteSettings, Settings};
 use nekominal_term::CoreConfig;
@@ -328,15 +329,113 @@ pub enum Plate {
 }
 
 /// The plate for `total` tabs with the zero-based `selected` one: none for a single tab, the total alone when the
-/// strip is narrower than [`PLATE_TOTAL_ONLY_BELOW`].
-pub fn plate(selected: usize, total: usize, strip_width: f64) -> Option<Plate> {
+/// strip is narrower than [`PLATE_TOTAL_ONLY_BELOW`] or the bar is in its narrow tier (the room the plate would
+/// take is what the window cannot spare).
+pub fn plate(selected: usize, total: usize, strip_width: f64, tier: BarTier) -> Option<Plate> {
     if total < 2 {
         None
-    } else if strip_width < PLATE_TOTAL_ONLY_BELOW {
+    } else if strip_width < PLATE_TOTAL_ONLY_BELOW || tier == BarTier::Narrow {
         Some(Plate::Total(total))
     } else {
         Some(Plate::Position { current: selected + 1, total })
     }
+}
+
+/// Which of the controls on the right of the top bar the width of the window leaves room for. The new-tab and
+/// profile buttons on the left never fold, and the menu button on the right never does either.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BarTier {
+    /// Only the menu button: the rest is in the menu.
+    Narrow,
+    /// The palette and the menu button.
+    Medium,
+    /// The split pair, the palette and the menu button.
+    Wide,
+}
+
+/// From this window width (DIP) the bar is in the medium tier, and from [`WIDE_FROM`] in the wide one.
+pub const MEDIUM_FROM: f64 = 800.0;
+pub const WIDE_FROM: f64 = 1200.0;
+/// A window that gets narrower keeps its tier for this much below the width a tier starts at, so dragging an edge
+/// across a boundary does not flicker.
+pub const TIER_HYSTERESIS: f64 = 24.0;
+
+/// The commands the right-hand group of the bar can show, with the tier from which each shows. This is the order of
+/// `nekominal_model::menu::TOOLBAR` (a test keeps them one list); the split pair folds together, before the palette.
+pub const TOOLBAR_TIERS: [(Command, BarTier); 3] = [
+    (Command::PaneSplitRight, BarTier::Wide),
+    (Command::PaneSplitDown, BarTier::Wide),
+    (Command::AppPalette, BarTier::Medium),
+];
+
+impl BarTier {
+    /// The width from which the tier starts when the window grows.
+    fn starts_at(self) -> f64 {
+        match self {
+            BarTier::Narrow => 0.0,
+            BarTier::Medium => MEDIUM_FROM,
+            BarTier::Wide => WIDE_FROM,
+        }
+    }
+
+    /// The tier of a window `width` DIP wide that had `previous`. A window that grows takes the tier of its width at
+    /// once; one that shrinks keeps `previous` until it is [`TIER_HYSTERESIS`] below where that tier starts.
+    pub fn at(width: f64, previous: Option<BarTier>) -> BarTier {
+        let mut tier = BarTier::Narrow;
+        for candidate in [BarTier::Medium, BarTier::Wide] {
+            let held = previous.is_some_and(|previous| previous >= candidate)
+                && width + TIER_HYSTERESIS >= candidate.starts_at();
+            if width >= candidate.starts_at() || held {
+                tier = candidate;
+            }
+        }
+        tier
+    }
+
+    /// Whether the right-hand group of the bar shows `command` in this tier.
+    pub fn shows(self, command: Command) -> bool {
+        TOOLBAR_TIERS.iter().any(|(shown, from)| *shown == command && self >= *from)
+    }
+
+    /// The divider between the split pair and the rest of the group shows when both are there.
+    pub fn shows_divider(self) -> bool {
+        self == BarTier::Wide
+    }
+
+    /// How many controls the right-hand group has, the menu button included.
+    pub fn control_count(self) -> usize {
+        1 + TOOLBAR_TIERS.iter().filter(|(command, _)| self.shows(*command)).count()
+    }
+}
+
+/// Width of a tool button of the bar, of the padding of the group around them and of the divider with its margins, in
+/// DIP (`resources.xaml`, `shell.xaml`; a test keeps them in step).
+pub const TOOL_BUTTON_WIDTH: f64 = 32.0;
+pub const CLUSTER_PADDING: f64 = 4.0;
+pub const DIVIDER_WIDTH: f64 = 7.0;
+
+/// The width of the group on the right of the bar in a tier.
+pub fn cluster_width(tier: BarTier) -> f64 {
+    CLUSTER_PADDING
+        + TOOL_BUTTON_WIDTH * tier.control_count() as f64
+        + if tier.shows_divider() { DIVIDER_WIDTH } else { 0.0 }
+}
+
+/// The smallest the drag area of the window gets, however narrow the window.
+pub const MIN_DRAG_WIDTH: f64 = 48.0;
+
+/// What the bar spends on neither the strip, the position plate, the caption buttons nor the group on the right: the
+/// app mark and its margins (12 + 22 + 8), the margin and the new-tab and profile buttons (4 + 32 + 22), the margins
+/// of the group on the right (8 + 8) and the smallest drag area (`shell.xaml`; a test keeps them in step).
+pub const BAR_FIXED_WIDTH: f64 = 12.0 + 22.0 + 8.0 + 4.0 + 32.0 + 22.0 + 8.0 + 8.0 + MIN_DRAG_WIDTH;
+
+/// The smallest the strip gets, however narrow the window.
+pub const STRIP_MIN_WIDTH: f64 = 120.0;
+
+/// The width the strip and the position plate may share on a bar `bar_width` wide whose caption buttons (and the room
+/// the system keeps on the left) take `insets`.
+pub fn strip_budget(bar_width: f64, insets: f64, tier: BarTier) -> f64 {
+    (bar_width - insets - cluster_width(tier) - BAR_FIXED_WIDTH).max(STRIP_MIN_WIDTH)
 }
 
 /// Tabs in most-recently-used order, and the walk through that order while the keys of next/previous tab are
@@ -1025,12 +1124,105 @@ mod tests {
     }
 
     #[test]
-    fn the_plate_is_hidden_for_one_tab_and_total_only_on_a_narrow_strip() {
-        assert_eq!(plate(0, 0, 800.0), None);
-        assert_eq!(plate(0, 1, 800.0), None);
-        assert_eq!(plate(2, 12, 800.0), Some(Plate::Position { current: 3, total: 12 }));
-        assert_eq!(plate(1, 2, 300.0), Some(Plate::Position { current: 2, total: 2 }));
-        assert_eq!(plate(2, 12, 299.9), Some(Plate::Total(12)));
+    fn the_plate_is_hidden_for_one_tab_and_total_only_on_a_narrow_strip_or_in_the_narrow_tier() {
+        use BarTier::*;
+        assert_eq!(plate(0, 0, 800.0, Wide), None);
+        assert_eq!(plate(0, 1, 800.0, Wide), None);
+        assert_eq!(plate(2, 12, 800.0, Wide), Some(Plate::Position { current: 3, total: 12 }));
+        assert_eq!(plate(1, 2, 300.0, Medium), Some(Plate::Position { current: 2, total: 2 }));
+        assert_eq!(plate(2, 12, 299.9, Medium), Some(Plate::Total(12)));
+        // The narrow tier says the total whatever the strip: the bar has no room for more.
+        assert_eq!(plate(2, 12, 455.0, Narrow), Some(Plate::Total(12)));
+        assert_eq!(plate(0, 1, 455.0, Narrow), None);
+    }
+
+    #[test]
+    fn the_bar_shows_four_two_or_one_control_on_the_right_at_the_widths_of_the_spec() {
+        for (width, controls) in [(1440.0, 4), (1200.0, 4), (1199.0, 2), (1000.0, 2), (800.0, 2), (799.0, 1), (700.0, 1), (500.0, 1)] {
+            assert_eq!(BarTier::at(width, None).control_count(), controls, "{width} DIP");
+        }
+        use BarTier::*;
+        assert_eq!(BarTier::at(1440.0, None), Wide);
+        assert_eq!(BarTier::at(1000.0, None), Medium);
+        assert_eq!(BarTier::at(700.0, None), Narrow);
+        // What each tier shows, and the divider only where the split pair and the rest are both there.
+        let shown = |tier: BarTier| TOOLBAR_TIERS.iter().filter(|(c, _)| tier.shows(*c)).map(|(c, _)| c.id()).collect::<Vec<_>>();
+        assert_eq!(shown(Wide), ["pane.splitRight", "pane.splitDown", "app.palette"]);
+        assert_eq!(shown(Medium), ["app.palette"]);
+        assert_eq!(shown(Narrow), Vec::<&str>::new());
+        assert!(Wide.shows_divider() && !Medium.shows_divider() && !Narrow.shows_divider());
+        assert!(!Wide.shows(Command::EditFind) && !Wide.shows(Command::AppSettings), "find and settings have no button");
+    }
+
+    #[test]
+    fn the_tiers_of_the_bar_are_the_toolbar_of_the_model_in_its_order() {
+        let commands: Vec<Command> = TOOLBAR_TIERS.iter().map(|(command, _)| *command).collect();
+        assert_eq!(commands, nekominal_model::menu::TOOLBAR);
+        // The split pair folds together, and before the palette.
+        assert_eq!(TOOLBAR_TIERS[0].1, TOOLBAR_TIERS[1].1);
+        assert!(TOOLBAR_TIERS[0].1 > TOOLBAR_TIERS[2].1);
+    }
+
+    #[test]
+    fn a_tier_boundary_never_goes_the_wrong_way_and_a_shrinking_window_keeps_its_tier_for_24_dip() {
+        // Growing: every width gets the tier it starts at, at once, and a wider window never has less.
+        let mut previous = None;
+        let mut last = BarTier::Narrow;
+        for tenth in 0..=30_000 {
+            let width = f64::from(tenth) / 10.0;
+            let tier = BarTier::at(width, previous);
+            assert!(tier >= last, "{width} DIP has {tier:?} after {last:?}");
+            assert_eq!(tier, BarTier::at(width, None), "growing needs no memory: {width}");
+            (previous, last) = (Some(tier), tier);
+        }
+        // Shrinking: a narrower window never has more, and a tier is kept until 24 DIP below where it starts.
+        let mut previous = Some(BarTier::Wide);
+        let mut last = BarTier::Wide;
+        let mut switches = Vec::new();
+        for tenth in (0..=30_000).rev() {
+            let width = f64::from(tenth) / 10.0;
+            let tier = BarTier::at(width, previous);
+            assert!(tier <= last, "{width} DIP has {tier:?} after {last:?}");
+            if tier != last {
+                switches.push((width, tier));
+            }
+            (previous, last) = (Some(tier), tier);
+        }
+        assert_eq!(switches, [(1175.9, BarTier::Medium), (775.9, BarTier::Narrow)]);
+        // The edges of the margin, from either side.
+        assert_eq!(BarTier::at(1176.0, Some(BarTier::Wide)), BarTier::Wide);
+        assert_eq!(BarTier::at(1175.9, Some(BarTier::Wide)), BarTier::Medium);
+        assert_eq!(BarTier::at(1199.9, Some(BarTier::Medium)), BarTier::Medium, "growing waits for the boundary");
+        assert_eq!(BarTier::at(1200.0, Some(BarTier::Medium)), BarTier::Wide);
+        assert_eq!(BarTier::at(776.0, Some(BarTier::Medium)), BarTier::Medium);
+        assert_eq!(BarTier::at(775.9, Some(BarTier::Medium)), BarTier::Narrow);
+        assert_eq!(BarTier::at(790.0, Some(BarTier::Narrow)), BarTier::Narrow, "a window that grew from narrow has no margin");
+        // A jump over a whole tier lands in the tier of its width, held at most one margin.
+        assert_eq!(BarTier::at(700.0, Some(BarTier::Wide)), BarTier::Narrow);
+        assert_eq!(BarTier::at(790.0, Some(BarTier::Wide)), BarTier::Medium);
+    }
+
+    #[test]
+    fn the_group_on_the_right_gets_narrower_with_every_tier() {
+        use BarTier::*;
+        assert!(cluster_width(Wide) > cluster_width(Medium) && cluster_width(Medium) > cluster_width(Narrow));
+        // 4 padding, 32 per control, and the divider of the wide tier with its margins.
+        assert_eq!((cluster_width(Wide), cluster_width(Medium), cluster_width(Narrow)), (139.0, 68.0, 36.0));
+    }
+
+    #[test]
+    fn at_500_dip_the_narrow_bar_leaves_the_strip_its_minimum_and_a_plate_and_the_drag_area_theirs() {
+        // 138 DIP of caption buttons. What is left for the strip and the plate: the window minus the caption buttons,
+        // the single control on the right and everything else that is fixed (including the smallest drag area).
+        let budget = strip_budget(500.0, 138.0, BarTier::at(500.0, None));
+        assert_eq!(budget, 500.0 - 138.0 - 36.0 - BAR_FIXED_WIDTH);
+        // The plate of the narrow tier is the total in a button of the minimum width (32) with a 4 DIP margin.
+        assert!(budget >= STRIP_MIN_WIDTH + 36.0 + 4.0, "{budget}");
+        // The more room, the more strip; and never less than the minimum.
+        assert!(strip_budget(1000.0, 138.0, BarTier::Medium) > strip_budget(900.0, 138.0, BarTier::Medium));
+        assert_eq!(strip_budget(100.0, 138.0, BarTier::Narrow), STRIP_MIN_WIDTH);
+        // A wider tier takes room from the strip at the same width.
+        assert!(strip_budget(1300.0, 138.0, BarTier::Medium) > strip_budget(1300.0, 138.0, BarTier::Wide));
     }
 
     #[test]

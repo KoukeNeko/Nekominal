@@ -18,13 +18,13 @@
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
-        <ColumnDefinition Width="*" MinWidth="40"/>
+        <ColumnDefinition x:Name="DragColumn" Width="*" MinWidth="48"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition x:Name="RightInsetColumn" Width="138"/>
       </Grid.ColumnDefinitions>
 
       <!-- The cat of assets/icon.svg: ears and head in the accent, the prompt cut out in the scheme ink. -->
-      <Viewbox x:Name="AppMark" Grid.Column="1" Width="22" Height="22" Margin="14,0,10,0" IsHitTestVisible="False"
+      <Viewbox x:Name="AppMark" Grid.Column="1" Width="22" Height="22" Margin="12,0,8,0" IsHitTestVisible="False"
                VerticalAlignment="Center">
         <Canvas Width="1024" Height="1024">
           <Polygon Points="212,440 212,190 440,336" Fill="{StaticResource NkAccent}"/>
@@ -61,7 +61,7 @@
         </Border>
       </Grid>
 
-      <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
+      <StackPanel x:Name="NewTabGroup" Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,0,0">
         <Button x:Name="NewTabButton" Style="{StaticResource NkIconButton}">
           <FontIcon Glyph="&#xE710;" FontSize="13"/>
         </Button>
@@ -81,7 +81,7 @@
            ordinary client area. -->
       <Grid x:Name="DragRegion" Grid.Column="4" Background="Transparent"/>
 
-      <Border x:Name="ToolCluster" Grid.Column="5" CornerRadius="{StaticResource NkCornerRadius}" Padding="2" Margin="8,0,10,0"
+      <Border x:Name="ToolCluster" Grid.Column="5" CornerRadius="{StaticResource NkCornerRadius}" Padding="2" Margin="8,0,8,0"
               VerticalAlignment="Center" Background="{StaticResource NkCluster}">
         <StackPanel Orientation="Horizontal">
           <Button x:Name="ToolSplitRight" Style="{StaticResource NkIconButton}">
@@ -96,10 +96,7 @@
                     Data="M3,2.75 H13 A1.25,1.25 0 0 1 14.25,4 V12 A1.25,1.25 0 0 1 13,13.25 H3 A1.25,1.25 0 0 1 1.75,12 V4 A1.25,1.25 0 0 1 3,2.75 Z M1.75,8 H14.25"/>
             </Canvas>
           </Button>
-          <Border Width="1" Height="16" Margin="3,0" Background="{StaticResource NkDivider}"/>
-          <Button x:Name="ToolSearch" Style="{StaticResource NkIconButton}">
-            <FontIcon Glyph="&#xE721;" FontSize="14"/>
-          </Button>
+          <Border x:Name="ToolDivider" Width="1" Height="16" Margin="3,0" Background="{StaticResource NkDivider}"/>
           <Button x:Name="ToolPalette" Style="{StaticResource NkIconButton}">
             <Canvas Width="16" Height="16">
               <Path Stroke="{StaticResource NkText}" StrokeThickness="1.3" StrokeLineJoin="Round"
@@ -107,13 +104,14 @@
                     Data="M3,2.75 H13 A1.25,1.25 0 0 1 14.25,4 V12 A1.25,1.25 0 0 1 13,13.25 H3 A1.25,1.25 0 0 1 1.75,12 V4 A1.25,1.25 0 0 1 3,2.75 Z M4.9,6 L7.1,8 L4.9,10 M8.6,10.2 H11.2"/>
             </Canvas>
           </Button>
-          <Button x:Name="ToolAppearance" Style="{StaticResource NkIconButton}">
+          <!-- The menu of everything the bar folds away. Its flyout is the quick appearance panel, shown by the
+               "Background opacity" row of the menu. -->
+          <Button x:Name="ToolMenu" Style="{StaticResource NkIconButton}">
             <Canvas Width="16" Height="16">
-              <Path Stroke="{StaticResource NkText}" StrokeThickness="1.3"
-                    Data="M8,1.75 A6.25,6.25 0 1 0 8,14.25 A6.25,6.25 0 1 0 8,1.75 Z"/>
-              <Path Fill="{StaticResource NkText}" Data="M8,1.75 A6.25,6.25 0 0 0 8,14.25 Z"/>
+              <Path Fill="{StaticResource NkText}"
+                    Data="M2,8 A1.25,1.25 0 1 1 4.5,8 A1.25,1.25 0 1 1 2,8 Z M6.75,8 A1.25,1.25 0 1 1 9.25,8 A1.25,1.25 0 1 1 6.75,8 Z M11.5,8 A1.25,1.25 0 1 1 14,8 A1.25,1.25 0 1 1 11.5,8 Z"/>
             </Canvas>
-            <Button.Flyout>
+            <FlyoutBase.AttachedFlyout>
               <Flyout x:Name="AppearanceFlyout" Placement="BottomEdgeAlignedRight">
                 <StackPanel Width="244" Spacing="14">
                   <StackPanel Spacing="6">
@@ -135,10 +133,7 @@
                   </StackPanel>
                 </StackPanel>
               </Flyout>
-            </Button.Flyout>
-          </Button>
-          <Button x:Name="ToolSettings" Style="{StaticResource NkIconButton}">
-            <FontIcon Glyph="&#xE713;" FontSize="15"/>
+            </FlyoutBase.AttachedFlyout>
           </Button>
         </StackPanel>
       </Border>

@@ -13,6 +13,7 @@ use nekominal_model::{
     commands::{self, Command},
     keymap::{self, Keymap},
     layout::{Axis, PaneId},
+    menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, Settings},
     store,
@@ -36,7 +37,7 @@ use crate::glass::{self, Glass};
 use crate::i18n::{self, localize, t, tf};
 use crate::keyboard;
 use crate::logic::{
-    self, AgentLabel, Attention, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts,
+    self, AgentLabel, Attention, BarTier, COUNT_BLOCK_WIDTH, PaneSignal, Plate, REVEAL_MARGIN, Reported, TitleParts,
     TitleSource,
 };
 use crate::palette::TabRow;
@@ -51,16 +52,8 @@ const SHELL_XAML: &str = include_str!("xaml/shell.xaml");
 /// How long a change of settings waits for further changes before it is written to disk.
 const SAVE_DELAY: Duration = Duration::from_millis(600);
 
-/// Space on the bar that is not the tab strip: app mark, new-tab buttons, tool cluster margins, the smallest
-/// useful drag area. Together with the cluster, the position plate and the caption buttons this bounds the width
-/// of the strip.
-const BAR_FIXED_WIDTH: f64 = 46.0 + 4.0 + 54.0 + 18.0 + 40.0;
-
 /// Padding of the strip inside its scroll viewer, both sides together (`shell.xaml`).
 const STRIP_PADDING: f64 = 4.0;
-
-/// The smallest the strip gets, however narrow the window.
-const STRIP_MIN_WIDTH: f64 = 120.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Overlay {
@@ -93,10 +86,10 @@ struct Ui {
     tool_cluster: Border,
     tool_split_right: Button,
     tool_split_down: Button,
-    tool_search: Button,
+    tool_divider: Border,
     tool_palette: Button,
-    tool_appearance: Button,
-    tool_settings: Button,
+    /// The button of the menu of everything the bar folds away; the appearance flyout hangs on it.
+    tool_menu: Button,
     appearance_flyout: Flyout,
     backdrop_choice: RadioButtons,
     opacity_slider: Slider,
@@ -127,6 +120,8 @@ pub struct Shell {
     mru: RefCell<logic::Mru<TabId>>,
     /// The width of every chip as the last layout of the strip set it.
     strip_widths: RefCell<Vec<f64>>,
+    /// How much of the right-hand group of the bar the width of the window leaves room for (None before the first layout).
+    bar_tier: Cell<Option<BarTier>>,
     /// The width of the visible part of the strip as the last layout set it (the viewer reports it late).
     strip_viewport: Cell<f64>,
     /// The selected chip must be scrolled into view once the viewer has laid out at its new size (it clamps a
@@ -157,6 +152,10 @@ pub struct Shell {
     profile_menu: RefCell<Option<MenuFlyout>>,
     /// The menu of the right button of a pane and its Copy item, which is enabled while a selection exists.
     pane_menu: RefCell<Option<(MenuFlyout, MenuFlyoutItem)>>,
+    /// The menu of the ... button as it was last opened, with the handlers of its rows. It is built again every time it opens: its labels, shortcuts and checks are read then.
+    app_menu: RefCell<Option<(MenuFlyout, Vec<EventRevoker>)>>,
+    /// The row Background opacity... of that menu was chosen: the appearance flyout opens when the menu has closed.
+    appearance_requested: Cell<bool>,
 }
 
 thread_local! {
@@ -232,6 +231,46 @@ fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
     }
 }
 
+/// A menu row that runs `on_click`; its handler goes into `revokers`, which are dropped with the menu.
+fn plain_menu_item(label: &str, revokers: &mut Vec<EventRevoker>, on_click: impl Fn() + 'static) -> Result<MenuFlyoutItem> {
+    let item = MenuFlyoutItem::new()?;
+    item.SetText(label)?;
+    revokers.push(item.Click(cb!("menu item", |_, _| on_click()))?);
+    Ok(item)
+}
+
+/// A menu row with a check mark that is shown while `checked`.
+fn checked_menu_item(
+    label: &str,
+    checked: bool,
+    revokers: &mut Vec<EventRevoker>,
+    on_click: impl Fn() + 'static,
+) -> Result<ToggleMenuFlyoutItem> {
+    let item = ToggleMenuFlyoutItem::new()?;
+    item.cast::<MenuFlyoutItem>()?.SetText(label)?;
+    item.SetIsChecked(checked)?;
+    revokers.push(item.cast::<MenuFlyoutItem>()?.Click(cb!("menu item", |_, _| on_click()))?);
+    Ok(item)
+}
+
+/// A row of a menu that is one of several choices, marked with a dot while `checked`. `RadioMenuFlyoutItem` has no
+/// binding here, so it is created from markup that holds only its group and its state; the label is set after.
+fn radio_menu_item(
+    label: &str,
+    checked: bool,
+    revokers: &mut Vec<EventRevoker>,
+    on_click: impl Fn() + 'static,
+) -> Result<MenuFlyoutItem> {
+    let markup = format!(
+        r#"<RadioMenuFlyoutItem xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" GroupName="Backdrop" IsChecked="{}"/>"#,
+        if checked { "True" } else { "False" }
+    );
+    let item: MenuFlyoutItem = load_xaml(&markup)?.cast()?;
+    item.SetText(label)?;
+    revokers.push(item.Click(cb!("menu item", |_, _| on_click()))?);
+    Ok(item)
+}
+
 pub fn launch() -> Result<()> {
     let (tx, rx) = mpsc::channel();
     // Probing for shells starts processes (wsl.exe, vswhere.exe); it runs while the window comes up.
@@ -288,10 +327,9 @@ pub fn launch() -> Result<()> {
         tool_cluster: find(&root, "ToolCluster")?,
         tool_split_right: find(&root, "ToolSplitRight")?,
         tool_split_down: find(&root, "ToolSplitDown")?,
-        tool_search: find(&root, "ToolSearch")?,
+        tool_divider: find(&root, "ToolDivider")?,
         tool_palette: find(&root, "ToolPalette")?,
-        tool_appearance: find(&root, "ToolAppearance")?,
-        tool_settings: find(&root, "ToolSettings")?,
+        tool_menu: find(&root, "ToolMenu")?,
         appearance_flyout: find(&root, "AppearanceFlyout")?,
         backdrop_choice: find(&root, "BackdropChoice")?,
         opacity_slider: find(&root, "OpacitySlider")?,
@@ -318,6 +356,7 @@ pub fn launch() -> Result<()> {
         selected: Cell::new(0),
         mru: RefCell::new(logic::Mru::default()),
         strip_widths: RefCell::new(Vec::new()),
+        bar_tier: Cell::new(None),
         strip_viewport: Cell::new(0.0),
         reveal_pending: Cell::new(false),
         next_tab: Cell::new(1),
@@ -340,6 +379,8 @@ pub fn launch() -> Result<()> {
         dialog: RefCell::new(None),
         profile_menu: RefCell::new(None),
         pane_menu: RefCell::new(None),
+        app_menu: RefCell::new(None),
+        appearance_requested: Cell::new(false),
     });
     SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
@@ -377,6 +418,7 @@ impl Shell {
         let (left, right) = window::caption_insets(&self.window, scale);
         let _ = self.ui.left_inset.SetWidth(GridLength { value: left, grid_unit_type: GridUnitType::Pixel });
         let _ = self.ui.right_inset.SetWidth(GridLength { value: right, grid_unit_type: GridUnitType::Pixel });
+        self.apply_bar_tier();
         self.layout_tabs(true);
 
         // Discovery has been running since launch; it is normally done by now.
@@ -625,21 +667,17 @@ impl Shell {
         tip(&self.ui.tab_plate_button, t(Text::TabAll).to_owned());
         tip(&self.ui.tool_split_right, keymap.tooltip(Command::PaneSplitRight, lang));
         tip(&self.ui.tool_split_down, keymap.tooltip(Command::PaneSplitDown, lang));
-        tip(&self.ui.tool_search, keymap.tooltip(Command::EditFind, lang));
         tip(&self.ui.tool_palette, keymap.tooltip(Command::AppPalette, lang));
-        tip(&self.ui.tool_appearance, t(Text::SettingsAppearance).to_owned());
-        tip(&self.ui.tool_settings, keymap.tooltip(Command::AppSettings, lang));
+        tip(&self.ui.tool_menu, t(Text::MenuApp).to_owned());
     }
 
     fn attach_bar(self: &Rc<Self>) -> Result<()> {
         let mut revokers = Vec::new();
-        let buttons: [(&Button, Command); 6] = [
+        let buttons: [(&Button, Command); 4] = [
             (&self.ui.new_tab, Command::TabNew),
             (&self.ui.tool_split_right, Command::PaneSplitRight),
             (&self.ui.tool_split_down, Command::PaneSplitDown),
-            (&self.ui.tool_search, Command::EditFind),
             (&self.ui.tool_palette, Command::AppPalette),
-            (&self.ui.tool_settings, Command::AppSettings),
         ];
         for (button, command) in buttons {
             let this = self.clone();
@@ -647,6 +685,8 @@ impl Shell {
         }
         let this = self.clone();
         revokers.push(self.ui.new_tab_menu.on_click(cb!("profile menu", |_, _| this.show_profile_menu()))?);
+        let this = self.clone();
+        revokers.push(self.ui.tool_menu.on_click(cb!("app menu", |_, _| this.show_app_menu()))?);
         let this = self.clone();
         revokers.push(self.ui.tab_plate_button.on_click(cb!("tab list", |_, _| this.toggle_overlay(Overlay::Tabs)))?);
 
@@ -679,7 +719,10 @@ impl Shell {
 
         // The strip's width follows the bar; the wheel scrolls it sideways.
         let this = self.clone();
-        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| this.layout_tabs(true)))?);
+        revokers.push(fe(&self.ui.top_bar)?.SizeChanged(cb!("bar size", |_, _| {
+            this.apply_bar_tier();
+            this.layout_tabs(true);
+        }))?);
         let this = self.clone();
         revokers.push(fe(&self.ui.tool_cluster)?.SizeChanged(cb!("cluster size", |_, _| this.layout_tabs(true)))?);
         let this = self.clone();
@@ -699,13 +742,36 @@ impl Shell {
         Ok(())
     }
 
-    /// The width the strip and the position plate may share: the bar without the app mark, the new-tab buttons,
-    /// the tool cluster, the caption buttons and the smallest drag area.
+    /// The tier the width of the window puts the bar in.
+    fn tier(&self) -> BarTier {
+        self.bar_tier.get().unwrap_or(BarTier::Wide)
+    }
+
+    /// Shows the controls on the right of the bar that the width of the window leaves room for (`BarTier::at`): the
+    /// rest is in the menu. Returns whether the tier changed.
+    fn apply_bar_tier(&self) -> bool {
+        let width = fe(&self.ui.top_bar).and_then(|bar| bar.ActualWidth()).unwrap_or(0.0);
+        let tier = BarTier::at(width, self.bar_tier.get());
+        if self.bar_tier.replace(Some(tier)) == Some(tier) {
+            return false;
+        }
+        for (button, command) in [
+            (&self.ui.tool_split_right, Command::PaneSplitRight),
+            (&self.ui.tool_split_down, Command::PaneSplitDown),
+            (&self.ui.tool_palette, Command::AppPalette),
+        ] {
+            let _ = ui(button).and_then(|button| button.SetVisibility(visibility(tier.shows(command))));
+        }
+        let _ = ui(&self.ui.tool_divider).and_then(|divider| divider.SetVisibility(visibility(tier.shows_divider())));
+        log(&format!("bar {tier:?} at {width:.0} DIP"));
+        true
+    }
+
+    /// The width the strip and the position plate may share (`logic::strip_budget`).
     fn strip_budget(&self) -> f64 {
         let bar = fe(&self.ui.top_bar).and_then(|b| b.ActualWidth()).unwrap_or(0.0);
-        let cluster = fe(&self.ui.tool_cluster).and_then(|b| b.ActualWidth()).unwrap_or(0.0);
         let insets = self.ui.left_inset.ActualWidth().unwrap_or(0.0) + self.ui.right_inset.ActualWidth().unwrap_or(0.0);
-        (bar - insets - cluster - BAR_FIXED_WIDTH).max(STRIP_MIN_WIDTH)
+        logic::strip_budget(bar, insets, self.tier())
     }
 
     /// Sizes the whole tab strip: the position plate, the width of every chip and the counts at the cut edges. Runs
@@ -716,7 +782,7 @@ impl Shell {
         let tabs = self.tabs.borrow().clone();
         let selected = self.selected.get();
         let budget = self.strip_budget();
-        let strip = (budget - self.update_plate(tabs.len(), selected, budget)).max(STRIP_MIN_WIDTH);
+        let strip = (budget - self.update_plate(tabs.len(), selected, budget)).max(logic::STRIP_MIN_WIDTH);
         let _ = fe(&self.ui.tab_scroll).and_then(|scroll| scroll.SetMaxWidth(strip));
         let preferred: Vec<f64> = tabs.iter().map(|tab| tab.chip.natural_width()).collect();
         let widths = logic::tab_widths(&preferred, selected, strip - STRIP_PADDING, CHIP_GAP);
@@ -735,7 +801,7 @@ impl Shell {
 
     /// Shows `current / total` (or the total alone on a narrow strip) and returns the width the plate takes.
     fn update_plate(&self, count: usize, selected: usize, budget: f64) -> f64 {
-        let text = match logic::plate(selected, count, budget) {
+        let text = match logic::plate(selected, count, budget, self.tier()) {
             None => {
                 let _ = ui(&self.ui.tab_plate).and_then(|plate| plate.SetVisibility(Visibility::Collapsed));
                 return 0.0;
@@ -1485,6 +1551,97 @@ impl Shell {
         }
     }
 
+    /// Opens the menu of the `...` button: `menu::APP_MENU`, the same rows at every width of the window. It is built
+    /// again each time, so its labels, shortcuts and checks are those of the moment, and the handlers of the menu
+    /// before it go with it.
+    fn show_app_menu(self: &Rc<Self>) {
+        match self.build_app_menu() {
+            Ok((menu, revokers)) => {
+                let shown = menu.cast::<FlyoutBase>().and_then(|flyout| {
+                    flyout.SetPlacement(FlyoutPlacementMode::BottomEdgeAlignedRight)?;
+                    flyout.ShowAt(&self.ui.tool_menu)
+                });
+                if let Err(e) = shown {
+                    log(&format!("app menu: {e}"));
+                }
+                *self.app_menu.borrow_mut() = Some((menu, revokers));
+            }
+            Err(e) => log(&format!("app menu: {e}")),
+        }
+    }
+
+    fn build_app_menu(self: &Rc<Self>) -> Result<(MenuFlyout, Vec<EventRevoker>)> {
+        let menu = MenuFlyout::new()?;
+        let items = menu.Items()?;
+        let mut revokers = Vec::new();
+        let keymap = self.keymap.borrow();
+        let lang = self.lang();
+        let (panes, zoomed) =
+            self.selected_tab().map_or((0, false), |tab| (tab.pane_count(), tab.zoomed.get().is_some()));
+        let fullscreen = app_window(&self.window)?.Presenter()?.Kind()? == AppWindowPresenterKind::FullScreen;
+        let backdrop = self.settings.borrow().appearance.backdrop;
+        for row in APP_MENU {
+            match *row {
+                MenuRow::Separator => items.Append(&MenuFlyoutSeparator::new()?)?,
+                MenuRow::Command(command) => {
+                    let label = keymap.tooltip(command, lang);
+                    let this = self.clone();
+                    let on_click = move || this.run(command);
+                    match command {
+                        Command::PaneZoom => {
+                            let item = checked_menu_item(&label, zoomed, &mut revokers, on_click)?;
+                            item.cast::<Control>()?.SetIsEnabled(panes >= 2)?;
+                            items.Append(&item)?;
+                        }
+                        Command::ViewFullscreen => {
+                            items.Append(&checked_menu_item(&label, fullscreen, &mut revokers, on_click)?)?;
+                        }
+                        _ => items.Append(&plain_menu_item(&label, &mut revokers, on_click)?)?,
+                    }
+                }
+                MenuRow::Backdrop => {
+                    let submenu = MenuFlyoutSubItem::new()?;
+                    submenu.SetText(t(Text::SettingsBackdrop))?;
+                    let choices = submenu.Items()?;
+                    for choice in Backdrop::ALL {
+                        let this = self.clone();
+                        let item = radio_menu_item(t(choice.text()), choice == backdrop, &mut revokers, move || {
+                            this.set_backdrop(choice);
+                        })?;
+                        choices.Append(&item)?;
+                    }
+                    items.Append(&submenu)?;
+                }
+                MenuRow::Opacity => {
+                    let this = self.clone();
+                    items.Append(&plain_menu_item(t(Text::MenuOpacity), &mut revokers, move || {
+                        this.appearance_requested.set(true);
+                    })?)?;
+                }
+            }
+        }
+        let this = self.clone();
+        let closed = menu.cast::<FlyoutBase>()?.Closed(cb!("app menu closed", |_, _| {
+            // The row of the opacity opens the appearance flyout once the menu is gone (a flyout opened from the click
+            // is closed with the menu); the flyout gives the focus back to the pane when it closes.
+            if this.appearance_requested.replace(false) {
+                this.show_appearance_flyout();
+            } else {
+                this.focus_active_pane();
+            }
+        }))?;
+        revokers.push(closed);
+        Ok((menu, revokers))
+    }
+
+    /// Shows the quick appearance flyout (background material and opacity) under the menu button.
+    fn show_appearance_flyout(&self) {
+        let shown = self.ui.appearance_flyout.cast::<FlyoutBase>().and_then(|flyout| flyout.ShowAt(&self.ui.tool_menu));
+        if let Err(e) = shown {
+            log(&format!("appearance flyout: {e}"));
+        }
+    }
+
     fn attach_chip_menu(self: &Rc<Self>, tab: &Rc<Tab>) -> Result<()> {
         let flyout = MenuFlyout::new()?;
         let items = flyout.Items()?;
@@ -1504,6 +1661,16 @@ impl Shell {
                 let _ = this.add_tab(&profile);
             }
         })?)?;
+        // The pane of this tab that has the focus is the one that splits, whichever tab is shown.
+        for command in [Command::PaneSplitRight, Command::PaneSplitDown] {
+            let this = self.clone();
+            items.Append(&self.menu_item(&command.label(self.lang()), move || {
+                if let Some(index) = this.tab_index(id) {
+                    this.select_index(index);
+                    this.run(command);
+                }
+            })?)?;
+        }
         items.Append(&MenuFlyoutSeparator::new()?)?;
         let this = self.clone();
         items.Append(&self.menu_item(t(Text::TabCloseOthers), move || this.close_other_tabs(id, false))?)?;
@@ -2119,5 +2286,73 @@ impl Shell {
         }))?;
         self.revokers.borrow_mut().push(revoker);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The value of `attribute` on the element of `markup` whose `x:Name` is `name`.
+    fn attribute(markup: &str, name: &str, attribute: &str) -> String {
+        let marker = format!("x:Name=\"{name}\"");
+        let start = markup.find(&marker).unwrap_or_else(|| panic!("the markup has no {marker}"));
+        let rest = &markup[start..];
+        let element = &rest[..rest.find('>').expect("the element ends")];
+        let key = format!(" {attribute}=\"");
+        let at = element.find(&key).unwrap_or_else(|| panic!("{name} has no {attribute}")) + key.len();
+        element[at..].split('"').next().expect("the value ends").to_owned()
+    }
+
+    fn number(text: &str) -> f64 {
+        text.parse().unwrap_or_else(|_| panic!("{text:?} is not a number"))
+    }
+
+    fn numbers(text: &str) -> Vec<f64> {
+        text.split(',').map(|part| number(part.trim())).collect()
+    }
+
+    /// The width every tool button of the bar gets from its style.
+    fn button_width() -> f64 {
+        let style = include_str!("xaml/resources.xaml").split("x:Key=\"NkIconButton\"").nth(1).expect("the button style");
+        let key = "Property=\"Width\" Value=\"";
+        let at = style.find(key).expect("the style sets a width") + key.len();
+        number(style[at..].split('"').next().expect("the value ends"))
+    }
+
+    #[test]
+    fn the_numbers_the_bar_adds_up_are_the_ones_of_the_markup() {
+        let bar = SHELL_XAML;
+        // Margins are left,top,right,bottom.
+        let mark = numbers(&attribute(bar, "AppMark", "Margin"));
+        let group = numbers(&attribute(bar, "NewTabGroup", "Margin"));
+        let cluster = numbers(&attribute(bar, "ToolCluster", "Margin"));
+        let drag = number(&attribute(bar, "DragColumn", "MinWidth"));
+        let fixed = mark[0]
+            + number(&attribute(bar, "AppMark", "Width"))
+            + mark[2]
+            + group[0]
+            + button_width()
+            + number(&attribute(bar, "NewTabMenuButton", "Width"))
+            + cluster[0]
+            + cluster[2]
+            + drag;
+        assert_eq!(logic::BAR_FIXED_WIDTH, fixed);
+        assert_eq!(logic::MIN_DRAG_WIDTH, drag);
+        assert_eq!(logic::TOOL_BUTTON_WIDTH, button_width());
+        // The padding of the group is one number: the same on both sides.
+        assert_eq!(logic::CLUSTER_PADDING, 2.0 * number(&attribute(bar, "ToolCluster", "Padding")));
+        let divider = numbers(&attribute(bar, "ToolDivider", "Margin"));
+        assert_eq!(logic::DIVIDER_WIDTH, number(&attribute(bar, "ToolDivider", "Width")) + 2.0 * divider[0]);
+    }
+
+    #[test]
+    fn the_bar_has_a_button_for_every_control_of_a_tier_and_none_for_find_appearance_or_settings() {
+        for name in ["ToolSplitRight", "ToolSplitDown", "ToolPalette", "ToolMenu", "ToolDivider"] {
+            assert!(SHELL_XAML.contains(&format!("x:Name=\"{name}\"")), "{name}");
+        }
+        for gone in ["ToolSearch", "ToolAppearance", "ToolSettings"] {
+            assert!(!SHELL_XAML.contains(gone), "{gone} has a row in the menu now");
+        }
     }
 }
