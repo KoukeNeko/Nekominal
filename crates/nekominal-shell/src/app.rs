@@ -747,6 +747,7 @@ impl App {
         }
         self.alert(ring);
         self.update_window_title();
+        self.find_refresh();
         self.redraw();
     }
 
@@ -1145,7 +1146,29 @@ impl App {
         self.focused().and_then(|e| e.pane.selection_text()).is_some_and(|text| clipboard::write_text(&text))
     }
 
+    /// Puts the first line of the clipboard into the line of text that has the keyboard: the query of a pop-up, the search
+    /// of the settings page or the field being edited there. False when there is no such line.
+    fn paste_into_field(&mut self) -> bool {
+        let in_popup = self.popup.as_ref().is_some_and(|popup| popup.query.is_some());
+        if !in_popup && self.page.is_none() {
+            return false;
+        }
+        let text = clipboard::read_text().unwrap_or_default();
+        let line = text.lines().next().unwrap_or_default().to_owned();
+        for unit in line.encode_utf16() {
+            if in_popup {
+                self.popup_char(unit);
+            } else {
+                self.page_text(unit);
+            }
+        }
+        true
+    }
+
     fn paste(&mut self) {
+        if self.paste_into_field() {
+            return;
+        }
         if let (Some(text), Some(entry)) = (clipboard::read_text(), self.focused()) {
             let warning = logic::paste_warning(&text, entry.pane.input_modes().bracketed_paste, &self.settings.paste);
             let title = match warning {
@@ -2270,6 +2293,30 @@ impl App {
         self.find_show_current();
     }
 
+    /// Output arrived while the find bar is open: the matches are looked for again, so that the count and the marks keep
+    /// up with the screen. The match the bar was on stays, or the last one when it was on the last; the pane does not
+    /// scroll.
+    fn find_refresh(&mut self) {
+        let Some(query) = self.popup.as_ref().filter(|popup| popup.kind == popup::Kind::Find).and_then(|popup| popup.query.clone()) else { return };
+        if query.is_empty() {
+            return;
+        }
+        let matches = match self.focused() {
+            Some(entry) => entry.pane.term.lock().search_all(&find::literal_pattern(&query), FIND_LIMIT).unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let Some(old) = self.find.as_ref() else { return };
+        let last = matches.len().saturating_sub(1);
+        let current = if old.current + 1 >= old.matches.len() { last } else { old.current.min(last) };
+        let status = find::status(&query, current, matches.len());
+        self.find = Some(FindState { matches, current });
+        if let Some(popup) = self.popup.as_mut() {
+            popup.status = status;
+            // SAFETY: invalidating our own window.
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        }
+    }
+
     fn find_step(&mut self, forward: bool) {
         if let Some(find) = self.find.as_mut() {
             find.current = find::step(find.current, find.matches.len(), forward);
@@ -2435,6 +2482,11 @@ impl App {
         const VK_RETURN: i32 = 0x0D;
         const VK_UP: i32 = 0x26;
         const VK_DOWN: i32 = 0x28;
+        // Ctrl+V into the line of a palette or a find bar.
+        if vk_code == 0x56 && held().ctrl && !repeat && self.popup.as_ref().is_some_and(|popup| popup.query.is_some()) {
+            self.paste_into_field();
+            return;
+        }
         let Some(popup) = self.popup.as_mut() else { return };
         if popup.kind == popup::Kind::Confirm {
             if repeat {

@@ -156,6 +156,18 @@ function Scenario-NextFind {
         ShotRegion $after $region[0] $region[1] $region[2] $region[3] | Out-Null
         $left = Next-DiffPixels $before $after
         Next-Check 'find.escape-clears-them' ($left -lt 80) "$left pixels differ from the start after Esc"
+        # Output that arrives while the bar is open is counted too.
+        Next-Line 'Start-Sleep 5; echo needle-LATE'
+        Press 0x46 @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Type-Unicode 'needle' 40; Start-Sleep -Milliseconds 700
+        $popup = Next-PopupWindow
+        $bar = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$bar)
+        $count1 = Join-Path $env:TEMP 'find-count-1.png'; $count2 = Join-Path $env:TEMP 'find-count-2.png'
+        [void](ShotRegion $count1 ($bar.Right - 100) $bar.Top 90 ($bar.Bottom - $bar.Top))
+        Start-Sleep -Seconds 6
+        [void](ShotRegion $count2 ($bar.Right - 100) $bar.Top 90 ($bar.Bottom - $bar.Top))
+        Next-Check 'find.count-follows-new-output' ((Next-DiffPixels $count1 $count2) -gt 10) 'the count in the bar changed when a line with the text came in'
+        Press 0x1B; Start-Sleep -Milliseconds 700
         Next-Line 'echo AFTER-FIND'
         Next-Check 'find.pane-takes-typing-again' ((Next-Text) -match 'AFTER-FIND') 'after Esc the pane takes the typing again'
     }
@@ -1003,5 +1015,34 @@ function Scenario-NextBar {
         $distinct = @($seen | Select-Object -Unique)
         Next-Check 'bar.closing-a-tab-slides-the-others' ($distinct.Count -ge 4) "the second chip was seen at $($distinct.Count) places on its way: $(($distinct | Select-Object -First 8) -join ' ')"
         Next-Check 'bar.strip-comes-to-rest' (@($seen | Select-Object -Last 5 | Select-Object -Unique).Count -eq 1) 'the chip stands still at the end'
+    }
+}
+
+# Ctrl+Shift+V goes into the line of text that has the keyboard: the search of the settings page and the query of the
+# palette, not the terminal under them.
+function Scenario-NextPaste {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $rows = {
+            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } | ForEach-Object { $_.Current.Name })
+        }
+        Next-Line 'echo ONE'
+        Set-Clipboard -Value 'opacity'
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        $all = (& $rows).Count
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 700
+        $found = & $rows
+        Next-Check 'paste.into-the-search-of-the-page' ($found.Count -lt $all -and $found -contains 'Background opacity') "$all rows, $($found.Count) after the paste"
+        Press 0x1B; Start-Sleep -Milliseconds 300; Press 0x1B; Start-Sleep -Milliseconds 500
+        Next-Check 'paste.did-not-reach-the-terminal' ((Next-Text) -notmatch 'opacity') 'the terminal under the page did not get the text'
+        Set-Clipboard -Value 'split pane right'
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 700
+        Press 0x0D; Start-Sleep -Milliseconds 1500
+        Next-Line 'echo TWO'
+        $text = Next-Text
+        Next-Check 'paste.into-the-palette-query' ($text -match 'TWO' -and $text -notmatch 'ONE') 'the pasted name ran the command: the pane was split'
     }
 }
