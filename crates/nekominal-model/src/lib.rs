@@ -3,6 +3,7 @@
 pub mod bell;
 pub mod commands;
 pub mod fuzzy;
+pub mod keybindings;
 pub mod keymap;
 pub mod layout;
 pub mod menu;

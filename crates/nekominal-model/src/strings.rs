@@ -157,6 +157,7 @@ texts! {
     CommonAuto "common.auto" "自動" "Automatic";
     // A row of the settings drawer that differs from its default: the button that puts it back, and the two buttons that
     // step a number.
+    CommonRestore "common.restore" "還原" "Restore";
     CommonRestoreDefault "common.restoreDefault" "還原預設" "Restore default";
     CommonDecrease "common.decrease" "減少" "Decrease";
     CommonIncrease "common.increase" "增加" "Increase";
@@ -167,9 +168,17 @@ texts! {
     DialogCloseSessions "dialog.closeSessions" "關閉 {0} 個執行中的工作階段？" "Close running sessions ({0})?";
     DialogCloseTab "dialog.closeTab" "關閉「{0}」？" "Close \"{0}\"?";
     DialogRestartSession "dialog.restartSession" "重新啟動「{0}」？" "Restart \"{0}\"?";
+    DialogRestoreKeys "dialog.restoreKeys" "還原所有快速鍵？" "Restore all shortcuts?";
 
     // A setting that was changed and could not be put in effect: the InfoBar names it, the row of the opacity says it.
     SettingNotApplied "setting.notApplied" "未套用" "Not applied";
+    // The shortcuts page: the button of a row that adds a binding, what a row says while a key is waited for and when
+    // the key is taken (by a command or by a program in the terminal), and the buttons that answer that.
+    KeyAdd "keys.add" "新增快速鍵" "Add shortcut";
+    KeyRecord "keys.record" "按下按鍵" "Press keys";
+    KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
+    KeyReserved "keys.reserved" "終端機程式使用此組合鍵" "Terminal programs use this shortcut";
+    KeyReplace "keys.replace" "取代" "Replace";
     // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
     SettingInvalid "setting.invalid" "設定檔值無效" "Invalid value in file";
     SettingsProblems "settings.problems" "問題" "Problems";
