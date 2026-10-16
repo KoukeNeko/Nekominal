@@ -22,8 +22,30 @@ use windows::{
 pub enum AdapterKind {
     /// The low-power hardware adapter (the integrated GPU where there are two).
     Real,
+    /// The adapter that drives the monitor (an HMONITOR as a number), so that what is drawn does not have to be copied from
+    /// one graphics card to another to reach the screen; the low-power one when no adapter has the monitor.
+    Display(isize),
     /// Microsoft Basic Render Driver (software rasterizer).
     Warp,
+}
+
+/// The adapter that has an output on the monitor, None when no hardware adapter does.
+fn adapter_of_monitor(factory: &IDXGIFactory6, monitor: isize) -> Option<IDXGIAdapter1> {
+    // SAFETY: plain DXGI queries; the objects are released when they go out of scope.
+    unsafe {
+        let mut adapters = 0;
+        while let Ok(adapter) = factory.EnumAdapters1(adapters) {
+            let mut outputs = 0;
+            while let Ok(output) = adapter.EnumOutputs(outputs) {
+                if output.GetDesc().is_ok_and(|desc| desc.Monitor.0 as isize == monitor) {
+                    return Some(adapter);
+                }
+                outputs += 1;
+            }
+            adapters += 1;
+        }
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -40,11 +62,18 @@ impl Gpu {
             let mut adapter_name = String::from("WARP");
             let (adapter, driver) = match kind {
                 AdapterKind::Warp => (None, D3D_DRIVER_TYPE_WARP),
-                AdapterKind::Real => {
+                AdapterKind::Real | AdapterKind::Display(_) => {
                     let factory: IDXGIFactory6 = CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1: {e}"))?;
-                    let adapter: IDXGIAdapter1 = factory
-                        .EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_MINIMUM_POWER)
-                        .map_err(|e| format!("no hardware adapter: {e}"))?;
+                    let driving = match kind {
+                        AdapterKind::Display(monitor) => adapter_of_monitor(&factory, monitor),
+                        _ => None,
+                    };
+                    let adapter: IDXGIAdapter1 = match driving {
+                        Some(adapter) => adapter,
+                        None => factory
+                            .EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_MINIMUM_POWER)
+                            .map_err(|e| format!("no hardware adapter: {e}"))?,
+                    };
                     let desc = adapter.GetDesc1().map_err(|e| format!("GetDesc1: {e}"))?;
                     adapter_name = String::from_utf16_lossy(&desc.Description).trim_end_matches('\0').to_owned();
                     (Some(adapter.cast::<IDXGIAdapter>().map_err(|e| e.to_string())?), D3D_DRIVER_TYPE_UNKNOWN)
@@ -371,5 +400,24 @@ mod shader_tests {
             let code = super::compile(source, entry, target).unwrap_or_else(|e| panic!("{e}"));
             assert!(code.starts_with(b"DXBC"), "{entry} did not give D3D bytecode");
         }
+    }
+}
+#[cfg(test)]
+mod adapter_tests {
+    use super::*;
+    use windows::Win32::{
+        Foundation::POINT,
+        Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromPoint},
+    };
+
+    #[test]
+    fn the_adapter_of_the_primary_monitor_is_found_and_an_unknown_monitor_falls_back_to_the_low_power_one() {
+        // SAFETY: a plain query.
+        let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let driving = Gpu::new(AdapterKind::Display(primary.0 as isize)).expect("the adapter of the primary monitor");
+        let fallback = Gpu::new(AdapterKind::Display(0)).expect("the low-power adapter");
+        let low_power = Gpu::new(AdapterKind::Real).expect("the low-power adapter");
+        assert!(!driving.adapter_name.is_empty());
+        assert_eq!(fallback.adapter_name, low_power.adapter_name, "no monitor is no reason to pick another adapter");
     }
 }

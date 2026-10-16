@@ -6,6 +6,7 @@ use nekominal_render::d3d::AdapterKind;
 use windows::{
     Win32::{
         Foundation::HWND,
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         Graphics::{
             Direct3D11::{ID3D11RenderTargetView, ID3D11Texture2D},
             DirectComposition::{DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual},
@@ -32,10 +33,14 @@ pub struct Surface {
     committed: bool,
 }
 
-/// The device, and a swap chain of `size` pixels for `hwnd`. The adapter is the low-power one (the integrated GPU
-/// where there are two): a terminal does not need the other, and it costs the battery.
+/// The device, and a swap chain of `size` pixels for `hwnd`. The adapter is the one that drives the monitor the window is
+/// on: with another one, every frame would be copied from one graphics card to the other, which is what makes a window slow
+/// on a computer with two. Where no adapter claims the monitor it is the low-power one.
 pub fn create(hwnd: HWND, size: (u32, u32)) -> Result<(Gpu, Surface), String> {
-    let gpu = Gpu::new(AdapterKind::Real)?;
+    // SAFETY: a plain query for a window of this thread.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let gpu = Gpu::new(AdapterKind::Display(monitor.0 as isize))?;
+    crate::util::log(&format!("adapter: {}", gpu.adapter_name));
     let surface = create_surface(&gpu, hwnd, size)?;
     Ok((gpu, surface))
 }

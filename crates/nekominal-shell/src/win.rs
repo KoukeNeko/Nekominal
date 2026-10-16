@@ -268,7 +268,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_PAINT => {
+            let started = std::time::Instant::now();
             let next_frame = with_app(hwnd, App::paint).unwrap_or(false);
+            // A frame takes one refresh at most (the swap chain waits for it): one that takes more is told in the log, with
+            // the adapter, so that a slow window can be looked into.
+            if started.elapsed() > std::time::Duration::from_millis(24) {
+                crate::util::log(&format!("slow frame: {:?}", started.elapsed()));
+            }
             // SAFETY: the swap chain is the content; only the update region is cleared.
             unsafe { let _ = ValidateRect(Some(hwnd), None); };
             // After the validation, which would take it back: a slide of the tab chips asks for its next frame, and a
