@@ -56,6 +56,9 @@ pub struct Page {
     /// The command whose shortcut the next chord pressed becomes, and whether the last chord was one a program needs.
     pub capturing: Option<Command>,
     pub reserved: bool,
+    /// The caret and the selection of the search line, and of the text field being edited.
+    pub cursor: crate::textfield::Cursor,
+    pub edit_cursor: crate::textfield::Cursor,
 }
 
 /// What a rectangle does when it is pressed.
@@ -106,6 +109,8 @@ pub enum Fill {
     Accent,
     Knob,
     Radio { on: bool, hover: bool },
+    /// Behind the selected part of a line of text.
+    Selection,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -306,13 +311,17 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
     item(&mut items, Rect::new(search.x + 12.0, search.y, 20.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 14.0, tone: Tone::Quiet }, false);
     let text_x = search.x + 40.0;
+    if let Some((from, to)) = page.cursor.selection().filter(|_| page.editing.is_none()) {
+        let (left, right) = (measure(crate::textfield::prefix(&page.query, from), 13.0, false), measure(crate::textfield::prefix(&page.query, to), 13.0, false));
+        item(&mut items, Rect::new(text_x + left, search.y + 8.0, right - left, search.h - 16.0), None, Visual::Plate(Fill::Selection), false);
+    }
     if page.query.is_empty() {
         item(&mut items, Rect::new(text_x + 6.0, search.y, search.w - 58.0, search.h), None, label(Text::SettingsSearch.get(lang), 13.0, Tone::Quiet, false, Align::Left), false);
     } else {
         item(&mut items, Rect::new(text_x, search.y, search.w - 52.0, search.h), None, label(page.query.as_str(), 13.0, Tone::Text, false, Align::Left), false);
     }
     if page.editing.is_none() {
-        let caret = text_x + measure(&page.query, 13.0, false) + 1.0;
+        let caret = text_x + measure(crate::textfield::prefix(&page.query, page.cursor.caret), 13.0, false) + 1.0;
         item(&mut items, Rect::new(caret, search.y + 8.0, 1.5, search.h - 16.0), None, Visual::Caret, false);
     }
 
@@ -425,7 +434,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         item(&mut items, field, Some(Part::Field(id)), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
                         let inner = Rect::new(field.x + 10.0, field.y, field.w - 20.0, field.h);
                         if let Some(text) = editing {
-                            let caret = inner.x + measure(&text, 13.0, false).min(inner.w) + 1.0;
+                            let caret = inner.x + measure(crate::textfield::prefix(&text, page.edit_cursor.caret), 13.0, false).min(inner.w) + 1.0;
+                            if let Some((from, to)) = page.edit_cursor.selection() {
+                                let (left, right) = (measure(crate::textfield::prefix(&text, from), 13.0, false), measure(crate::textfield::prefix(&text, to), 13.0, false));
+                                item(&mut items, Rect::new(inner.x + left, field.y + 5.0, (right - left).min(inner.w), field.h - 10.0), None, Visual::Plate(Fill::Selection), true);
+                            }
                             item(&mut items, inner, None, label(text, 13.0, Tone::Text, false, Align::Left), true);
                             item(&mut items, Rect::new(caret, field.y + 6.0, 1.5, field.h - 12.0), None, Visual::Caret, true);
                         } else {

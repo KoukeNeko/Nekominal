@@ -526,7 +526,12 @@ function Scenario-NextResize([ValidateSet('fullscreen', 'classic')][string]$Mode
             Start-Sleep -Seconds 9
             $fresh = Next-Text
             $a = Next-Normalized $storm; $b = Next-Normalized $fresh
-            Next-Check 'resize.fullscreen.same-as-fresh' ($a -ceq $b) ("the screen after the storm and a fresh run at the same size have the same text ({0} and {1} lines)" -f ($a -split "`n").Count, ($b -split "`n").Count)
+            $first = ''
+            if ($a -cne $b) {
+                $left = $a -split "`n"; $right = $b -split "`n"
+                for ($i = 0; $i -lt [Math]::Max($left.Count, $right.Count); $i++) { if ($left[$i] -cne $right[$i]) { $first = "; first difference at line $($i + 1): [$($left[$i])] against [$($right[$i])]"; break } }
+            }
+            Next-Check 'resize.fullscreen.same-as-fresh' ($a -ceq $b) ("the screen after the storm and a fresh run at the same size have the same text ({0} and {1} lines){2}" -f ($a -split "`n").Count, ($b -split "`n").Count, $first)
         }
         Next-ExitClaude
     } finally {
@@ -1124,4 +1129,61 @@ process.stdin.on('data', d => { const s = JSON.stringify(d.toString('latin1')); 
         Next-Check 'kitty.release-is-reported' ($text -match 'KEYS' -and $text -match '15;1:3~') "what the program read: $((($text -split "`n") | Where-Object { $_ -match 'KEYS' }) -join ' | ')"
         Press 0x51; Start-Sleep -Milliseconds 600
     } '{ "keyboard": { "kittyProtocol": true } }'
+}
+
+# The lines of text: the caret and the selection in the palette, the search of the settings page and the fields of its rows, a
+# font family that is put in effect at once, and a find bar that stays open when the terminal is clicked.
+function Scenario-NextTextFields {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $isList = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::List)
+        # What the line says: the tree of the window names the list that has it after the text.
+        $line = { $e = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $isList); if ($e) { $e.Current.Name } else { '(none)' } }
+        Next-Line 'echo ONE'
+
+        Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 800            # the palette
+        Type-Unicode 'plit pane' 30; Press 0x24; Start-Sleep -Milliseconds 200; Type-Unicode 's' 30; Start-Sleep -Milliseconds 400
+        Next-Check 'fields.palette-home-and-typing' ((& $line) -eq 'split pane') "the query: $(& $line)"
+        Press 0x41 @(0x11); Press 0x43 @(0x11); Start-Sleep -Milliseconds 300
+        Next-Check 'fields.palette-select-all-and-copy' ((Get-Clipboard -Raw).Trim() -eq 'split pane') "clipboard: $((Get-Clipboard -Raw).Trim())"
+        Type-Unicode 'zoom' 30; Start-Sleep -Milliseconds 300
+        Next-Check 'fields.typing-replaces-the-selection' ((& $line) -eq 'zoom') "the query: $(& $line)"
+        Press 0x25 @(0x10); Press 0x25 @(0x10); Start-Sleep -Milliseconds 200; Press 0x2E; Start-Sleep -Milliseconds 300
+        Next-Check 'fields.shift-arrows-select-and-delete-removes' ((& $line) -eq 'zo') "the query: $(& $line)"
+        Press 0x1B; Start-Sleep -Milliseconds 500
+
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900            # the settings page
+        Type-Unicode 'opcity' 30; 1..4 | ForEach-Object { Press 0x25 }; Type-Unicode 'a' 30; Start-Sleep -Milliseconds 500
+        Next-Check 'fields.page-search-caret' ((& $line) -eq 'opacity') "the search: $(& $line)"
+        Press 0x1B; Start-Sleep -Milliseconds 300                           # clears the search
+        Press 0x28; Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300    # Down x4: the font row
+        $r = Win-Rect; $s = Get-Scale
+        $before = Join-Path $env:TEMP 'font-before.png'; $after = Join-Path $env:TEMP 'font-after.png'
+        Press 0x1B; Start-Sleep -Milliseconds 400
+        [void](ShotRegion $before ($r.Left + 4) ($r.Top + [int](60 * $s)) 700 200)
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Press 0x28; Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300
+        Press 0x0D; Start-Sleep -Milliseconds 300                           # Enter: edit, the text selected
+        Type-Unicode 'Courier New' 30; Press 0x0D; Start-Sleep -Milliseconds 700
+        $saved = Next-SavedSettings
+        Next-Check 'fields.field-edit-is-kept' ((ConvertTo-Json $saved.font -Compress) -match 'Courier New') "font in the file: $(ConvertTo-Json $saved.font -Compress)"
+        Press 0x1B; Start-Sleep -Milliseconds 600
+        [void](ShotRegion $after ($r.Left + 4) ($r.Top + [int](60 * $s)) 700 200)
+        Next-Check 'fields.font-family-reaches-the-open-terminal' ((Next-DiffPixels $before $after) -gt 200) "$(Next-DiffPixels $before $after) pixels of the terminal changed with the font"
+
+        # The find bar stays when the terminal is clicked, and the keyboard is the terminal's then.
+        Next-Line 'echo needle-A'
+        Press 0x46 @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Type-Unicode 'needle' 30; Start-Sleep -Milliseconds 500
+        $pane = Next-At 400 300; Click-At $pane[0] $pane[1]; Start-Sleep -Milliseconds 500
+        Next-Check 'fields.find-bar-stays-after-a-click-outside' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'the bar is still open'
+        Next-Line 'echo TYPED-IN-TERMINAL'
+        Next-Check 'fields.keyboard-is-the-terminals-again' ((Next-Text) -match 'TYPED-IN-TERMINAL' -and (& $line) -eq 'needle') "the bar still says: $(& $line)"
+        $bar = New-Object D+RECT; [void][D]::GetWindowRect((Next-PopupWindow), [ref]$bar)
+        Click-At ([int](($bar.Left + $bar.Right) / 2)) ([int](($bar.Top + $bar.Bottom) / 2)); Start-Sleep -Milliseconds 400
+        Type-Unicode 'zz' 30; Start-Sleep -Milliseconds 400
+        Next-Check 'fields.click-on-the-bar-gives-it-the-keyboard' ((& $line) -eq 'needlezz') "the bar says: $(& $line)"
+        Press 0x1B; Start-Sleep -Milliseconds 500
+    }
 }

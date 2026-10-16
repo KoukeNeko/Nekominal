@@ -109,6 +109,10 @@ pub struct Popup {
     /// How far the rows are scrolled up, in DIP.
     pub scroll: f32,
     pub hover: Option<usize>,
+    /// The caret and the selection in the query.
+    pub cursor: crate::textfield::Cursor,
+    /// The find bar stays open when something else is clicked, and then the keyboard is the terminal's again.
+    pub has_keys: bool,
 }
 
 impl Popup {
@@ -244,20 +248,6 @@ pub enum Kind {
     Find,
 }
 
-/// A query consumes UTF-16 separately from the terminal, including non-BMP characters.
-pub fn edit_query(query: &mut String, input: &mut Utf16Assembler, unit: u16) -> bool {
-    match unit {
-        0x08 => {
-            *input = Utf16Assembler::default();
-            query.pop().is_some()
-        }
-        u if u >= 0x20 && u != 0x7F => {
-            if let Some(ch) = input.push(u) { query.push(ch); true } else { false }
-        }
-        _ => false,
-    }
-}
-
 /// Blurs what is behind the window. The system backdrop attribute does not do it for these windows: they never take the
 /// focus, and the backdrop of a window that is not the active one is a flat colour. The accent policy keeps blurring.
 fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
@@ -360,7 +350,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
             }
         };
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None };
+        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true };
         if popup.query.is_some() {
             popup.set_rows(rows);
         } else {
@@ -384,6 +374,8 @@ mod tests {
     fn query_text_accepts_chinese_and_surrogate_pairs_without_accepting_submit() {
         let mut text = String::new();
         let mut input = Utf16Assembler::default();
+        let mut cursor = crate::textfield::Cursor::default();
+        let mut edit_query = |text: &mut String, input: &mut Utf16Assembler, unit: u16| crate::textfield::type_unit(text, &mut cursor, input, unit);
         for unit in "找你😀".encode_utf16() { edit_query(&mut text, &mut input, unit); }
         assert_eq!(text, "找你😀");
         assert!(!edit_query(&mut text, &mut input, 13));

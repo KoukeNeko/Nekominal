@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, clipboard, find, motion,
+    access, clipboard, find, motion, textfield,
     settings_page::{self, Page, Part},
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
@@ -947,12 +947,21 @@ impl App {
     /// A mouse button changed. The result says whether the window should take or give back the mouse capture.
     pub fn on_button(&mut self, x: i32, y: i32, button: MouseButton, down: bool, time_ms: u32) -> Capture {
         if self.popup_keeps_owner_active() {
-            // Consume both halves of the outside click; it dismisses the menu without reaching the shell.
-            if !down && std::mem::take(&mut self.context_release) && button == MouseButton::Right {
+            if down && self.popup.as_ref().is_some_and(|popup| popup.kind == popup::Kind::Find) {
+                // A click outside the find bar leaves it open, with its marks: the keyboard goes back to the terminal.
+                if let Some(popup) = self.popup.as_mut() {
+                    popup.has_keys = false;
+                    // SAFETY: invalidating our own window.
+                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                }
+            } else {
+                // Consume both halves of the outside click; it dismisses the menu without reaching the shell.
+                if !down && std::mem::take(&mut self.context_release) && button == MouseButton::Right {
+                    return Capture::None;
+                }
+                if !down { self.close_popup(); }
                 return Capture::None;
             }
-            if !down { self.close_popup(); }
-            return Capture::None;
         }
         if self.page.is_some() && self.pressed == Hit::None && (self.page.as_ref().is_some_and(|page| page.drag.is_some()) || self.hit_test(x, y) == Hit::Pane) {
             return self.page_button(x, y, button, down);
@@ -1109,7 +1118,7 @@ impl App {
 
     /// The text being composed, drawn at the cursor; `None` when the composition ended.
     pub fn on_ime_preedit(&mut self, text: Option<String>) {
-        if let Some(popup) = self.popup.as_mut() {
+        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut() {
             if popup.query.is_some() {
                 popup.preedit = text.unwrap_or_default();
                 unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
@@ -1124,7 +1133,7 @@ impl App {
 
     /// Text the input method finished: it goes to the program as typed.
     pub fn on_ime_commit(&mut self, text: &str) {
-        if let Some(popup) = self.popup.as_mut() {
+        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut() {
             popup.preedit.clear();
             for unit in text.encode_utf16() { self.popup_char(unit); }
             return;
@@ -1366,6 +1375,9 @@ impl App {
             return true;
         }
         let held = held();
+        if self.page.is_some() && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_field_key(vk_code) {
+            return true;
+        }
         if self.page.is_some() && !held.ctrl && !held.alt && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_key(vk_code, repeat) {
             return true;
         }
@@ -1413,7 +1425,7 @@ impl App {
 
     /// One UTF-16 unit of text from the keyboard or the IME.
     pub fn on_char(&mut self, unit: u16) {
-        if self.popup.is_some() { self.popup_char(unit); return; }
+        if self.popup_keeps_owner_active() { self.popup_char(unit); return; }
         if self.page.is_some() {
             if unit >= 0x20 || unit == 0x08 { self.page_text(unit); }
             return;
@@ -1585,6 +1597,7 @@ impl App {
                     settings_page::Fill::Track => self.ui.rrect(rect, rect.h / 2.0, col(g.divider()), None),
                     settings_page::Fill::Accent => self.ui.rrect(rect, rect.h / 2.0, accent, None),
                     settings_page::Fill::Knob => self.ui.rrect(rect, rect.w / 2.0, col(g.text()), None),
+                    settings_page::Fill::Selection => self.ui.rrect(rect, 4.0, Color([g.accent.r, g.accent.g, g.accent.b, 90]), None),
                     settings_page::Fill::Radio { on, hover } => {
                         let ring = if on { accent } else if hover { col(g.text()) } else { col(g.text_secondary()) };
                         self.ui.rrect(rect, rect.w / 2.0, Color::TRANSPARENT, Some((ring, 1.5)));
@@ -1913,6 +1926,7 @@ impl App {
         self.close_popup();
         let mut page = self.page.take().unwrap_or_default();
         page.query.clear();
+        page.cursor = textfield::Cursor::default();
         page.editing = None;
         page.scroll = 0.0;
         page.focus = None;
@@ -2028,6 +2042,7 @@ impl App {
             Part::Nav(i) => {
                 if let Some(page) = self.page.as_mut() {
                     (page.section, page.query, page.scroll, page.focus) = (i, String::new(), 0.0, None);
+                    page.cursor = textfield::Cursor::default();
                 }
             }
             Part::Search => {}
@@ -2053,6 +2068,7 @@ impl App {
                     && let Some(page) = self.page.as_mut()
                     && page.editing.is_none()
                 {
+                    page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
                     page.editing = Some((id, text));
                 }
             }
@@ -2136,6 +2152,7 @@ impl App {
                     self.close_page();
                 } else if let Some(page) = self.page.as_mut() {
                     (page.query, page.scroll, page.focus) = (String::new(), 0.0, None);
+                    page.cursor = textfield::Cursor::default();
                 }
             }
             VK_UP | VK_DOWN => {
@@ -2164,6 +2181,7 @@ impl App {
                 let Some(row) = focused_row else { return true };
                 if matches!(row.control, Control::Text) {
                     if let (Value::Text(text), Some(page)) = ((row.get)(&self.settings), self.page.as_mut()) {
+                        page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
                         page.editing = Some((row.id, text));
                     }
                 } else {
@@ -2248,13 +2266,47 @@ impl App {
         true
     }
 
+    /// The keys of a line of text (the caret, the selection, Delete, Ctrl+A, Ctrl+C, Ctrl+X) in the field being edited, or in
+    /// the search while no row has the keyboard. True when the key was one of them.
+    fn page_field_key(&mut self, vk_code: i32) -> bool {
+        let mods = held();
+        let Some(page) = self.page.as_mut() else { return false };
+        let editing = page.editing.is_some();
+        let edit = if let Some((_, text)) = page.editing.as_mut() {
+            textfield::key(text, &mut page.edit_cursor, vk_code, mods.ctrl, mods.shift)
+        } else if page.focus.is_none() && !page.query.is_empty() {
+            textfield::key(&mut page.query, &mut page.cursor, vk_code, mods.ctrl, mods.shift)
+        } else {
+            return false;
+        };
+        match edit {
+            textfield::Edit::Ignored => return false,
+            textfield::Edit::Done { changed } => {
+                if changed && !editing {
+                    (page.scroll, page.focus) = (0.0, None);
+                }
+            }
+            textfield::Edit::Copy(text) => {
+                clipboard::write_text(&text);
+            }
+            textfield::Edit::Cut(text) => {
+                clipboard::write_text(&text);
+                if !editing {
+                    (page.scroll, page.focus) = (0.0, None);
+                }
+            }
+        }
+        self.redraw();
+        true
+    }
+
     /// Text typed while the page is open goes into the field being edited, or into the search.
     fn page_text(&mut self, unit: u16) {
         let Some(page) = self.page.as_mut() else { return };
         let changed = match page.editing.as_mut() {
-            Some((_, text)) => popup::edit_query(text, &mut self.text, unit),
+            Some((_, text)) => textfield::type_unit(text, &mut page.edit_cursor, &mut self.text, unit),
             None => {
-                let changed = popup::edit_query(&mut page.query, &mut self.text, unit);
+                let changed = textfield::type_unit(&mut page.query, &mut page.cursor, &mut self.text, unit);
                 if changed {
                     (page.scroll, page.focus) = (0.0, None);
                 }
@@ -2304,7 +2356,14 @@ impl App {
         let effects = logic::effects(before, &self.settings);
         if effects.font {
             for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
-                if let Err(e) = entry.view.set_font_size(self.settings.font.size as f32).and_then(|()| entry.view.set_line_height(self.settings.font.line_height as f32)) {
+                let result = (|| {
+                    if self.settings.font.family != before.font.family {
+                        entry.view.set_font_families(self.settings.font.family.clone())?;
+                    }
+                    entry.view.set_font_size(self.settings.font.size as f32)?;
+                    entry.view.set_line_height(self.settings.font.line_height as f32)
+                })();
+                if let Err(e) = result {
                     util::log(&format!("font: {e}"));
                 }
             }
@@ -2387,6 +2446,12 @@ impl App {
     }
 
     fn open_find(&mut self) {
+        if let Some(popup) = self.popup.as_mut().filter(|popup| popup.kind == popup::Kind::Find) {
+            popup.has_keys = true;
+            // SAFETY: invalidating our own window.
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            return;
+        }
         let anchor = self.screen_point(self.layout.size.0 * self.scale - 24.0 * self.scale, layout::TITLE_HEIGHT * self.scale);
         self.open_popup(Vec::new(), popup::Kind::Find, anchor);
     }
@@ -2475,19 +2540,23 @@ impl App {
 
     /// A character typed into the palette: it goes into the query, and the rows follow.
     pub fn popup_char(&mut self, unit: u16) {
-        let Some(query) = self.popup.as_mut().and_then(|p| p.query.as_mut()) else { return };
-        if !popup::edit_query(query, &mut self.text, unit) { return; }
-        let query = query.clone();
-        if self.popup.as_ref().is_some_and(|p| p.kind == popup::Kind::Find) {
-            if let Some(popup) = self.popup.as_mut() {
-                popup.query = Some(query.clone());
-            }
+        let Some(popup) = self.popup.as_mut() else { return };
+        let Some(query) = popup.query.as_mut() else { return };
+        if !textfield::type_unit(query, &mut popup.cursor, &mut self.text, unit) {
+            return;
+        }
+        self.query_changed();
+    }
+
+    /// The query of the palette or of the find bar changed: the rows or the matches follow it.
+    fn query_changed(&mut self) {
+        let Some(query) = self.popup.as_ref().and_then(|popup| popup.query.clone()) else { return };
+        if self.popup.as_ref().is_some_and(|popup| popup.kind == popup::Kind::Find) {
             self.find_search(&query);
             return;
         }
         let rows = self.palette_rows(&query);
         let Some(popup) = self.popup.as_mut() else { return };
-        popup.query = Some(query);
         popup.set_rows(rows);
         // SAFETY: invalidating our own window.
         unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
@@ -2556,8 +2625,9 @@ impl App {
         self.redraw();
     }
 
+    /// A pop-up has the keyboard and the pointer: all but a find bar that something else was clicked after.
     pub fn popup_keeps_owner_active(&self) -> bool {
-        self.popup.is_some()
+        self.popup.as_ref().is_some_and(|popup| popup.kind != popup::Kind::Find || popup.has_keys)
     }
 
     /// The menu lost the activation: another window was clicked, or this one.
@@ -2582,6 +2652,10 @@ impl App {
     }
 
     pub fn popup_click(&mut self, x: i32, y: i32) {
+        // A click on the find bar gives it the keyboard back.
+        if let Some(popup) = self.popup.as_mut().filter(|popup| popup.kind == popup::Kind::Find) {
+            popup.has_keys = true;
+        }
         let scale = self.scale;
         let Some(popup) = self.popup.as_ref() else { return };
         if let Some(row) = popup.row_at_point(x as f32 / scale, y as f32 / scale) {
@@ -2593,6 +2667,38 @@ impl App {
         const VK_RETURN: i32 = 0x0D;
         const VK_UP: i32 = 0x26;
         const VK_DOWN: i32 = 0x28;
+        // The keys of a line of text: the caret, the selection, Delete, Ctrl+A, Ctrl+C and Ctrl+X.
+        let edit = {
+            let mods = held();
+            match self.popup.as_mut() {
+                Some(popup) if popup.kind != popup::Kind::Confirm => match popup.query.as_mut() {
+                    Some(query) => textfield::key(query, &mut popup.cursor, vk_code, mods.ctrl, mods.shift),
+                    None => textfield::Edit::Ignored,
+                },
+                _ => textfield::Edit::Ignored,
+            }
+        };
+        match edit {
+            textfield::Edit::Ignored => {}
+            textfield::Edit::Done { changed } => {
+                if changed {
+                    self.query_changed();
+                } else if let Some(popup) = self.popup.as_ref() {
+                    // SAFETY: invalidating our own window.
+                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                }
+                return;
+            }
+            textfield::Edit::Copy(text) => {
+                clipboard::write_text(&text);
+                return;
+            }
+            textfield::Edit::Cut(text) => {
+                clipboard::write_text(&text);
+                self.query_changed();
+                return;
+            }
+        }
         // Ctrl+V into the line of a palette or a find bar.
         if vk_code == 0x56 && held().ctrl && !repeat && self.popup.as_ref().is_some_and(|popup| popup.query.is_some()) {
             self.paste_into_field();
@@ -2902,13 +3008,21 @@ impl App {
             ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
             let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
             let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
-            let width = ui.measure(query, TEXT_SIZE, false);
+            let before = textfield::prefix(query, popup.cursor.caret);
+            let after = &query[before.len()..];
+            let width = ui.measure(before, TEXT_SIZE, false);
             let composing = ui.measure(&popup.preedit, TEXT_SIZE, false);
+            // The text scrolls so that the caret stays in view.
             let scroll = (width + composing + 4.0 - (end - popup::QUERY_LEFT)).max(0.0);
             let start = popup::QUERY_LEFT - scroll;
             ui.push_clip(Rect::new(popup::QUERY_LEFT, y, (end - popup::QUERY_LEFT).max(0.0), line));
-            ui.text(start, y, query, TEXT_SIZE, col(g.text()), false);
+            if let Some((from, to)) = popup.cursor.selection() {
+                let (left, right) = (ui.measure(textfield::prefix(query, from), TEXT_SIZE, false), ui.measure(textfield::prefix(query, to), TEXT_SIZE, false));
+                ui.fill(Rect::new(start + left, y, right - left, line), Color([g.accent.r, g.accent.g, g.accent.b, 90]));
+            }
+            ui.text(start, y, before, TEXT_SIZE, col(g.text()), false);
             ui.text(start + width, y, &popup.preedit, TEXT_SIZE, col(g.text()), false);
+            ui.text(start + width + composing, y, after, TEXT_SIZE, col(g.text()), false);
             if composing > 0.0 {
                 ui.fill(Rect::new(start + width, y + line - 1.0, composing, 1.0), col(g.accent));
             }

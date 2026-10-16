@@ -17,6 +17,7 @@ mod popup;
 mod settings_page;
 mod status;
 mod tab;
+mod textfield;
 mod win;
 
 /// What the modules call to write to the log: the file named by NEKOMINAL_LOG, when there is one.

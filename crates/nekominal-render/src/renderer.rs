@@ -408,6 +408,20 @@ impl Renderer {
         Ok(())
     }
 
+    /// Change the families of the primary text chain (empty keeps the default chain); the other chains stay. Glyphs are
+    /// resolved and rasterized again from the new fonts.
+    pub fn set_text_families(&mut self, families: Vec<String>) -> Result<(), String> {
+        let mut fonts = self.cfg.fonts.clone();
+        fonts.text = if families.is_empty() { FontConfig::default().text } else { families };
+        let stack = FontStack::new(fonts.clone())?;
+        self.cfg.fonts = fonts;
+        self.fonts = stack;
+        self.recompute_metrics()?;
+        self.reset_glyph_caches();
+        self.epoch += 1;
+        Ok(())
+    }
+
     pub(crate) fn reset_glyph_caches(&mut self) {
         self.glyph_cache.clear();
         self.sprite_cache.clear();
