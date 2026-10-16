@@ -398,3 +398,20 @@ impl Ui {
         }
     }
 }
+
+#[cfg(test)]
+mod shader_tests {
+    use nekominal_render::d3d::compile;
+
+    /// The shaders are compiled when the window starts, so a mistake in one would show only then: this makes it show in the
+    /// tests.
+    #[test]
+    fn every_entry_of_the_interface_shaders_compiles() {
+        let quad = include_str!("quad.hlsl");
+        let glyph = include_str!("glyph.hlsl");
+        for (source, entry, target) in [(quad, "vs_main", "vs_5_0"), (glyph, "vs_main", "vs_5_0"), (quad, "fs_main", "ps_5_0"), (glyph, "fs_main", "ps_5_0")] {
+            let code = compile(source, entry, target).unwrap_or_else(|e| panic!("{e}"));
+            assert!(code.starts_with(b"DXBC"), "{entry} did not give D3D bytecode");
+        }
+    }
+}

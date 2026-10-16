@@ -352,3 +352,24 @@ pub fn set_shaders(gpu: &Gpu, layout: &ID3D11InputLayout, vs: &ID3D11VertexShade
         gpu.context.PSSetShader(ps, None);
     }
 }
+
+#[cfg(test)]
+mod shader_tests {
+    /// The shaders are compiled when the window starts (about 20 ms), so a mistake in one would show only then: this makes it
+    /// show in the tests.
+    #[test]
+    fn every_entry_of_the_grid_shaders_compiles() {
+        let glyph = include_str!("shaders/glyph.hlsl");
+        let rect = include_str!("shaders/rect.hlsl");
+        for (source, entry, target) in [
+            (rect, "vs_main", "vs_5_0"),
+            (glyph, "vs_main", "vs_5_0"),
+            (rect, "fs_main", "ps_5_0"),
+            (glyph, "fs_main", "ps_5_0"),
+            (glyph, "fs_lcd", "ps_5_0"),
+        ] {
+            let code = super::compile(source, entry, target).unwrap_or_else(|e| panic!("{e}"));
+            assert!(code.starts_with(b"DXBC"), "{entry} did not give D3D bytecode");
+        }
+    }
+}
