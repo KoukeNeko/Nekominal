@@ -1187,3 +1187,32 @@ function Scenario-NextTextFields {
         Press 0x1B; Start-Sleep -Milliseconds 500
     }
 }
+
+# The glyphs of the title bar sit on its middle line: the + and the shell button, the menu button, and the mark that
+# stands before the title of a tab that asks for something.
+function Scenario-NextCentre {
+    Add-Type -AssemblyName System.Drawing
+    Run-Next {
+        $r = Win-Rect; $s = Get-Scale
+        Next-Line 'exit 3'
+        Start-Sleep -Milliseconds 1200
+        Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500          # a second tab: the first one shows its failure mark
+        Move-To ([int]($r.Left + 300)) ([int]($r.Top + 500)); Start-Sleep -Milliseconds 600
+        $path = Join-Path $env:TEMP 'centre.png'
+        [void](ShotRegion $path $r.Left $r.Top ($r.Right - $r.Left) ([int](60 * $s)))
+        $bitmap = [System.Drawing.Bitmap]::FromFile($path)
+        try {
+            $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+            $shellX = Next-TabListX 2
+            $spots = [ordered]@{ 'the mark before a title' = 19; 'the + button' = $shellX - 36; 'the shell button' = $shellX; 'the menu button' = $menuX }
+            foreach ($name in $spots.Keys) {
+                $rows = @()
+                for ($py = [int](4 * $s); $py -lt [int](44 * $s); $py++) {
+                    for ($px = [int](($spots[$name] - 10) * $s); $px -le [int](($spots[$name] + 10) * $s); $px++) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt 0.62) { $rows += $py; break } }
+                }
+                $middle = if ($rows.Count) { ($rows[0] + $rows[-1]) / 2 } else { -100 }
+                Next-Check "centre.$($name -replace ' ', '-')" ([Math]::Abs($middle - 24 * $s) -le 1.2) ("{0}: the glyph is at {1} px, the middle of the bar at {2} px" -f $name, $middle, (24 * $s))
+            }
+        } finally { $bitmap.Dispose() }
+    }
+}

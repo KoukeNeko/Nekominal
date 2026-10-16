@@ -84,8 +84,9 @@ const TEAR_MARGIN: f32 = 12.0;
 pub const CORNER_RADIUS: f32 = 8.0;
 const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
-/// How far the caption glyphs move down so that they sit in the middle of the title bar, in DIP.
-const CAPTION_GLYPH_NUDGE: f32 = 1.5;
+/// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
+/// icon font are drawn above the middle of their line.
+const ICON_NUDGE: f32 = 1.5;
 
 pub struct App {
     hwnd: HWND,
@@ -1658,8 +1659,7 @@ impl App {
             if self.hover == hit || pressed {
                 self.ui.rrect(plate, CORNER_RADIUS, if pressed { col(g.pressed()) } else { col(g.hover()) }, None);
             }
-            // The glyphs of the icon font sit a little above the middle of their line; the nudge brings them to it.
-            self.icon_centered(Rect::new(plate.x, plate.y + CAPTION_GLYPH_NUDGE, plate.w, plate.h), glyph, ICON_SIZE, color);
+            self.icon_centered(plate, glyph, ICON_SIZE, color);
         }
 
         // The dividers between panes.
@@ -1709,7 +1709,7 @@ impl App {
             if let Some(glyph) = status::glyph(status.state) {
                 let icon_line = self.ui.line_height(ICON_SIZE);
                 let at = chip.x + 10.0;
-                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0, glyph, ICON_SIZE, col(status::color(g, status.state)));
+                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, status.state)));
                 title_x = at + ICON_SIZE + 6.0;
             }
             self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
@@ -3046,6 +3046,6 @@ impl App {
     fn icon_centered(&mut self, rect: Rect, ch: char, size: f32, color: Color) {
         let line = self.ui.line_height(size);
         let width = self.ui.measure_icon(ch, size);
-        self.ui.icon(rect.x + (rect.w - width) / 2.0, rect.y + (rect.h - line) / 2.0, ch, size, color);
+        self.ui.icon(rect.x + (rect.w - width) / 2.0, rect.y + (rect.h - line) / 2.0 + ICON_NUDGE, ch, size, color);
     }
 }
