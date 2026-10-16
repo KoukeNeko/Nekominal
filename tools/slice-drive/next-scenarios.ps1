@@ -412,7 +412,7 @@ function Scenario-NextKeys {
     }
 }
 
-# Claude Code in the shell, started the way the WinUI scenarios start it (see claude-scenarios.ps1 for the rules): the
+# Claude Code in the shell, under these rules: the
 # environment of this session never reaches the app, auto-update and the user's customizations are off, nothing is ever
 # sent to the model, and Enter goes to the CLI only when the input box holds exactly /exit. The screen text is not
 # printed: it shows account and folder names.

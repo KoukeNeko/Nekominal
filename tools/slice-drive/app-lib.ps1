@@ -1,4 +1,4 @@
-# Helpers for driving nekominal.exe on top of drive-lib.ps1 (dot-sourced by run-app.ps1).
+# Helpers for driving the shell on top of drive-lib.ps1 (dot-sourced by next-scenarios.ps1).
 #
 #   Shot-Safe          guarded screenshot of the app window (skipped when another window is on top)
 #   Wait-Log           waits for a regex to appear in the app log
