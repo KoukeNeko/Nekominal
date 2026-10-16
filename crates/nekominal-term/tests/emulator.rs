@@ -1881,3 +1881,27 @@ fn random_op(rng: &mut Rng, allow_zero_width: bool, allow_scroll_region: bool) -
         _ => ["\x1b[2J", "\x1b[3J", "\x1b[H"][rng.below(3) as usize].into(),
     }
 }
+
+#[test]
+fn text_between_starting_on_the_spacer_of_a_wide_character_does_not_panic() {
+    let mut core = core(10, 3);
+    feed(&mut core, "你好ab");
+    // Column 1 is the spacer of 你, column 3 the spacer of 好: a point there is inside the character.
+    assert_eq!(core.text_between((0, 1), (0, 3)), "你好");
+    assert_eq!(core.text_between((0, 1), (0, 1)), "你");
+    assert_eq!(core.text_between((0, 0), (0, 2)), "你好");
+    assert_eq!(core.text_between((0, 2), (0, 5)), "好ab");
+}
+
+#[test]
+fn text_between_on_the_blank_a_wide_character_leaves_at_the_end_of_a_line_does_not_panic() {
+    let mut core = core(5, 3);
+    // 你 does not fit in the last column: the cell there stays a leading spacer and the character wraps.
+    feed(&mut core, "abcd你好");
+    for start in [(0, 4), (0, 3), (1, 0), (1, 1)] {
+        for end in [(0, 4), (1, 0), (1, 1), (1, 3), (2, 0)] {
+            let _ = core.text_between(start, end);
+        }
+    }
+    assert!(core.text_between((0, 4), (1, 1)).contains('你'));
+}

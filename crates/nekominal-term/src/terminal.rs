@@ -1298,7 +1298,19 @@ impl TerminalCore {
     /// Text between two grid points, for example a search match or an OSC 8 link.
     pub fn text_between(&self, start: (i32, usize), end: (i32, usize)) -> String {
         let clamp = |p: (i32, usize)| Point::new(Line(p.0), Column(p.1)).grid_clamp(&self.term, Boundary::Grid);
-        let (start, end) = (clamp(start), clamp(end));
+        let (mut start, mut end) = (clamp(start), clamp(end));
+        // The blank a wide character leaves at the end of a line (it wrapped to the next) is nothing to start or end on, and
+        // ounds_to_string indexes past the grid from it: a start there moves to the next line, an end to the column before.
+        let leading_spacer = |point: Point| self.term.grid()[point].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
+        if leading_spacer(start) {
+            start = Point::new(start.line + 1, Column(0));
+            if start.line > self.term.bottommost_line() {
+                return String::new();
+            }
+        }
+        if leading_spacer(end) {
+            end.column = Column(end.column.0.saturating_sub(1));
+        }
         if start > end {
             return String::new();
         }
