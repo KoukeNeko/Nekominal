@@ -200,8 +200,8 @@ function Scenario-NextAppearance {
         $file = Join-Path $global:NextAppData 'Nekominal\settings.json'
         $saved = if (Test-Path $file) { Get-Content $file -Raw } else { '' }
         Next-Check 'appearance.backdrop-is-saved' ($saved -match '"backdrop":\s*"mica"') "settings.json: $($saved -replace '\s+',' ')"
-        Next-Line 'echo STILL-WORKS'
-        Next-Check 'appearance.window-still-takes-typing' ((Next-Text) -match 'STILL-WORKS') 'the pane takes the typing after the backdrop changed'
+        Next-Line 'echo STILLWORKS'
+        Next-Check 'appearance.window-still-takes-typing' ((Next-Text) -match 'STILLWORKS') 'the pane takes the typing after the backdrop changed'
     }
 }
 
@@ -1214,5 +1214,48 @@ function Scenario-NextCentre {
                 Next-Check "centre.$($name -replace ' ', '-')" ([Math]::Abs($middle - 24 * $s) -le 1.2) ("{0}: the glyph is at {1} px, the middle of the bar at {2} px" -f $name, $middle, (24 * $s))
             }
         } finally { $bitmap.Dispose() }
+    }
+}
+
+# The settings are a tab: opening them adds a chip, the other tabs stay as they were, opening again comes back to the same tab,
+# the page keeps what was typed in it, closing takes the chip away, and the chip does not leave its window.
+function Scenario-NextSettingsTab {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+    Run-Next {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
+        $rows = {
+            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } | ForEach-Object { $_.Current.Name })
+        }
+        $isList = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::List)
+        $query = { $e = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $isList); if ($e) { $e.Current.Name } else { '' } }
+        Next-Line 'echo FIRST-TAB'
+        Next-Check 'settingstab.one-tab-at-the-start' (@(Next-TabNames).Count -eq 1) "tabs: $(@(Next-TabNames) -join ' | ')"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        $names = @(Next-TabNames)
+        Next-Check 'settingstab.opening-adds-a-tab' ($names.Count -eq 2 -and $names[1] -match 'Settings|設定') "tabs: $($names -join ' | ')"
+        Next-Check 'settingstab.page-is-shown' ((& $rows).Count -gt 5) 'the rows of the page are listed'
+        Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 400
+        $first = Next-At 60 24; Click-At $first[0] $first[1]; Start-Sleep -Milliseconds 700    # back to the terminal
+        Next-Check 'settingstab.other-tab-is-a-terminal-again' ((& $rows).Count -eq 0 -and (Next-Text) -match 'FIRST-TAB') 'the first tab shows its terminal, with its text'
+        Next-Line 'echo STILLWORKS'
+        Next-Check 'settingstab.terminal-takes-typing' ((Next-Text) -match 'STILLWORKS') 'the terminal has the keyboard'
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 800
+        Next-Check 'settingstab.opening-again-comes-back-to-the-same-tab' (@(Next-TabNames).Count -eq 2 -and (& $query) -eq 'opacity') "tabs: $(@(Next-TabNames).Count), the search says: $(& $query)"
+        # The chip does not leave the window: dragged down out of the bar it stays.
+        $r = Win-Rect; $s = Get-Scale
+        $chip = Next-At 330 24
+        Move-To $chip[0] $chip[1]; Start-Sleep -Milliseconds 200
+        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
+        for ($k = 1; $k -le 20; $k++) { Move-To $chip[0] ([int]($chip[1] + 300 * $s * $k / 20)); Start-Sleep -Milliseconds 20 }
+        Start-Sleep -Milliseconds 500
+        $windows = @([D]::AllWindows([uint32]$script:App.Id)).Count
+        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 700
+        Next-Check 'settingstab.chip-stays-in-its-window' ($windows -eq 1 -and @(Next-TabNames).Count -eq 2) "$windows windows while the chip was pulled down"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 500            # in case the drag moved the selection
+        Press 0x1B; Start-Sleep -Milliseconds 700; Press 0x1B; Start-Sleep -Milliseconds 700
+        Next-Check 'settingstab.escape-closes-the-tab' (@(Next-TabNames).Count -eq 1) "tabs: $(@(Next-TabNames) -join ' | ')"
+        Next-Line 'echo AFTER-CLOSE'
+        Next-Check 'settingstab.terminal-after-closing' ((Next-Text) -match 'AFTER-CLOSE') 'the terminal takes the typing again'
     }
 }

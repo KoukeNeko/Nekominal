@@ -456,7 +456,6 @@ impl App {
     }
 
     fn new_tab(&mut self) -> Result<(), String> {
-        self.close_page();
         let area = self.pane_area();
         let tab = Tab::new(|id| self.make_entry(id, (area.w as u32, area.h as u32)))?;
         self.tabs.push(tab);
@@ -599,7 +598,6 @@ impl App {
     }
 
     fn select(&mut self, index: usize) {
-        self.close_page();
         if index < self.tabs.len() && index != self.selected {
             self.selected = index;
             self.tabs[index].mark_seen();
@@ -858,13 +856,13 @@ impl App {
             let (height, width) = (y as f32 / self.scale, self.layout.size.0);
             let outside = drag.active && (height < -TEAR_MARGIN || height > layout::TITLE_HEIGHT + TEAR_MARGIN || pointer < 0.0 || pointer > width);
             let held = (drag.tab, drag.grab * self.scale);
-            if outside && self.detach.is_none() {
+            if outside && self.detach.is_none() && !self.tabs.get(held.0).is_some_and(|tab| tab.settings) {
                 self.detach = Some(Detach { tab: held.0, pointer: self.screen_point(x as f32, y as f32), grab: held.1 });
             }
             self.redraw();
             return;
         }
-        if self.page.is_some() {
+        if self.page_shown() {
             self.page_hover(x, y);
             return;
         }
@@ -964,7 +962,7 @@ impl App {
                 return Capture::None;
             }
         }
-        if self.page.is_some() && self.pressed == Hit::None && (self.page.as_ref().is_some_and(|page| page.drag.is_some()) || self.hit_test(x, y) == Hit::Pane) {
+        if self.page_shown() && self.pressed == Hit::None && (self.page.as_ref().is_some_and(|page| page.drag.is_some()) || self.hit_test(x, y) == Hit::Pane) {
             return self.page_button(x, y, button, down);
         }
         let hit = self.hit_test(x, y);
@@ -1079,7 +1077,7 @@ impl App {
 
     pub fn on_wheel(&mut self, x: i32, y: i32, delta: i16, time_ms: u32) {
         if self.popup_keeps_owner_active() { return; }
-        if self.page.is_some() {
+        if self.page_shown() {
             self.page_wheel(delta);
             return;
         }
@@ -1177,7 +1175,7 @@ impl App {
     /// of the settings page or the field being edited there. False when there is no such line.
     fn paste_into_field(&mut self) -> bool {
         let in_popup = self.popup.as_ref().is_some_and(|popup| popup.query.is_some());
-        if !in_popup && self.page.is_none() {
+        if !in_popup && !self.page_shown() {
             return false;
         }
         let text = clipboard::read_text().unwrap_or_default();
@@ -1283,11 +1281,13 @@ impl App {
                     util::log(&format!("new tab: {e}"));
                 }
             }
+            Command::TabClose if self.page_shown() => self.close_page(),
             Command::TabClose => self.request_close_tab(self.selected),
             Command::TabNext => self.select((self.selected + 1) % self.tabs.len().max(1)),
             Command::TabPrevious => self.select((self.selected + self.tabs.len().max(1) - 1) % self.tabs.len().max(1)),
             Command::PaneSplitRight => self.split(Axis::Row),
             Command::PaneSplitDown => self.split(Axis::Column),
+            Command::PaneClose if self.page_shown() => self.close_page(),
             Command::PaneClose => {
                 if let Some(id) = self.tab().map(|t| t.focused) {
                     self.request_close_pane(self.selected, id);
@@ -1372,14 +1372,14 @@ impl App {
             if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
             return true;
         }
-        if self.page.as_ref().is_some_and(|page| page.capturing.is_some()) && self.capture_chord(vk_code, scan, extended, repeat) {
+        if self.page_shown() && self.page.as_ref().is_some_and(|page| page.capturing.is_some()) && self.capture_chord(vk_code, scan, extended, repeat) {
             return true;
         }
         let held = held();
-        if self.page.is_some() && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_field_key(vk_code) {
+        if self.page_shown() && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_field_key(vk_code) {
             return true;
         }
-        if self.page.is_some() && !held.ctrl && !held.alt && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_key(vk_code, repeat) {
+        if self.page_shown() && !held.ctrl && !held.alt && vk_code != vk::VK_PROCESSKEY && vk_code != vk::VK_PACKET && self.page_key(vk_code, repeat) {
             return true;
         }
         if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
@@ -1395,8 +1395,8 @@ impl App {
         if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
             return false;
         }
-        // The terminal under the page gets no keys.
-        if self.page.is_some() {
+        // A settings tab has no terminal to give keys to.
+        if self.page_shown() {
             return true;
         }
         let mods = input_mods(held);
@@ -1414,7 +1414,7 @@ impl App {
             self.shortcut_keys.remove(at);
             return;
         }
-        if self.popup.is_some() || self.page.is_some() || vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
+        if self.popup.is_some() || self.page_shown() || vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
             return;
         }
         let mods = input_mods(held());
@@ -1427,7 +1427,7 @@ impl App {
     /// One UTF-16 unit of text from the keyboard or the IME.
     pub fn on_char(&mut self, unit: u16) {
         if self.popup_keeps_owner_active() { self.popup_char(unit); return; }
-        if self.page.is_some() {
+        if self.page_shown() {
             if unit >= 0x20 || unit == 0x08 { self.page_text(unit); }
             return;
         }
@@ -1465,7 +1465,7 @@ impl App {
 
     fn access_view(&self) -> access::View {
         let lang = self.language();
-        let page = self.page.as_ref().map(|page| {
+        let page = self.page.as_ref().filter(|_| self.page_shown()).map(|page| {
             let entries = settings_page::entries(page, lang, &self.keymap);
             access::PopupView {
                 kind: access::PopupKind::List,
@@ -1516,8 +1516,8 @@ impl App {
 
         let highlights = self.find_highlights();
         let mut first = true;
-        if self.page.is_some() {
-            // The page is drawn instead of the panes: nothing of the terminal shows through it.
+        if self.page_shown() {
+            // The settings tab has the page in the place of the panes.
         } else if let Some(tab) = self.tabs.get_mut(self.selected) {
             let focused = tab.focused;
             for id in tab.shown() {
@@ -1545,6 +1545,9 @@ impl App {
 
     /// The settings page over the area of the panes.
     fn paint_page(&mut self) {
+        if !self.page_shown() {
+            return;
+        }
         let Some(frame) = self.page_frame() else { return };
         let Some(page) = self.page.as_ref() else { return };
         let scroll = page.scroll;
@@ -1706,6 +1709,11 @@ impl App {
             // What the tab asks for: its glyph in the status colour, ahead of the title.
             let status = self.tabs[i].status();
             let mut title_x = chip.x + 12.0;
+            if self.tabs[i].settings {
+                let icon_line = self.ui.line_height(ICON_SIZE);
+                self.ui.icon(chip.x + 10.0, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, '\u{E713}', ICON_SIZE, col(g.text_secondary()));
+                title_x = chip.x + 10.0 + ICON_SIZE + 6.0;
+            }
             if let Some(glyph) = status::glyph(status.state) {
                 let icon_line = self.ui.line_height(ICON_SIZE);
                 let at = chip.x + 10.0;
@@ -1914,7 +1922,7 @@ impl App {
     }
 
     fn toggle_settings_page(&mut self) {
-        if self.page.is_some() {
+        if self.page_shown() {
             self.close_page();
         } else {
             self.open_settings_page(None);
@@ -1924,6 +1932,14 @@ impl App {
     /// Opens the page at the section of the row `focus`, with that row under the keyboard.
     fn open_settings_page(&mut self, focus: Option<&str>) {
         self.close_popup();
+        // The tab is there already and no row is asked for: it is shown as it was left.
+        if focus.is_none() && let Some(index) = self.tabs.iter().position(|tab| tab.settings) {
+            self.selected = index;
+            self.relayout();
+            self.sync_focus();
+            self.redraw();
+            return;
+        }
         let mut page = self.page.take().unwrap_or_default();
         page.query.clear();
         page.cursor = textfield::Cursor::default();
@@ -1935,6 +1951,20 @@ impl App {
             page.section = Section::ALL.iter().position(|s| *s == row.section).unwrap_or(0);
         }
         self.page = Some(page);
+        // One tab holds the settings: it is shown again when it is there, and made when it is not.
+        match self.tabs.iter().position(|tab| tab.settings) {
+            Some(index) => {
+                self.selected = index;
+                self.relayout();
+                self.sync_focus();
+            }
+            None => {
+                self.tabs.push(Tab::settings());
+                self.selected = self.tabs.len() - 1;
+                self.relayout();
+                self.sync_focus();
+            }
+        }
         if let Some(row) = row
             && let Some(frame) = self.page_frame()
             && let Some(at) = frame.entries.iter().position(|entry| matches!(entry, settings_page::Entry::Setting(r) if r.id == row.id))
@@ -1946,11 +1976,16 @@ impl App {
         self.redraw();
     }
 
+    /// Whether the settings tab is the tab that is shown.
+    fn page_shown(&self) -> bool {
+        self.page.is_some() && self.tab().is_some_and(|tab| tab.settings)
+    }
+
+    /// Closes the settings tab.
     fn close_page(&mut self) {
-        if self.page.take().is_some() {
-            // The panes were not drawn while the page was open.
-            self.relayout();
-            self.redraw();
+        self.page = None;
+        if let Some(index) = self.tabs.iter().position(|tab| tab.settings) {
+            self.close_tab(index);
         }
     }
 
@@ -2798,9 +2833,10 @@ impl App {
     /// to start where this one stopped. A window with no tab left writes an empty session: the next run starts afresh.
     pub fn save_session(&self) {
         let Some(path) = store::session_path() else { return };
-        let tabs = self
-            .tabs
+        let kept: Vec<usize> = (0..self.tabs.len()).filter(|i| !self.tabs[*i].settings).collect();
+        let tabs = kept
             .iter()
+            .map(|i| &self.tabs[*i])
             .map(|tab| TabRecord {
                 layout: tab.tree.clone(),
                 panes: tab.panes.iter().map(|entry| (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone() })).collect(),
@@ -2817,7 +2853,8 @@ impl App {
                 maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
             }
         });
-        let session = Session { window, tabs, active_tab: self.selected };
+        let active_tab = kept.iter().position(|i| *i == self.selected).unwrap_or(0);
+        let session = Session { window, tabs, active_tab };
         if let Err(e) = store::save(&path, &session.to_json()) {
             util::log(&format!("session: {e}"));
         }
@@ -2945,6 +2982,9 @@ impl App {
     fn tab_label(&self, i: usize) -> String {
         let lang = self.language();
         let untitled = Text::TabUntitled.get(lang);
+        if self.tabs[i].settings {
+            return Text::AppSettings.get(lang).to_owned();
+        }
         let Some(entry) = self.tabs[i].focused_entry() else { return untitled.to_owned() };
         let parts = logic::TitleParts {
             program: entry.title.clone(),
