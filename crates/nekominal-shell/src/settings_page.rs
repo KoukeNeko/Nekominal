@@ -37,6 +37,8 @@ const TILE: (f32, f32) = (148.0, 64.0);
 const TILE_GAP: f32 = 12.0;
 const RADIO_ROW: f32 = 36.0;
 const RESET_ROOM: f32 = 32.0;
+/// How much taller a row is when its control goes under its label.
+const STACK: f32 = 48.0;
 
 /// What the page remembers between frames.
 #[derive(Clone, Debug, Default)]
@@ -269,6 +271,24 @@ pub fn slider_track(area: Rect) -> Rect {
     Rect::new(area.x + THUMB / 2.0, area.y + (area.h - 4.0) / 2.0, area.w - THUMB, 4.0)
 }
 
+/// Where options of these widths go when they may not be wider together than room (with gap between them): the line of
+/// each and how far it is from the left.
+fn wrap(widths: &[f32], room: f32, gap: f32) -> Vec<(usize, f32)> {
+    let (mut line, mut at) = (0, 0.0);
+    widths
+        .iter()
+        .map(|width| {
+            if at > 0.0 && at + width > room {
+                line += 1;
+                at = 0.0;
+            }
+            let place = (line, at);
+            at += width + gap;
+            place
+        })
+        .collect()
+}
+
 fn item(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, visual: Visual, scrolls: bool) {
     items.push(Item { rect, part, visual, scrolls });
 }
@@ -370,52 +390,79 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::Setting(row) => {
                 let id = row.id;
-                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                let mid = rect.y + (rect.h - CONTROL) / 2.0;
+                // A control that does not fit beside the label goes on a line of its own under it.
+                let label_width = measure(row.label(lang), 13.0, false);
+                let control_width = match row.control {
+                    Control::Toggle => SWITCH.0,
+                    Control::Choice(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 30.0).sum::<f32>() - 6.0,
+                    Control::Slider(_) => 48.0 + 12.0 + SLIDER_WIDTH,
+                    Control::Number(_) => 2.0 * CONTROL + 72.0,
+                    Control::Text => FIELD_WIDTH,
+                    Control::Themes | Control::Profiles => 0.0,
+                };
+                let stacked = control_width > 0.0 && label_width + control_width + 48.0 + RESET_ROOM > content_width;
+                let drop = if stacked { STACK } else { 0.0 };
+                // What fits on the line of the control under the label: the options of a choice go on more lines when they do not.
+                let room = content_width - 32.0 - RESET_ROOM;
+                let option_widths: Vec<f32> = match row.control {
+                    Control::Choice(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 24.0).collect(),
+                    _ => Vec::new(),
+                };
+                let option_lines = if stacked { wrap(&option_widths, room, 6.0) } else { Vec::new() };
+                let lines = option_lines.iter().map(|(line, _)| *line + 1).max().unwrap_or(1);
+                let extra = (lines - 1) as f32 * (CONTROL + 6.0);
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP + drop + extra);
+                let line = Rect::new(rect.x, rect.y + drop, rect.w, ROW - ROW_GAP);
+                let mid = line.y + (line.h - CONTROL) / 2.0;
                 let right = rect.x + rect.w - 16.0 - RESET_ROOM;
                 let value = (row.get)(view.settings);
                 // A toggle is pressed anywhere on its row.
                 let row_part = matches!(row.control, Control::Toggle).then_some(Part::Toggle(id));
                 item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
-                item(&mut items, Rect::new(rect.x + 16.0, rect.y, (rect.w - 32.0 - RESET_ROOM) / 2.0, rect.h), None, label(row.label(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let label_room = if stacked { rect.w - 32.0 - RESET_ROOM } else { (rect.w - 32.0 - RESET_ROOM) / 2.0 };
+                item(&mut items, Rect::new(rect.x + 16.0, rect.y, label_room, ROW - ROW_GAP), None, label(row.label(lang), 13.0, Tone::Text, false, Align::Left), true);
                 if row.is_modified(view.settings) {
-                    let reset = Rect::new(rect.x + rect.w - 16.0 - 24.0, rect.y + (rect.h - 24.0) / 2.0, 24.0, 24.0);
+                    let reset = Rect::new(rect.x + rect.w - 16.0 - 24.0, rect.y + (ROW - ROW_GAP - 24.0) / 2.0, 24.0, 24.0);
                     let part = Part::Reset(id);
                     item(&mut items, reset, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
                     item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
                 }
                 match (row.control, value) {
                     (Control::Toggle, Value::Bool(on)) => {
-                        let switch = Rect::new(right - SWITCH.0, rect.y + (rect.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
+                        let switch = Rect::new(right - SWITCH.0, line.y + (line.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
                         item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(Part::Toggle(id)) }), true);
                         let knob = 18.0;
                         let knob_x = if on { switch.x + switch.w - knob - 3.0 } else { switch.x + 3.0 };
                         item(&mut items, Rect::new(knob_x, switch.y + (switch.h - knob) / 2.0, knob, knob), None, Visual::Plate(Fill::Knob), true);
-                        y += ROW;
+                        y += ROW + drop;
                     }
                     (Control::Choice(options), Value::Index(chosen)) => {
                         let mut at = right;
                         for (i, option) in options.iter().enumerate().rev() {
                             let text = option.get(lang);
-                            let w = measure(text, 13.0, false) + 24.0;
-                            let button = Rect::new(at - w, mid, w, CONTROL);
+                            let w = option_widths[i];
+                            let button = match option_lines.get(i) {
+                                Some((line, offset)) => Rect::new(rect.x + 16.0 + offset, mid + *line as f32 * (CONTROL + 6.0), w, CONTROL),
+                                None => Rect::new(at - w, mid, w, CONTROL),
+                            };
                             let part = Part::Option(id, i);
                             item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: i == chosen, hover: hover == Some(part) }), true);
                             item(&mut items, button, None, label(text, 13.0, if i == chosen { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
                             at = button.x - 6.0;
                         }
-                        y += ROW;
+                        y += ROW + drop + extra;
                     }
                     (Control::Slider(range), Value::Number(n)) => {
-                        let value_box = Rect::new(right - 48.0, rect.y, 48.0, rect.h);
+                        let value_box = Rect::new(right - 48.0, line.y, 48.0, line.h);
                         item(&mut items, value_box, None, label(format!("{n:.0}%"), 13.0, Tone::Quiet, false, Align::Right), true);
-                        let track = Rect::new(value_box.x - 12.0 - SLIDER_WIDTH, rect.y + (rect.h - 4.0) / 2.0, SLIDER_WIDTH, 4.0);
+                        let track_width = SLIDER_WIDTH.min(room - 60.0).max(60.0);
+                        let track = Rect::new(value_box.x - 12.0 - track_width, line.y + (line.h - 4.0) / 2.0, track_width, 4.0);
                         let share = (((n - range.min) / (range.max - range.min)) as f32).clamp(0.0, 1.0);
-                        item(&mut items, Rect::new(track.x - THUMB / 2.0, rect.y, track.w + THUMB, rect.h), Some(Part::Slider(id)), Visual::None, true);
+                        item(&mut items, Rect::new(track.x - THUMB / 2.0, line.y, track.w + THUMB, line.h), Some(Part::Slider(id)), Visual::None, true);
                         item(&mut items, track, None, Visual::Plate(Fill::Track), true);
                         item(&mut items, Rect::new(track.x, track.y, track.w * share, track.h), None, Visual::Plate(Fill::Accent), true);
-                        item(&mut items, Rect::new(track.x + track.w * share - THUMB / 2.0, rect.y + (rect.h - THUMB) / 2.0, THUMB, THUMB), None, Visual::Plate(Fill::Knob), true);
-                        y += ROW;
+                        item(&mut items, Rect::new(track.x + track.w * share - THUMB / 2.0, line.y + (line.h - THUMB) / 2.0, THUMB, THUMB), None, Visual::Plate(Fill::Knob), true);
+                        y += ROW + drop;
                     }
                     (Control::Number(range), Value::Number(n)) => {
                         let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
@@ -426,10 +473,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             item(&mut items, button, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
                         }
                         item(&mut items, value_box, None, label(number_text(range, n), 13.0, Tone::Text, false, Align::Center), true);
-                        y += ROW;
+                        y += ROW + drop;
                     }
                     (Control::Text, Value::Text(text)) => {
-                        let field = Rect::new(right - FIELD_WIDTH, mid, FIELD_WIDTH, CONTROL);
+                        let field_width = FIELD_WIDTH.min(room);
+                        let field = Rect::new(right - field_width, mid, field_width, CONTROL);
                         let editing = page.editing.as_ref().filter(|(edit_id, _)| *edit_id == id).map(|(_, text)| text.clone());
                         item(&mut items, field, Some(Part::Field(id)), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
                         let inner = Rect::new(field.x + 10.0, field.y, field.w - 20.0, field.h);
@@ -444,7 +492,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         } else {
                             item(&mut items, inner, None, label(text, 13.0, Tone::Quiet, false, Align::Left), true);
                         }
-                        y += ROW;
+                        y += ROW + drop;
                     }
                     (Control::Themes, Value::Text(current)) => {
                         y += ROW;
@@ -593,4 +641,40 @@ mod tests {
         assert_eq!(slider_value(range, track, 50.0), 20.0, "left of the track is the minimum");
         assert_eq!(slider_value(range, track, 900.0), 100.0);
     }
-}
+
+    #[test]
+    fn at_any_width_a_control_stays_in_its_row_and_clear_of_the_label() {
+        let settings = Settings::default();
+        let keymap = keymap();
+        let measure = |text: &str, size: f32| text.chars().count() as f32 * size * 0.55;
+        for width in [460.0, 560.0, 700.0, 1100.0, 1600.0] {
+            for section in 0..Section::ALL.len() {
+                let page = Page { section, ..Page::default() };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+                let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
+                for (entry, row) in frame.entries.iter().zip(&frame.rows) {
+                    let Entry::Setting(setting) = entry else { continue };
+                    if matches!(setting.control, Control::Themes | Control::Profiles) {
+                        continue;
+                    }
+                    let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + row.h + 0.01;
+                    let controls: Vec<&Item> = frame
+                        .items
+                        .iter()
+                        .filter(in_row)
+                        .filter(|item| matches!(item.part, Some(Part::Option(..) | Part::Plus(_) | Part::Minus(_) | Part::Slider(_) | Part::Field(_))) || matches!(item.visual, Visual::Plate(Fill::Switch { .. })))
+                        .collect();
+                    assert!(!controls.is_empty(), "{} has no control at {width}", setting.id);
+                    let label = frame.items.iter().filter(in_row).find(|item| matches!(item.visual, Visual::Label { .. }) && (item.rect.x - (row.x + 16.0)).abs() < 0.01).expect("the row has its label");
+                    let Visual::Label { text, size, .. } = &label.visual else { unreachable!() };
+                    let label_end = label.rect.x + measure(text, *size);
+                    for control in &controls {
+                        assert!(control.rect.x >= row.x - 0.01 && control.rect.x + control.rect.w <= row.x + row.w + 0.01, "{} sticks out of its row at {width}", setting.id);
+                        let beside = control.rect.x >= label_end - 0.01;
+                        let below = control.rect.y >= label.rect.y + label.rect.h - 0.01;
+                        assert!(beside || below, "{} runs into its label at {width}: control at {}, label ends at {label_end}", setting.id, control.rect.x);
+                    }
+                }
+            }
+        }
+    }}
