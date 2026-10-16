@@ -717,6 +717,9 @@ pub fn run() -> Result<(), String> {
     // SAFETY: plain Win32 calls on the thread that owns the window.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        // A launcher can start the process with Ctrl+C switched off, and the shells inherit that: Ctrl+C would not stop
+        // anything in any of them. This process takes the default back for itself and for them.
+        let _ = windows::Win32::System::Console::SetConsoleCtrlHandler(None, false);
         let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let class = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
