@@ -30,8 +30,13 @@ fn stage_conpty() {
         }
         for target in [profile_dir, deps_dir.as_path()] {
             if target.is_dir() {
-                fs::copy(&from, target.join(name))
-                    .unwrap_or_else(|e| panic!("failed to stage {name}: {e}"));
+                let to = target.join(name);
+                // A copy that is there already is left alone: a window that runs from this folder holds its conpty.dll open,
+                // and copying over it would fail the build.
+                if fs::read(&from).ok().zip(fs::read(&to).ok()).is_some_and(|(new, old)| new == old) {
+                    continue;
+                }
+                fs::copy(&from, &to).unwrap_or_else(|e| panic!("failed to stage {name}: {e}"));
             }
         }
     }
