@@ -33,6 +33,8 @@ pub struct PaneEntry {
     pub profile_id: String,
     pub shell: String,
     pub exited: bool,
+    /// The file name of the program the pane runs now (the shell at a prompt), as the last look at its processes found it.
+    pub job: Option<String>,
     /// A bell, a notification or a failed exit nobody has looked at.
     pub attention: Option<Attention>,
     /// What the notification said.
@@ -121,6 +123,11 @@ impl Tab {
     /// The title of the tab: what the focused pane's program set.
     pub fn title(&self) -> &str {
         self.focused_entry().map_or("", |p| p.title.as_str())
+    }
+
+    /// The program the tab runs: what the focused pane runs.
+    pub fn job(&self) -> Option<&str> {
+        self.focused_entry().and_then(|p| p.job.as_deref())
     }
 
     /// What the tab shows: the status of its most urgent pane.

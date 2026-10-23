@@ -26,7 +26,7 @@ use windows::{
 };
 
 use crate::gpu::{self, Gpu, Surface};
-use crate::{app::CORNER_RADIUS, glass::Glass};
+use crate::{app::CORNER_RADIUS, glass::Glass, logic::Mark};
 
 /// Width of a menu or a list, and of the command palette.
 pub const WIDTH: f32 = 260.0;
@@ -72,11 +72,17 @@ pub struct Row {
     pub action: Option<Action>,
     /// The row of what is current (the selected tab).
     pub current: bool,
+    /// What is drawn before the label (the logo of a shell).
+    pub mark: Option<Mark>,
 }
+
+/// The side of the square a mark is drawn in, and the space after it.
+pub const MARK_SIZE: f32 = 18.0;
+pub const MARK_GAP: f32 = 10.0;
 
 impl Row {
     pub fn separator() -> Row {
-        Row { label: String::new(), hint: String::new(), action: None, current: false }
+        Row { label: String::new(), hint: String::new(), action: None, current: false, mark: None }
     }
 
     pub fn is_separator(&self) -> bool {
@@ -389,7 +395,7 @@ mod tests {
     }
 
     fn row(label: &str) -> Row {
-        Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false }
+        Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false, mark: None }
     }
 
     fn rows() -> Vec<Row> {

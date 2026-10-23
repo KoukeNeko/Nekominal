@@ -9,16 +9,18 @@ use crate::logic;
 
 /// Height of the title bar: the tab strip and the caption buttons live in it.
 pub const TITLE_HEIGHT: f32 = 48.0;
-pub const CHIP_HEIGHT: f32 = 32.0;
-pub const CHIP_GAP: f32 = 4.0;
+/// Space above the tabs. A tab is as tall as the bar, so that the selected one is one piece with the terminal below it.
+pub const TAB_TOP: f32 = 0.0;
+/// Space between two chips: the tabs touch and a line tells them apart.
+pub const CHIP_GAP: f32 = 0.0;
 /// Space left of the first chip.
-pub const STRIP_LEFT: f32 = 12.0;
+pub const STRIP_LEFT: f32 = 0.0;
 /// Width of the three caption buttons together.
 pub const CAPTION: f32 = 3.0 * 46.0;
-/// Width and height of the new-tab and menu buttons.
+/// Width of the new-tab, profiles and menu buttons; they are as tall as the bar.
 pub const BUTTON: f32 = 32.0;
 /// Space between the menu button and the caption buttons.
-const MENU_RIGHT: f32 = 12.0;
+const MENU_RIGHT: f32 = 0.0;
 /// The part of the title bar that stays free for dragging the window.
 pub const DRAG_MIN: f32 = 48.0;
 /// A chip at least this wide has room for a close button.
@@ -64,8 +66,7 @@ impl Layout {
     /// `caption` is the width of the system caption buttons at the right edge. When the chips at their narrowest do not
     /// all fit, the strip shows the ones that do, scrolled so that tab `selected` is the last of them or earlier.
     pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize) -> Layout {
-        let top = (TITLE_HEIGHT - CHIP_HEIGHT) / 2.0;
-        let menu = Rect::new((width - caption - MENU_RIGHT - BUTTON).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
+        let menu = Rect::new((width - caption - MENU_RIGHT - BUTTON).max(STRIP_LEFT), 0.0, BUTTON, TITLE_HEIGHT);
         let strip_end = menu.x - DRAG_MIN;
         // The room for the chips: what is between the strip start and the two buttons at the end of the strip.
         let available = (strip_end - STRIP_LEFT - 2.0 * (BUTTON + CHIP_GAP)).max(0.0);
@@ -75,11 +76,11 @@ impl Layout {
         let shown = tabs.min(fits);
         let first = if tabs <= shown { 0 } else { (selected + 1).saturating_sub(shown).min(tabs - shown) };
         let chips: Vec<Rect> = (0..tabs)
-            .map(|i| Rect::new(STRIP_LEFT + (i as f32 - first as f32) * (chip_width + CHIP_GAP), top, chip_width, CHIP_HEIGHT))
+            .map(|i| Rect::new(STRIP_LEFT + (i as f32 - first as f32) * (chip_width + CHIP_GAP), TAB_TOP, chip_width, TITLE_HEIGHT - TAB_TOP))
             .collect();
         let after = STRIP_LEFT + shown as f32 * (chip_width + CHIP_GAP);
-        let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON - CHIP_GAP).max(STRIP_LEFT), top, BUTTON, CHIP_HEIGHT);
-        let profiles = Rect::new(new_tab.x + BUTTON + CHIP_GAP, top, BUTTON, CHIP_HEIGHT);
+        let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON - CHIP_GAP).max(STRIP_LEFT), 0.0, BUTTON, TITLE_HEIGHT);
+        let profiles = Rect::new(new_tab.x + BUTTON + CHIP_GAP, 0.0, BUTTON, TITLE_HEIGHT);
         Layout {
             size: (width, height),
             chips,
@@ -180,7 +181,8 @@ mod tests {
         assert_eq!(layout.hit(layout.profiles.x + 4.0, layout.profiles.y + 4.0), Hit::Profiles);
         assert_eq!(layout.hit(layout.menu.x + 4.0, layout.menu.y + 4.0), Hit::Menu);
         assert_eq!(layout.hit(layout.menu.x - 20.0, 10.0), Hit::Drag);
-        assert_eq!(layout.hit(chip.x + 10.0, 2.0), Hit::Drag, "above the chips is still the title bar");
+        assert_eq!(layout.hit(chip.x + 10.0, 2.0), Hit::Chip(1), "a chip is as tall as the title bar");
+        assert_eq!(layout.hit(chip.x + 10.0, TITLE_HEIGHT - 1.0), Hit::Chip(1));
         assert_eq!(layout.hit(600.0, 300.0), Hit::Pane);
         assert_eq!(layout.hit(-1.0, 300.0), Hit::None);
     }

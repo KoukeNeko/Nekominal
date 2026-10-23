@@ -82,6 +82,10 @@ const TEAR_MARGIN: f32 = 12.0;
 
 /// Corner radius of every rounded rectangle, in DIP (the same number as `design.rs` of the WinUI shell).
 pub const CORNER_RADIUS: f32 = 8.0;
+/// How opaque the settings page is over the glass (of 255): the selected tab above it takes the same.
+const PAGE_ALPHA: u8 = 205;
+/// The top corners of a tab: square but for a hint.
+const TAB_RADIUS: f32 = 3.0;
 const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
 /// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
@@ -448,6 +452,7 @@ impl App {
             profile_id: profile.id.clone(),
             shell: std::path::Path::new(&profile.program).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default(),
             exited: false,
+            job: None,
             attention: None,
             note: None,
             progress: None,
@@ -1106,6 +1111,22 @@ impl App {
     }
 
     /// A step of the scrolling a drag held outside the pane asks for.
+    /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
+    pub fn on_job_tick(&mut self) {
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            let Some(entry) = tab.focused_entry_mut() else { continue };
+            let job = entry.pane.job_name();
+            if job.is_some() && job != entry.job {
+                entry.job = job;
+                changed = true;
+            }
+        }
+        if changed {
+            self.redraw();
+        }
+    }
+
     pub fn on_drag_tick(&mut self) {
         let Some(id) = self.pointer_pane else { return };
         if self.tab().and_then(|t| t.entry(id)).is_some_and(|e| e.pane.drag_scroll()) {
@@ -1249,8 +1270,8 @@ impl App {
         self.close_popup();
         let lang = self.language();
         let rows = vec![
-            popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false },
-            popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false },
+            popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false, mark: None },
+            popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false, mark: None },
         ];
         let size = self.surface.size();
         let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH).1.1;
@@ -1554,7 +1575,7 @@ impl App {
         let g = self.glass;
         let accent = col(g.accent);
         let area = self.layout.pane;
-        self.ui.fill(area, Color([g.background.r, g.background.g, g.background.b, 205]));
+        self.ui.fill(area, Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
         let schemes: Vec<&str> = themes::theme_names().collect();
         let tone_color = |tone: settings_page::Tone| match tone {
             settings_page::Tone::Text => col(g.text()),
@@ -1642,27 +1663,50 @@ impl App {
         }
     }
 
-    fn paint_chrome(&mut self) {        let g = self.glass;
+    /// A tab: a rectangle with rounded top corners that runs down to the bottom edge of the bar. The rounded rectangle
+    /// is drawn taller than the tab and cut at `bottom`, which leaves the lower corners out.
+    fn tab_shape(&mut self, chip: Rect, bottom: f32, fill: Color, border: Option<(Color, f32)>) {
+        self.ui.push_clip(Rect::new(chip.x, 0.0, chip.w, bottom));
+        self.ui.rrect(Rect::new(chip.x, chip.y, chip.w, chip.h + TAB_RADIUS * 2.0), TAB_RADIUS, fill, border);
+        self.ui.pop_clip();
+    }
+
+    /// A button of the bar lit: a square plate as tall as the bar, above its lower edge.
+    fn bar_plate(&mut self, button: Rect, color: Color) {
+        self.ui.fill(Rect::new(button.x, 0.0, button.w, layout::TITLE_HEIGHT - 1.0), color);
+    }
+
+    fn paint_chrome(&mut self) {
+        let g = self.glass;
         let width = self.layout.size.0;
+        let opacity = glass::terminal_opacity(self.settings.appearance.backdrop, self.settings.appearance.opacity, glass::Material { window_active: self.active, effects_on: true });
         let tint = {
-            let opacity = glass::terminal_opacity(self.settings.appearance.backdrop, self.settings.appearance.opacity, glass::Material { window_active: self.active, effects_on: true });
             let alpha = glass::bar_tint_alpha(opacity);
             Color([g.background.r, g.background.g, g.background.b, (alpha * 255.0).round() as u8])
         };
         self.ui.fill(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT), tint);
-        self.ui.fill(Rect::new(0.0, layout::TITLE_HEIGHT - 1.0, width, 1.0), col(g.divider()));
+        // The lower edge of the bar, broken where the selected tab joins the terminal.
+        let dragged = self.drag.filter(|drag| drag.active).map(|drag| drag.tab);
+        let joined = self.chip_rects.get(self.selected).copied().or_else(|| self.layout.chips.get(self.selected).copied()).filter(|_| {
+            self.layout.is_shown(self.selected) || Some(self.selected) == dragged
+        });
+        let edge = layout::TITLE_HEIGHT - 1.0;
+        // The bar is darker than the terminal everywhere but under the selected tab, which is the terminal's own colour.
+        let (left, right) = joined.map_or((width, width), |chip| (chip.x.clamp(0.0, width), (chip.x + chip.w).clamp(0.0, width)));
+        for (x, w) in [(0.0, left), (right, width - right)] {
+            self.ui.fill(Rect::new(x, 0.0, w, layout::TITLE_HEIGHT), col(g.tab_rest()));
+            self.ui.fill(Rect::new(x, edge, w, 1.0), col(g.divider()));
+        }
 
-        // The caption buttons: a plate as tall as the chips in the middle of the bar, the glyph in the middle of the plate.
+        // The caption buttons: square plates as tall as the bar, like the tabs, the glyph in the middle of the plate.
         let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if self.maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
         for (cell, (hit, glyph)) in self.layout.caption_buttons.into_iter().zip(glyphs) {
-            let plate = Rect::new(cell.x + 4.0, (layout::TITLE_HEIGHT - layout::CHIP_HEIGHT) / 2.0, cell.w - 8.0, layout::CHIP_HEIGHT);
             let pressed = self.pressed == hit;
             let color = if self.active { col(g.text()) } else { col(g.text_secondary()) };
-            // The same plate as the other buttons of the bar, in the colours of the scheme.
             if self.hover == hit || pressed {
-                self.ui.rrect(plate, CORNER_RADIUS, if pressed { col(g.pressed()) } else { col(g.hover()) }, None);
+                self.bar_plate(cell, if pressed { col(g.pressed()) } else { col(g.hover()) });
             }
-            self.icon_centered(plate, glyph, ICON_SIZE, color);
+            self.icon_centered(cell, glyph, ICON_SIZE, color);
         }
 
         // The dividers between panes.
@@ -1676,7 +1720,14 @@ impl App {
         }
 
         let line = self.ui.line_height(TEXT_SIZE);
-        let dragged = self.drag.filter(|drag| drag.active).map(|drag| drag.tab);
+        // The selected tab is the colour of what is below it, the terminal or the settings page: the bar's tint is under
+        // it, so it takes only what that has more of (the glass shows through as much as its opacity says).
+        let joined_fill = {
+            let below = if self.page_shown() { f32::from(PAGE_ALPHA) / 255.0 } else { opacity };
+            let bar = glass::bar_tint_alpha(opacity);
+            let alpha = if bar >= 1.0 { 1.0 } else { (1.0 - (1.0 - below) / (1.0 - bar)).clamp(0.0, 1.0) };
+            Color([g.background.r, g.background.g, g.background.b, (alpha * 255.0).round() as u8])
+        };
         // The dragged chip last, over the others.
         let order: Vec<usize> = (0..self.layout.chips.len()).filter(|i| Some(*i) != dragged).chain(dragged).collect();
         for i in order {
@@ -1685,18 +1736,21 @@ impl App {
             }
             let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
             if Some(i) == dragged {
+                self.ui.push_clip(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT));
                 self.ui.shadow(chip, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
+                self.ui.pop_clip();
             }
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
-            let (fill, border) = if selected {
-                (col(g.chip_selected()), Some((col(g.chip_selected_border()), 1.0)))
+            if selected {
+                self.tab_shape(chip, layout::TITLE_HEIGHT, joined_fill, Some((col(g.divider()), 1.0)));
             } else if hover {
-                (col(g.hover()), None)
-            } else {
-                (Color::TRANSPARENT, None)
-            };
-            self.ui.rrect(chip, CORNER_RADIUS, fill, border);
+                self.tab_shape(chip, edge, col(g.hover()), None);
+            }
+            // A line between two tabs that are not selected (the selected one has its own outline).
+            if !selected && i + 1 != self.selected && i + 1 < self.layout.chips.len() {
+                self.ui.fill(Rect::new(chip.x + chip.w - 1.0, chip.y, 1.0, chip.h - 1.0), col(g.divider()));
+            }
             let title = if logic::shows_ordinal(f64::from(chip.w)) {
                 (i + 1).to_string()
             } else {
@@ -1719,24 +1773,30 @@ impl App {
                 let at = chip.x + 10.0;
                 self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, status.state)));
                 title_x = at + ICON_SIZE + 6.0;
+            } else if let Some(glyph) = self.tabs[i].job().map(logic::job_icon) {
+                // A tab at rest shows the program it runs, as the automatic icon of iTerm2 does.
+                let icon_line = self.ui.line_height(ICON_SIZE);
+                let at = chip.x + 10.0;
+                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, color);
+                title_x = at + ICON_SIZE + 6.0;
             }
             self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
             if let Some(close) = close {
                 if self.hover == Hit::ChipClose(i) {
-                    self.ui.rrect(close, CORNER_RADIUS, col(g.pressed()), None);
+                    self.ui.rrect(close, TAB_RADIUS, col(g.pressed()), None);
                 }
                 self.icon_centered(close, '\u{E711}', ICON_SIZE, col(g.text()));
             }
         }
         let plus = self.layout.new_tab;
         if self.hover == Hit::NewTab {
-            self.ui.rrect(plus, CORNER_RADIUS, col(g.hover()), None);
+            self.bar_plate(plus, col(g.hover()));
         }
         self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
         let list = self.layout.profiles;
         if self.hover == Hit::Profiles || self.popup_from == Some(Hit::Profiles) {
-            self.ui.rrect(list, CORNER_RADIUS, col(g.hover()), None);
+            self.bar_plate(list, col(g.hover()));
         }
         self.icon_centered(list, '\u{E70D}', 12.0, col(g.text()));
         // The position plate: where the selected tab is among all of them, which a strip of narrow chips cannot say.
@@ -1753,7 +1813,7 @@ impl App {
             let plate = Rect::new(x - 8.0, list.y, width + 16.0, list.h);
             self.plate_rect = Some(plate);
             if self.hover == Hit::Plate || self.popup_from == Some(Hit::Plate) {
-                self.ui.rrect(plate, CORNER_RADIUS, col(g.hover()), None);
+                self.bar_plate(plate, col(g.hover()));
             }
             self.ui.push_clip(Rect::new(x, list.y, room.max(0.0), list.h));
             self.ui.text(x, list.y + (list.h - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
@@ -1763,7 +1823,7 @@ impl App {
         }
         let menu = self.layout.menu;
         if self.hover == Hit::Menu || self.popup_from == Some(Hit::Menu) {
-            self.ui.rrect(menu, CORNER_RADIUS, col(g.hover()), None);
+            self.bar_plate(menu, col(g.hover()));
         }
         self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
     }
@@ -1791,6 +1851,7 @@ impl App {
                     hint: self.keymap.shortcut_text(*command).to_string(),
                     action: Some(popup::Action::Command(*command)),
                     current: false,
+                    mark: None,
                 }),
                 MenuRow::Backdrop => {
                     for backdrop in Backdrop::ALL {
@@ -1805,6 +1866,7 @@ impl App {
                             hint: String::new(),
                             action: Some(popup::Action::Backdrop(backdrop)),
                             current: backdrop == self.settings.appearance.backdrop,
+                            mark: None,
                         });
                     }
                 }
@@ -1815,6 +1877,7 @@ impl App {
                             hint: format!("{}%", (self.settings.appearance.opacity * 100.0).round()),
                             action: Some(popup::Action::Command(command)),
                             current: false,
+                            mark: None,
                         });
                     }
                 }
@@ -1862,7 +1925,7 @@ impl App {
                     PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
                     PaletteAction::Run(_) => return None,
                 };
-                Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false })
+                Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false, mark: None })
             })
             .collect()
     }
@@ -2433,6 +2496,7 @@ impl App {
                 hint: String::new(),
                 action: Some(popup::Action::NewTab(i)),
                 current: profile.id == self.profile.id,
+                mark: Some(logic::profile_mark(profile.icon)),
             })
             .collect();
         let anchor = self.button_anchor(self.layout.profiles);
@@ -2604,7 +2668,7 @@ impl App {
         let rows: Vec<popup::Row> = [Command::EditCopy, Command::EditPaste, Command::EditSelectAll]
             .into_iter()
             .filter(|command| *command != Command::EditCopy || has_selection)
-            .map(|command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false })
+            .map(|command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None })
             .collect();
         let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
         self.open_popup(rows, popup::Kind::List, anchor);
@@ -2618,6 +2682,7 @@ impl App {
                 hint: (i + 1).to_string(),
                 action: Some(popup::Action::Tab(i)),
                 current: i == self.selected,
+                mark: None,
             })
             .collect();
         let anchor = self.button_anchor(self.plate_rect.unwrap_or(self.layout.profiles));
@@ -3037,8 +3102,26 @@ impl App {
             let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
             ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
             let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
+            let mut label_x = rect.x + 12.0;
+            if let Some(mark) = row.mark {
+                let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
+                match mark {
+                    logic::Mark::Badge { label, color: (r, green, b) } => {
+                        ui.rrect(square, 4.0, Color([r, green, b, 255]), None);
+                        let (size, label_line) = (9.0, ui.line_height(9.0));
+                        let width = ui.measure(label, size, true);
+                        ui.text(square.x + (square.w - width) / 2.0, square.y + (square.h - label_line) / 2.0, label, size, Color([255, 255, 255, 255]), true);
+                    }
+                    logic::Mark::Glyph(ch) => {
+                        let (size, glyph_line) = (14.0, ui.line_height(14.0));
+                        let width = ui.measure_icon(ch, size);
+                        ui.icon(square.x + (square.w - width) / 2.0, square.y + (square.h - glyph_line) / 2.0 + ICON_NUDGE, ch, size, col(g.text_secondary()));
+                    }
+                }
+                label_x += popup::MARK_SIZE + popup::MARK_GAP;
+            }
             ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));
-            ui.text(rect.x + 12.0, y, &row.label, TEXT_SIZE, col(g.text()), false);
+            ui.text(label_x, y, &row.label, TEXT_SIZE, col(g.text()), false);
             ui.pop_clip();
         }
         ui.pop_clip();

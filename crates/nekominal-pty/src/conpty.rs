@@ -19,13 +19,18 @@ use std::{
 use windows_sys::{
     Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
-        Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
+        Foundation::{CloseHandle, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
         System::{
             Console::{COORD, HPCON},
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, TerminateJobObject,
+                JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation,
+                QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
             },
             LibraryLoader::{
                 GetModuleHandleW, GetProcAddress, LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW,
@@ -34,10 +39,10 @@ use windows_sys::{
             SystemInformation::OSVERSIONINFOW,
             Threading::{
                 CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-                EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE,
-                InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess,
-                UpdateProcThreadAttribute, WaitForSingleObject,
+                EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes, INFINITE,
+                InitializeProcThreadAttributeList, OpenProcess, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES,
+                STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     },
@@ -365,6 +370,57 @@ impl Pty {
             }
             code
         }
+    }
+
+    /// Every process currently in the job: the child and all its descendants.
+    pub(crate) fn job_process_ids(&self) -> Vec<u32> {
+        // The list header is two u32 counts followed by pointer-sized ids; u64 words keep the
+        // buffer aligned for it.
+        let mut buffer = vec![0u64; 2 + 64];
+        let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
+        // SAFETY: the buffer is larger than the length passed, and the job handle is valid for
+        // the lifetime of `self`. The ids read back lie inside the buffer because the API
+        // reports at most the number that fit.
+        unsafe {
+            let ok = QueryInformationJobObject(
+                self.job.0,
+                JobObjectBasicProcessIdList,
+                list as *mut c_void,
+                (buffer.len() * size_of::<u64>()) as u32,
+                null_mut(),
+            );
+            if ok == 0 {
+                return Vec::new();
+            }
+            let count = (*list).NumberOfProcessIdsInList as usize;
+            std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
+                .iter()
+                .map(|&pid| pid as u32)
+                .collect()
+        }
+    }
+
+    /// The program the user is running now, by its file name (`vim.exe`): the process of the job that started last,
+    /// not counting the helpers of the console, or the child itself when it started nothing. None when the processes
+    /// cannot be read.
+    pub fn job_name(&self) -> Option<String> {
+        let names = process_names()?;
+        let name_of = |pid: u32| names.iter().find(|(id, _)| *id == pid).map(|(_, name)| name.clone());
+        let mut newest: Option<(u64, String)> = None;
+        for pid in self.job_process_ids() {
+            if pid == self.pid {
+                continue;
+            }
+            let Some(name) = name_of(pid) else { continue };
+            if is_console_helper(&name) {
+                continue;
+            }
+            let started = start_time(pid);
+            if newest.as_ref().is_none_or(|(at, _)| started >= *at) {
+                newest = Some((started, name));
+            }
+        }
+        newest.map(|(_, name)| name).or_else(|| name_of(self.pid))
     }
 
     /// Terminates the child and every process it started.
@@ -833,49 +889,59 @@ mod tests {
     }
 }
 
+/// The name of the program of every process of the system, with its id.
+fn process_names() -> Option<Vec<(u32, String)>> {
+    // SAFETY: the snapshot is owned and closed by `Handle`; the entry is initialised with its size as the calls ask.
+    unsafe {
+        let snapshot = Handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+        if snapshot.0 == INVALID_HANDLE_VALUE || snapshot.0.is_null() {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = zeroed();
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut names = Vec::new();
+        let mut more = Process32FirstW(snapshot.0, &mut entry);
+        while more != 0 {
+            let len = entry.szExeFile.iter().position(|&unit| unit == 0).unwrap_or(entry.szExeFile.len());
+            names.push((entry.th32ProcessID, String::from_utf16_lossy(&entry.szExeFile[..len])));
+            more = Process32NextW(snapshot.0, &mut entry);
+        }
+        Some(names)
+    }
+}
+
+/// When a process started, in 100 ns ticks; 0 when it cannot be asked.
+fn start_time(pid: u32) -> u64 {
+    // SAFETY: the handle is owned and closed by `Handle`; the times are written into locals.
+    unsafe {
+        let process = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
+        if process.0.is_null() {
+            return 0;
+        }
+        let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
+            (zeroed(), zeroed(), zeroed(), zeroed());
+        if GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) == 0 {
+            return 0;
+        }
+        (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+    }
+}
+
+/// A program that is part of the console and not of what the user runs.
+fn is_console_helper(name: &str) -> bool {
+    ["conhost.exe", "openconsole.exe"].iter().any(|helper| name.eq_ignore_ascii_case(helper))
+}
+
 /// Process inspection shared by the lifetime tests.
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::time::Duration;
 
-    use windows_sys::Win32::System::{
-        JobObjects::{
-            JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, QueryInformationJobObject,
-        },
-        Threading::{OpenProcess, PROCESS_SYNCHRONIZE},
-    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
 
     use super::*;
 
     impl Pty {
-        /// Every process currently in the job: the child and all its descendants.
-        pub(crate) fn job_process_ids(&self) -> Vec<u32> {
-            // The list header is two u32 counts followed by pointer-sized ids; u64 words keep the
-            // buffer aligned for it.
-            let mut buffer = vec![0u64; 2 + 64];
-            let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
-            // SAFETY: the buffer is larger than the length passed, and the job handle is valid for
-            // the lifetime of `self`. The ids read back lie inside the buffer because the API
-            // reports at most the number that fit.
-            unsafe {
-                let ok = QueryInformationJobObject(
-                    self.job.0,
-                    JobObjectBasicProcessIdList,
-                    list as *mut c_void,
-                    (buffer.len() * size_of::<u64>()) as u32,
-                    null_mut(),
-                );
-                if ok == 0 {
-                    return Vec::new();
-                }
-                let count = (*list).NumberOfProcessIdsInList as usize;
-                std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
-                    .iter()
-                    .map(|&pid| pid as u32)
-                    .collect()
-            }
-        }
-
         pub(crate) fn console_closed(&self) -> bool {
             self.hpc.lock().unwrap().is_none()
         }

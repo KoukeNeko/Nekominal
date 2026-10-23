@@ -42,6 +42,8 @@ use crate::{
 const WM_MOUSELEAVE: u32 = 0x02A3;
 /// The timer that scrolls the view while a selection drag is held outside the pane.
 const DRAG_TIMER: usize = 1;
+/// Looks at what the panes run, for the icons of the tabs: once a second.
+const JOB_TIMER: usize = 2;
 
 pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 
@@ -364,6 +366,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, App::on_drag_tick);
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == JOB_TIMER => {
+            with_app(hwnd, App::on_job_tick);
+            LRESULT(0)
+        }
         WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && with_app(hwnd, |app| app.cursor()).flatten().is_some() => {
             let id = match with_app(hwnd, |app| app.cursor()).flatten() {
                 Some(Cursor::ResizeH) => IDC_SIZEWE,
@@ -600,6 +606,7 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
             let rect = placement.rect;
             let _ = SetWindowPos(hwnd, None, rect.x, rect.y, rect.width as i32, rect.height as i32, SWP_NOZORDER | SWP_NOACTIVATE);
         }
+        SetTimer(Some(hwnd), JOB_TIMER, 1000, None);
         let _ = ShowWindow(hwnd, if placement.is_some_and(|placement| placement.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOW });
         with_app(hwnd, |app| app.redraw());
 

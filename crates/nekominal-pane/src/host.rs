@@ -521,6 +521,12 @@ impl Pane {
         self.live.borrow().input.clone()
     }
 
+    /// The file name of the program the pane is running now (`vim.exe`; the shell when nothing else runs), if it can be told.
+    pub fn job_name(&self) -> Option<String> {
+        let live = self.live.borrow();
+        live.sessions.get(live.id).ok()?.job_name()
+    }
+
     /// Term and PTY are resized together under the terminal lock so a snapshot never sees half a resize.
     pub fn resize(&self, cols: u16, rows: u16) {
         let mut core = self.term.lock();

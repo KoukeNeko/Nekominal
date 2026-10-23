@@ -449,6 +449,50 @@ pub fn tab_width(count: usize, available: f64, gap: f64) -> f64 {
     ((available - gap * (count - 1) as f64) / count as f64).clamp(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH)
 }
 
+/// The glyph (of the icon font) a tab shows for the program it runs, by its file name. The glyphs are those of the
+/// icon font; a program with none of its own gets the terminal's, as a shell does.
+pub fn job_icon(file_name: &str) -> char {
+    let lower = file_name.to_lowercase();
+    let name = ["exe", "cmd", "bat", "com"]
+        .iter()
+        .find_map(|extension| lower.strip_suffix(extension).and_then(|rest| rest.strip_suffix('.')))
+        .unwrap_or(lower.as_str());
+    match name {
+        "vim" | "vi" | "nvim" | "gvim" | "nvim-qt" | "nano" | "micro" | "hx" | "helix" | "kak" | "emacs" | "code" | "notepad" => '\u{E70F}',
+        "ssh" | "mosh" | "telnet" | "scp" | "sftp" | "curl" | "wget" | "ping" | "tracert" | "nc" => '\u{E774}',
+        "less" | "more" | "man" | "bat" | "glow" | "cat" | "type" => '\u{E8A5}',
+        "git" | "lazygit" | "gh" | "tig" | "gitui" => '\u{E81C}',
+        "yazi" | "ranger" | "nnn" | "mc" | "lf" | "explorer" => '\u{E838}',
+        "node" | "npm" | "npx" | "pnpm" | "yarn" | "bun" | "deno" | "pip" | "uv" | "cargo" | "rustc" | "go" | "dotnet" | "java" | "ruby"
+        | "php" | "make" | "cmake" | "claude" | "codex" | "gemini" | "aider" | "opencode" => '\u{E943}',
+        _ if name.starts_with("python") || name == "py" => '\u{E943}',
+        _ => '\u{E756}',
+    }
+}
+
+/// What a row of a list shows before its label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    /// A small square of a colour with a short label in it, the way a shell is known by its logo.
+    Badge { label: &'static str, color: (u8, u8, u8) },
+    /// A glyph of the icon font.
+    Glyph(char),
+}
+
+/// The mark of a profile, by the icon key of the profile: one of `nekominal_pty::profiles::ICON_KEYS` or the generic one.
+pub fn profile_mark(icon: &str) -> Mark {
+    match icon {
+        "pwsh" => Mark::Badge { label: "PS", color: (0x3A, 0x78, 0xD4) },
+        "windows-powershell" => Mark::Badge { label: "PS", color: (0x1B, 0x3F, 0x8B) },
+        "cmd" => Mark::Badge { label: ">_", color: (0x4A, 0x4A, 0x4A) },
+        "git-bash" => Mark::Badge { label: "$", color: (0xD0, 0x4A, 0x28) },
+        "wsl" => Mark::Badge { label: "L", color: (0x3F, 0x8F, 0x5A) },
+        "visual-studio" => Mark::Badge { label: "VS", color: (0x68, 0x21, 0x7A) },
+        "ssh" => Mark::Glyph('\u{E774}'),
+        _ => Mark::Glyph('\u{E756}'),
+    }
+}
+
 /// Whether a chip of this width shows its number instead of its title.
 pub fn shows_ordinal(width: f64) -> bool {
     width < ORDINAL_BELOW
@@ -1745,6 +1789,30 @@ mod tests {
         assert_eq!(notification.attention, Some(Attention::Notification));
         assert_eq!(grouped[6].1.unwrap().attention, Some(Attention::Bell));
         assert_eq!(list_order(&[], true), Vec::new());
+    }
+
+    #[test]
+    fn a_tab_shows_the_icon_of_the_program_it_runs_whatever_the_case_or_the_extension() {
+        assert_eq!(job_icon("vim.exe"), job_icon("NVIM.EXE"));
+        assert_eq!(job_icon("ssh.exe"), '\u{E774}');
+        assert_eq!(job_icon("git"), '\u{E81C}');
+        assert_eq!(job_icon("python3.12.exe"), job_icon("py.exe"));
+        assert_eq!(job_icon("npm.cmd"), job_icon("node.exe"));
+        // A shell and a program nobody knows have the terminal's glyph; a name that only ends like an extension is no extension.
+        assert_eq!(job_icon("pwsh.exe"), '\u{E756}');
+        assert_eq!(job_icon("whatever.exe"), '\u{E756}');
+        assert_ne!(job_icon("exe"), '\u{E70F}');
+        assert_ne!(job_icon("vim.exe"), job_icon("pwsh.exe"));
+    }
+
+    #[test]
+    fn every_profile_has_a_mark_and_the_shells_are_told_apart() {
+        let marks: Vec<Mark> = nekominal_pty::profiles::ICON_KEYS.iter().map(|key| profile_mark(key)).collect();
+        for (i, mark) in marks.iter().enumerate() {
+            assert!(marks[i + 1..].iter().all(|other| other != mark), "{} looks like another profile", nekominal_pty::profiles::ICON_KEYS[i]);
+        }
+        assert_eq!(profile_mark("terminal"), profile_mark("something else"), "a profile nobody knows is generic");
+        assert!(!marks.contains(&profile_mark("terminal")), "a known profile is not the generic one");
     }
 
     #[test]

@@ -102,6 +102,11 @@ impl Glass {
         with_alpha(self.overlay(), if self.light { 0.10 } else { 0.14 })
     }
 
+    /// The bar behind the tabs that are not selected: darker than the terminal, which the selected tab joins.
+    pub fn tab_rest(&self) -> Color {
+        with_alpha(Color::rgb(0x000000), if self.light { 0.06 } else { 0.28 })
+    }
+
     /// The tool cluster and the other resting surfaces on the bar.
     pub fn cluster(&self) -> Color {
         with_alpha(self.overlay(), if self.light { 0.05 } else { 0.07 })

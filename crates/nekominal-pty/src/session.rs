@@ -96,6 +96,11 @@ impl Session {
     pub fn ack(&self, bytes: usize) {
         self.flow.ack(bytes);
     }
+
+    /// The file name of the program the session is running now; see [`Pty::job_name`].
+    pub fn job_name(&self) -> Option<String> {
+        self.pty.job_name()
+    }
 }
 
 #[derive(Default)]
@@ -403,6 +408,25 @@ mod tests {
                 "process {index} of the tree survived the close"
             );
         }
+    }
+
+    #[test]
+    fn the_job_is_the_program_that_started_last_and_never_a_helper_of_the_console() {
+        let sessions = Sessions::default();
+        // cmd (root) -> cmd -> ping: the program the user would say is running is ping.
+        let config = cmd_config(&["/d", "/c", "cmd /d /c ping -n 60 127.0.0.1 >nul"]);
+        let (id, session, _rx) = start(&sessions, &config);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let name = loop {
+            match session.job_name() {
+                Some(name) if name.eq_ignore_ascii_case("ping.exe") => break name,
+                other => assert!(Instant::now() < deadline, "the job was {other:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(name.eq_ignore_ascii_case("ping.exe"));
+        sessions.close(id);
     }
 
     #[test]
