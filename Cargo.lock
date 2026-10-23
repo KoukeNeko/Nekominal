@@ -43,7 +43,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-probe"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "nekominal-input",
  "nekominal-pty",
@@ -173,7 +173,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "d3d11-spike"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "windows",
 ]
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-input"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "alacritty_terminal",
  "nekominal-pty",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-model"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "base64",
  "nekominal-input",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-pane"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "nekominal-input",
  "nekominal-pty",
@@ -397,14 +397,14 @@ dependencies = [
 
 [[package]]
 name = "nekominal-pty"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nekominal-render"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bytemuck",
  "etagere",
@@ -422,7 +422,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-shell"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-term"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "alacritty_terminal",
  "base64",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-ui"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bytemuck",
  "nekominal-render",
