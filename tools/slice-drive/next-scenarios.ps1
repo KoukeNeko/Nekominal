@@ -293,21 +293,65 @@ function Scenario-NextPalette {
     }
 }
 
-function Next-PopupWindow {
+# The one visible window of a class that belongs to the test app: its handle, or zero when there is none.
+function Next-WindowOfClass([string]$Class) {
     $found = [Collections.Generic.List[IntPtr]]::new()
     [void][D]::EnumWindows([D+EnumProc]{ param($h, $l)
         [uint32]$windowPid = 0
         [void][D]::GetWindowThreadProcessId($h, [ref]$windowPid)
         if ($windowPid -eq $script:App.Id -and [D]::IsWindowVisible($h)) {
-            $class = [Text.StringBuilder]::new(256)
-            [void][D]::GetClassName($h, $class, $class.Capacity)
-            if ($class.ToString() -eq 'NekominalPopup') { $found.Add($h) }
+            $name = [Text.StringBuilder]::new(256)
+            [void][D]::GetClassName($h, $name, $name.Capacity)
+            if ($name.ToString() -eq $Class) { $found.Add($h) }
         }
         return $true
     }, [IntPtr]::Zero)
-    if ($found.Count -gt 1) { throw 'more than one popup in the test app' }
+    if ($found.Count -gt 1) { throw "more than one $Class window in the test app" }
     if ($found.Count -eq 1) { return $found[0] }
     return [IntPtr]::Zero
+}
+
+function Next-PopupWindow { Next-WindowOfClass 'NekominalPopup' }
+
+# The window of the settings: a window of its own, owned by the one of the shell.
+function Next-SettingsWindow { Next-WindowOfClass 'NekominalSettings' }
+
+# The window of the settings as a UI Automation client sees it; $null while it is not open.
+function Next-SettingsRoot {
+    $window = Next-SettingsWindow
+    if ($window -eq [IntPtr]::Zero) { return $null }
+    [System.Windows.Automation.AutomationElement]::FromHandle($window)
+}
+
+function Next-ByType($Root, [System.Windows.Automation.ControlType]$Type) {
+    $is = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type)
+    @($Root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $is))
+}
+
+# The names of the rows the page lists; none while the window is closed.
+function Next-SettingsRows {
+    $root = Next-SettingsRoot
+    if (-not $root) { return @() }
+    @(Next-ByType $root ([System.Windows.Automation.ControlType]::ListItem) | ForEach-Object { $_.Current.Name })
+}
+
+# What the search line of the page says: '(closed)' without the window.
+function Next-SettingsSearch {
+    $root = Next-SettingsRoot
+    if (-not $root) { return '(closed)' }
+    $edit = Next-ByType $root ([System.Windows.Automation.ControlType]::Edit) | Select-Object -First 1
+    if (-not $edit) { return '(none)' }
+    $pattern = $null
+    if ($edit.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) { return $pattern.Current.Value }
+    ''
+}
+
+# Presses a tab of the page (0 is the first section): the pointer goes where UI Automation says the tab is.
+function Next-ClickSettingsTab([int]$Index) {
+    $tabs = @(Next-ByType (Next-SettingsRoot) ([System.Windows.Automation.ControlType]::TabItem))
+    if ($Index -ge $tabs.Count) { throw "the page has $($tabs.Count) tabs, not $($Index + 1)" }
+    $at = $tabs[$Index].Current.BoundingRectangle
+    Click-At ([int]($at.Left + $at.Width / 2)) ([int]($at.Top + $at.Height / 2)); Start-Sleep -Milliseconds 500
 }
 
 function Scenario-NextConfirm {
@@ -729,29 +773,22 @@ function Next-SavedSettings {
     if (Test-Path $path) { Get-Content $path -Raw | ConvertFrom-Json } else { $null }
 }
 
-# The settings page: it opens from the keyboard, its rows are driven by the keys and the pointer, what they change is kept
-# in the settings file, and a screen reader is told of its rows. The palette opens it at a row and sets a colour scheme.
+# The settings: a window of their own that opens from the keyboard, its rows are driven by the keys and the pointer, what
+# they change is kept in the settings file, and a screen reader is told of its tabs, its search line and its rows. The
+# palette opens it at a row and sets a colour scheme.
 function Scenario-NextSettings {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-    # The geometry the pointer needs is the page's own: read from its source, not copied.
-    $source = Get-Content (Join-Path $PSScriptRoot '../../crates/nekominal-shell/src/settings_page.rs') -Raw
-    $constant = { param($name) if ($source -notmatch "const $name`: f32 = ([0-9.]+);") { throw "$name not found" }; [double]$Matches[1] }
-    $navTop = & $constant 'NAV_TOP'; $navItem = & $constant 'NAV_ITEM'
     Run-Next {
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-        $rows = {
-            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } |
-                ForEach-Object { $_.Current.Name })
-        }
         Next-Line 'echo ONE'
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900          # Ctrl+Shift+O (Ctrl+, is taken by the Zhuyin IME)
-        $listed = & $rows
-        Next-Check 'settings.opens' ($listed -contains 'Background opacity') "the page lists its rows: $($listed.Count) rows"
-        $r = Win-Rect; $s = Get-Scale
-        $shot = if ($env:NEXT_SHOT) { Join-Path (Split-Path $env:NEXT_SHOT) 'settings-page.png' } else { Join-Path $env:TEMP 'settings-page.png' }
-        [void](ShotRegion $shot ($r.Left + 8) ($r.Top + [int](48 * $s)) ($r.Right - $r.Left - 16) ($r.Bottom - $r.Top - [int](48 * $s) - 8))
-        Next-Check 'settings.is-drawn' ((Next-LightPixels ($r.Left + 240) ($r.Top + [int](150 * $s)) 600 300) -gt 100) 'the rows show text, not just a backdrop'
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200         # Ctrl+Shift+O (Ctrl+, is taken by the Zhuyin IME)
+        $listed = Next-SettingsRows
+        Next-Check 'settings.opens-in-a-window-of-its-own' ((Next-SettingsWindow) -ne [IntPtr]::Zero -and $listed -contains 'Background opacity') "the window lists its rows: $($listed.Count) rows"
+        Next-Check 'settings.adds-no-tab-to-the-shell' (@(Next-TabNames).Count -eq 1) "tabs of the shell: $(@(Next-TabNames) -join ' | ')"
+        $window = Next-SettingsWindow; $s = Get-Scale
+        $shot = if ($env:NEXT_SHOT) { Join-Path (Split-Path $env:NEXT_SHOT) 'settings-window.png' } else { Join-Path $env:TEMP 'settings-window.png' }
+        [void](Shot-Window $window $shot)
+        $bounds = New-Object D+RECT; [void][D]::GetWindowRect($window, [ref]$bounds)
+        Next-Check 'settings.is-drawn' ((Next-LightPixels ($bounds.Left + 240) ($bounds.Top + [int](150 * $s)) 600 300) -gt 100) 'the rows show text, not just a backdrop'
         Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300     # Down x3: the opacity row
         Press 0x27; Press 0x27; Press 0x27; Start-Sleep -Milliseconds 500     # Right x3
         $saved = Next-SavedSettings
@@ -759,30 +796,30 @@ function Scenario-NextSettings {
         Press 0x0D; Start-Sleep -Milliseconds 500                             # Enter: one more
         Next-Check 'settings.enter-steps-it' ((Next-SavedSettings).appearance.opacity -eq 0.76) "opacity $((Next-SavedSettings).appearance.opacity)"
         Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 500              # the search line
-        $listed = & $rows
+        $listed = Next-SettingsRows
         Next-Check 'settings.search-narrows-the-rows' ($listed.Count -ge 1 -and $listed.Count -lt 5 -and $listed -contains 'Background opacity') "$($listed.Count) rows match: $($listed -join ', ')"
+        Next-Check 'settings.search-line-says-what-was-typed' ((Next-SettingsSearch) -eq 'opacity') "the search says: $(Next-SettingsSearch)"
         Press 0x28; Press 0x25; Start-Sleep -Milliseconds 500                 # Down to the first match, Left: one back
         Next-Check 'settings.left-steps-back' ((Next-SavedSettings).appearance.opacity -eq 0.75) "opacity $((Next-SavedSettings).appearance.opacity)"
-        Press 0x1B; Start-Sleep -Milliseconds 400                             # Esc: clears the search, the page stays
-        Next-Check 'settings.escape-clears-the-search' ((& $rows).Count -gt 5) 'all the rows of the section are back'
-        $terminal = @{ X = [int]($r.Left + 100 * $s); Y = [int]($r.Top + ($navTop + 1.5 * $navItem + 48) * $s) }
-        Click-At $terminal.X $terminal.Y; Start-Sleep -Milliseconds 500       # the second section of the list
-        $listed = & $rows
-        Next-Check 'settings.section-list-switches-the-rows' ($listed -contains 'Copy on select' -and $listed -notcontains 'Background opacity') "rows now: $($listed.Count)"
+        Press 0x1B; Start-Sleep -Milliseconds 400                             # Esc: clears the search, the window stays
+        Next-Check 'settings.escape-clears-the-search' ((Next-SettingsRows).Count -gt 5 -and (Next-SettingsWindow) -ne [IntPtr]::Zero) 'all the rows of the section are back'
+        Next-ClickSettingsTab 1                                               # the second tab with the pointer
+        $listed = Next-SettingsRows
+        Next-Check 'settings.tab-with-the-pointer-switches-the-rows' ($listed -contains 'Copy on select' -and $listed -notcontains 'Background opacity') "rows now: $($listed.Count)"
         Press 0x09; Start-Sleep -Milliseconds 400                             # Tab: the next section
-        Next-Check 'settings.tab-switches-sections' ((& $rows) -notcontains 'Copy on select') 'the third section has other rows'
-        Press 0x1B; Start-Sleep -Milliseconds 600                             # Esc: closes the page
+        Next-Check 'settings.tab-key-switches-sections' ((Next-SettingsRows) -notcontains 'Copy on select') 'the third section has other rows'
+        Press 0x1B; Start-Sleep -Milliseconds 900                             # Esc: closes the window
         Next-Line 'echo AFTER'
-        Next-Check 'settings.escape-closes' ((Next-Text) -match 'AFTER' -and (& $rows).Count -eq 0) 'the terminal takes the typing again'
+        Next-Check 'settings.escape-closes-the-window' ((Next-Text) -match 'AFTER' -and (Next-SettingsWindow) -eq [IntPtr]::Zero) 'the window is gone and the terminal takes the typing again'
         Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900              # palette
         Type-Unicode 'color scheme: nord' 30; Start-Sleep -Milliseconds 500
         Press 0x0D; Start-Sleep -Milliseconds 800
         Next-Check 'settings.palette-sets-the-colour-scheme' ((Next-SavedSettings).theme -eq 'Nord') "theme in the file: $((Next-SavedSettings).theme)"
         Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900
         Type-Unicode 'settings: language' 30; Start-Sleep -Milliseconds 500
-        Press 0x0D; Start-Sleep -Milliseconds 900
-        Next-Check 'settings.palette-opens-the-row' ((& $rows) -contains 'Language') 'a settings entry of the palette opens the page at its section'
-        Press 0x1B; Start-Sleep -Milliseconds 500
+        Press 0x0D; Start-Sleep -Milliseconds 1200
+        Next-Check 'settings.palette-opens-the-row' ((Next-SettingsRows) -contains 'Language') 'a settings entry of the palette opens the window at its section'
+        Press 0x1B; Start-Sleep -Milliseconds 900
         Press 0x4E @(0x11, 0x10); Start-Sleep -Milliseconds 900              # Ctrl+Shift+N: the profiles
         Next-Check 'profiles.list-opens' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'Ctrl+Shift+N lists the profiles'
         Press 0x28; Press 0x0D; Start-Sleep -Milliseconds 1800
@@ -892,10 +929,15 @@ function Next-WindowTitle {
     $text.ToString()
 }
 
+# The tabs of the shell window. The window of the settings is owned by it, so UI Automation shows that window under this
+# one, with the tabs of its sections: those are not tabs of the shell and are left out.
 function Next-TabNames {
+    $tabType = [System.Windows.Automation.ControlType]::TabItem
+    $ofSettings = @{}
+    $settings = Next-SettingsRoot
+    if ($settings) { foreach ($tab in Next-ByType $settings $tabType) { $ofSettings[($tab.GetRuntimeId() -join '.')] = $true } }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-    @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-        Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.TabItem' } | ForEach-Object { $_.Current.Name })
+    @(Next-ByType $root $tabType | Where-Object { -not $ofSettings.ContainsKey(($_.GetRuntimeId() -join '.')) } | ForEach-Object { $_.Current.Name })
 }
 
 # What the settings change in the window: the title of a tab, the mark of a bell, the menu of the right button, the title
@@ -1023,25 +1065,20 @@ function Scenario-NextBar {
     }
 }
 
-# Ctrl+Shift+V goes into the line of text that has the keyboard: the search of the settings page and the query of the
-# palette, not the terminal under them.
+# Ctrl+Shift+V goes into the line of text that has the keyboard: the search of the settings window and the query of the
+# palette, not the terminal of the shell.
 function Scenario-NextPaste {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Run-Next {
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-        $rows = {
-            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } | ForEach-Object { $_.Current.Name })
-        }
         Next-Line 'echo ONE'
         Set-Clipboard -Value 'opacity'
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
-        $all = (& $rows).Count
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
+        $all = (Next-SettingsRows).Count
         Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 700
-        $found = & $rows
+        $found = Next-SettingsRows
         Next-Check 'paste.into-the-search-of-the-page' ($found.Count -lt $all -and $found -contains 'Background opacity') "$all rows, $($found.Count) after the paste"
-        Press 0x1B; Start-Sleep -Milliseconds 300; Press 0x1B; Start-Sleep -Milliseconds 500
-        Next-Check 'paste.did-not-reach-the-terminal' ((Next-Text) -notmatch 'opacity') 'the terminal under the page did not get the text'
+        Press 0x1B; Start-Sleep -Milliseconds 300; Press 0x1B; Start-Sleep -Milliseconds 900
+        Next-Check 'paste.did-not-reach-the-terminal' ((Next-Text) -notmatch 'opacity') 'the terminal of the shell did not get the text'
         Set-Clipboard -Value 'split pane right'
         Press 0x50 @(0x11, 0x10); Start-Sleep -Milliseconds 900
         Press 0x56 @(0x11, 0x10); Start-Sleep -Milliseconds 700
@@ -1083,11 +1120,9 @@ function Scenario-NextRestore {
 function Scenario-NextKeybind {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Run-Next {
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-        $isTab = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
-        $tabs = { $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isTab).Count }
+        $tabs = { @(Next-TabNames).Count }
         $bindings = { $s = Next-SavedSettings; if ($s -and $s.keybindings) { ($s.keybindings | ConvertTo-Json -Compress) } else { '' } }
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900          # the page
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200         # the settings window
         1..4 | ForEach-Object { Press 0x09 }; Start-Sleep -Milliseconds 400    # Tab x4: the shortcuts section
         Press 0x28; Start-Sleep -Milliseconds 300                         # Down: the first command
         Press 0x0D; Start-Sleep -Milliseconds 400                         # Enter: wait for a chord
@@ -1096,16 +1131,16 @@ function Scenario-NextKeybind {
         Press 0x59 @(0x11, 0x10); Start-Sleep -Milliseconds 700           # Ctrl+Shift+Y (Ctrl+Alt is AltGr: programs need it)
         $kept = & $bindings
         Next-Check 'keybind.chord-is-kept-in-the-settings' ($kept -match 'Ctrl\+Shift\+Y') "bindings: $kept"
-        Press 0x1B; Start-Sleep -Milliseconds 600                         # closes the page
+        Press 0x1B; Start-Sleep -Milliseconds 900                         # closes the window
         $before = & $tabs
         Press 0x59 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
         Next-Check 'keybind.new-chord-runs-the-command' ((& $tabs) -eq $before + 1) "tabs $before -> $(& $tabs)"
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
         1..4 | ForEach-Object { Press 0x09 }; Start-Sleep -Milliseconds 300
         Press 0x28; Start-Sleep -Milliseconds 300
         Press 0x2E; Start-Sleep -Milliseconds 600                         # Delete: the default again
         Next-Check 'keybind.delete-puts-the-default-back' ((& $bindings) -notmatch 'Ctrl\+Shift\+Y') "bindings: $(& $bindings)"
-        Press 0x1B; Start-Sleep -Milliseconds 500
+        Press 0x1B; Start-Sleep -Milliseconds 900
     }
 }
 
@@ -1153,22 +1188,22 @@ function Scenario-NextTextFields {
         Next-Check 'fields.shift-arrows-select-and-delete-removes' ((& $line) -eq 'zo') "the query: $(& $line)"
         Press 0x1B; Start-Sleep -Milliseconds 500
 
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900            # the settings page
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200           # the settings window
         Type-Unicode 'opcity' 30; 1..4 | ForEach-Object { Press 0x25 }; Type-Unicode 'a' 30; Start-Sleep -Milliseconds 500
-        Next-Check 'fields.page-search-caret' ((& $line) -eq 'opacity') "the search: $(& $line)"
+        Next-Check 'fields.page-search-caret' ((Next-SettingsSearch) -eq 'opacity') "the search: $(Next-SettingsSearch)"
         Press 0x1B; Start-Sleep -Milliseconds 300                           # clears the search
         Press 0x28; Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300    # Down x4: the font row
         $r = Win-Rect; $s = Get-Scale
         $before = Join-Path $env:TEMP 'font-before.png'; $after = Join-Path $env:TEMP 'font-after.png'
-        Press 0x1B; Start-Sleep -Milliseconds 400
+        Press 0x1B; Start-Sleep -Milliseconds 900                           # closes the window: the shell shows what is under it
         [void](ShotRegion $before ($r.Left + 4) ($r.Top + [int](60 * $s)) 700 200)
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
         Press 0x28; Press 0x28; Press 0x28; Press 0x28; Start-Sleep -Milliseconds 300
         Press 0x0D; Start-Sleep -Milliseconds 300                           # Enter: edit, the text selected
         Type-Unicode 'Courier New' 30; Press 0x0D; Start-Sleep -Milliseconds 700
         $saved = Next-SavedSettings
         Next-Check 'fields.field-edit-is-kept' ((ConvertTo-Json $saved.font -Compress) -match 'Courier New') "font in the file: $(ConvertTo-Json $saved.font -Compress)"
-        Press 0x1B; Start-Sleep -Milliseconds 600
+        Press 0x1B; Start-Sleep -Milliseconds 900
         [void](ShotRegion $after ($r.Left + 4) ($r.Top + [int](60 * $s)) 700 200)
         Next-Check 'fields.font-family-reaches-the-open-terminal' ((Next-DiffPixels $before $after) -gt 200) "$(Next-DiffPixels $before $after) pixels of the terminal changed with the font"
 
@@ -1217,45 +1252,34 @@ function Scenario-NextCentre {
     }
 }
 
-# The settings are a tab: opening them adds a chip, the other tabs stay as they were, opening again comes back to the same tab,
-# the page keeps what was typed in it, closing takes the chip away, and the chip does not leave its window.
-function Scenario-NextSettingsTab {
+# The settings are a window of their own: opening makes a window and no tab, the shell takes the typing while the window is
+# open, opening again brings back the same window with what was typed in it, and the shortcut and Escape close it.
+function Scenario-NextSettingsWindow {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     Run-Next {
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
-        $rows = {
-            @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                Where-Object { $_.Current.ControlType.ProgrammaticName -eq 'ControlType.ListItem' } | ForEach-Object { $_.Current.Name })
-        }
-        $isList = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::List)
-        $query = { $e = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $isList); if ($e) { $e.Current.Name } else { '' } }
+        $windows = { @([D]::AllWindows([uint32]$script:App.Id)).Count }
         Next-Line 'echo FIRST-TAB'
-        Next-Check 'settingstab.one-tab-at-the-start' (@(Next-TabNames).Count -eq 1) "tabs: $(@(Next-TabNames) -join ' | ')"
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
-        $names = @(Next-TabNames)
-        Next-Check 'settingstab.opening-adds-a-tab' ($names.Count -eq 2 -and $names[1] -match 'Settings|設定') "tabs: $($names -join ' | ')"
-        Next-Check 'settingstab.page-is-shown' ((& $rows).Count -gt 5) 'the rows of the page are listed'
+        Next-Check 'settingswindow.none-at-the-start' ((Next-SettingsWindow) -eq [IntPtr]::Zero -and (& $windows) -eq 1 -and @(Next-TabNames).Count -eq 1) "windows: $(& $windows), tabs: $(@(Next-TabNames) -join ' | ')"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
+        $window = Next-SettingsWindow
+        Next-Check 'settingswindow.opening-makes-a-window-and-no-tab' ($window -ne [IntPtr]::Zero -and (& $windows) -eq 2 -and @(Next-TabNames).Count -eq 1) "windows: $(& $windows), tabs: $(@(Next-TabNames) -join ' | ')"
+        Next-Check 'settingswindow.rows-are-listed' ((Next-SettingsRows).Count -gt 5) 'the rows of the first section are listed'
+        Next-Check 'settingswindow.has-the-keyboard-when-it-opens' ([D]::ForegroundPid() -eq [uint32]$script:App.Id) 'the window that came up is the one the keyboard is in'
         Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 400
-        $first = Next-At 60 24; Click-At $first[0] $first[1]; Start-Sleep -Milliseconds 700    # back to the terminal
-        Next-Check 'settingstab.other-tab-is-a-terminal-again' ((& $rows).Count -eq 0 -and (Next-Text) -match 'FIRST-TAB') 'the first tab shows its terminal, with its text'
+        Next-Check 'settingswindow.takes-the-typing' ((Next-SettingsSearch) -eq 'opacity') "the search says: $(Next-SettingsSearch)"
+        # Back to the shell: the window stays open and the typing goes to the terminal.
+        [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 700
         Next-Line 'echo STILLWORKS'
-        Next-Check 'settingstab.terminal-takes-typing' ((Next-Text) -match 'STILLWORKS') 'the terminal has the keyboard'
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 800
-        Next-Check 'settingstab.opening-again-comes-back-to-the-same-tab' (@(Next-TabNames).Count -eq 2 -and (& $query) -eq 'opacity') "tabs: $(@(Next-TabNames).Count), the search says: $(& $query)"
-        # The chip does not leave the window: dragged down out of the bar it stays.
-        $r = Win-Rect; $s = Get-Scale
-        $chip = Next-At 330 24
-        Move-To $chip[0] $chip[1]; Start-Sleep -Milliseconds 200
-        [D]::Mouse(0x0002, 0); Start-Sleep -Milliseconds 200
-        for ($k = 1; $k -le 20; $k++) { Move-To $chip[0] ([int]($chip[1] + 300 * $s * $k / 20)); Start-Sleep -Milliseconds 20 }
-        Start-Sleep -Milliseconds 500
-        $windows = @([D]::AllWindows([uint32]$script:App.Id)).Count
-        [D]::Mouse(0x0004, 0); Start-Sleep -Milliseconds 700
-        Next-Check 'settingstab.chip-stays-in-its-window' ($windows -eq 1 -and @(Next-TabNames).Count -eq 2) "$windows windows while the chip was pulled down"
-        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 500            # in case the drag moved the selection
-        Press 0x1B; Start-Sleep -Milliseconds 700; Press 0x1B; Start-Sleep -Milliseconds 700
-        Next-Check 'settingstab.escape-closes-the-tab' (@(Next-TabNames).Count -eq 1) "tabs: $(@(Next-TabNames) -join ' | ')"
+        Next-Check 'settingswindow.shell-takes-typing-while-it-is-open' ((Next-Text) -match 'STILLWORKS' -and (Next-SettingsSearch) -eq 'opacity') "the search says: $(Next-SettingsSearch)"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900
+        Next-Check 'settingswindow.opening-again-brings-back-the-same-window' ((Next-SettingsWindow) -eq $window -and (Next-SettingsSearch) -eq 'opacity' -and (& $windows) -eq 2) "windows: $(& $windows), the search says: $(Next-SettingsSearch)"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 900            # the shortcut of the settings, in the window: closes it
+        Next-Check 'settingswindow.shortcut-closes-it' ((Next-SettingsWindow) -eq [IntPtr]::Zero -and (& $windows) -eq 1) "windows: $(& $windows)"
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
+        Next-Check 'settingswindow.opens-afresh-after-closing' ((Next-SettingsWindow) -ne [IntPtr]::Zero -and (Next-SettingsSearch) -eq '') "the search says: $(Next-SettingsSearch)"
+        Press 0x1B; Start-Sleep -Milliseconds 900                           # Esc, with nothing in the search: closes it
+        Next-Check 'settingswindow.escape-closes-it' ((Next-SettingsWindow) -eq [IntPtr]::Zero -and (& $windows) -eq 1) "windows: $(& $windows)"
         Next-Line 'echo AFTER-CLOSE'
-        Next-Check 'settingstab.terminal-after-closing' ((Next-Text) -match 'AFTER-CLOSE') 'the terminal takes the typing again'
+        Next-Check 'settingswindow.terminal-after-closing' ((Next-Text) -match 'AFTER-CLOSE') 'the terminal takes the typing again'
     }
 }
