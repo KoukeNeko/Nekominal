@@ -3,6 +3,10 @@
 //! plus the directory (`OSC 9;9` for PowerShell, `OSC 7` for the Unix shells). The emulator reads them to
 //! jump between prompts and to open new tabs in the current directory.
 //!
+//! The PowerShell script also gives Claude Code the status line of the window: when `NEKOMINAL_CLAUDE_SETTINGS` names a
+//! settings file (the window sets it while its status bar is on), `claude` runs `claude.exe --settings <that file>`,
+//! unless the user has a `claude` function of their own.
+//!
 //! Only PowerShell is wired into profiles ([`powershell_args`]). The Unix scripts are ready to be sourced
 //! by whatever starts those shells (an rc file, `--rcfile`, `ZDOTDIR`); they must run after the user's own
 //! prompt is set because they wrap it.
@@ -23,6 +27,13 @@ pub const POWERSHELL_SCRIPT: &str = r#"if (-not $global:__NekominalPrompt) {
     $text = & $global:__NekominalPrompt
     $global:LASTEXITCODE = $native
     ('{0}]133;D;{1}{2}{0}]133;A{2}{0}]9;9;"{3}"{2}{4}{0}]133;B{2}' -f $esc, $exit, $bel, $cwd, $text)
+  }
+}
+if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude)) {
+  function global:claude {
+    $exe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $exe -and (Test-Path "$HOME\.local\bin\claude.exe")) { $exe = "$HOME\.local\bin\claude.exe" }
+    if ($exe) { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args } else { Write-Error 'claude.exe was not found' }
   }
 }"#;
 

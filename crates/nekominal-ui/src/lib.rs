@@ -264,8 +264,10 @@ impl Ui {
         self.fonts.choice_for(ch, Style { bold, italic: false }, class)
     }
 
-    /// The cached advance and bitmap of `ch` at `px` pixels per em, rasterizing it when it is new.
-    fn glyph(&mut self, choice: FontChoice, ch: char, px: f32) -> Cached {
+    /// The cached advance and bitmap of `ch` at `px` pixels per em, rasterizing it when it is new. `hint` fits the outline to
+    /// the pixel grid, which the icons need: their strokes are one pixel wide, and at 125 % the bar of minimize would fall
+    /// between two rows of pixels and be drawn half bright in both.
+    fn glyph(&mut self, choice: FontChoice, ch: char, px: f32, hint: bool) -> Cached {
         let face = self.fonts.face(choice.face);
         let glyph = face.glyph(ch);
         let key = GlyphKey {
@@ -273,7 +275,7 @@ impl Ui {
             glyph,
             px: px.to_bits(),
             wght: choice.wght.map_or(u32::MAX, f32::to_bits),
-            synth: u8::from(choice.synth_bold) | (u8::from(choice.synth_italic) << 1),
+            synth: u8::from(choice.synth_bold) | (u8::from(choice.synth_italic) << 1) | (u8::from(hint) << 2),
         };
         if let Some(cached) = self.cache.get(&key) {
             return *cached;
@@ -281,7 +283,7 @@ impl Ui {
         let advance = face.font_ref().glyph_metrics(&[]).scale(px).advance_width(glyph);
         let bitmap = self
             .raster
-            .rasterize(face, &choice, glyph, px, 0.0, RasterOptions { lcd: false, hint: false })
+            .rasterize(face, &choice, glyph, px, 0.0, RasterOptions { lcd: false, hint })
             .filter(|r| r.width > 0 && r.height > 0)
             .and_then(|r| {
                 let atlas = if r.kind == GlyphKind::Color { &mut self.atlas_rgba } else { &mut self.atlas_gray };
@@ -312,7 +314,7 @@ impl Ui {
         let mut width = 0.0;
         for ch in text.chars().filter(|c| !c.is_control()) {
             if let Some(choice) = self.choice_for(ch, bold) {
-                width += self.glyph(choice, ch, px).advance;
+                width += self.glyph(choice, ch, px, false).advance;
             }
         }
         width / self.scale
@@ -322,7 +324,7 @@ impl Ui {
     pub fn measure_icon(&mut self, ch: char, size: f32) -> f32 {
         let px = size * self.scale;
         match self.fonts.family_choice("Segoe Fluent Icons", Style::REGULAR) {
-            Some(choice) => self.glyph(choice, ch, px).advance / self.scale,
+            Some(choice) => self.glyph(choice, ch, px, true).advance / self.scale,
             None => 0.0,
         }
     }
@@ -345,7 +347,7 @@ impl Ui {
         let mut pen = x * s;
         for ch in text.chars().filter(|c| !c.is_control()) {
             let Some(choice) = family_choice.or_else(|| self.choice_for(ch, bold)) else { continue };
-            let cached = self.glyph(choice, ch, px);
+            let cached = self.glyph(choice, ch, px, family.is_some());
             if let Some(b) = cached.bitmap {
                 let index = self.glyphs.len() as u32;
                 self.glyphs.push(GlyphInstance {

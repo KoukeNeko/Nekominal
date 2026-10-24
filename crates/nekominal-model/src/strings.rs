@@ -288,13 +288,14 @@ texts! {
     SettingsStatusTime "settings.statusTime" "狀態列：工作階段時間" "Status bar: session time";
     SettingsStatusBranch "settings.statusBranch" "狀態列：Git 分支" "Status bar: Git branch";
     SettingsStatusFolder "settings.statusFolder" "狀態列：資料夾" "Status bar: folder";
-    ClaudeLink "claude.link" "連線" "Connect";
-    ClaudeUnlink "claude.unlink" "中斷連線" "Disconnect";
-    ClaudeLinked "claude.linked" "已連線：狀態列會顯示模型、脈絡用量和費用" "Connected: the status bar shows the model, context and cost";
-    ClaudeUnlinked "claude.unlinked" "連線後，狀態列會顯示模型、脈絡用量和費用" "Connect to show the model, context and cost in the status bar";
-    ClaudeForeign "claude.foreign" "Claude Code 已設定別的 statusLine，連線不會取代它" "Claude Code has another statusLine; connecting would not replace it";
+    WindowMove "window.move" "移動" "Move";
+    WindowSize "window.size" "大小" "Size";
+    WindowMinimize "window.minimize" "最小化" "Minimize";
+    WindowMaximize "window.maximize" "最大化" "Maximize";
+    ClaudeAuto "claude.auto" "在 PowerShell 分頁打開 Claude Code，狀態列就會顯示模型、脈絡用量和費用" "Open Claude Code in a PowerShell tab and the status bar shows its model, context and cost";
+    ClaudeBarOff "claude.barOff" "狀態列關閉時，不會向 Claude Code 取得用量" "With the status bar off, nothing is asked of Claude Code";
+    ClaudeForeign "claude.foreign" "Claude Code 已有自訂的 statusLine，Nekominal 不會取代它" "Claude Code already has a custom statusLine; Nekominal leaves it alone";
     ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
-    ClaudeHint "claude.hint" "連線 Claude 以顯示模型與用量" "Connect Claude to show the model and usage";
 
     SettingsFile "settings.file" "設定 JSON" "Settings file";
     SettingsVersion "settings.version" "版本" "Version";

@@ -98,8 +98,6 @@ const STATUS_BAR: f32 = 26.0;
 enum StatusPart {
     /// The state of the agent: goes to the next tab that waits for the user.
     State,
-    /// Connect Claude Code: opens the Agent page.
-    Connect,
 }
 
 pub struct App {
@@ -437,8 +435,12 @@ impl App {
         if self.settings.agent_environment {
             env.extend(nekominal_pty::profiles::agent_environment());
         }
-        // Which pane a program runs in, for the status line command of Claude Code.
+        // Which pane a program runs in, for the status line command of Claude Code, and the settings that make that command
+        // this program, while the status bar is on and Claude Code has no status line of the user's own.
         env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
+        if self.settings.status_bar.show && !self.claude.own_status_line && let Some(file) = agent::claude_settings_file() {
+            env.insert(agent::CLAUDE_SETTINGS_VAR.to_owned(), file.to_string_lossy().into_owned());
+        }
         let program = nekominal_pty::profiles::resolve_program(&profile.program)
             .unwrap_or_else(|| profile.program.clone().into());
         SpawnConfig {
@@ -1591,7 +1593,7 @@ impl App {
                 .map(|entry| match entry {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
-                    settings_page::Entry::Claude => ("Claude Code".to_owned(), self.claude_note(lang).to_owned()),
+                    settings_page::Entry::Claude => ("Claude Code".to_owned(), settings_page::claude_note(&self.claude, &self.settings).get(lang).to_owned()),
                 })
                 .collect(),
             focused: page.focus,
@@ -1947,7 +1949,6 @@ impl App {
     fn status_click(&mut self, x: f32) {
         match self.status_parts.iter().find(|(rect, _)| rect.x <= x && x < rect.x + rect.w).map(|(_, part)| *part) {
             Some(StatusPart::State) => self.run(Command::TabNextNeedsResponse),
-            Some(StatusPart::Connect) => self.open_settings_page(Some("agentEnvironment")),
             None => {}
         }
     }
@@ -1974,7 +1975,7 @@ impl App {
             State(Color, String),
             Meter(f32),
             Glyph(char, String),
-            Text(String, Option<StatusPart>),
+            Text(String),
         }
         let mut left = Vec::new();
         if Self::runs_agent(entry) {
@@ -1991,28 +1992,21 @@ impl App {
                 };
                 left.push(Piece::State(col(status::color(g, state)), text.get(lang).to_owned()));
             }
-            match &entry.usage {
-                Some(usage) => {
-                    if let Some(model) = usage.model.clone().filter(|_| show.model) {
-                        left.push(Piece::Text(model, None));
-                    }
-                    if let Some(share) = usage.context.filter(|_| show.context) {
-                        left.push(Piece::Meter(share as f32));
-                    }
-                    if let Some(cost) = usage.cost.filter(|_| show.cost) {
-                        left.push(Piece::Text(format!("${cost:.2}"), None));
-                    }
-                    if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
-                        let s = ms / 1000;
-                        let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
-                        left.push(Piece::Text(time, None));
-                    }
+            if let Some(usage) = &entry.usage {
+                if let Some(model) = usage.model.clone().filter(|_| show.model) {
+                    left.push(Piece::Text(model));
                 }
-                // Claude Code says nothing until it is connected: the bar says where to connect it.
-                None if self.claude.link == agent::Link::Unlinked && (show.model || show.context || show.cost || show.time) => {
-                    left.push(Piece::Text(Text::ClaudeHint.get(lang).to_owned(), Some(StatusPart::Connect)));
+                if let Some(share) = usage.context.filter(|_| show.context) {
+                    left.push(Piece::Meter(share as f32));
                 }
-                None => {}
+                if let Some(cost) = usage.cost.filter(|_| show.cost) {
+                    left.push(Piece::Text(format!("${cost:.2}")));
+                }
+                if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
+                    let s = ms / 1000;
+                    let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
+                    left.push(Piece::Text(time));
+                }
             }
         }
         let mut right = Vec::new();
@@ -2034,7 +2028,7 @@ impl App {
                     Piece::State(_, text) => 8.0 + 6.0 + ui.measure(text, size, false),
                     Piece::Meter(_) => METER + 6.0 + ui.measure("100%", size, false),
                     Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, size, false),
-                    Piece::Text(text, _) => ui.measure(text, size, false),
+                    Piece::Text(text) => ui.measure(text, size, false),
                 }
         };
         let mut widths_left: Vec<f32> = left.iter().map(|p| measure(&mut self.ui, p)).collect();
@@ -2051,7 +2045,8 @@ impl App {
         }
 
         let line = self.ui.line_height(size);
-        let text_y = bar.y + (bar.h - line) / 2.0 + 0.5;
+        // A line box holds room for descenders under the letters, so centring the box puts the letters low: up by one.
+        let text_y = bar.y + (bar.h - line) / 2.0 - 1.0;
         let quiet = col(g.text_secondary());
         let draw = |app: &mut App, piece: &Piece, x: f32, w: f32| {
             let cell = Rect::new(x, bar.y + 1.0, w, bar.h - 1.0);
@@ -2075,12 +2070,8 @@ impl App {
                     at += ICON_SIZE + 6.0;
                     app.ui.text(at, text_y, text, size, quiet, false);
                 }
-                Piece::Text(text, part) => {
-                    let color = if part.is_some() { col(g.accent) } else { quiet };
-                    app.ui.text(at, text_y, text, size, color, false);
-                    if let Some(part) = part {
-                        app.status_parts.push((cell, *part));
-                    }
+                Piece::Text(text) => {
+                    app.ui.text(at, text_y, text, size, quiet, false);
                 }
             }
         };
@@ -2101,6 +2092,12 @@ impl App {
     /// What the entry that opens the settings says, under the menu of the window.
     pub fn settings_label(&self) -> &'static str {
         Text::AppSettings.get(self.language())
+    }
+
+    /// The entries of the menu of the window, in its order: restore, move, size, minimize, maximize, close.
+    pub fn window_menu_labels(&self) -> [&'static str; 6] {
+        let lang = self.language();
+        [Text::CommonRestore, Text::WindowMove, Text::WindowSize, Text::WindowMinimize, Text::WindowMaximize, Text::CommonClose].map(|text| text.get(lang))
     }
 
     fn language(&self) -> Lang {
@@ -2622,31 +2619,9 @@ impl App {
                 }
             }
             Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
-            Part::Claude => self.toggle_claude(),
         }
         self.page_redraw();
         capture
-    }
-
-    /// Connects Claude Code's status line to the status bar, or disconnects it, and looks at Claude Code again.
-    fn toggle_claude(&mut self) {
-        let done = if self.claude.link == agent::Link::Linked { agent::unlink() } else { agent::link() };
-        if let Err(e) = done {
-            util::log(&format!("claude status line: {e}"));
-        }
-        self.claude = agent::claude();
-        self.redraw();
-    }
-
-    /// What the Agent page says about how Claude Code is connected.
-    fn claude_note(&self, lang: Lang) -> &'static str {
-        let text = match self.claude.link {
-            _ if self.claude.exe.is_none() => Text::ClaudeMissing,
-            agent::Link::Linked => Text::ClaudeLinked,
-            agent::Link::Unlinked => Text::ClaudeUnlinked,
-            agent::Link::Foreign => Text::ClaudeForeign,
-        };
-        text.get(lang)
     }
 
     fn page_wheel(&mut self, delta: i16) {
@@ -2694,7 +2669,6 @@ impl App {
             settings_page::Entry::Key(command) => Some(*command),
             settings_page::Entry::Setting(_) | settings_page::Entry::Claude => None,
         });
-        let on_claude = focus.and_then(|i| frame.entries.get(i)).is_some_and(|entry| matches!(entry, settings_page::Entry::Claude));
         match vk_code {
             VK_ESCAPE => {
                 if page.query.is_empty() {
@@ -2721,7 +2695,6 @@ impl App {
                 let Some(row) = focused_row else { return true };
                 self.step_setting(row.id, vk_code == VK_RIGHT, shift);
             }
-            VK_RETURN if !repeat && on_claude => self.toggle_claude(),
             VK_RETURN if !repeat && focused_command.is_some() => {
                 if let (Some(command), Some(page)) = (focused_command, self.page.as_mut()) {
                     (page.capturing, page.reserved) = (Some(command), false);

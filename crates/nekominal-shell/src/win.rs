@@ -159,37 +159,44 @@ fn edge_hit(hwnd: HWND, x: i32, y: i32) -> Option<u32> {
 /// The id of an entry a window adds under the menu of the window.
 const MENU_EXTRA: u32 = 0x1000;
 
-/// The menu of the window, as the system shows it for a native title bar (Restore, Move, Size, Minimize, Maximize,
-/// Close, in the language of the system), at a point of the screen; `extra` is an entry of the window's own under it.
-/// Both windows open it from their title bars. A command of the system is carried out here; true when `extra` was
-/// chosen.
-fn system_menu(hwnd: HWND, x: i32, y: i32, extra: Option<&str>) -> bool {
-    // SAFETY: the menu is the copy the system keeps for this window of this thread; the text lives through the calls.
+/// The menu of the window, as the system shows it for a native title bar: Restore, Move, Size, Minimize, Maximize and
+/// Close (`labels`, in that order), with the system's own glyphs, greyed as the state of the window says; `extra` is an
+/// entry of the window's own under them. It is built here because these windows have no menu of the system: without
+/// `WS_SYSMENU`, which they leave out so that DWM draws no caption buttons over theirs, there is none to show. Both windows
+/// open it from their title bars. A command of the system is carried out here; true when `extra` was chosen.
+fn system_menu(hwnd: HWND, x: i32, y: i32, labels: [&str; 6], extra: Option<&str>) -> bool {
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(Some(0)).collect() };
+    // SAFETY: a menu of this thread, destroyed below; every text lives through the call that takes it.
     unsafe {
-        let menu = GetSystemMenu(hwnd, false);
-        if menu.is_invalid() {
-            return false;
-        }
-        // The entry of the window's own, added once to the copy and taken off for a window that has none.
-        let has_extra = GetMenuState(menu, MENU_EXTRA, MF_BYCOMMAND) != u32::MAX;
-        match (extra, has_extra) {
-            (Some(text), false) => {
-                let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-                let _ = AppendMenuW(menu, MF_STRING, MENU_EXTRA as usize, windows::core::PCWSTR(text.as_ptr()));
-            }
-            (None, true) => {
-                let _ = DeleteMenu(menu, MENU_EXTRA, MF_BYCOMMAND);
-            }
-            _ => {}
-        }
-        // What can be done now, as the system greys it for a native frame.
+        let Ok(menu) = CreatePopupMenu() else { return false };
         let maximized = is_maximized(hwnd);
         let restorable = maximized || IsIconic(hwnd).as_bool();
-        for (command, on) in [(SC_RESTORE, restorable), (SC_MOVE, !maximized), (SC_SIZE, !maximized), (SC_MINIMIZE, true), (SC_MAXIMIZE, !maximized), (SC_CLOSE, true)] {
-            let _ = EnableMenuItem(menu, command, MF_BYCOMMAND | if on { MF_ENABLED } else { MF_GRAYED });
+        let entries = [
+            (SC_RESTORE, restorable, Some(HBMMENU_POPUP_RESTORE)),
+            (SC_MOVE, !maximized, None),
+            (SC_SIZE, !maximized, None),
+            (SC_MINIMIZE, true, Some(HBMMENU_POPUP_MINIMIZE)),
+            (SC_MAXIMIZE, !maximized, Some(HBMMENU_POPUP_MAXIMIZE)),
+            (SC_CLOSE, true, Some(HBMMENU_POPUP_CLOSE)),
+        ];
+        for ((command, on, glyph), label) in entries.into_iter().zip(labels) {
+            if command == SC_CLOSE {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            }
+            let text = wide(&if command == SC_CLOSE { format!("{label}\tAlt+F4") } else { label.to_owned() });
+            let _ = AppendMenuW(menu, MF_STRING | if on { MF_ENABLED } else { MF_GRAYED }, command as usize, windows::core::PCWSTR(text.as_ptr()));
+            if let Some(glyph) = glyph {
+                let info = MENUITEMINFOW { cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32, fMask: MIIM_BITMAP, hbmpItem: glyph, ..Default::default() };
+                let _ = SetMenuItemInfoW(menu, command, false, &info);
+            }
+        }
+        if let Some(extra) = extra {
+            let text = wide(extra);
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            let _ = AppendMenuW(menu, MF_STRING, MENU_EXTRA as usize, windows::core::PCWSTR(text.as_ptr()));
         }
         let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, x, y, Some(0), hwnd, None).0 as u32;
+        let _ = DestroyMenu(menu);
         match chosen {
             0 => false,
             MENU_EXTRA => true,
@@ -302,10 +309,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        // The press is taken here: the default handling would hold the mouse and swallow the release.
+        WM_NCRBUTTONDOWN if wparam.0 as u32 == HTCAPTION => LRESULT(0),
         // A right click on the title bar opens the menu of the window, with the settings under it.
         WM_NCRBUTTONUP if wparam.0 as u32 == HTCAPTION => {
-            let label = with_app(hwnd, |app| app.settings_label());
-            if system_menu(hwnd, lo(lparam), hi(lparam), label) {
+            let Some((labels, settings)) = with_app(hwnd, |app| (app.window_menu_labels(), app.settings_label())) else { return LRESULT(0) };
+            if system_menu(hwnd, lo(lparam), hi(lparam), labels, Some(settings)) {
                 with_app(hwnd, |app| app.run(nekominal_model::commands::Command::AppSettings));
             }
             LRESULT(0)
@@ -717,9 +726,12 @@ pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam:
             }
             LRESULT(0)
         }
+        WM_NCRBUTTONDOWN if wparam.0 as u32 == HTCAPTION => LRESULT(0),
         // The same menu of the window as the shell's, without the settings: this is them.
         WM_NCRBUTTONUP if wparam.0 as u32 == HTCAPTION => {
-            system_menu(hwnd, lo(lparam), hi(lparam), None);
+            if let Some(labels) = with_app(hwnd, |app| app.window_menu_labels()) {
+                system_menu(hwnd, lo(lparam), hi(lparam), labels, None);
+            }
             LRESULT(0)
         }
         WM_PAINT => {

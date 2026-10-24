@@ -95,8 +95,6 @@ pub enum Part {
     Binding(Command),
     /// Puts the shortcuts of a command back to the default.
     ResetKey(Command),
-    /// Connects Claude Code's status line to the status bar, or disconnects it.
-    Claude,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -234,6 +232,19 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
         // The Agent page starts with the agents it knows, before the rows of the table.
         let agents = (section == Section::Agents).then_some(Entry::Claude);
         agents.into_iter().chain(settings_ui::in_section(section).map(Entry::Setting)).collect()
+    }
+}
+
+/// What the row of Claude Code says about the status bar getting its numbers.
+pub fn claude_note(claude: &crate::agent::Claude, settings: &Settings) -> Text {
+    if claude.exe.is_none() {
+        Text::ClaudeMissing
+    } else if claude.own_status_line {
+        Text::ClaudeForeign
+    } else if !settings.status_bar.show {
+        Text::ClaudeBarOff
+    } else {
+        Text::ClaudeAuto
     }
 }
 
@@ -398,33 +409,13 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let mark = Rect::new(rect.x + MARGIN, rect.y + (rect.h - 28.0) / 2.0, 28.0, 28.0);
                 item(&mut items, mark, None, Visual::Mark(Mark::Badge { label: "C", color: (217, 119, 87) }), true);
                 let text_x = mark.x + 28.0 + 2.0 * MARK_GAP;
-                // A button to connect or disconnect when there is a Claude Code and nobody else's status line is in the way.
-                let action = match claude.link {
-                    _ if claude.exe.is_none() => None,
-                    crate::agent::Link::Linked => Some(Text::ClaudeUnlink),
-                    crate::agent::Link::Unlinked => Some(Text::ClaudeLink),
-                    crate::agent::Link::Foreign => None,
-                };
-                let mut text_end = rect.x + rect.w - MARGIN;
-                if let Some(action) = action {
-                    let w = measure(action.get(lang), 13.0, false) + 32.0;
-                    let button = Rect::new(text_end - w, rect.y + (rect.h - CONTROL) / 2.0, w, CONTROL);
-                    item(&mut items, button, Some(Part::Claude), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::Claude) }), true);
-                    item(&mut items, button, None, label(action.get(lang), 13.0, Tone::Text, false, Align::Center), true);
-                    text_end = button.x - 2.0 * GAP;
-                }
-                let room = (text_end - text_x).max(0.0);
+                let room = (rect.x + rect.w - MARGIN - text_x).max(0.0);
                 let title = match &claude.version {
                     Some(version) => format!("Claude Code  {version}"),
                     None => "Claude Code".to_owned(),
                 };
                 item(&mut items, Rect::new(text_x, rect.y + 8.0, room, 22.0), None, label(title, 13.0, Tone::Text, true, Align::Left), true);
-                let note = match claude.link {
-                    _ if claude.exe.is_none() => Text::ClaudeMissing,
-                    crate::agent::Link::Linked => Text::ClaudeLinked,
-                    crate::agent::Link::Unlinked => Text::ClaudeUnlinked,
-                    crate::agent::Link::Foreign => Text::ClaudeForeign,
-                };
+                let note = claude_note(claude, view.settings);
                 item(&mut items, Rect::new(text_x, rect.y + rect.h - 30.0, room, 22.0), None, label(note.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
                 y += CLAUDE_ROW;
             }
@@ -565,7 +556,7 @@ mod tests {
 
     use super::*;
 
-    const CLAUDE: crate::agent::Claude = crate::agent::Claude { exe: None, version: None, link: crate::agent::Link::Unlinked };
+    const CLAUDE: crate::agent::Claude = crate::agent::Claude { exe: None, version: None, own_status_line: false };
 
     fn keymap() -> Keymap {
         build_keymap(default_bindings(), &Default::default()).keymap

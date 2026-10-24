@@ -1,13 +1,14 @@
 //! Claude Code and the status bar: where its numbers come from.
 //!
-//! Claude Code runs a `statusLine` command whenever its session changes and hands it the session as JSON on stdin. Once the
-//! user connects it on the Agent page, that command is this program with `--statusline`: it writes what it is handed to a
-//! file named by the pane it runs in (`NEKOMINAL_SESSION`, set for every pane), and the window reads the file of the
-//! focused pane once a second. Nothing leaves the machine. Connecting adds one member to Claude Code's settings file and
-//! disconnecting takes it out again; the rest of the file is left as it was written, byte for byte.
+//! Claude Code runs a `statusLine` command whenever its session changes and hands it the session as JSON on stdin. In a pane
+//! of Nekominal that command is this program with `--statusline`: it writes what it is handed to a file named by the pane
+//! it runs in (`NEKOMINAL_SESSION`, set for every pane), and the window reads the file of the focused pane once a second.
+//! Nothing leaves the machine, and Claude Code's own settings are never written: the command reaches it only through
+//! `--settings`, which the `claude` function of the PowerShell integration adds when `NEKOMINAL_CLAUDE_SETTINGS` names a
+//! file. The window sets that variable for a new pane while the status bar is on, unless Claude Code has a status line of
+//! the user's own, which it would replace.
 
 use std::{
-    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -17,7 +18,8 @@ use std::{
 pub const SESSION_VAR: &str = "NEKOMINAL_SESSION";
 /// The argument that makes this program the `statusLine` command instead of a window.
 const FLAG: &str = "--statusline";
-const MEMBER: &str = "statusLine";
+/// The variable that names the settings file the `claude` function of the PowerShell integration hands to Claude Code.
+pub const CLAUDE_SETTINGS_VAR: &str = "NEKOMINAL_CLAUDE_SETTINGS";
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -41,8 +43,11 @@ pub fn statusline_main() -> bool {
     if std::env::args().nth(1).as_deref() != Some(FLAG) {
         return false;
     }
-    let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
+    // One JSON value, read up to its end and not to the end of the stream: nothing then hangs on a caller that keeps stdin
+    // open after writing.
+    let mut values = serde_json::Deserializer::from_reader(std::io::stdin().lock()).into_iter::<serde_json::Value>();
+    let Some(Ok(value)) = values.next() else { return true };
+    let input = value.to_string();
     if let Some(file) = std::env::var(SESSION_VAR).ok().as_deref().and_then(usage_file)
         && let Some(dir) = file.parent()
         && std::fs::create_dir_all(dir).is_ok()
@@ -126,21 +131,13 @@ pub fn git_branch(dir: &Path) -> Option<String> {
     None
 }
 
-/// Whether Claude Code's status line goes to this program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Link {
-    Linked,
-    Unlinked,
-    /// Claude Code has a status line command of somebody else's, which connecting would replace: it is left alone.
-    Foreign,
-}
-
 /// Claude Code as this machine has it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claude {
     pub exe: Option<PathBuf>,
     pub version: Option<String>,
-    pub link: Link,
+    /// The user's settings of Claude Code give it a status line of their own, which Nekominal leaves alone.
+    pub own_status_line: bool,
 }
 
 fn home() -> Option<PathBuf> {
@@ -148,7 +145,7 @@ fn home() -> Option<PathBuf> {
 }
 
 /// Claude Code's settings of the user: `CLAUDE_CONFIG_DIR` or `~/.claude`.
-fn settings_file() -> Option<PathBuf> {
+fn claude_settings() -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home().map(|h| h.join(".claude")))?;
     Some(dir.join("settings.json"))
 }
@@ -165,187 +162,34 @@ pub fn claude() -> Claude {
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .filter(|name| name.split('.').all(|part| part.parse::<u32>().is_ok()))
         .max_by_key(|name| name.split('.').map(|part| part.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>());
-    let text = settings_file().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
-    Claude { exe: on_path.or(installed), version, link: link_of(&text) }
+    let text = claude_settings().and_then(|file| std::fs::read_to_string(file).ok()).unwrap_or_default();
+    Claude { exe: on_path.or(installed), version, own_status_line: has_status_line(&text) }
 }
 
-fn link_of(settings: &str) -> Link {
-    let value: Option<serde_json::Value> = serde_json::from_str(settings).ok();
-    match value.as_ref().and_then(|v| v.get(MEMBER)) {
-        None | Some(serde_json::Value::Null) => Link::Unlinked,
-        Some(line) if line.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains(FLAG)) => Link::Linked,
-        Some(_) => Link::Foreign,
-    }
+/// Whether Claude Code's settings `text` set a status line; a file that cannot be read sets none.
+fn has_status_line(text: &str) -> bool {
+    let value: Option<serde_json::Value> = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok();
+    value.as_ref().and_then(|v| v.get("statusLine")).is_some_and(|line| !line.is_null())
 }
 
-/// The command Claude Code runs: this program, with forward slashes (Git Bash, which Claude Code prefers on Windows, eats
-/// backslashes) and in quotes for a path with spaces.
-fn command() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+/// The settings Claude Code takes with `--settings` in a pane: a status line that is this program. Forward slashes,
+/// because Claude Code runs the command through Git Bash when it can, which eats backslashes; quotes for a path with spaces.
+fn status_line_settings(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\\', "/");
-    Ok(if exe.contains(' ') { format!("\"{exe}\" {FLAG}") } else { format!("{exe} {FLAG}") })
+    let command = if exe.contains(' ') { format!("\"{exe}\" {FLAG}") } else { format!("{exe} {FLAG}") };
+    serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
 }
 
-/// Points Claude Code's status line at this program; refused when it has a command of somebody else's.
-pub fn link() -> Result<(), String> {
-    let file = settings_file().ok_or("no home folder")?;
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.to_string()),
-    };
-    let line = serde_json::json!({ "type": "command", "command": command()? });
-    match linked(&text, &line.to_string())? {
-        Some(added) => write(&file, &added),
-        None => Ok(()),
+/// Writes the file `NEKOMINAL_CLAUDE_SETTINGS` names and returns where it is: next to the files of the panes, rewritten
+/// when this program moved (another build, an update).
+pub fn claude_settings_file() -> Option<PathBuf> {
+    let file = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("claude-settings.json");
+    let text = status_line_settings(&std::env::current_exe().ok()?);
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
+        std::fs::create_dir_all(file.parent()?).ok()?;
+        std::fs::write(&file, &text).ok()?;
     }
-}
-
-/// Claude Code's settings `text` with the status line `line` in it; `None` when it is in already.
-fn linked(text: &str, line: &str) -> Result<Option<String>, String> {
-    // Only a file that is understood is edited: a comma too many, a byte order mark or a file being written would be
-    // made worse by an edit made as text.
-    if !text.trim().is_empty() && serde_json::from_str::<serde_json::Value>(text).is_err() {
-        return Err("Claude Code's settings file is not JSON this program understands".to_owned());
-    }
-    match link_of(text) {
-        Link::Linked => return Ok(None),
-        Link::Foreign => return Err("another statusLine is set".to_owned()),
-        Link::Unlinked => {}
-    }
-    // `"statusLine": null` counts as none: it goes before the new member, or the file would hold the key twice.
-    let text = if member(text, MEMBER).is_some() { without_member(text, MEMBER).ok_or("the statusLine member could not be taken out")? } else { text.to_owned() };
-    with_member(&text, MEMBER, line).map(Some).ok_or_else(|| "the settings file is not a JSON object".to_owned())
-}
-
-/// Takes this program's status line out of Claude Code's settings; a command of somebody else's stays.
-pub fn unlink() -> Result<(), String> {
-    let file = settings_file().ok_or("no home folder")?;
-    let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-    if link_of(&text) != Link::Linked {
-        return Ok(());
-    }
-    let removed = without_member(&text, MEMBER).ok_or("the statusLine member was not found")?;
-    write(&file, &removed)
-}
-
-fn write(file: &Path, text: &str) -> Result<(), String> {
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    let part = file.with_extension("json.nekominal");
-    std::fs::write(&part, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&part, file).map_err(|e| e.to_string())
-}
-
-// --- the members of a JSON object, edited as text ---------------------------------------------------------------
-
-/// Where the string that starts at `at` (its opening quote) ends: the index of its closing quote.
-fn string_end(b: &[u8], at: usize) -> Option<usize> {
-    let mut i = at + 1;
-    while i < b.len() {
-        match b[i] {
-            b'\\' => i += 2,
-            b'"' => return Some(i),
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// Where the value that starts at `at` ends (exclusive).
-fn value_end(b: &[u8], at: usize) -> Option<usize> {
-    match *b.get(at)? {
-        b'"' => string_end(b, at).map(|end| end + 1),
-        b'{' | b'[' => {
-            let mut depth = 0;
-            let mut i = at;
-            while i < b.len() {
-                match b[i] {
-                    b'"' => i = string_end(b, i)?,
-                    b'{' | b'[' => depth += 1,
-                    b'}' | b']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return Some(i + 1);
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            None
-        }
-        _ => Some(at + b[at..].iter().position(|c| matches!(c, b',' | b'}' | b']') || c.is_ascii_whitespace()).unwrap_or(b.len() - at)),
-    }
-}
-
-fn skip_space(b: &[u8], mut at: usize) -> usize {
-    while at < b.len() && b[at].is_ascii_whitespace() {
-        at += 1;
-    }
-    at
-}
-
-/// The member `key` of the outermost object of `text`: from the quote of its key to the end of its value.
-fn member(text: &str, key: &str) -> Option<(usize, usize)> {
-    let b = text.as_bytes();
-    let (mut depth, mut expect_key, mut i) = (0, false, 0);
-    while i < b.len() {
-        match b[i] {
-            b'"' => {
-                let end = string_end(b, i)?;
-                if depth == 1 && expect_key && &text[i + 1..end] == key {
-                    let colon = skip_space(b, end + 1);
-                    (b.get(colon) == Some(&b':')).then_some(())?;
-                    return Some((i, value_end(b, skip_space(b, colon + 1))?));
-                }
-                expect_key = false;
-                i = end;
-            }
-            b'{' | b'[' => {
-                depth += 1;
-                expect_key = b[i] == b'{' && depth == 1;
-            }
-            b'}' | b']' => depth -= 1,
-            b',' if depth == 1 => expect_key = true,
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// `text` with `"key": value` added as the last member of its outermost object, indented by two spaces; `None` when it is
-/// not an object. An empty text becomes an object of that member alone.
-fn with_member(text: &str, key: &str, value: &str) -> Option<String> {
-    if text.trim().is_empty() {
-        return Some(format!("{{\n  \"{key}\": {value}\n}}\n"));
-    }
-    let close = text.rfind('}')?;
-    text.trim_start().starts_with('{').then_some(())?;
-    let before = text[..close].trim_end();
-    let comma = if before.ends_with('{') { "" } else { "," };
-    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    Some(format!("{before}{comma}{nl}  \"{key}\": {value}{nl}{}", &text[close..]))
-}
-
-/// `text` without the member `key` of its outermost object and the comma that went with it.
-fn without_member(text: &str, key: &str) -> Option<String> {
-    let (start, end) = member(text, key)?;
-    let b = text.as_bytes();
-    let before = text[..start].trim_end();
-    if before.ends_with(',') {
-        // Not the first member: it goes with the comma before it.
-        return Some(format!("{}{}", &text[..before.len() - 1], &text[end..]));
-    }
-    let after = skip_space(b, end);
-    if b.get(after) == Some(&b',') {
-        // The first member: it goes with the comma after it, up to the next member.
-        return Some(format!("{}{}", &text[..start], &text[skip_space(b, after + 1)..]));
-    }
-    // The only member: the object is left empty.
-    Some(format!("{before}{}", &text[after..]))
+    Some(file)
 }
 
 #[cfg(test)]
@@ -376,55 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn the_link_is_read_from_the_member_of_claude_code_s_settings() {
-        assert_eq!(link_of(""), Link::Unlinked);
-        assert_eq!(link_of(r#"{"theme":"dark"}"#), Link::Unlinked);
-        assert_eq!(link_of(r#"{"statusLine":{"type":"command","command":"C:/n/nekominal.exe --statusline"}}"#), Link::Linked);
-        assert_eq!(link_of(r#"{"statusLine":{"type":"command","command":"~/.claude/line.sh"}}"#), Link::Foreign);
+    fn a_status_line_of_the_user_s_own_is_found_and_left_alone() {
+        assert!(!has_status_line(""));
+        assert!(!has_status_line(r#"{"theme":"dark"}"#));
+        assert!(!has_status_line(r#"{"statusLine": null}"#));
+        assert!(has_status_line(r#"{"statusLine":{"type":"command","command":"~/.claude/line.sh"}}"#));
+        assert!(has_status_line("\u{feff}{\"statusLine\":{\"command\":\"x\"}}"));
+        assert!(!has_status_line("{\"a\": 1,}"), "a file Claude Code cannot read either sets nothing");
     }
 
     #[test]
-    fn connecting_adds_one_member_and_disconnecting_leaves_the_file_as_it_was() {
-        let line = r#"{"type":"command","command":"C:/n/n.exe --statusline"}"#;
-        for original in [
-            "{\n  \"theme\": \"dark\",\n  \"env\": { \"A\": \"{,}\" }\n}\n",
-            "{\r\n  \"theme\": \"dark\"\r\n}\r\n",
-            "{\n  \"nested\": { \"statusLine\": 1 }\n}",
-        ] {
-            let added = with_member(original, MEMBER, line).unwrap();
-            assert_eq!(link_of(&added), Link::Linked, "{added}");
-            let value: serde_json::Value = serde_json::from_str(&added).unwrap();
-            assert_eq!(value["theme"].as_str().or(Some("dark")), Some("dark"));
-            assert_eq!(without_member(&added, MEMBER).unwrap().replace("\r\n", "\n").trim_end(), original.replace("\r\n", "\n").trim_end(), "{added}");
-        }
-        let alone = with_member("", MEMBER, line).unwrap();
-        assert_eq!(link_of(&alone), Link::Linked);
-        assert_eq!(with_member("{}", MEMBER, line).unwrap(), format!("{{\n  \"statusLine\": {line}\n}}"));
-        assert_eq!(without_member(&with_member("{}", MEMBER, line).unwrap(), MEMBER).unwrap(), "{}");
-        assert_eq!(with_member("[1]", MEMBER, line), None);
-    }
-
-    #[test]
-    fn only_a_file_that_is_understood_is_connected_and_a_null_line_is_replaced() {
-        let line = r#"{"type":"command","command":"C:/n/n.exe --statusline"}"#;
-        let replaced = linked("{\n  \"statusLine\": null,\n  \"theme\": \"dark\"\n}", line).unwrap().unwrap();
-        assert_eq!(replaced.matches("statusLine").count(), 1, "{replaced}");
-        assert_eq!(link_of(&replaced), Link::Linked);
-        assert_eq!(link_of(&without_member(&replaced, MEMBER).unwrap()), Link::Unlinked, "one disconnect takes it out");
-        assert!(linked("{\"a\": 1,}", line).is_err(), "a comma too many is left alone");
-        assert!(linked("\u{feff}{\"a\": 1}", line).is_err());
-        assert!(linked(r#"{"statusLine":{"command":"~/line.sh"}}"#, line).is_err(), "somebody else's line stays");
-        assert_eq!(linked(&replaced, line).unwrap(), None, "connected already");
-        assert!(linked("", line).unwrap().is_some());
-    }
-
-    #[test]
-    fn a_member_is_found_only_at_the_top_and_taken_out_with_its_comma() {
-        let text = r#"{"statusLine": {"command": "a,b}"}, "theme": "x", "inner": {"statusLine": 2}}"#;
-        assert_eq!(without_member(text, MEMBER).unwrap(), r#"{"theme": "x", "inner": {"statusLine": 2}}"#);
-        let text = r#"{"theme": "x", "statusLine": {"command": "q\"}"}, "z": 1}"#;
-        assert_eq!(without_member(text, MEMBER).unwrap(), r#"{"theme": "x", "z": 1}"#);
-        assert_eq!(member(r#"{"a": "statusLine", "b": 1}"#, MEMBER), None, "a value of that name is no member");
+    fn the_settings_of_a_pane_run_this_program_with_forward_slashes() {
+        let plain: serde_json::Value = serde_json::from_str(&status_line_settings(Path::new(r"C:\n\nekominal.exe"))).unwrap();
+        assert_eq!(plain["statusLine"]["command"], "C:/n/nekominal.exe --statusline");
+        assert_eq!(plain["statusLine"]["type"], "command");
+        let spaced: serde_json::Value = serde_json::from_str(&status_line_settings(Path::new(r"C:\Program Files\N\n.exe"))).unwrap();
+        assert_eq!(spaced["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline");
     }
 
     #[test]
