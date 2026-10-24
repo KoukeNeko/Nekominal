@@ -103,8 +103,9 @@ pub fn tree(view: &View) -> TreeUpdate {
 pub struct PageView {
     pub window: String,
     pub sections_label: String,
-    /// The name of each section and whether it is the one shown (none is while a search shows rows of every section).
-    pub sections: Vec<(String, bool)>,
+    /// The name of each section, whether it is the one shown (none is while a search shows rows of every section) and
+    /// where its tab is drawn (left, top, right, bottom, in pixels from the top left of the window).
+    pub sections: Vec<(String, bool, [f64; 4])>,
     pub search_label: String,
     pub query: String,
     /// The label and the value of each row on show.
@@ -124,11 +125,12 @@ pub fn page_tree(view: &PageView) -> TreeUpdate {
     let mut tabs = Node::new(Role::TabList);
     tabs.set_label(view.sections_label.as_str());
     let mut tab_ids = Vec::new();
-    for (i, (name, selected)) in view.sections.iter().enumerate() {
+    for (i, (name, selected, [x0, y0, x1, y1])) in view.sections.iter().enumerate() {
         let id = NodeId(FIRST_TAB + i as u64);
         let mut tab = Node::new(Role::Tab);
         tab.set_label(name.as_str());
         tab.set_selected(*selected);
+        tab.set_bounds(accesskit::Rect { x0: *x0, y0: *y0, x1: *x1, y1: *y1 });
         nodes.push((id, tab));
         tab_ids.push(id);
     }
@@ -217,7 +219,7 @@ mod tests {
         let view = PageView {
             window: "Settings".into(),
             sections_label: "Sections".into(),
-            sections: vec![("Appearance".into(), true), ("Terminal".into(), false)],
+            sections: vec![("Appearance".into(), true, [14.0, 8.0, 100.0, 44.0]), ("Terminal".into(), false, [100.0, 8.0, 180.0, 44.0])],
             search_label: "Search settings".into(),
             query: String::new(),
             rows: vec![("Background opacity".into(), "72%".into()), ("Font size".into(), "14".into())],
@@ -227,6 +229,8 @@ mod tests {
         assert_eq!(update.focus, NodeId(4), "the search line has the keyboard when no row has it");
         assert_eq!(node(&update, WINDOW).children(), &[TABS, NodeId(4), POPUP]);
         assert_eq!(node(&update, NodeId(FIRST_TAB)).is_selected(), Some(true));
+        let bounds = node(&update, NodeId(FIRST_TAB + 1)).bounds().expect("a tab has bounds");
+        assert_eq!((bounds.x0, bounds.x1), (100.0, 180.0));
         assert_eq!(node(&update, NodeId(FIRST_ROW)).label(), Some("Background opacity"));
         assert_eq!(node(&update, NodeId(FIRST_ROW)).description(), Some("72%"));
         let update = page_tree(&PageView { focused: Some(1), query: "fo".into(), ..view });

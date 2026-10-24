@@ -1465,13 +1465,19 @@ impl App {
         self.settings_win.as_mut()?.access.as_mut()?.update_window_focus_state(focused)
     }
 
-    fn page_access_view(&self) -> Option<access::PageView> {
+    fn page_access_view(&mut self) -> Option<access::PageView> {
+        let scale = f64::from(self.settings_win.as_ref()?.scale);
+        let frame = self.page_frame()?;
         let (lang, page) = (self.language(), self.page.as_ref()?);
         let searching = !page.query.trim().is_empty();
+        let tab_bounds = |i: usize| {
+            let rect = frame.items.iter().find(|item| item.part == Some(Part::Nav(i))).map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |item| item.rect);
+            [f64::from(rect.x) * scale, f64::from(rect.y) * scale, f64::from(rect.x + rect.w) * scale, f64::from(rect.y + rect.h) * scale]
+        };
         Some(access::PageView {
             window: Text::AppSettings.get(lang).to_owned(),
             sections_label: Text::AppSettings.get(lang).to_owned(),
-            sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section)).collect(),
+            sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section, tab_bounds(i))).collect(),
             search_label: Text::SettingsSearch.get(lang).to_owned(),
             query: page.query.clone(),
             rows: settings_page::entries(page, lang, &self.keymap)
