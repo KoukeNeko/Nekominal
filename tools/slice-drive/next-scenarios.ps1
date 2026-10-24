@@ -57,9 +57,9 @@ function Next-At([double]$X, [double]$Y) {
 function Next-MenuX([double]$Width) { $Width - 138 - 16 }
 
 # Where a pop-up that hangs from a button of the bar starts, in DIP from the top of the window: the buttons are as tall as
-# the bar (48), and the pop-up hangs 4 below them. Its rows start 6 further down and are 32 tall.
+# the bar (48), and the pop-up hangs 4 below them. Its rows start 4 further down and are 32 tall.
 function Next-PopupTop { 52 }
-function Next-PopupRowY([int]$Row) { (Next-PopupTop) + 6 + 32 * $Row + 16 }
+function Next-PopupRowY([int]$Row) { (Next-PopupTop) + 4 + 32 * $Row + 16 }
 
 # The whole text of the selected tab, through select all and copy.
 function Next-Text {
@@ -204,7 +204,7 @@ function Scenario-NextAppearance {
         $menuX = Next-MenuX (($r.Right - $r.Left) / $s)
         $button = Next-At $menuX 24
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
-        $row = Next-At ($menuX - 60) ((Next-PopupTop) + 296)                  # the Mica row of the backdrop group
+        $row = Next-At ($menuX - 60) ((Next-PopupTop) + 294)                  # the Mica row of the backdrop group
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1200
         $file = Join-Path $global:NextAppData 'Nekominal\settings.json'
         $saved = if (Test-Path $file) { Get-Content $file -Raw } else { '' }
@@ -1281,6 +1281,19 @@ function Scenario-NextSettingsWindow {
         Next-Check 'settingswindow.has-the-keyboard-when-it-opens' ([D]::ForegroundPid() -eq [uint32]$script:App.Id) 'the window that came up is the one the keyboard is in'
         Type-Unicode 'opacity' 30; Start-Sleep -Milliseconds 400
         Next-Check 'settingswindow.takes-the-typing' ((Next-SettingsSearch) -eq 'opacity') "the search says: $(Next-SettingsSearch)"
+        # The title row is drawn by the window, as in the shell: its buttons act and what they leave of it drags the window.
+        $s = Get-Scale
+        $frame = { $f = New-Object D+RECT; if ([D]::DwmGetWindowAttribute($window, 9, [ref]$f, 16) -ne 0) { [void][D]::GetWindowRect($window, [ref]$f) }; $f }
+        $button = { param($i) $f = & $frame; @([int]($f.Right - (3 - $i) * 46 * $s + 23 * $s), [int]($f.Top + 20 * $s)) }
+        $at = & $button 1; Click-At $at[0] $at[1]; Start-Sleep -Milliseconds 1100
+        Next-Check 'settingswindow.maximize-button-maximizes' ([D]::IsZoomed($window)) 'the middle button of the title row maximizes the window'
+        $at = & $button 1; Click-At $at[0] $at[1]; Start-Sleep -Milliseconds 1100
+        Next-Check 'settingswindow.maximize-button-restores' (-not [D]::IsZoomed($window)) 'the same button restores it'
+        $before = (& $frame).Left; $top = & $frame
+        Drag-To ([int]($top.Left + 300 * $s)) ([int]($top.Top + 20 * $s)) ([int]($top.Left + 380 * $s)) ([int]($top.Top + 60 * $s)) 12 20
+        $moved = (& $frame).Left - $before
+        Next-Check 'settingswindow.title-row-drags-the-window' ([Math]::Abs($moved - 80 * $s) -le 4) "the window moved $moved px for a drag of $([int](80 * $s)) px"
+        Next-Check 'settingswindow.keeps-its-search-through-all-that' ((Next-SettingsSearch) -eq 'opacity') "the search says: $(Next-SettingsSearch)"
         # Back to the shell: the window stays open and the typing goes to the terminal.
         [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 700
         Next-Line 'echo STILLWORKS'
@@ -1295,5 +1308,10 @@ function Scenario-NextSettingsWindow {
         Next-Check 'settingswindow.escape-closes-it' ((Next-SettingsWindow) -eq [IntPtr]::Zero -and (& $windows) -eq 1) "windows: $(& $windows)"
         Next-Line 'echo AFTER-CLOSE'
         Next-Check 'settingswindow.terminal-after-closing' ((Next-Text) -match 'AFTER-CLOSE') 'the terminal takes the typing again'
+        Press 0x4F @(0x11, 0x10); Start-Sleep -Milliseconds 1200
+        $window = Next-SettingsWindow
+        $close = & $button 2
+        Click-At $close[0] $close[1]; Start-Sleep -Milliseconds 1200
+        Next-Check 'settingswindow.close-button-closes-it' ((Next-SettingsWindow) -eq [IntPtr]::Zero -and (& $windows) -eq 1) "windows: $(& $windows)"
     }
 }
