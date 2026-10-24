@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, clipboard, find, motion, textfield,
+    access, clipboard, design, find, motion, textfield,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -81,12 +81,10 @@ pub enum Cursor {
 /// How far below the title bar a dragged chip is let go to count as pulled out of the window, in DIP.
 const TEAR_MARGIN: f32 = 12.0;
 
-/// Corner radius of every rounded rectangle, in DIP (the same number as `design.rs` of the WinUI shell).
-pub const CORNER_RADIUS: f32 = 8.0;
+/// Corner radius of every rounded rectangle, in DIP: the one of `design.rs`.
+pub const CORNER_RADIUS: f32 = design::RADIUS;
 /// How opaque the settings page is over the glass (of 255): the selected tab above it takes the same.
 const PAGE_ALPHA: u8 = 205;
-/// The top corners of a tab: square but for a hint.
-const TAB_RADIUS: f32 = 3.0;
 const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
 /// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
@@ -245,9 +243,7 @@ fn wired(command: Command) -> bool {
     )
 }
 
-fn col(c: SchemeColor) -> Color {
-    Color([c.r, c.g, c.b, c.a])
-}
+use crate::widgets::{self, col, State};
 
 fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
     DiscoveredProfile {
@@ -1575,7 +1571,19 @@ impl App {
         let g = self.glass;
         let accent = col(g.accent);
         let area = self.page_area();
-        self.ui.fill(area, Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
+        let Some((window_width, hover, pressed, maximized)) = self.settings_win.as_ref().map(|win| (win.area().0, win.hover, win.pressed, win.maximized)) else { return };
+        self.ui.fill(Rect::new(0.0, 0.0, area.w, area.y + area.h), Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
+        // The title row: the band of the tabs goes on above them, the title at the left and the caption buttons at the
+        // right, with the plate of the bar under the one the pointer is on.
+        self.ui.fill(Rect::new(0.0, 0.0, window_width, settings_window::TITLE), col(g.tab_rest()));
+        let title_line = self.ui.line_height(TEXT_SIZE);
+        let title = Text::AppSettings.get(self.language());
+        self.ui.text(design::INSET, (settings_window::TITLE - title_line) / 2.0, title, TEXT_SIZE, col(g.text_secondary()), false);
+        let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
+        for (cell, (button, glyph)) in settings_window::caption_buttons(window_width).into_iter().zip(glyphs) {
+            widgets::bar_button(&mut self.ui, &g, cell, State { hover: hover == button, pressed: pressed == button, chosen: false });
+            self.icon_centered(cell, glyph, ICON_SIZE, col(g.text()));
+        }
         // The tab that is selected is the page itself: the band behind the tabs and its lower edge leave it out.
         let joined = frame.items.iter().find(|item| matches!(item.visual, settings_page::Visual::Plate(settings_page::Fill::Tab { selected: true, .. }))).map(|item| item.rect);
         let schemes: Vec<&str> = themes::theme_names().collect();
@@ -1597,47 +1605,29 @@ impl App {
                 settings_page::Visual::None => {}
                 settings_page::Visual::Plate(fill) => match *fill {
                     settings_page::Fill::Strip => {
+                        // The band goes on above the selected tab: only the tab itself, from its top down, is the colour of
+                        // the page.
+                        let above = joined.map_or(rect.h, |tab| (tab.y - rect.y).clamp(0.0, rect.h));
+                        self.ui.fill(Rect::new(rect.x, rect.y, rect.w, above), col(g.tab_rest()));
                         let (left, right) = joined.map_or((rect.w, rect.w), |tab| ((tab.x - rect.x).clamp(0.0, rect.w), (tab.x + tab.w - rect.x).clamp(0.0, rect.w)));
                         for (x, w) in [(rect.x, left), (rect.x + right, rect.w - right)] {
-                            self.ui.fill(Rect::new(x, rect.y, w, rect.h), col(g.tab_rest()));
+                            self.ui.fill(Rect::new(x, rect.y + above, w, rect.h - above), col(g.tab_rest()));
                             self.ui.fill(Rect::new(x, rect.y + rect.h - 1.0, w, 1.0), col(g.divider()));
                         }
                     }
                     settings_page::Fill::Tab { selected, hover } => {
                         if selected {
-                            self.tab_shape(rect, rect.y + rect.h, Color::TRANSPARENT, Some((col(g.divider()), 1.0)));
+                            widgets::tab(&mut self.ui, rect, rect.y + rect.h, Color::TRANSPARENT, Some((col(g.divider()), 1.0)));
                         } else if hover {
-                            self.tab_shape(rect, rect.y + rect.h - 1.0, col(g.hover()), None);
+                            widgets::tab(&mut self.ui, rect, rect.y + rect.h - 1.0, col(g.hover()), None);
                         }
                     }
-                    settings_page::Fill::Row { focus } => {
-                        self.ui.rrect(rect, CORNER_RADIUS, col(g.cluster()), focus.then_some((accent, 1.5)));
-                    }
-                    settings_page::Fill::Button { selected, hover } => {
-                        if selected {
-                            self.ui.rrect(rect, CORNER_RADIUS, col(g.chip_selected()), Some((col(g.chip_selected_border()), 1.0)));
-                        } else {
-                            self.ui.rrect(rect, CORNER_RADIUS, if hover { col(g.hover()) } else { col(g.cluster()) }, None);
-                        }
-                    }
-                    settings_page::Fill::Field { editing } => {
-                        self.ui.rrect(rect, CORNER_RADIUS, col(g.cluster()), Some((if editing { accent } else { col(g.divider()) }, 1.0)));
-                    }
-                    settings_page::Fill::Switch { on, hover } => {
-                        let fill = if on { accent } else if hover { col(g.hover()) } else { col(g.pressed()) };
-                        self.ui.rrect(rect, CORNER_RADIUS, fill, Some((col(g.divider()), 1.0)));
-                    }
-                    settings_page::Fill::Track => self.ui.rrect(rect, rect.h / 2.0, col(g.divider()), None),
-                    settings_page::Fill::Accent => self.ui.rrect(rect, rect.h / 2.0, accent, None),
-                    settings_page::Fill::Knob => self.ui.rrect(rect, rect.w / 2.0, col(g.text()), None),
-                    settings_page::Fill::Selection => self.ui.rrect(rect, 4.0, Color([g.accent.r, g.accent.g, g.accent.b, 90]), None),
-                    settings_page::Fill::Radio { on, hover } => {
-                        let ring = if on { accent } else if hover { col(g.text()) } else { col(g.text_secondary()) };
-                        self.ui.rrect(rect, rect.w / 2.0, Color::TRANSPARENT, Some((ring, 1.5)));
-                        if on {
-                            self.ui.rrect(Rect::new(rect.x + 4.0, rect.y + 4.0, rect.w - 8.0, rect.h - 8.0), (rect.w - 8.0) / 2.0, accent, None);
-                        }
-                    }
+                    settings_page::Fill::Row { focus } => widgets::row(&mut self.ui, &g, rect, focus),
+                    settings_page::Fill::Button { selected, hover } => widgets::button(&mut self.ui, &g, rect, State::chosen(selected, hover)),
+                    settings_page::Fill::Field { editing } => widgets::field(&mut self.ui, &g, rect, editing),
+                    settings_page::Fill::Switch { on, hover } => widgets::switch(&mut self.ui, &g, rect, on, hover),
+                    settings_page::Fill::Slider { share } => widgets::slider(&mut self.ui, &g, rect, share),
+                    settings_page::Fill::Radio { on, hover } => widgets::radio(&mut self.ui, &g, rect, on, hover),
                 },
                 settings_page::Visual::Label { text, size, tone, bold, align } => {
                     let width = self.ui.measure(text, *size, *bold);
@@ -1652,6 +1642,10 @@ impl App {
                     self.ui.pop_clip();
                 }
                 settings_page::Visual::Glyph { ch, size, tone } => self.icon_centered(rect, *ch, *size, tone_color(*tone)),
+                settings_page::Visual::Mark(mark) => widgets::mark(&mut self.ui, rect, *mark, col(g.text_secondary())),
+                settings_page::Visual::Edit { text, cursor, placeholder } => {
+                    widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder });
+                }
                 settings_page::Visual::Tile { scheme, selected, hover } => {
                     let Some(scheme) = schemes.get(*scheme).map(|name| themes::scheme(name)) else { continue };
                     let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text()), 1.0) } else { (col(g.divider()), 1.0) };
@@ -1659,11 +1653,10 @@ impl App {
                     self.ui.push_clip(rect);
                     self.ui.text(rect.x + 10.0, rect.y + 8.0, scheme.name, 12.0, col(scheme.foreground), false);
                     for (i, color) in scheme.ansi[1..7].iter().enumerate() {
-                        self.ui.rrect(Rect::new(rect.x + 10.0 + i as f32 * 20.0, rect.y + rect.h - 26.0, 16.0, 16.0), 4.0, col(*color), None);
+                        self.ui.rrect(Rect::new(rect.x + 10.0 + i as f32 * 20.0, rect.y + rect.h - 26.0, 16.0, 16.0), CORNER_RADIUS, col(*color), None);
                     }
                     self.ui.pop_clip();
                 }
-                settings_page::Visual::Caret => self.ui.fill(rect, col(g.text())),
             }
         }
         if clipped {
@@ -1671,17 +1664,10 @@ impl App {
         }
     }
 
-    /// A tab: a rectangle with rounded top corners that runs down to the bottom edge of the bar. The rounded rectangle
-    /// is drawn taller than the tab and cut at `bottom`, which leaves the lower corners out.
-    fn tab_shape(&mut self, chip: Rect, bottom: f32, fill: Color, border: Option<(Color, f32)>) {
-        self.ui.push_clip(Rect::new(chip.x, 0.0, chip.w, bottom));
-        self.ui.rrect(Rect::new(chip.x, chip.y, chip.w, chip.h + TAB_RADIUS * 2.0), TAB_RADIUS, fill, border);
-        self.ui.pop_clip();
-    }
-
     /// A button of the bar lit: a square plate as tall as the bar, above its lower edge.
-    fn bar_plate(&mut self, button: Rect, color: Color) {
-        self.ui.fill(Rect::new(button.x, 0.0, button.w, layout::TITLE_HEIGHT - 1.0), color);
+    fn bar_plate(&mut self, button: Rect, state: State) {
+        let g = self.glass;
+        widgets::bar_button(&mut self.ui, &g, Rect::new(button.x, 0.0, button.w, layout::TITLE_HEIGHT - 1.0), state);
     }
 
     fn paint_chrome(&mut self) {
@@ -1712,7 +1698,7 @@ impl App {
             let pressed = self.pressed == hit;
             let color = if self.active { col(g.text()) } else { col(g.text_secondary()) };
             if self.hover == hit || pressed {
-                self.bar_plate(cell, if pressed { col(g.pressed()) } else { col(g.hover()) });
+                self.bar_plate(cell, State { hover: true, pressed, chosen: false });
             }
             self.icon_centered(cell, glyph, ICON_SIZE, color);
         }
@@ -1750,9 +1736,9 @@ impl App {
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
             if selected {
-                self.tab_shape(chip, layout::TITLE_HEIGHT, joined_fill, Some((col(g.divider()), 1.0)));
+                widgets::tab(&mut self.ui, chip, layout::TITLE_HEIGHT, joined_fill, Some((col(g.divider()), 1.0)));
             } else if hover {
-                self.tab_shape(chip, edge, col(g.hover()), None);
+                widgets::tab(&mut self.ui, chip, edge, col(g.hover()), None);
             }
             // A line between two tabs that are not selected (the selected one has its own outline).
             if !selected && i + 1 != self.selected && i + 1 < self.layout.chips.len() {
@@ -1764,7 +1750,7 @@ impl App {
                 self.tab_label(i)
             };
             let close = Layout::close_button(chip).filter(|_| selected || hover);
-            let right = close.map_or(chip.x + chip.w - 10.0, |c| c.x - 4.0);
+            let right = close.map_or(chip.x + chip.w - design::INSET, |c| c.x - design::GAP);
             self.ui.push_clip(Rect::new(chip.x, chip.y, (right - chip.x).max(0.0), chip.h));
             let color = if selected { col(g.text()) } else { col(g.text_secondary()) };
             // What the tab asks for: its glyph in the status colour, ahead of the title.
@@ -1772,33 +1758,33 @@ impl App {
             let mut title_x = chip.x + 12.0;
             if let Some(glyph) = status::glyph(status.state) {
                 let icon_line = self.ui.line_height(ICON_SIZE);
-                let at = chip.x + 10.0;
+                let at = chip.x + design::INSET;
                 self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, status.state)));
-                title_x = at + ICON_SIZE + 6.0;
+                title_x = at + ICON_SIZE + 2.0 * design::GAP;
             } else if let Some(glyph) = self.tabs[i].job().map(logic::job_icon) {
                 // A tab at rest shows the program it runs, as the automatic icon of iTerm2 does.
                 let icon_line = self.ui.line_height(ICON_SIZE);
-                let at = chip.x + 10.0;
+                let at = chip.x + design::INSET;
                 self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, color);
-                title_x = at + ICON_SIZE + 6.0;
+                title_x = at + ICON_SIZE + 2.0 * design::GAP;
             }
             self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
             if let Some(close) = close {
                 if self.hover == Hit::ChipClose(i) {
-                    self.ui.rrect(close, TAB_RADIUS, col(g.pressed()), None);
+                    widgets::plate(&mut self.ui, close, col(g.pressed()));
                 }
                 self.icon_centered(close, '\u{E711}', ICON_SIZE, col(g.text()));
             }
         }
         let plus = self.layout.new_tab;
         if self.hover == Hit::NewTab {
-            self.bar_plate(plus, col(g.hover()));
+            self.bar_plate(plus, State::hover(true));
         }
         self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
         let list = self.layout.profiles;
         if self.hover == Hit::Profiles || self.popup_from == Some(Hit::Profiles) {
-            self.bar_plate(list, col(g.hover()));
+            self.bar_plate(list, State::hover(true));
         }
         self.icon_centered(list, '\u{E70D}', 12.0, col(g.text()));
         // The position plate: where the selected tab is among all of them, which a strip of narrow chips cannot say.
@@ -1815,7 +1801,7 @@ impl App {
             let plate = Rect::new(x - 8.0, list.y, width + 16.0, list.h);
             self.plate_rect = Some(plate);
             if self.hover == Hit::Plate || self.popup_from == Some(Hit::Plate) {
-                self.bar_plate(plate, col(g.hover()));
+                self.bar_plate(plate, State::hover(true));
             }
             self.ui.push_clip(Rect::new(x, list.y, room.max(0.0), list.h));
             self.ui.text(x, list.y + (list.h - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
@@ -1825,7 +1811,7 @@ impl App {
         }
         let menu = self.layout.menu;
         if self.hover == Hit::Menu || self.popup_from == Some(Hit::Menu) {
-            self.bar_plate(menu, col(g.hover()));
+            self.bar_plate(menu, State::hover(true));
         }
         self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
     }
@@ -1980,10 +1966,10 @@ impl App {
 
     // --- the settings window ------------------------------------------------------------------------------------
 
-    /// The area of the page: the whole client area of the window of the settings, in DIP.
+    /// The area of the page: the client area of the window of the settings below its title row, in DIP.
     fn page_area(&self) -> Rect {
         let (w, h) = self.settings_win.as_ref().map_or((0.0, 0.0), |win| win.area());
-        Rect::new(0.0, 0.0, w, h)
+        Rect::new(0.0, settings_window::TITLE, w, (h - settings_window::TITLE).max(0.0))
     }
 
     /// Asks for a frame of the window of the settings.
@@ -2069,10 +2055,42 @@ impl App {
         (x as f32 / scale, y as f32 / scale)
     }
 
+    /// What is under a point of the window of the settings (pixels): a caption button, the title row, or the page.
+    pub fn settings_hit_test(&self, x: i32, y: i32) -> Hit {
+        let Some(win) = self.settings_win.as_ref() else { return Hit::None };
+        let (x, y) = self.settings_point(x, y);
+        settings_window::hit(win.area().0, x, y)
+    }
+
+    pub fn settings_caption_hover(&mut self, hit: Hit) {
+        if let Some(win) = self.settings_win.as_mut()
+            && win.hover != hit
+        {
+            win.hover = hit;
+            self.page_redraw();
+        }
+    }
+
+    pub fn settings_caption_press(&mut self, hit: Hit) {
+        if let Some(win) = self.settings_win.as_mut() {
+            win.pressed = hit;
+            self.page_redraw();
+        }
+    }
+
+    /// A caption button was let go of: whether it is the one that was pressed.
+    pub fn settings_caption_release(&mut self, hit: Hit) -> bool {
+        let Some(win) = self.settings_win.as_mut() else { return false };
+        let pressed = std::mem::replace(&mut win.pressed, Hit::None);
+        self.page_redraw();
+        pressed == hit
+    }
+
     /// The window of the settings has this size in pixels now.
-    pub fn settings_size(&mut self, size_px: (u32, u32)) {
+    pub fn settings_size(&mut self, size_px: (u32, u32), maximized: bool) {
         if let Some(win) = self.settings_win.as_mut() {
             win.surface.resize(&self.gpu, size_px);
+            win.maximized = maximized;
         }
         // Rows that were scrolled to the end of a tall page stay inside a page that has grown.
         if let Some(max) = self.page_frame().map(|frame| frame.max_scroll())
@@ -3206,31 +3224,14 @@ impl App {
                 ui.fill(Rect::new(rect.x + 8.0, rect.y + rect.h / 2.0, rect.w - 16.0, 1.0), col(g.divider()));
                 continue;
             }
-            if popup.hover == Some(i) {
-                ui.rrect(rect, CORNER_RADIUS, col(g.hover()), None);
-            } else if row.current {
-                ui.rrect(rect, CORNER_RADIUS, col(g.chip_selected()), Some((col(g.chip_selected_border()), 1.0)));
-            }
+            widgets::menu_row(ui, &g, rect, popup.hover == Some(i), row.current);
             let y = rect.y + (rect.h - line) / 2.0;
             let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
             ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
             let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
             let mut label_x = rect.x + 12.0;
             if let Some(mark) = row.mark {
-                let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
-                match mark {
-                    logic::Mark::Badge { label, color: (r, green, b) } => {
-                        ui.rrect(square, 4.0, Color([r, green, b, 255]), None);
-                        let (size, label_line) = (9.0, ui.line_height(9.0));
-                        let width = ui.measure(label, size, true);
-                        ui.text(square.x + (square.w - width) / 2.0, square.y + (square.h - label_line) / 2.0, label, size, Color([255, 255, 255, 255]), true);
-                    }
-                    logic::Mark::Glyph(ch) => {
-                        let (size, glyph_line) = (14.0, ui.line_height(14.0));
-                        let width = ui.measure_icon(ch, size);
-                        ui.icon(square.x + (square.w - width) / 2.0, square.y + (square.h - glyph_line) / 2.0 + ICON_NUDGE, ch, size, col(g.text_secondary()));
-                    }
-                }
+                widgets::mark(ui, Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE), mark, col(g.text_secondary()));
                 label_x += popup::MARK_SIZE + popup::MARK_GAP;
             }
             ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));
@@ -3244,29 +3245,8 @@ impl App {
             ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
             let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
             let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
-            let before = textfield::prefix(query, popup.cursor.caret);
-            let after = &query[before.len()..];
-            let width = ui.measure(before, TEXT_SIZE, false);
-            let composing = ui.measure(&popup.preedit, TEXT_SIZE, false);
-            // The text scrolls so that the caret stays in view.
-            let scroll = (width + composing + 4.0 - (end - popup::QUERY_LEFT)).max(0.0);
-            let start = popup::QUERY_LEFT - scroll;
-            ui.push_clip(Rect::new(popup::QUERY_LEFT, y, (end - popup::QUERY_LEFT).max(0.0), line));
-            if let Some((from, to)) = popup.cursor.selection() {
-                let (left, right) = (ui.measure(textfield::prefix(query, from), TEXT_SIZE, false), ui.measure(textfield::prefix(query, to), TEXT_SIZE, false));
-                ui.fill(Rect::new(start + left, y, right - left, line), Color([g.accent.r, g.accent.g, g.accent.b, 90]));
-            }
-            ui.text(start, y, before, TEXT_SIZE, col(g.text()), false);
-            ui.text(start + width, y, &popup.preedit, TEXT_SIZE, col(g.text()), false);
-            ui.text(start + width + composing, y, after, TEXT_SIZE, col(g.text()), false);
-            if composing > 0.0 {
-                ui.fill(Rect::new(start + width, y + line - 1.0, composing, 1.0), col(g.accent));
-            }
-            let caret = start + width + composing + 1.0;
-            popup.caret = (caret, y, line);
-            // The caret: a bar after the text, not blinking, so the window needs no timer.
-            ui.fill(Rect::new(caret, y, 1.5, line), col(g.text()));
-            ui.pop_clip();
+            let area = Rect::new(popup::QUERY_LEFT, 0.0, (end - popup::QUERY_LEFT).max(0.0), header);
+            popup.caret = widgets::line_edit(ui, &g, area, TEXT_SIZE, &widgets::LineEdit { text: query, cursor: Some(popup.cursor), preedit: &popup.preedit, placeholder: "" });
             if !popup.status.is_empty() {
                 let width = ui.measure(&popup.status, TEXT_SIZE, false);
                 ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);

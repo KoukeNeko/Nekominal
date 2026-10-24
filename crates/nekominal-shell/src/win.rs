@@ -587,10 +587,75 @@ fn place_settings_ime(hwnd: HWND) {
 
 /// The messages of the window of the settings. They go to `App`, which owns the page; while `App` is busy (a message sent
 /// from inside one of its own calls) `with_app` finds it taken and the message is dropped. The frame and the title bar are
-/// the system's, so the window answers for none of them. The input method draws its own composition; what it finishes
+/// the system's at the sides and below, the title row is ours. The input method draws its own composition; what it finishes
 /// arrives as characters.
 pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        // As in the window of the shell: the client area is the whole window but for the frame at the sides and below, and
+        // the title row is ours.
+        WM_NCCALCSIZE if wparam.0 != 0 => {
+            // SAFETY: with wParam set, lParam points to an NCCALCSIZE_PARAMS.
+            unsafe {
+                let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
+                let top = params.rgrc[0].top;
+                let result = DefWindowProcW(hwnd, msg, wparam, lparam);
+                params.rgrc[0].top = if is_maximized(hwnd) { top + border(hwnd) } else { top };
+                result
+            }
+        }
+        WM_NCHITTEST => {
+            let (x, y) = (lo(lparam), hi(lparam));
+            if let Some(edge) = edge_hit(hwnd, x, y) {
+                return LRESULT(edge as isize);
+            }
+            let mut point = POINT { x, y };
+            // SAFETY: a window handle of this thread.
+            unsafe { let _ = ScreenToClient(hwnd, &mut point); };
+            match with_app(hwnd, |app| app.settings_hit_test(point.x, point.y)) {
+                Some(Hit::Drag) => LRESULT(HTCAPTION as isize),
+                Some(Hit::Minimize) => LRESULT(HTMINBUTTON as isize),
+                Some(Hit::Maximize) => LRESULT(HTMAXBUTTON as isize),
+                Some(Hit::Close) => LRESULT(HTCLOSE as isize),
+                _ => LRESULT(HTCLIENT as isize),
+            }
+        }
+        WM_NCMOUSEMOVE => {
+            let hit = caption_hit(wparam.0 as u32);
+            if hit.is_some() {
+                let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+                // SAFETY: a valid request for this window.
+                unsafe { let _ = TrackMouseEvent(&mut track); };
+            }
+            with_app(hwnd, |app| app.settings_caption_hover(hit.unwrap_or(Hit::None)));
+            if hit.is_some() { LRESULT(0) } else { unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } }
+        }
+        WM_NCMOUSELEAVE => {
+            with_app(hwnd, |app| {
+                app.settings_caption_hover(Hit::None);
+                app.settings_caption_press(Hit::None);
+            });
+            LRESULT(0)
+        }
+        // The button is pressed here and acts when let go of over the same button (no modal loop of the system).
+        WM_NCLBUTTONDOWN if caption_hit(wparam.0 as u32).is_some() => {
+            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
+            with_app(hwnd, |app| app.settings_caption_press(hit));
+            LRESULT(0)
+        }
+        WM_NCLBUTTONUP if caption_hit(wparam.0 as u32).is_some() => {
+            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
+            if with_app(hwnd, |app| app.settings_caption_release(hit)) == Some(true) {
+                let command = match hit {
+                    Hit::Minimize => SC_MINIMIZE,
+                    Hit::Maximize if is_maximized(hwnd) => SC_RESTORE,
+                    Hit::Maximize => SC_MAXIMIZE,
+                    _ => SC_CLOSE,
+                };
+                // SAFETY: posting to our own window.
+                unsafe { let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); }
+            }
+            LRESULT(0)
+        }
         WM_PAINT => {
             with_app(hwnd, App::settings_paint);
             // SAFETY: the swap chain is the content; only the update region is cleared.
@@ -612,7 +677,7 @@ pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam:
         }
         WM_SIZE => {
             let size = client_size(hwnd);
-            with_app(hwnd, |app| app.settings_size(size));
+            with_app(hwnd, |app| app.settings_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
             LRESULT(0)
         }
         WM_DPICHANGED => {

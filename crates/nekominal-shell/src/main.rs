@@ -5,6 +5,7 @@
 mod access;
 mod app;
 mod clipboard;
+mod design;
 mod find;
 mod glass;
 mod gpu;
@@ -19,6 +20,7 @@ mod settings_window;
 mod status;
 mod tab;
 mod textfield;
+mod widgets;
 mod win;
 
 /// What the modules call to write to the log: the file named by NEKOMINAL_LOG, when there is one.

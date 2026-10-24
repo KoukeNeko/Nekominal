@@ -26,7 +26,7 @@ use windows::{
 };
 
 use crate::gpu::{self, Gpu, Surface};
-use crate::{app::CORNER_RADIUS, glass::Glass, logic::Mark};
+use crate::{glass::Glass, logic::Mark};
 
 /// Width of a menu or a list, and of the command palette.
 pub const WIDTH: f32 = 260.0;
@@ -40,7 +40,7 @@ pub const QUERY_LEFT: f32 = 44.0;
 const WINDOW_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(WS_EX_NOACTIVATE.0 | WS_EX_NOREDIRECTIONBITMAP.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0);
 /// The rows the palette shows before it scrolls.
 const PALETTE_ROWS: f32 = 8.0;
-const PADDING: f32 = 6.0;
+const PADDING: f32 = crate::design::GAP;
 const ROW_HEIGHT: f32 = 32.0;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 /// How far the pop-up hangs below the point it is anchored at.
@@ -77,8 +77,8 @@ pub struct Row {
 }
 
 /// The side of the square a mark is drawn in, and the space after it.
-pub const MARK_SIZE: f32 = 18.0;
-pub const MARK_GAP: f32 = 10.0;
+pub const MARK_SIZE: f32 = crate::widgets::MARK_SIZE;
+pub const MARK_GAP: f32 = 2.0 * crate::design::GAP;
 
 impl Row {
     pub fn separator() -> Row {
@@ -219,9 +219,7 @@ pub fn paint_confirmation(ui: &mut Ui, heading: &str, rows: &[Row], hover: Optio
     let (rects, _) = dialog_buttons(width);
     for (i, (row, rect)) in rows.iter().zip(rects).enumerate() {
         let rect = Rect::new(rect.x, rect.y + DIALOG_HEADER, rect.w, rect.h);
-        let selected = hover == Some(i);
-        ui.rrect(rect, CORNER_RADIUS, color(if selected { glass.chip_selected() } else { glass.hover() }),
-                 Some((color(if selected { glass.accent } else { glass.divider() }), 1.0)));
+        crate::widgets::button(ui, &glass, rect, crate::widgets::State::chosen(hover == Some(i), false));
         let x = rect.x + (rect.w - ui.measure(&row.label, font_size, false)) / 2.0;
         ui.text(x, rect.y + (rect.h - line) / 2.0, &row.label, font_size, color(glass.text()), false);
     }
@@ -340,7 +338,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
 
         // Rounded corners and the blur behind, over the whole client area.
         let dark = i32::from(dark);
-        let rounded: i32 = 2;
+        let rounded: i32 = 3; // DWMWCP_ROUNDSMALL: a corner of 4, the one of design.rs
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const i32).cast(), 4);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&rounded as *const i32).cast(), 4);
         if let Err(e) = blur_behind(hwnd, 0x01_00_00_00) {
