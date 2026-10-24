@@ -45,6 +45,8 @@ const TILE: (f32, f32) = (148.0, 64.0);
 const TILE_GAP: f32 = 2.0 * GAP;
 const RADIO_ROW: f32 = 36.0;
 const RESET_ROOM: f32 = 32.0;
+/// The row of an agent on the Agent page: its logo, its name and version, and a line that says how it is connected.
+const CLAUDE_ROW: f32 = 68.0;
 /// How much taller a row is when its control goes under its label.
 const STACK: f32 = 48.0;
 
@@ -93,6 +95,8 @@ pub enum Part {
     Binding(Command),
     /// Puts the shortcuts of a command back to the default.
     ResetKey(Command),
+    /// Connects Claude Code's status line to the status bar, or disconnects it.
+    Claude,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -152,6 +156,8 @@ pub struct Item {
 pub enum Entry {
     Setting(&'static Descriptor),
     Key(Command),
+    /// Claude Code: where it is and whether its status line goes to the status bar.
+    Claude,
 }
 
 pub struct Frame {
@@ -170,6 +176,7 @@ pub struct View<'a> {
     pub settings: &'a Settings,
     pub keymap: &'a Keymap,
     pub profiles: &'a [Profile],
+    pub claude: &'a crate::agent::Claude,
     /// The area of the page in the coordinates of the window, in DIP.
     pub area: Rect,
 }
@@ -224,7 +231,9 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
     if section == Section::Keys {
         settings_ui::key_rows().map(Entry::Key).collect()
     } else {
-        settings_ui::in_section(section).map(Entry::Setting).collect()
+        // The Agent page starts with the agents it knows, before the rows of the table.
+        let agents = (section == Section::Agents).then_some(Entry::Claude);
+        agents.into_iter().chain(settings_ui::in_section(section).map(Entry::Setting)).collect()
     }
 }
 
@@ -382,6 +391,43 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 }
                 y += ROW;
             }
+            Entry::Claude => {
+                let claude = view.claude;
+                let rect = Rect::new(x0, y, content_width, CLAUDE_ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                let mark = Rect::new(rect.x + MARGIN, rect.y + (rect.h - 28.0) / 2.0, 28.0, 28.0);
+                item(&mut items, mark, None, Visual::Mark(Mark::Badge { label: "C", color: (217, 119, 87) }), true);
+                let text_x = mark.x + 28.0 + 2.0 * MARK_GAP;
+                // A button to connect or disconnect when there is a Claude Code and nobody else's status line is in the way.
+                let action = match claude.link {
+                    _ if claude.exe.is_none() => None,
+                    crate::agent::Link::Linked => Some(Text::ClaudeUnlink),
+                    crate::agent::Link::Unlinked => Some(Text::ClaudeLink),
+                    crate::agent::Link::Foreign => None,
+                };
+                let mut text_end = rect.x + rect.w - MARGIN;
+                if let Some(action) = action {
+                    let w = measure(action.get(lang), 13.0, false) + 32.0;
+                    let button = Rect::new(text_end - w, rect.y + (rect.h - CONTROL) / 2.0, w, CONTROL);
+                    item(&mut items, button, Some(Part::Claude), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::Claude) }), true);
+                    item(&mut items, button, None, label(action.get(lang), 13.0, Tone::Text, false, Align::Center), true);
+                    text_end = button.x - 2.0 * GAP;
+                }
+                let room = (text_end - text_x).max(0.0);
+                let title = match &claude.version {
+                    Some(version) => format!("Claude Code  {version}"),
+                    None => "Claude Code".to_owned(),
+                };
+                item(&mut items, Rect::new(text_x, rect.y + 8.0, room, 22.0), None, label(title, 13.0, Tone::Text, true, Align::Left), true);
+                let note = match claude.link {
+                    _ if claude.exe.is_none() => Text::ClaudeMissing,
+                    crate::agent::Link::Linked => Text::ClaudeLinked,
+                    crate::agent::Link::Unlinked => Text::ClaudeUnlinked,
+                    crate::agent::Link::Foreign => Text::ClaudeForeign,
+                };
+                item(&mut items, Rect::new(text_x, rect.y + rect.h - 30.0, room, 22.0), None, label(note.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
+                y += CLAUDE_ROW;
+            }
             Entry::Setting(row) => {
                 let id = row.id;
                 // A control that does not fit beside the label goes on a line of its own under it.
@@ -519,13 +565,15 @@ mod tests {
 
     use super::*;
 
+    const CLAUDE: crate::agent::Claude = crate::agent::Claude { exe: None, version: None, link: crate::agent::Link::Unlinked };
+
     fn keymap() -> Keymap {
         build_keymap(default_bindings(), &Default::default()).keymap
     }
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -539,7 +587,9 @@ mod tests {
         for (i, section) in Section::ALL.iter().enumerate() {
             let page = Page { section: i, ..Page::default() };
             let shown = frame(&page, &settings).entries.len();
-            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() };
+            // The Agent page starts with the row of Claude Code.
+            let agents = usize::from(*section == Section::Agents);
+            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + agents };
             assert_eq!(shown, expected, "{section:?}");
         }
     }
@@ -593,7 +643,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1400.0] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 0.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, 650.0) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let tabs_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.x + item.rect.w).fold(0.0, f32::max);
             // The search line is always there; the button for the file goes when the tabs leave no room for it.
@@ -618,7 +668,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Mark(_))).collect();
         assert_eq!(marks.len(), 3, "a logo for each profile");
@@ -685,7 +735,7 @@ mod tests {
         for width in [460.0, 560.0, 700.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

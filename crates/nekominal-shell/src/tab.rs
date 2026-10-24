@@ -42,6 +42,19 @@ pub struct PaneEntry {
     /// Progress the program reports (OSC 9;4).
     pub progress: Option<Reported>,
     pub wake: std::sync::Arc<WakeTarget>,
+    /// The name of the pane for the status line command of Claude Code (`agent::SESSION_VAR`), and what that command
+    /// last handed over, with when it did.
+    pub session: String,
+    pub usage: Option<crate::agent::Usage>,
+    pub usage_stamp: Option<std::time::SystemTime>,
+    /// The Git branch of the folder the pane is in.
+    pub branch: Option<String>,
+}
+
+impl Drop for PaneEntry {
+    fn drop(&mut self) {
+        crate::agent::forget(&self.session);
+    }
 }
 
 /// Hands out the number that tells one tab from another for as long as the process lives, whichever window shows it.

@@ -43,6 +43,8 @@ pub enum Hit {
     Maximize,
     Close,
     Pane,
+    /// The status bar at the bottom of the window.
+    Status,
 }
 
 #[derive(Clone, Debug, PartialEq)]

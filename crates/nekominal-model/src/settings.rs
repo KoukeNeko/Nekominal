@@ -382,6 +382,47 @@ pub struct Keyboard {
     pub kitty_protocol: bool,
 }
 
+/// What the status bar does for a pane that runs no agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoAgent {
+    /// Keeps the folder and the branch.
+    Place,
+    Hide,
+}
+
+impl NoAgent {
+    pub const ALL: [NoAgent; 2] = [NoAgent::Place, NoAgent::Hide];
+
+    pub fn text(self) -> Text {
+        match self {
+            NoAgent::Place => Text::StatusBarPlace,
+            NoAgent::Hide => Text::StatusBarHide,
+        }
+    }
+}
+
+/// The bar at the bottom of the window: what the agent of the focused pane is doing, and where the pane is.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusBar {
+    pub show: bool,
+    pub no_agent: NoAgent,
+    pub state: bool,
+    pub model: bool,
+    pub context: bool,
+    pub cost: bool,
+    pub time: bool,
+    pub branch: bool,
+    pub folder: bool,
+}
+
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self { show: true, no_agent: NoAgent::Place, state: true, model: true, context: true, cost: true, time: false, branch: true, folder: true }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -403,6 +444,7 @@ pub struct Settings {
     pub keyboard: Keyboard,
     /// Sets environment variables that make coding-agent CLIs use their full terminal features.
     pub agent_environment: bool,
+    pub status_bar: StatusBar,
     /// Makes PowerShell report its working directory and prompt marks.
     pub shell_integration: bool,
     /// Ask before closing a window, tab or pane that holds running sessions.
@@ -448,6 +490,7 @@ impl Default for Settings {
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
             keyboard: Keyboard { kitty_protocol: true },
             agent_environment: true,
+            status_bar: StatusBar::default(),
             shell_integration: true,
             confirm_close: true,
             confirm_close_threshold: 1,
@@ -777,6 +820,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let paste = section(&root, "paste", "", &mut problems);
     let bell = section(&root, "bell", "", &mut problems);
     let keyboard = section(&root, "keyboard", "", &mut problems);
+    let status_bar = section(&root, "statusBar", "", &mut problems);
     let tabs = section(&root, "tabs", "", &mut problems);
     let tab_title = section(&tabs, "title", "tabs", &mut problems);
 
@@ -873,6 +917,21 @@ pub fn parse(source: Option<&str>) -> Parsed {
         },
         keyboard: Keyboard { kitty_protocol: boolean(&keyboard, "kittyProtocol", d.keyboard.kitty_protocol, "keyboard", &mut problems) },
         agent_environment: boolean(&root, "agentEnvironment", d.agent_environment, "", &mut problems),
+        status_bar: {
+            let b = &d.status_bar;
+            let flag = |key: &str, default: bool, problems: &mut Problems| boolean(&status_bar, key, default, "statusBar", problems);
+            StatusBar {
+                show: flag("show", b.show, &mut problems),
+                no_agent: one_of(&status_bar, "noAgent", &[("place", NoAgent::Place), ("hide", NoAgent::Hide)], b.no_agent, "statusBar", &mut problems),
+                state: flag("state", b.state, &mut problems),
+                model: flag("model", b.model, &mut problems),
+                context: flag("context", b.context, &mut problems),
+                cost: flag("cost", b.cost, &mut problems),
+                time: flag("time", b.time, &mut problems),
+                branch: flag("branch", b.branch, &mut problems),
+                folder: flag("folder", b.folder, &mut problems),
+            }
+        },
         shell_integration: boolean(&root, "shellIntegration", d.shell_integration, "", &mut problems),
         confirm_close: boolean(&root, "confirmClose", d.confirm_close, "", &mut problems),
         confirm_close_threshold: number(&root, "confirmCloseThreshold", d.confirm_close_threshold as f64, (1.0, 1000.0), "", &mut problems) as u32,

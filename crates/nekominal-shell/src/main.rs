@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod access;
+mod agent;
 mod app;
 mod clipboard;
 mod design;
@@ -36,6 +37,10 @@ mod util {
 }
 
 fn main() {
+    // Claude Code's status line command is this program too: it hands the session over and is gone.
+    if agent::statusline_main() {
+        return;
+    }
     if let Err(e) = win::run() {
         std::fs::write(std::env::temp_dir().join("nekominal-next.log"), format!("{e}\n")).ok();
     }

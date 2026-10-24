@@ -23,7 +23,7 @@ use nekominal_model::{
     settings_ui::{self, Control, Descriptor, Section, Value},
     strings::{Lang, Text},
     store,
-    themes::{self, Color as SchemeColor},
+    themes,
 };
 use nekominal_pane::{Pane, PaneRenderer, UiEvent, view as pane_view};
 use nekominal_term::SearchMatch;
@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, clipboard, design, find, motion, textfield,
+    access, agent, clipboard, design, find, motion, textfield,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -90,6 +90,17 @@ const ICON_SIZE: f32 = 10.0;
 /// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
 /// icon font are drawn above the middle of their line.
 const ICON_NUDGE: f32 = 1.5;
+/// The height of the status bar at the bottom of the window, in DIP.
+const STATUS_BAR: f32 = 26.0;
+
+/// What a part of the status bar does when it is clicked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StatusPart {
+    /// The state of the agent: goes to the next tab that waits for the user.
+    State,
+    /// Connect Claude Code: opens the Agent page.
+    Connect,
+}
 
 pub struct App {
     hwnd: HWND,
@@ -126,6 +137,15 @@ pub struct App {
     drag: Option<ChipDrag>,
     /// Where the position plate of the tab strip is drawn, when it is: it opens the list of all tabs.
     plate_rect: Option<Rect>,
+    /// The status bar takes the bottom of the window now, and what its parts that can be clicked are.
+    status_shown: bool,
+    status_parts: Vec<(Rect, StatusPart)>,
+    /// Claude Code as the Agent page last found it.
+    claude: agent::Claude,
+    /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
+    /// it was last written, by this window or another, as this window last saw it.
+    settings_readable: bool,
+    settings_stamp: Option<std::time::SystemTime>,
     /// Where the window was when the session was saved, for the window code to put it back.
     placement: Option<Placement>,
     /// Keys (by scan code) that went down as a shortcut of the shell: the program does not get their release either.
@@ -245,6 +265,30 @@ fn wired(command: Command) -> bool {
 
 use crate::widgets::{self, col, State};
 
+/// The settings of the file, and whether it could be read: missing or empty is fine (the defaults), but text that is not
+/// JSON, or not UTF-8, is a file the user is in the middle of editing, which a save must not replace with the defaults.
+fn load_settings() -> (Settings, bool) {
+    let loaded = store::settings_path().map(|path| store::load(&path)).transpose();
+    let (text, readable) = match loaded {
+        Ok(text) => (text.flatten(), true),
+        Err(e) => {
+            util::log(&format!("settings: {e}"));
+            (None, false)
+        }
+    };
+    let parsed = settings::parse(text.as_deref());
+    for problem in &parsed.problems {
+        util::log(&format!("settings: {} {:?}", problem.key, problem.expected));
+    }
+    let whole_file = parsed.problems.iter().any(|problem| problem.key.is_empty());
+    (parsed.settings, readable && !whole_file)
+}
+
+/// When the settings file was last written.
+fn settings_stamp() -> Option<std::time::SystemTime> {
+    std::fs::metadata(store::settings_path()?).ok()?.modified().ok()
+}
+
 fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
     DiscoveredProfile {
         id: found.id.clone(),
@@ -273,8 +317,7 @@ fn input_mods(m: Modifiers) -> Mods {
 
 impl App {
     pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
-        let text = store::settings_path().and_then(|path| store::load(&path).ok().flatten());
-        let settings = settings::parse(text.as_deref()).settings;
+        let (settings, settings_readable) = load_settings();
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
         let scheme = themes::scheme(&settings.theme);
         let glass = Glass::from_scheme(scheme);
@@ -319,6 +362,11 @@ impl App {
             chip_size: (0, 0),
             drag: None,
             plate_rect: None,
+            status_shown: false,
+            status_parts: Vec::new(),
+            claude: agent::claude(),
+            settings_readable,
+            settings_stamp: settings_stamp(),
             placement: None,
             shortcut_keys: Vec::new(),
             window_title: String::new(),
@@ -373,7 +421,8 @@ impl App {
     fn pane_area(&self) -> PxRect {
         let (w, h) = self.surface.size();
         let top = self.pane_top() as i32;
-        PxRect { x: 0, y: top, w: w as i32, h: (h as i32 - top).max(1) }
+        let bottom = if self.status_shown { (STATUS_BAR * self.scale).round() as i32 } else { 0 };
+        PxRect { x: 0, y: top, w: w as i32, h: (h as i32 - top - bottom).max(1) }
     }
 
     /// Pixels between the top of the window and the top of the panes.
@@ -383,11 +432,13 @@ impl App {
 
     // --- tabs and panes -----------------------------------------------------------------------------------------
 
-    fn spawn_config(&self, profile: &Profile, directory: Option<&str>, cols: u16, rows: u16) -> SpawnConfig {
+    fn spawn_config(&self, profile: &Profile, directory: Option<&str>, session: &str, cols: u16, rows: u16) -> SpawnConfig {
         let mut env = nekominal_pty::profiles::default_environment();
         if self.settings.agent_environment {
             env.extend(nekominal_pty::profiles::agent_environment());
         }
+        // Which pane a program runs in, for the status line command of Claude Code.
+        env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
         let program = nekominal_pty::profiles::resolve_program(&profile.program)
             .unwrap_or_else(|| profile.program.clone().into());
         SpawnConfig {
@@ -436,7 +487,8 @@ impl App {
                 unsafe { PostMessageW(Some(hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
             }
         });
-        let config = self.spawn_config(profile, directory, cols as u16, rows as u16);
+        let session = agent::new_session();
+        let config = self.spawn_config(profile, directory, &session, cols as u16, rows as u16);
         let core = logic::core_config(&self.settings);
         let pane = Pane::spawn_woken(config, core, wake).map_err(|e| format!("pty: {e}"))?;
         Ok(PaneEntry {
@@ -456,6 +508,10 @@ impl App {
             note: None,
             progress: None,
             wake: target,
+            session,
+            usage: None,
+            usage_stamp: None,
+            branch: None,
         })
     }
 
@@ -512,6 +568,7 @@ impl App {
         if self.confirmation.is_some() {
             self.close_popup();
         }
+        self.forget_tab_positions();
         let tab = self.tabs.remove(index);
         for entry in &tab.panes {
             entry.pane.shutdown();
@@ -529,12 +586,23 @@ impl App {
         self.redraw();
     }
 
+    /// A tab is about to go: what holds the position of a tab (a chip held by the pointer, a pressed chip, the list of the
+    /// tabs) would point at another tab, or past the last one, once the tabs after it move up.
+    fn forget_tab_positions(&mut self) {
+        self.drag = None;
+        self.pressed = Hit::None;
+        if self.popup.as_ref().is_some_and(|popup| popup.kind == popup::Kind::List) {
+            self.close_popup();
+        }
+    }
+
     /// Takes a tab out of this window with its sessions running, for another window to adopt. The window closes
     /// when it was the last tab.
     pub fn take_tab(&mut self, index: usize) -> Option<Tab> {
         if index >= self.tabs.len() {
             return None;
         }
+        self.forget_tab_positions();
         let tab = self.tabs.remove(index);
         if self.tabs.is_empty() {
             // SAFETY: closes the window of this thread; nothing is left in it to ask about.
@@ -584,7 +652,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !matches!(self.hit_test(x, y), Hit::Pane | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !matches!(self.hit_test(x, y), Hit::Pane | Hit::Status | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -668,6 +736,11 @@ impl App {
 
     pub fn on_activate(&mut self, active: bool) {
         if !active { self.close_popup(); }
+        // Another window may have changed the settings while this one was in the background: take them before this one
+        // changes and writes its own copy.
+        if active && settings_stamp() != self.settings_stamp {
+            self.reload_settings();
+        }
         self.active = active;
         self.update_window_title();
         if active && let Some(tab) = self.tabs.get_mut(self.selected) {
@@ -679,6 +752,7 @@ impl App {
 
     /// Chips, panes and the cells each shown pane has.
     fn relayout(&mut self) {
+        self.status_shown = self.status_wanted();
         let (w, h) = self.surface.size();
         self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected);
         let area = self.pane_area();
@@ -818,6 +892,9 @@ impl App {
         let (x, y) = self.point(x, y);
         if self.plate_rect.is_some_and(|plate| plate.contains(x, y)) {
             return Hit::Plate;
+        }
+        if self.status_shown && y >= self.layout.size.1 - STATUS_BAR {
+            return Hit::Status;
         }
         self.layout.hit(x, y)
     }
@@ -999,6 +1076,7 @@ impl App {
                     Hit::Profiles => self.open_profiles(),
                     Hit::Plate => self.open_tab_list(),
                     Hit::Menu => self.open_menu(),
+                    Hit::Status => self.status_click(x as f32 / self.scale),
                     _ => {}
                 }
             }
@@ -1106,9 +1184,35 @@ impl App {
                 changed = true;
             }
         }
+        changed |= self.refresh_usage();
+        if self.status_wanted() != self.status_shown {
+            self.relayout();
+            changed = true;
+        }
         if changed {
             self.redraw();
         }
+    }
+
+    /// Reads again what the agent of the focused pane said about its session, when it said something new, and the branch
+    /// of the folder the pane is in. True when the status bar has to be drawn again.
+    fn refresh_usage(&mut self) -> bool {
+        let Some(entry) = self.tabs.get_mut(self.selected).and_then(|tab| tab.focused_entry_mut()) else { return false };
+        let stamp = agent::usage_stamp(&entry.session);
+        let mut changed = false;
+        if stamp != entry.usage_stamp {
+            entry.usage_stamp = stamp;
+            let usage = stamp.and_then(|_| agent::read_usage(&entry.session));
+            changed |= usage != entry.usage;
+            entry.usage = usage;
+        }
+        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
+        let branch = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
+        if branch != entry.branch {
+            entry.branch = branch;
+            changed = true;
+        }
+        changed
     }
 
     pub fn on_drag_tick(&mut self) {
@@ -1279,6 +1383,12 @@ impl App {
             Command::TabClose => self.request_close_tab(self.selected),
             Command::TabNext => self.select((self.selected + 1) % self.tabs.len().max(1)),
             Command::TabPrevious => self.select((self.selected + self.tabs.len().max(1) - 1) % self.tabs.len().max(1)),
+            Command::TabNextNeedsResponse => {
+                let waiting: Vec<bool> = self.tabs.iter().map(|tab| logic::is_urgent(tab.status().state)).collect();
+                if let Some(next) = logic::next_waiting(&waiting, self.selected) {
+                    self.select(next);
+                }
+            }
             Command::PaneSplitRight => self.split(Axis::Row),
             Command::PaneSplitDown => self.split(Axis::Column),
             Command::PaneClose => {
@@ -1481,6 +1591,7 @@ impl App {
                 .map(|entry| match entry {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
+                    settings_page::Entry::Claude => ("Claude Code".to_owned(), self.claude_note(lang).to_owned()),
                 })
                 .collect(),
             focused: page.focus,
@@ -1814,9 +1925,183 @@ impl App {
             self.bar_plate(menu, State::hover(true));
         }
         self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
+        self.paint_status_bar();
+    }
+
+    // --- the status bar -----------------------------------------------------------------------------------------
+
+    /// Whether the pane runs an agent: one that reported its state or its session, or Claude Code by the name of its program.
+    fn runs_agent(entry: &PaneEntry) -> bool {
+        entry.usage.is_some()
+            || entry.pane.agent_summary().is_some()
+            || entry.job.as_deref().is_some_and(|job| job.to_ascii_lowercase().starts_with("claude"))
+    }
+
+    /// Whether the status bar takes the bottom of the window: switched on, and for a pane without an agent only when it
+    /// keeps the folder and the branch there.
+    fn status_wanted(&self) -> bool {
+        let bar = &self.settings.status_bar;
+        bar.show && (bar.no_agent == settings::NoAgent::Place || self.focused().is_some_and(Self::runs_agent))
+    }
+
+    fn status_click(&mut self, x: f32) {
+        match self.status_parts.iter().find(|(rect, _)| rect.x <= x && x < rect.x + rect.w).map(|(_, part)| *part) {
+            Some(StatusPart::State) => self.run(Command::TabNextNeedsResponse),
+            Some(StatusPart::Connect) => self.open_settings_page(Some("agentEnvironment")),
+            None => {}
+        }
+    }
+
+    /// The bar at the bottom of the window, for the focused pane: what its agent is doing on the left (its state, model,
+    /// context, cost and time), where the pane is on the right (branch and folder). What does not fit goes, from the right
+    /// end of the right side first, then from the end of the left side.
+    fn paint_status_bar(&mut self) {
+        self.status_parts.clear();
+        if !self.status_shown {
+            return;
+        }
+        let g = self.glass;
+        let lang = self.language();
+        let (width, height) = self.layout.size;
+        let bar = Rect::new(0.0, height - STATUS_BAR, width, STATUS_BAR);
+        self.ui.fill(bar, col(g.tab_rest()));
+        self.ui.fill(Rect::new(0.0, bar.y, width, 1.0), col(g.divider()));
+        let Some(entry) = self.focused() else { return };
+        let show = self.settings.status_bar.clone();
+
+        /// One part of the bar: a dot in a colour before its text, a meter, a glyph before its text, or text alone.
+        enum Piece {
+            State(Color, String),
+            Meter(f32),
+            Glyph(char, String),
+            Text(String, Option<StatusPart>),
+        }
+        let mut left = Vec::new();
+        if Self::runs_agent(entry) {
+            if show.state
+                && let Some(record) = entry.pane.agent_summary()
+            {
+                use nekominal_term::agent_status::AgentState;
+                let (state, text) = match record.state {
+                    AgentState::Working => (logic::TabState::Working, Text::AgentWorking),
+                    AgentState::Blocked => (logic::TabState::Blocked, Text::AgentBlocked),
+                    AgentState::Done => (logic::TabState::Done, Text::AgentDone),
+                    AgentState::Error => (logic::TabState::Error, Text::AgentError),
+                    AgentState::Idle => (logic::TabState::Idle, Text::AgentDone),
+                };
+                left.push(Piece::State(col(status::color(g, state)), text.get(lang).to_owned()));
+            }
+            match &entry.usage {
+                Some(usage) => {
+                    if let Some(model) = usage.model.clone().filter(|_| show.model) {
+                        left.push(Piece::Text(model, None));
+                    }
+                    if let Some(share) = usage.context.filter(|_| show.context) {
+                        left.push(Piece::Meter(share as f32));
+                    }
+                    if let Some(cost) = usage.cost.filter(|_| show.cost) {
+                        left.push(Piece::Text(format!("${cost:.2}"), None));
+                    }
+                    if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
+                        let s = ms / 1000;
+                        let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
+                        left.push(Piece::Text(time, None));
+                    }
+                }
+                // Claude Code says nothing until it is connected: the bar says where to connect it.
+                None if self.claude.link == agent::Link::Unlinked && (show.model || show.context || show.cost || show.time) => {
+                    left.push(Piece::Text(Text::ClaudeHint.get(lang).to_owned(), Some(StatusPart::Connect)));
+                }
+                None => {}
+            }
+        }
+        let mut right = Vec::new();
+        if let Some(branch) = entry.branch.clone().filter(|_| show.branch) {
+            right.push(Piece::Glyph('\u{E81C}', branch));
+        }
+        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
+        if let Some(folder) = folder.filter(|_| show.folder) {
+            let home = std::env::var("USERPROFILE").ok();
+            right.push(Piece::Glyph('\u{E838}', logic::folder_label(&folder, home.as_deref())));
+        }
+
+        const PAD: f32 = 10.0;
+        const METER: f32 = 44.0;
+        let size = 12.0;
+        let measure = |ui: &mut Ui, piece: &Piece| -> f32 {
+            2.0 * PAD
+                + match piece {
+                    Piece::State(_, text) => 8.0 + 6.0 + ui.measure(text, size, false),
+                    Piece::Meter(_) => METER + 6.0 + ui.measure("100%", size, false),
+                    Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, size, false),
+                    Piece::Text(text, _) => ui.measure(text, size, false),
+                }
+        };
+        let mut widths_left: Vec<f32> = left.iter().map(|p| measure(&mut self.ui, p)).collect();
+        let mut widths_right: Vec<f32> = right.iter().map(|p| measure(&mut self.ui, p)).collect();
+        let room = width - 2.0 * design::GAP;
+        while widths_left.iter().chain(&widths_right).sum::<f32>() > room {
+            if widths_right.pop().is_some() {
+                right.pop();
+            } else if widths_left.pop().is_some() {
+                left.pop();
+            } else {
+                break;
+            }
+        }
+
+        let line = self.ui.line_height(size);
+        let text_y = bar.y + (bar.h - line) / 2.0 + 0.5;
+        let quiet = col(g.text_secondary());
+        let draw = |app: &mut App, piece: &Piece, x: f32, w: f32| {
+            let cell = Rect::new(x, bar.y + 1.0, w, bar.h - 1.0);
+            let mut at = x + PAD;
+            match piece {
+                Piece::State(color, text) => {
+                    app.ui.rrect(Rect::new(at, bar.y + (bar.h - 8.0) / 2.0, 8.0, 8.0), 4.0, *color, None);
+                    app.ui.text(at + 14.0, text_y, text, size, col(g.text()), false);
+                    app.status_parts.push((cell, StatusPart::State));
+                }
+                Piece::Meter(share) => {
+                    let track = Rect::new(at, bar.y + (bar.h - 4.0) / 2.0, METER, 4.0);
+                    let warn = col(if *share > 90.0 { g.mark(g.danger) } else if *share > 70.0 { g.mark(g.warning) } else { g.accent });
+                    app.ui.rrect(track, 2.0, col(g.divider()), None);
+                    app.ui.rrect(Rect::new(track.x, track.y, METER * (share / 100.0).clamp(0.0, 1.0), 4.0), 2.0, warn, None);
+                    app.ui.text(at + METER + 6.0, text_y, &format!("{share:.0}%"), size, quiet, false);
+                }
+                Piece::Glyph(ch, text) => {
+                    let icon_line = app.ui.line_height(ICON_SIZE);
+                    app.ui.icon(at, bar.y + (bar.h - icon_line) / 2.0 + ICON_NUDGE, *ch, ICON_SIZE, quiet);
+                    at += ICON_SIZE + 6.0;
+                    app.ui.text(at, text_y, text, size, quiet, false);
+                }
+                Piece::Text(text, part) => {
+                    let color = if part.is_some() { col(g.accent) } else { quiet };
+                    app.ui.text(at, text_y, text, size, color, false);
+                    if let Some(part) = part {
+                        app.status_parts.push((cell, *part));
+                    }
+                }
+            }
+        };
+        let mut x = design::GAP;
+        for (piece, w) in left.iter().zip(&widths_left) {
+            draw(self, piece, x, *w);
+            x += w;
+        }
+        let mut x = width - design::GAP - widths_right.iter().sum::<f32>();
+        for (piece, w) in right.iter().zip(&widths_right) {
+            draw(self, piece, x, *w);
+            x += w;
+        }
     }
 
     // --- the menu -----------------------------------------------------------------------------------------------
+
+    /// What the entry that opens the settings says, under the menu of the window.
+    pub fn settings_label(&self) -> &'static str {
+        Text::AppSettings.get(self.language())
+    }
 
     fn language(&self) -> Lang {
         let mut name = [0u16; 85];
@@ -1956,12 +2241,17 @@ impl App {
         }
     }
 
-    fn save_settings(&self) {
+    fn save_settings(&mut self) {
+        if !self.settings_readable {
+            util::log("settings: the file could not be read, so it is not written over; fix it and the changes made here are saved again");
+            return;
+        }
         if let Some(path) = store::settings_path()
             && let Err(e) = store::save_keeping_original(&path, &settings::serialize(&self.settings))
         {
             util::log(&format!("settings: {e}"));
         }
+        self.settings_stamp = settings_stamp();
     }
 
     // --- the settings window ------------------------------------------------------------------------------------
@@ -1986,7 +2276,7 @@ impl App {
         let area = self.page_area();
         let page = self.page.as_ref()?;
         let ui = &mut self.ui;
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, area };
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, claude: &self.claude, area };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 
@@ -1994,6 +2284,8 @@ impl App {
     /// is open already is brought to the front, and kept as it was when no row is asked for.
     fn open_settings_page(&mut self, focus: Option<&str>) {
         self.close_popup();
+        // Claude Code may have been installed or connected elsewhere since the page last looked.
+        self.claude = agent::claude();
         let open = self.settings_win.is_some();
         let mut page = self.page.take().unwrap_or_default();
         let row = focus.and_then(settings_ui::find);
@@ -2330,9 +2622,31 @@ impl App {
                 }
             }
             Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
+            Part::Claude => self.toggle_claude(),
         }
         self.page_redraw();
         capture
+    }
+
+    /// Connects Claude Code's status line to the status bar, or disconnects it, and looks at Claude Code again.
+    fn toggle_claude(&mut self) {
+        let done = if self.claude.link == agent::Link::Linked { agent::unlink() } else { agent::link() };
+        if let Err(e) = done {
+            util::log(&format!("claude status line: {e}"));
+        }
+        self.claude = agent::claude();
+        self.redraw();
+    }
+
+    /// What the Agent page says about how Claude Code is connected.
+    fn claude_note(&self, lang: Lang) -> &'static str {
+        let text = match self.claude.link {
+            _ if self.claude.exe.is_none() => Text::ClaudeMissing,
+            agent::Link::Linked => Text::ClaudeLinked,
+            agent::Link::Unlinked => Text::ClaudeUnlinked,
+            agent::Link::Foreign => Text::ClaudeForeign,
+        };
+        text.get(lang)
     }
 
     fn page_wheel(&mut self, delta: i16) {
@@ -2374,12 +2688,13 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Claude => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Claude => None,
         });
+        let on_claude = focus.and_then(|i| frame.entries.get(i)).is_some_and(|entry| matches!(entry, settings_page::Entry::Claude));
         match vk_code {
             VK_ESCAPE => {
                 if page.query.is_empty() {
@@ -2406,6 +2721,7 @@ impl App {
                 let Some(row) = focused_row else { return true };
                 self.step_setting(row.id, vk_code == VK_RIGHT, shift);
             }
+            VK_RETURN if !repeat && on_claude => self.toggle_claude(),
             VK_RETURN if !repeat && focused_command.is_some() => {
                 if let (Some(command), Some(page)) = (focused_command, self.page.as_mut()) {
                     (page.capturing, page.reserved) = (Some(command), false);
@@ -2564,8 +2880,9 @@ impl App {
 
     /// Reads the settings file again and puts what changed in effect. Nothing is written back.
     fn reload_settings(&mut self) {
-        let text = store::settings_path().and_then(|path| store::load(&path).ok().flatten());
-        let loaded = settings::parse(text.as_deref()).settings;
+        let (loaded, readable) = load_settings();
+        self.settings_readable = readable;
+        self.settings_stamp = settings_stamp();
         let before = std::mem::replace(&mut self.settings, loaded);
         self.keymap = keymap::build_keymap(commands::default_bindings(), &self.settings.keybindings).keymap;
         self.apply_changes(&before);
@@ -3012,7 +3329,8 @@ impl App {
                 }
                 Some(Confirmation::ClosePane { tab, pane }) => self.close_pane(tab, pane),
                 Some(Confirmation::CloseTab(tab)) => self.close_tab(tab),
-                Some(Confirmation::CloseWindow) => unsafe { let _ = DestroyWindow(self.hwnd); },
+                // Destroyed outside this borrow of the window, so that the last window can still save the session then.
+                Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
                 None => {}
             },
             Some(popup::Action::Cancel) => {},

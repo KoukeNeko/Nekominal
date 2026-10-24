@@ -224,7 +224,7 @@ texts! {
     SettingsAppearance "settings.appearance" "外觀" "Appearance";
     SettingsTerminal "settings.terminal" "終端機" "Terminal";
     SettingsProfiles "settings.profiles" "設定檔" "Profiles";
-    SettingsAgents "settings.agents" "代理程式" "Agents";
+    SettingsAgents "settings.agents" "Agent" "Agents";
     SettingsKeys "settings.keys" "快速鍵" "Shortcuts";
     SettingsAdvanced "settings.advanced" "進階" "Advanced";
     // The two choices of a row that is on or off (and the "off" of the clipboard row).
@@ -277,6 +277,24 @@ texts! {
     SettingsOsc52 "settings.osc52" "OSC 52 剪貼簿" "OSC 52 clipboard";
     Osc52Write "osc52.write" "僅寫入" "Write only";
     Osc52ReadWrite "osc52.readWrite" "讀取與寫入" "Read and write";
+    SettingsStatusBar "settings.statusBar" "顯示狀態列" "Show the status bar";
+    SettingsStatusBarNoAgent "settings.statusBarNoAgent" "沒有 agent 時" "Without an agent";
+    StatusBarPlace "statusBar.place" "只留資料夾和分支" "Folder and branch only";
+    StatusBarHide "statusBar.hide" "整條隱藏" "Hide the bar";
+    SettingsStatusState "settings.statusState" "狀態列：工作狀態" "Status bar: agent state";
+    SettingsStatusModel "settings.statusModel" "狀態列：模型" "Status bar: model";
+    SettingsStatusContext "settings.statusContext" "狀態列：脈絡用量" "Status bar: context used";
+    SettingsStatusCost "settings.statusCost" "狀態列：費用" "Status bar: cost";
+    SettingsStatusTime "settings.statusTime" "狀態列：工作階段時間" "Status bar: session time";
+    SettingsStatusBranch "settings.statusBranch" "狀態列：Git 分支" "Status bar: Git branch";
+    SettingsStatusFolder "settings.statusFolder" "狀態列：資料夾" "Status bar: folder";
+    ClaudeLink "claude.link" "連線" "Connect";
+    ClaudeUnlink "claude.unlink" "中斷連線" "Disconnect";
+    ClaudeLinked "claude.linked" "已連線：狀態列會顯示模型、脈絡用量和費用" "Connected: the status bar shows the model, context and cost";
+    ClaudeUnlinked "claude.unlinked" "連線後，狀態列會顯示模型、脈絡用量和費用" "Connect to show the model, context and cost in the status bar";
+    ClaudeForeign "claude.foreign" "Claude Code 已設定別的 statusLine，連線不會取代它" "Claude Code has another statusLine; connecting would not replace it";
+    ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
+    ClaudeHint "claude.hint" "連線 Claude 以顯示模型與用量" "Connect Claude to show the model and usage";
 
     SettingsFile "settings.file" "設定 JSON" "Settings file";
     SettingsVersion "settings.version" "版本" "Version";

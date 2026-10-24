@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
+        Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
         TabTitle, split_font_families,
     },
     strings::{Lang, Text},
@@ -198,6 +198,7 @@ const RIGHT_CLICKS: [Text; 2] = [Text::RightClickSmart, Text::RightClickMenu];
 const BELL_SOUNDS: [Text; 3] = [Text::BackdropNone, Text::BellSoundBackground, Text::BellSoundAlways];
 const OSC52_POLICIES: [Text; 3] = [Text::ToggleOff, Text::Osc52Write, Text::Osc52ReadWrite];
 const LANGUAGES: [Text; 3] = [Text::CommonAuto, Text::LanguageZhTw, Text::LanguageEnUs];
+const NO_AGENT: [Text; 2] = [Text::StatusBarPlace, Text::StatusBarHide];
 
 const FONT_SIZE: Range = Range { min: FONT_SIZE_RANGE.0, max: FONT_SIZE_RANGE.1, step: 1.0, large: 4.0 };
 const LINE_HEIGHT: Range = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
@@ -372,6 +373,26 @@ pub const TABLE: &[Descriptor] = &[
     },
     // Agents
     toggle!("agentEnvironment", Agents, SettingsAgentEnvironment, agent_environment),
+    toggle!("statusBar.show", Agents, SettingsStatusBar, status_bar.show),
+    Descriptor {
+        id: "statusBar.noAgent",
+        section: Section::Agents,
+        label: Text::SettingsStatusBarNoAgent,
+        control: Control::Choice(&NO_AGENT),
+        get: |s| choice(&NoAgent::ALL, s.status_bar.no_agent),
+        set: |s, v| {
+            if let Some(mode) = chosen(&NoAgent::ALL, v) {
+                s.status_bar.no_agent = mode;
+            }
+        },
+    },
+    toggle!("statusBar.state", Agents, SettingsStatusState, status_bar.state),
+    toggle!("statusBar.model", Agents, SettingsStatusModel, status_bar.model),
+    toggle!("statusBar.context", Agents, SettingsStatusContext, status_bar.context),
+    toggle!("statusBar.cost", Agents, SettingsStatusCost, status_bar.cost),
+    toggle!("statusBar.time", Agents, SettingsStatusTime, status_bar.time),
+    toggle!("statusBar.branch", Agents, SettingsStatusBranch, status_bar.branch),
+    toggle!("statusBar.folder", Agents, SettingsStatusFolder, status_bar.folder),
     toggle!("keyboard.kittyProtocol", Agents, SettingsKitty, keyboard.kitty_protocol),
     toggle!("shellIntegration", Agents, SettingsShellIntegration, shell_integration),
     Descriptor {
@@ -561,6 +582,7 @@ mod tests {
         assert_eq!(options("rightClick"), RightClick::ALL.map(RightClick::text));
         assert_eq!(options("bell.sound"), BellSound::ALL.map(BellSound::text));
         assert_eq!(options("osc52"), Osc52Policy::ALL.map(Osc52Policy::text));
+        assert_eq!(options("statusBar.noAgent"), NoAgent::ALL.map(NoAgent::text));
         assert_eq!(options("language"), Language::ALL.map(Language::text));
     }
 

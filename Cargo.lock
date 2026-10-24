@@ -49,6 +49,8 @@ dependencies = [
  "nekominal-pty",
  "nekominal-term",
  "regex",
+ "unicode-segmentation",
+ "unicode-width",
  "windows-sys 0.61.2",
 ]
 
@@ -433,6 +435,7 @@ dependencies = [
  "nekominal-render",
  "nekominal-term",
  "nekominal-ui",
+ "serde_json",
  "windows",
 ]
 
@@ -444,6 +447,7 @@ dependencies = [
  "base64",
  "memchr",
  "nekominal-pty",
+ "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.61.2",
 ]

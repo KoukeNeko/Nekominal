@@ -46,6 +46,9 @@ const DRAG_TIMER: usize = 1;
 const JOB_TIMER: usize = 2;
 
 pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
+/// Destroys the window from the message loop: the application asks for it from inside a handler, while it is borrowed, and
+/// `WM_DESTROY` needs it free to save the session.
+pub(crate) const WM_DESTROY_WINDOW: u32 = WM_APP + 3;
 
 thread_local! {
     static APPS: RefCell<HashMap<isize, Rc<RefCell<App>>>> = RefCell::new(HashMap::new());
@@ -153,6 +156,51 @@ fn edge_hit(hwnd: HWND, x: i32, y: i32) -> Option<u32> {
     .map(|code| code as u32)
 }
 
+/// The id of an entry a window adds under the menu of the window.
+const MENU_EXTRA: u32 = 0x1000;
+
+/// The menu of the window, as the system shows it for a native title bar (Restore, Move, Size, Minimize, Maximize,
+/// Close, in the language of the system), at a point of the screen; `extra` is an entry of the window's own under it.
+/// Both windows open it from their title bars. A command of the system is carried out here; true when `extra` was
+/// chosen.
+fn system_menu(hwnd: HWND, x: i32, y: i32, extra: Option<&str>) -> bool {
+    // SAFETY: the menu is the copy the system keeps for this window of this thread; the text lives through the calls.
+    unsafe {
+        let menu = GetSystemMenu(hwnd, false);
+        if menu.is_invalid() {
+            return false;
+        }
+        // The entry of the window's own, added once to the copy and taken off for a window that has none.
+        let has_extra = GetMenuState(menu, MENU_EXTRA, MF_BYCOMMAND) != u32::MAX;
+        match (extra, has_extra) {
+            (Some(text), false) => {
+                let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+                let _ = AppendMenuW(menu, MF_STRING, MENU_EXTRA as usize, windows::core::PCWSTR(text.as_ptr()));
+            }
+            (None, true) => {
+                let _ = DeleteMenu(menu, MENU_EXTRA, MF_BYCOMMAND);
+            }
+            _ => {}
+        }
+        // What can be done now, as the system greys it for a native frame.
+        let maximized = is_maximized(hwnd);
+        let restorable = maximized || IsIconic(hwnd).as_bool();
+        for (command, on) in [(SC_RESTORE, restorable), (SC_MOVE, !maximized), (SC_SIZE, !maximized), (SC_MINIMIZE, true), (SC_MAXIMIZE, !maximized), (SC_CLOSE, true)] {
+            let _ = EnableMenuItem(menu, command, MF_BYCOMMAND | if on { MF_ENABLED } else { MF_GRAYED });
+        }
+        let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN, x, y, Some(0), hwnd, None).0 as u32;
+        match chosen {
+            0 => false,
+            MENU_EXTRA => true,
+            command => {
+                let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0));
+                false
+            }
+        }
+    }
+}
+
 /// The composition string of the input method (`what` is the preedit or the result), as text.
 fn composition_text(himc: HIMC, what: IME_COMPOSITION_STRING) -> String {
     // SAFETY: the buffer is as long as the call says it needs.
@@ -254,6 +302,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             LRESULT(0)
         }
+        // A right click on the title bar opens the menu of the window, with the settings under it.
+        WM_NCRBUTTONUP if wparam.0 as u32 == HTCAPTION => {
+            let label = with_app(hwnd, |app| app.settings_label());
+            if system_menu(hwnd, lo(lparam), hi(lparam), label) {
+                with_app(hwnd, |app| app.run(nekominal_model::commands::Command::AppSettings));
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let size = client_size(hwnd);
             with_app(hwnd, |app| app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
@@ -296,6 +352,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_DESTROY_WINDOW => {
+            // SAFETY: a window of this thread.
+            unsafe { let _ = DestroyWindow(hwnd); }
+            LRESULT(0)
+        }
         WM_CLOSE => {
             if with_app(hwnd, App::request_close_window) == Some(true) {
                 unsafe { let _ = DestroyWindow(hwnd); }
@@ -654,6 +715,11 @@ pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam:
                 // SAFETY: posting to our own window.
                 unsafe { let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); }
             }
+            LRESULT(0)
+        }
+        // The same menu of the window as the shell's, without the settings: this is them.
+        WM_NCRBUTTONUP if wparam.0 as u32 == HTCAPTION => {
+            system_menu(hwnd, lo(lparam), hi(lparam), None);
             LRESULT(0)
         }
         WM_PAINT => {
