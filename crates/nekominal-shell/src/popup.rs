@@ -62,6 +62,8 @@ pub enum Action {
     NewTab(usize),
     /// Use the color scheme with this name.
     ColorScheme(&'static str),
+    /// A command of the menu of the window (`SC_MINIMIZE`, `SC_CLOSE`…), for the window the menu was opened on.
+    Window(u32),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).

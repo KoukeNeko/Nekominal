@@ -42,7 +42,7 @@ use windows::{core::HSTRING, Win32::{
             DestroyWindow, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
             SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
             SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
-            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WS_OVERLAPPEDWINDOW,
+            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND, WS_OVERLAPPEDWINDOW,
         },
     },
 }};
@@ -179,6 +179,8 @@ pub struct App {
     find: Option<FindState>,
     /// When the find bar last searched again for new output.
     find_at: Option<Instant>,
+    /// The window the menu of the window was last opened on: the one its commands go to.
+    window_menu_for: HWND,
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
@@ -404,6 +406,7 @@ impl App {
             fullscreen: None,
             find: None,
             find_at: None,
+            window_menu_for: hwnd,
             popup_closed: None,
             text: Utf16Assembler::default(),
             access: Some(Adapter::new(hwnd, true, access::NoActions)),
@@ -2143,15 +2146,46 @@ impl App {
 
     // --- the menu -----------------------------------------------------------------------------------------------
 
-    /// What the entry that opens the settings says, under the menu of the window.
-    pub fn settings_label(&self) -> &'static str {
-        Text::AppSettings.get(self.language())
-    }
-
-    /// The entries of the menu of the window, in its order: restore, move, size, minimize, maximize, close.
-    pub fn window_menu_labels(&self) -> [&'static str; 6] {
+    /// The menu of the window, opened by a right click on the title bar of `window` (the shell's or the settings') at the
+    /// screen point (`x`, `y`): restore, move, size, minimize, maximize and close, as Windows has it for a native title
+    /// bar, with what the state of the window allows, and in the shell's the settings under them. These windows have no menu
+    /// of the system to show: they leave out `WS_SYSMENU` so that DWM draws no caption buttons over theirs.
+    pub fn open_window_menu(&mut self, window: HWND, x: i32, y: i32) {
+        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
         let lang = self.language();
-        [Text::CommonRestore, Text::WindowMove, Text::WindowSize, Text::WindowMinimize, Text::WindowMaximize, Text::CommonClose].map(|text| text.get(lang))
+        // SAFETY: plain queries of a window of this thread.
+        let (maximized, minimized) = unsafe { (IsZoomed(window).as_bool(), IsIconic(window).as_bool()) };
+        let row = |text: Text, command: u32, glyph: char, hint: &str| popup::Row {
+            label: text.get(lang).to_owned(),
+            hint: hint.to_owned(),
+            action: Some(popup::Action::Window(command)),
+            current: false,
+            mark: Some(logic::Mark::Glyph(glyph)),
+            program: None,
+        };
+        let mut rows = Vec::new();
+        if maximized || minimized {
+            rows.push(row(Text::CommonRestore, SC_RESTORE, '\u{E923}', ""));
+        }
+        if !maximized {
+            // A blank glyph keeps their labels in the column of the others.
+            rows.push(row(Text::WindowMove, SC_MOVE, ' ', ""));
+            rows.push(row(Text::WindowSize, SC_SIZE, ' ', ""));
+        }
+        rows.push(row(Text::WindowMinimize, SC_MINIMIZE, '\u{E921}', ""));
+        if !maximized {
+            rows.push(row(Text::WindowMaximize, SC_MAXIMIZE, '\u{E922}', ""));
+        }
+        rows.push(popup::Row::separator());
+        rows.push(row(Text::CommonClose, SC_CLOSE, '\u{E8BB}', "Alt+F4"));
+        if window == self.hwnd {
+            rows.push(popup::Row::separator());
+            let settings = Command::AppSettings;
+            rows.push(popup::Row { label: settings.label(lang), hint: self.keymap.shortcut_text(settings), action: Some(popup::Action::Command(settings)), current: false, mark: Some(logic::Mark::Glyph('\u{E713}')), program: None });
+        }
+        self.window_menu_for = window;
+        // The pop-up hangs from its top right corner: put its left edge at the pointer.
+        self.open_popup(rows, popup::Kind::List, (x + (popup::WIDTH * self.scale).round() as i32, y));
     }
 
     fn language(&self) -> Lang {
@@ -2469,6 +2503,11 @@ impl App {
     }
 
     pub fn settings_button(&mut self, x: i32, y: i32, down: bool) -> Capture {
+        // A click on the settings dismisses a menu open over them, and does nothing else.
+        if self.popup.is_some() {
+            if !down { self.close_popup(); }
+            return Capture::None;
+        }
         let (x, y) = self.settings_point(x, y);
         self.page_button(x, y, MouseButton::Left, down)
     }
@@ -2492,6 +2531,11 @@ impl App {
 
     /// A key went down in the window of the settings. `true` when the page took it.
     pub fn settings_key(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
+        // The menu of the window, opened over the settings, has their keyboard while it is open.
+        if self.popup.is_some() {
+            if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
+            return true;
+        }
         if self.page.is_none() {
             return false;
         }
@@ -3373,6 +3417,8 @@ impl App {
             Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
             Some(popup::Action::ShowSetting(id)) => self.open_settings_page(Some(id)),
             Some(popup::Action::NewTab(index)) => self.new_tab_with(index),
+            // SAFETY: posting to a window of this thread.
+            Some(popup::Action::Window(command)) => unsafe { let _ = PostMessageW(Some(self.window_menu_for), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); },
             Some(popup::Action::ColorScheme(name)) => {
                 let before = self.settings.clone();
                 self.settings.theme = name.to_owned();
