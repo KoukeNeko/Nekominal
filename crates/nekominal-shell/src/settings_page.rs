@@ -131,8 +131,9 @@ pub enum Visual {
     Plate(Fill),
     Label { text: String, size: f32, tone: Tone, bold: bool, align: Align },
     Glyph { ch: char, size: f32, tone: Tone },
-    /// The logo of a shell, before the name of a profile.
-    Mark(Mark),
+    /// The icon of a program (a shell before the name of its profile, Claude Code), from its file at `path`; `mark` when
+    /// there is no file or it has no icon.
+    Program { path: Option<std::path::PathBuf>, mark: Mark },
     /// A line of text in a field, with its caret and selection when it is the one being edited (`cursor`), or what an empty
     /// one says (`placeholder`).
     Edit { text: String, cursor: Option<crate::textfield::Cursor>, placeholder: String },
@@ -174,6 +175,8 @@ pub struct View<'a> {
     pub settings: &'a Settings,
     pub keymap: &'a Keymap,
     pub profiles: &'a [Profile],
+    /// The program file of each profile, in the order of `profiles`, for its icon.
+    pub programs: &'a [Option<std::path::PathBuf>],
     pub claude: &'a crate::agent::Claude,
     /// The area of the page in the coordinates of the window, in DIP.
     pub area: Rect,
@@ -407,7 +410,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let rect = Rect::new(x0, y, content_width, CLAUDE_ROW - ROW_GAP);
                 item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
                 let mark = Rect::new(rect.x + MARGIN, rect.y + (rect.h - 28.0) / 2.0, 28.0, 28.0);
-                item(&mut items, mark, None, Visual::Mark(Mark::Badge { label: "C", color: (217, 119, 87) }), true);
+                item(&mut items, mark, None, Visual::Program { path: claude.exe.clone(), mark: Mark::Badge { label: "C", color: (217, 119, 87) } }, true);
                 let text_x = mark.x + 28.0 + 2.0 * MARK_GAP;
                 let room = (rect.x + rect.w - MARGIN - text_x).max(0.0);
                 let title = match &claude.version {
@@ -535,7 +538,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             item(&mut items, radio, None, Visual::Plate(Fill::Radio { on: i == chosen, hover: hover == Some(part) }), true);
                             // The logo of the shell, then its name.
                             let mark = Rect::new(line.x + 44.0, line.y + (line.h - MARK_SIZE) / 2.0, MARK_SIZE, MARK_SIZE);
-                            item(&mut items, mark, None, Visual::Mark(profile_mark(profile.icon)), true);
+                            item(&mut items, mark, None, Visual::Program { path: view.programs.get(i).cloned().flatten(), mark: profile_mark(profile.icon) }, true);
                             let name_x = mark.x + MARK_SIZE + MARK_GAP;
                             item(&mut items, Rect::new(name_x, line.y, (line.x + line.w - MARGIN - name_x).max(0.0), line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
                             y += RADIO_ROW;
@@ -564,7 +567,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -634,7 +637,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1400.0] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, 650.0) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let tabs_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.x + item.rect.w).fold(0.0, f32::max);
             // The search line is always there; the button for the file goes when the tabs leave no room for it.
@@ -659,12 +662,13 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, programs: &[None, None, None], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
-        let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Mark(_))).collect();
+        // The profiles come first on their page: the Agent page has a mark of its own.
+        let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
         assert_eq!(marks.len(), 3, "a logo for each profile");
         for (item, profile) in marks.iter().zip(&profiles) {
-            assert_eq!(item.visual, Visual::Mark(profile_mark(profile.icon)));
+            assert_eq!(item.visual, Visual::Program { path: None, mark: profile_mark(profile.icon) }, "no program file: the logo stands in");
             let radio = frame.items.iter().find(|r| matches!(r.visual, Visual::Plate(Fill::Radio { .. })) && (r.rect.y - item.rect.y).abs() < MARK_SIZE).expect("the radio of the row");
             let name = frame.items.iter().find(|n| matches!(&n.visual, Visual::Label { text, .. } if *text == profile.name)).expect("the name of the profile");
             assert!(item.rect.x >= radio.rect.x + radio.rect.w, "{}: the logo is right of the radio", profile.name);
@@ -726,7 +730,7 @@ mod tests {
         for width in [460.0, 560.0, 700.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

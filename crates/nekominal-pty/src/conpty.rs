@@ -41,7 +41,8 @@ use windows_sys::{
                 CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
                 EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, GetProcessTimes, INFINITE,
                 InitializeProcThreadAttributeList, OpenProcess, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTF_USESTDHANDLES,
+                PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+                STARTF_USESTDHANDLES,
                 STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
@@ -399,13 +400,12 @@ impl Pty {
         }
     }
 
-    /// The program the user is running now, by its file name (`vim.exe`): the process of the job that started last,
-    /// not counting the helpers of the console, or the child itself when it started nothing. None when the processes
-    /// cannot be read.
-    pub fn job_name(&self) -> Option<String> {
+    /// The program the user is running now: the process of the job that started last, not counting the helpers of the
+    /// console, or the child itself when it started nothing. None when the processes cannot be read.
+    pub fn job(&self) -> Option<Job> {
         let names = process_names()?;
         let name_of = |pid: u32| names.iter().find(|(id, _)| *id == pid).map(|(_, name)| name.clone());
-        let mut newest: Option<(u64, String)> = None;
+        let mut newest: Option<(u64, u32, String)> = None;
         for pid in self.job_process_ids() {
             if pid == self.pid {
                 continue;
@@ -415,11 +415,17 @@ impl Pty {
                 continue;
             }
             let started = start_time(pid);
-            if newest.as_ref().is_none_or(|(at, _)| started >= *at) {
-                newest = Some((started, name));
+            if newest.as_ref().is_none_or(|(at, _, _)| started >= *at) {
+                newest = Some((started, pid, name));
             }
         }
-        newest.map(|(_, name)| name).or_else(|| name_of(self.pid))
+        let (pid, name) = newest.map(|(_, pid, name)| (pid, name)).or_else(|| Some((self.pid, name_of(self.pid)?)))?;
+        Some(Job { name, path: image_path(pid) })
+    }
+
+    /// The file name of [`Pty::job`] (`vim.exe`).
+    pub fn job_name(&self) -> Option<String> {
+        self.job().map(|job| job.name)
     }
 
     /// Terminates the child and every process it started.
@@ -906,6 +912,30 @@ fn process_names() -> Option<Vec<(u32, String)>> {
             more = Process32NextW(snapshot.0, &mut entry);
         }
         Some(names)
+    }
+}
+
+/// A program a session runs: its file name, and its whole path when the process lets it be read (the icon comes from it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    pub name: String,
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// The path of the program file of a process.
+fn image_path(pid: u32) -> Option<std::path::PathBuf> {
+    // SAFETY: the handle is owned and closed by `Handle`; the buffer is as long as the size passed.
+    unsafe {
+        let process = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
+        if process.0.is_null() {
+            return None;
+        }
+        let mut buffer = [0u16; 1024];
+        let mut len = buffer.len() as u32;
+        if QueryFullProcessImageNameW(process.0, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len) == 0 {
+            return None;
+        }
+        Some(std::path::PathBuf::from(String::from_utf16_lossy(&buffer[..len as usize])))
     }
 }
 

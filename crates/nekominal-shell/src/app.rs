@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, clipboard, design, find, motion, textfield,
+    access, agent, clipboard, design, find, icons, motion, textfield,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -92,6 +92,8 @@ const ICON_SIZE: f32 = 10.0;
 const ICON_NUDGE: f32 = 1.5;
 /// The height of the status bar at the bottom of the window, in DIP.
 const STATUS_BAR: f32 = 26.0;
+/// The icon of the program a tab runs, in DIP.
+const TAB_ICON: f32 = 16.0;
 
 /// What a part of the status bar does when it is clicked.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,8 +115,9 @@ pub struct App {
     glass: Glass,
     theme: r::Theme,
     profile: Profile,
-    /// Every profile a tab can open, the default among them.
+    /// Every profile a tab can open, the default among them, and the program file of each, for its icon.
     profiles: Vec<Profile>,
+    programs: Vec<Option<std::path::PathBuf>>,
     /// What the settings page remembers while its window is open, and that window.
     page: Option<Page>,
     settings_win: Option<SettingsWin>,
@@ -287,6 +290,12 @@ fn settings_stamp() -> Option<std::time::SystemTime> {
     std::fs::metadata(store::settings_path()?).ok()?.modified().ok()
 }
 
+/// Draws the icon of the program file at `path` in `square` (DIP); false when the file has none, and the caller draws its glyph.
+fn program_icon(ui: &mut Ui, scale: f32, path: &std::path::Path, square: Rect) -> bool {
+    let px = (square.w * scale).round().max(1.0) as u32;
+    ui.image(icons::key(path), square.x, square.y, px, || icons::load(path, px))
+}
+
 fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
     DiscoveredProfile {
         id: found.id.clone(),
@@ -348,6 +357,7 @@ impl App {
             glass,
             theme,
             profile,
+            programs: all.iter().map(|p| nekominal_pty::profiles::resolve_program(&p.program)).collect(),
             profiles: all,
             page: None,
             settings_win: None,
@@ -506,6 +516,7 @@ impl App {
             shell: std::path::Path::new(&profile.program).file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default(),
             exited: false,
             job: None,
+            job_path: None,
             attention: None,
             note: None,
             progress: None,
@@ -1180,9 +1191,11 @@ impl App {
         let mut changed = false;
         for tab in &mut self.tabs {
             let Some(entry) = tab.focused_entry_mut() else { continue };
-            let job = entry.pane.job_name();
-            if job.is_some() && job != entry.job {
-                entry.job = job;
+            if let Some(job) = entry.pane.job()
+                && Some(&job.name) != entry.job.as_ref()
+            {
+                entry.job = Some(job.name);
+                entry.job_path = job.path;
                 changed = true;
             }
         }
@@ -1350,8 +1363,8 @@ impl App {
         self.close_popup();
         let lang = self.language();
         let rows = vec![
-            popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false, mark: None },
-            popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false, mark: None },
+            popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false, mark: None, program: None },
+            popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false, mark: None, program: None },
         ];
         let size = self.surface.size();
         let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH).1.1;
@@ -1755,7 +1768,11 @@ impl App {
                     self.ui.pop_clip();
                 }
                 settings_page::Visual::Glyph { ch, size, tone } => self.icon_centered(rect, *ch, *size, tone_color(*tone)),
-                settings_page::Visual::Mark(mark) => widgets::mark(&mut self.ui, rect, *mark, col(g.text_secondary())),
+                settings_page::Visual::Program { path, mark } => {
+                    if !path.as_deref().is_some_and(|path| program_icon(&mut self.ui, self.scale, path, rect)) {
+                        widgets::mark(&mut self.ui, rect, *mark, col(g.text_secondary()));
+                    }
+                }
                 settings_page::Visual::Edit { text, cursor, placeholder } => {
                     widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder });
                 }
@@ -1875,11 +1892,18 @@ impl App {
                 self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, status.state)));
                 title_x = at + ICON_SIZE + 2.0 * design::GAP;
             } else if let Some(glyph) = self.tabs[i].job().map(logic::job_icon) {
-                // A tab at rest shows the program it runs, as the automatic icon of iTerm2 does.
-                let icon_line = self.ui.line_height(ICON_SIZE);
+                // A tab at rest shows the program it runs, as the automatic icon of iTerm2 does: the icon of its file, or a
+                // glyph for one without.
                 let at = chip.x + design::INSET;
-                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, color);
-                title_x = at + ICON_SIZE + 2.0 * design::GAP;
+                let square = Rect::new(at, chip.y + (chip.h - TAB_ICON) / 2.0, TAB_ICON, TAB_ICON);
+                let path = self.tabs[i].job_path().map(std::path::Path::to_owned);
+                if path.is_some_and(|path| program_icon(&mut self.ui, self.scale, &path, square)) {
+                    title_x = at + TAB_ICON + 2.0 * design::GAP;
+                } else {
+                    let icon_line = self.ui.line_height(ICON_SIZE);
+                    self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, color);
+                    title_x = at + ICON_SIZE + 2.0 * design::GAP;
+                }
             }
             self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
@@ -2122,6 +2146,7 @@ impl App {
                     action: Some(popup::Action::Command(*command)),
                     current: false,
                     mark: None,
+                    program: None,
                 }),
                 MenuRow::Backdrop => {
                     for backdrop in Backdrop::ALL {
@@ -2137,6 +2162,7 @@ impl App {
                             action: Some(popup::Action::Backdrop(backdrop)),
                             current: backdrop == self.settings.appearance.backdrop,
                             mark: None,
+                            program: None,
                         });
                     }
                 }
@@ -2148,6 +2174,7 @@ impl App {
                             action: Some(popup::Action::Command(command)),
                             current: false,
                             mark: None,
+                            program: None,
                         });
                     }
                 }
@@ -2195,7 +2222,7 @@ impl App {
                     PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
                     PaletteAction::Run(_) => return None,
                 };
-                Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false, mark: None })
+                Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false, mark: None, program: None })
             })
             .collect()
     }
@@ -2273,7 +2300,7 @@ impl App {
         let area = self.page_area();
         let page = self.page.as_ref()?;
         let ui = &mut self.ui;
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, claude: &self.claude, area };
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, programs: &self.programs, claude: &self.claude, area };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 
@@ -2923,6 +2950,7 @@ impl App {
                 action: Some(popup::Action::NewTab(i)),
                 current: profile.id == self.profile.id,
                 mark: Some(logic::profile_mark(profile.icon)),
+                program: self.programs.get(i).cloned().flatten(),
             })
             .collect();
         let anchor = self.button_anchor(self.layout.profiles);
@@ -3094,7 +3122,7 @@ impl App {
         let rows: Vec<popup::Row> = [Command::EditCopy, Command::EditPaste, Command::EditSelectAll]
             .into_iter()
             .filter(|command| *command != Command::EditCopy || has_selection)
-            .map(|command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None })
+            .map(|command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None, program: None })
             .collect();
         let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
         self.open_popup(rows, popup::Kind::List, anchor);
@@ -3109,6 +3137,7 @@ impl App {
                 action: Some(popup::Action::Tab(i)),
                 current: i == self.selected,
                 mark: None,
+                program: None,
             })
             .collect();
         let anchor = self.button_anchor(self.plate_rect.unwrap_or(self.layout.profiles));
@@ -3522,7 +3551,10 @@ impl App {
             let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
             let mut label_x = rect.x + 12.0;
             if let Some(mark) = row.mark {
-                widgets::mark(ui, Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE), mark, col(g.text_secondary()));
+                let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
+                if !row.program.as_deref().is_some_and(|path| program_icon(ui, scale, path, square)) {
+                    widgets::mark(ui, square, mark, col(g.text_secondary()));
+                }
                 label_x += popup::MARK_SIZE + popup::MARK_GAP;
             }
             ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));

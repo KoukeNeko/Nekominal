@@ -10,6 +10,7 @@ mod design;
 mod find;
 mod glass;
 mod gpu;
+mod icons;
 mod layout;
 #[allow(dead_code)]
 mod logic;

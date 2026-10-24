@@ -101,6 +101,11 @@ impl Session {
     pub fn job_name(&self) -> Option<String> {
         self.pty.job_name()
     }
+
+    /// The program the session is running now, with its path; see [`Pty::job`].
+    pub fn job(&self) -> Option<crate::conpty::Job> {
+        self.pty.job()
+    }
 }
 
 #[derive(Default)]

@@ -74,6 +74,8 @@ pub struct Row {
     pub current: bool,
     /// What is drawn before the label (the logo of a shell).
     pub mark: Option<Mark>,
+    /// The program the row stands for, whose icon goes where `mark` would.
+    pub program: Option<std::path::PathBuf>,
 }
 
 /// The side of the square a mark is drawn in, and the space after it.
@@ -82,7 +84,7 @@ pub const MARK_GAP: f32 = 2.0 * crate::design::GAP;
 
 impl Row {
     pub fn separator() -> Row {
-        Row { label: String::new(), hint: String::new(), action: None, current: false, mark: None }
+        Row { label: String::new(), hint: String::new(), action: None, current: false, mark: None, program: None }
     }
 
     pub fn is_separator(&self) -> bool {
@@ -393,7 +395,7 @@ mod tests {
     }
 
     fn row(label: &str) -> Row {
-        Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false, mark: None }
+        Row { label: label.into(), hint: String::new(), action: Some(Action::Command(Command::TabNew)), current: false, mark: None, program: None }
     }
 
     fn rows() -> Vec<Row> {

@@ -136,6 +136,8 @@ pub struct Ui {
     pub fonts: FontStack,
     raster: Rasterizer,
     cache: FxHashMap<GlyphKey, Cached>,
+    /// Pictures by their key and size in pixels; `None` for one that could not be made.
+    images: FxHashMap<(u64, u32), Option<Bitmap>>,
     quads: Vec<QuadInstance>,
     glyphs: Vec<GlyphInstance>,
     cmds: Vec<Cmd>,
@@ -173,6 +175,7 @@ impl Ui {
             fonts: FontStack::new(ui_fonts())?,
             raster: Rasterizer::new(),
             cache: FxHashMap::default(),
+            images: FxHashMap::default(),
             quads: Vec::new(),
             glyphs: Vec::new(),
             cmds: Vec::new(),
@@ -332,6 +335,29 @@ impl Ui {
     /// Draws `text` with its line box starting at (`x`, `y`) DIP; returns its width in DIP.
     pub fn text(&mut self, x: f32, y: f32, text: &str, size: f32, color: Color, bold: bool) -> f32 {
         self.run(None, x, y, text, size, color, bold)
+    }
+
+    /// Draws a square colour picture `px` pixels wide with its top left at (`x`, `y`) DIP, on whole pixels. `key` names the
+    /// picture; the first time it is drawn at that size `pixels` makes it, `px * px` premultiplied RGBA. False when it
+    /// could not be made, and the caller draws something else.
+    pub fn image(&mut self, key: u64, x: f32, y: f32, px: u32, pixels: impl FnOnce() -> Option<Vec<u8>>) -> bool {
+        let bitmap = match self.images.get(&(key, px)) {
+            Some(cached) => *cached,
+            None => {
+                let made = pixels().filter(|data| px > 0 && data.len() == (px * px * 4) as usize).and_then(|data| {
+                    let src = self.atlas_rgba.insert(&self.gpu, px, px, &data).ok()?;
+                    Some(Bitmap { src: [src.0, src.1], size: [px as u16, px as u16], left: 0, top: 0, kind: KIND_COLOR })
+                });
+                self.images.insert((key, px), made);
+                made
+            }
+        };
+        let Some(b) = bitmap else { return false };
+        let s = self.scale;
+        let index = self.glyphs.len() as u32;
+        self.glyphs.push(GlyphInstance { dst: [(x * s).round() as i32, (y * s).round() as i32], size: b.size, src: b.src, fg: [255; 4], kind: b.kind });
+        self.extend_cmd(true, index);
+        true
     }
 
     /// Draws one glyph of the Segoe Fluent Icons font (a code point such as `'\u{E713}'`).
