@@ -91,7 +91,8 @@ pub fn tree(view: &View) -> TreeUpdate {
         node.set_children(row_ids);
         nodes.push((POPUP, node));
         children.push(POPUP);
-        focus = popup.focused.map_or(POPUP, |i| NodeId(FIRST_ROW + i as u64));
+        // A focus past the rows would name a node that is not in the tree, which accesskit refuses with a panic.
+        focus = popup.focused.filter(|&i| i < popup.rows.len()).map_or(POPUP, |i| NodeId(FIRST_ROW + i as u64));
     }
     window.set_children(children);
     nodes.push((WINDOW, window));
@@ -160,7 +161,7 @@ pub fn page_tree(view: &PageView) -> TreeUpdate {
 
     window.set_children(vec![TABS, SEARCH, POPUP]);
     nodes.push((WINDOW, window));
-    let focus = view.focused.map_or(SEARCH, |i| NodeId(FIRST_ROW + i as u64));
+    let focus = view.focused.filter(|&i| i < view.rows.len()).map_or(SEARCH, |i| NodeId(FIRST_ROW + i as u64));
     TreeUpdate { nodes, tree: Some(Tree::new(WINDOW)), tree_id: TreeId::ROOT, focus }
 }
 
@@ -237,6 +238,24 @@ mod tests {
         assert_eq!(update.focus, NodeId(FIRST_ROW + 1));
         assert_eq!(node(&update, NodeId(4)).value(), Some("fo"));
         assert_eq!(node(&update, NodeId(FIRST_ROW + 1)).is_selected(), Some(true));
+    }
+
+    /// accesskit panics on a focus that names no node of the tree, and the panic ends the process.
+    #[test]
+    fn the_focus_always_names_a_node_of_the_tree_even_with_no_rows() {
+        let page = PageView {
+            window: "Settings".into(),
+            sections_label: "Sections".into(),
+            sections: Vec::new(),
+            search_label: "Search settings".into(),
+            query: "zzzz".into(),
+            rows: Vec::new(),
+            focused: Some(0),
+        };
+        let update = page_tree(&page);
+        assert!(update.nodes.iter().any(|(id, _)| *id == update.focus), "a search that found nothing, and Down pressed");
+        let update = tree(&view(Some(PopupView { kind: PopupKind::Menu, heading: String::new(), rows: Vec::new(), focused: Some(3) })));
+        assert!(update.nodes.iter().any(|(id, _)| *id == update.focus), "a menu row that went away");
     }
 
     #[test]

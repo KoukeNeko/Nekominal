@@ -37,6 +37,8 @@ pub struct PaneEntry {
     pub job: Option<String>,
     /// The file of that program, for its icon.
     pub job_path: Option<std::path::PathBuf>,
+    /// An agent has run in the pane since its shell was last back at its prompt alone: the status bar is the agent's.
+    pub agent_seen: bool,
     /// A bell, a notification or a failed exit nobody has looked at.
     pub attention: Option<Attention>,
     /// What the notification said.

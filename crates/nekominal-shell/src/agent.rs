@@ -102,11 +102,25 @@ pub fn forget(session: &str) {
     }
 }
 
+/// Whether `dir` is on a disk of this machine: a drive letter whose drive is fixed, removable, optical or in memory. This
+/// runs every second on the thread of the window, so nothing else is looked at: a share (`\\host\x`) makes Windows connect
+/// and hand over the user's credentials, and a mapped drive whose server sleeps blocks for seconds.
+fn on_local_disk(dir: &Path) -> bool {
+    let text = dir.to_string_lossy();
+    let mut chars = text.chars();
+    let (Some(letter), Some(':')) = (chars.next(), chars.next()) else { return false };
+    if !letter.is_ascii_alphabetic() {
+        return false;
+    }
+    // SAFETY: a NUL-terminated root path that lives through the call.
+    let kind = unsafe { windows::Win32::Storage::FileSystem::GetDriveTypeW(&windows::core::HSTRING::from(format!("{letter}:\\"))) };
+    // DRIVE_REMOVABLE, DRIVE_FIXED, DRIVE_CDROM, DRIVE_RAMDISK; not DRIVE_REMOTE (4) or one that is not there.
+    matches!(kind, 2 | 3 | 5 | 6)
+}
+
 /// The branch the repository that holds `dir` is on, or the start of the commit when no branch is checked out.
 pub fn git_branch(dir: &Path) -> Option<String> {
-    // A network share is never looked at: this runs every second on the thread of the window, and looking connects.
-    let text = dir.to_string_lossy();
-    if text.chars().take(2).all(|c| matches!(c, '\\' | '/')) {
+    if !on_local_disk(dir) {
         return None;
     }
     for folder in dir.ancestors() {
@@ -116,8 +130,12 @@ pub fn git_branch(dir: &Path) -> Option<String> {
         } else if git.is_file() {
             // A worktree or a submodule: `.git` is a file that says where the repository is.
             let pointer = std::fs::read_to_string(&git).ok()?;
-            let target = Path::new(pointer.strip_prefix("gitdir:")?.trim());
-            folder.join(target).join("HEAD")
+            let target = folder.join(pointer.strip_prefix("gitdir:")?.trim());
+            // The file can name any folder, a share among them: the same rule holds for it.
+            if !on_local_disk(&target) {
+                return None;
+            }
+            target.join("HEAD")
         } else {
             continue;
         };
@@ -256,6 +274,12 @@ mod tests {
         std::fs::write(root.join("wt").join("HEAD"), "ref: refs/heads/side\n").unwrap();
         assert_eq!(git_branch(&tree).as_deref(), Some("side"));
         assert_eq!(git_branch(Path::new(r"\\nas\share\repo")), None, "a share is not looked at");
+        assert_eq!(git_branch(Path::new("//nas/share/repo")), None);
+        assert_eq!(git_branch(Path::new("/home/me")), None, "a path of another system");
+        // A `.git` file that points at a share, as an archive can hold one.
+        std::fs::write(tree.join(".git"), "gitdir: \\\\host\\x\n").unwrap();
+        assert_eq!(git_branch(&tree), None, "the folder a .git file names is held to the same rule");
+        assert!(on_local_disk(&root) && !on_local_disk(Path::new("relative\\dir")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

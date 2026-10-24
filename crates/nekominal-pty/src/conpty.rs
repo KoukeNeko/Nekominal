@@ -419,14 +419,11 @@ impl Pty {
                 newest = Some((started, pid, name));
             }
         }
+        let root = newest.is_none();
         let (pid, name) = newest.map(|(_, pid, name)| (pid, name)).or_else(|| Some((self.pid, name_of(self.pid)?)))?;
-        Some(Job { name, path: image_path(pid) })
+        Some(Job { name, path: image_path(pid), root })
     }
 
-    /// The file name of [`Pty::job`] (`vim.exe`).
-    pub fn job_name(&self) -> Option<String> {
-        self.job().map(|job| job.name)
-    }
 
     /// Terminates the child and every process it started.
     pub fn kill(&self) {
@@ -920,6 +917,8 @@ fn process_names() -> Option<Vec<(u32, String)>> {
 pub struct Job {
     pub name: String,
     pub path: Option<std::path::PathBuf>,
+    /// Nothing runs but the program the session started (the shell at its prompt).
+    pub root: bool,
 }
 
 /// The path of the program file of a process.

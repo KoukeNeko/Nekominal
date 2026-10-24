@@ -177,6 +177,8 @@ pub struct App {
     fullscreen: Option<(WINDOWPLACEMENT, isize)>,
     /// The search of the find bar while it is open.
     find: Option<FindState>,
+    /// When the find bar last searched again for new output.
+    find_at: Option<Instant>,
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
@@ -290,10 +292,10 @@ fn settings_stamp() -> Option<std::time::SystemTime> {
     std::fs::metadata(store::settings_path()?).ok()?.modified().ok()
 }
 
-/// Draws the icon of the program file at `path` in `square` (DIP); false when the file has none, and the caller draws its glyph.
-fn program_icon(ui: &mut Ui, scale: f32, path: &std::path::Path, square: Rect) -> bool {
-    let px = (square.w * scale).round().max(1.0) as u32;
-    ui.image(icons::key(path), square.x, square.y, px, || icons::load(path, px))
+/// Draws the icon of the program file at `path` in `square` (DIP), at the scale of the window being drawn; false when the
+/// file has none, and the caller draws its glyph.
+fn program_icon(ui: &mut Ui, path: &std::path::Path, square: Rect) -> bool {
+    ui.image(icons::key(path), square.x, square.y, square.w, |px| icons::load(path, px))
 }
 
 fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
@@ -305,6 +307,14 @@ fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
         program: found.program.clone(),
         args: found.args.clone(),
     }
+}
+
+/// Whether the key just pressed typed a character: WM_CHAR, which TranslateMessage put in the queue before the key came here.
+fn char_follows(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_NOREMOVE, PeekMessageW, WM_CHAR};
+    let mut msg = MSG::default();
+    // SAFETY: looks at the queue of our own window without taking anything from it.
+    unsafe { PeekMessageW(&mut msg, Some(hwnd), WM_CHAR, WM_CHAR, PM_NOREMOVE).as_bool() && msg.wParam.0 >= 0x20 }
 }
 
 fn held() -> Modifiers {
@@ -393,6 +403,7 @@ impl App {
             confirmation: None,
             fullscreen: None,
             find: None,
+            find_at: None,
             popup_closed: None,
             text: Utf16Assembler::default(),
             access: Some(Adapter::new(hwnd, true, access::NoActions)),
@@ -517,6 +528,7 @@ impl App {
             exited: false,
             job: None,
             job_path: None,
+            agent_seen: false,
             attention: None,
             note: None,
             progress: None,
@@ -790,6 +802,8 @@ impl App {
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
     pub fn on_wake(&mut self) {
+        // The find bar searches the focused pane: only its output can change the matches.
+        let focused_woke = self.focused().is_some_and(|entry| entry.wake.pending.load(Ordering::Acquire));
         for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
             entry.wake.pending.store(false, Ordering::Release);
         }
@@ -854,7 +868,12 @@ impl App {
         }
         self.alert(ring);
         self.update_window_title();
-        self.find_refresh();
+        // shortcut: at most four searches a second while output streams, so the count can lag the last burst until the next
+        // output; a timer would settle it if that ever matters.
+        if focused_woke && self.find_at.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
+            self.find_at = Some(Instant::now());
+            self.find_refresh();
+        }
         self.redraw();
     }
 
@@ -1191,9 +1210,17 @@ impl App {
         let mut changed = false;
         for tab in &mut self.tabs {
             let Some(entry) = tab.focused_entry_mut() else { continue };
-            if let Some(job) = entry.pane.job()
-                && Some(&job.name) != entry.job.as_ref()
-            {
+            let Some(job) = entry.pane.job() else { continue };
+            if job.name.to_ascii_lowercase().starts_with("claude") {
+                entry.agent_seen = true;
+            }
+            // The shell is alone again: whatever agent ran in the pane has ended, and what it last said is history.
+            if job.root && (entry.agent_seen || entry.usage.is_some()) {
+                agent::forget(&entry.session);
+                (entry.agent_seen, entry.usage, entry.usage_stamp) = (false, None, None);
+                changed = true;
+            }
+            if Some(&job.name) != entry.job.as_ref() {
                 entry.job = Some(job.name);
                 entry.job_path = job.path;
                 changed = true;
@@ -1241,11 +1268,10 @@ impl App {
 
     /// The text being composed, drawn at the cursor; `None` when the composition ended.
     pub fn on_ime_preedit(&mut self, text: Option<String>) {
-        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut() {
-            if popup.query.is_some() {
-                popup.preedit = text.unwrap_or_default();
-                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
-            }
+        // Only a pop-up with a line to type in takes the composition; under a menu it stays the terminal's.
+        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut().filter(|popup| popup.query.is_some()) {
+            popup.preedit = text.unwrap_or_default();
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
             return;
         }
         if let Some(entry) = self.tabs.get_mut(self.selected).and_then(Tab::focused_entry_mut) {
@@ -1256,7 +1282,7 @@ impl App {
 
     /// Text the input method finished: it goes to the program as typed.
     pub fn on_ime_commit(&mut self, text: &str) {
-        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut() {
+        if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut().filter(|popup| popup.query.is_some()) {
             popup.preedit.clear();
             for unit in text.encode_utf16() { self.popup_char(unit); }
             return;
@@ -1502,6 +1528,11 @@ impl App {
             return true;
         }
         if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET {
+            return false;
+        }
+        // AltGr is Ctrl+Alt to Windows. When the chord types a character (AltGr+Q is @ on a German layout), that character is
+        // already in the queue as WM_CHAR and is what the program gets; the chord is no key of its own.
+        if held.ctrl && held.alt && char_follows(self.hwnd) {
             return false;
         }
         let mods = input_mods(held);
@@ -1769,7 +1800,7 @@ impl App {
                 }
                 settings_page::Visual::Glyph { ch, size, tone } => self.icon_centered(rect, *ch, *size, tone_color(*tone)),
                 settings_page::Visual::Program { path, mark } => {
-                    if !path.as_deref().is_some_and(|path| program_icon(&mut self.ui, self.scale, path, rect)) {
+                    if !path.as_deref().is_some_and(|path| program_icon(&mut self.ui, path, rect)) {
                         widgets::mark(&mut self.ui, rect, *mark, col(g.text_secondary()));
                     }
                 }
@@ -1897,7 +1928,7 @@ impl App {
                 let at = chip.x + design::INSET;
                 let square = Rect::new(at, chip.y + (chip.h - TAB_ICON) / 2.0, TAB_ICON, TAB_ICON);
                 let path = self.tabs[i].job_path().map(std::path::Path::to_owned);
-                if path.is_some_and(|path| program_icon(&mut self.ui, self.scale, &path, square)) {
+                if path.is_some_and(|path| program_icon(&mut self.ui, &path, square)) {
                     title_x = at + TAB_ICON + 2.0 * design::GAP;
                 } else {
                     let icon_line = self.ui.line_height(ICON_SIZE);
@@ -1956,11 +1987,10 @@ impl App {
 
     // --- the status bar -----------------------------------------------------------------------------------------
 
-    /// Whether the pane runs an agent: one that reported its state or its session, or Claude Code by the name of its program.
+    /// Whether the pane runs an agent: one that reported its state or its session, or Claude Code, seen by the name of its
+    /// program, until the shell is alone again (a tool it runs, `bash.exe`, does not end it).
     fn runs_agent(entry: &PaneEntry) -> bool {
-        entry.usage.is_some()
-            || entry.pane.agent_summary().is_some()
-            || entry.job.as_deref().is_some_and(|job| job.to_ascii_lowercase().starts_with("claude"))
+        entry.agent_seen || entry.usage.is_some() || entry.pane.agent_summary().is_some()
     }
 
     /// Whether the status bar takes the bottom of the window: switched on, and for a pane without an agent only when it
@@ -2705,6 +2735,8 @@ impl App {
                     page.cursor = textfield::Cursor::default();
                 }
             }
+            // Nothing to move to: a search that found nothing.
+            VK_UP | VK_DOWN if frame.entries.is_empty() => {}
             VK_UP | VK_DOWN => {
                 let last = frame.entries.len().saturating_sub(1);
                 let next = match (focus, vk_code == VK_DOWN) {
@@ -3552,7 +3584,7 @@ impl App {
             let mut label_x = rect.x + 12.0;
             if let Some(mark) = row.mark {
                 let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
-                if !row.program.as_deref().is_some_and(|path| program_icon(ui, scale, path, square)) {
+                if !row.program.as_deref().is_some_and(|path| program_icon(ui, path, square)) {
                     widgets::mark(ui, square, mark, col(g.text_secondary()));
                 }
                 label_x += popup::MARK_SIZE + popup::MARK_GAP;

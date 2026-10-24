@@ -522,11 +522,6 @@ impl Pane {
     }
 
     /// The file name of the program the pane is running now (`vim.exe`; the shell when nothing else runs), if it can be told.
-    pub fn job_name(&self) -> Option<String> {
-        let live = self.live.borrow();
-        live.sessions.get(live.id).ok()?.job_name()
-    }
-
     /// The program the session runs now, with the path of its file.
     pub fn job(&self) -> Option<nekominal_pty::conpty::Job> {
         let live = self.live.borrow();

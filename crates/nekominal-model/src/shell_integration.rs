@@ -5,7 +5,7 @@
 //!
 //! The PowerShell script also gives Claude Code the status line of the window: when `NEKOMINAL_CLAUDE_SETTINGS` names a
 //! settings file (the window sets it while its status bar is on), `claude` runs `claude.exe --settings <that file>`,
-//! unless the user has a `claude` function of their own.
+//! unless the user has a `claude` function of their own or the project's `.claude\settings*.json` sets a status line.
 //!
 //! Only PowerShell is wired into profiles ([`powershell_args`]). The Unix scripts are ready to be sourced
 //! by whatever starts those shells (an rc file, `--rcfile`, `ZDOTDIR`); they must run after the user's own
@@ -33,7 +33,9 @@ if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude))
   function global:claude {
     $exe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $exe -and (Test-Path "$HOME\.local\bin\claude.exe")) { $exe = "$HOME\.local\bin\claude.exe" }
-    if ($exe) { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args } else { Write-Error 'claude.exe was not found' }
+    # A project that sets a status line of its own keeps it: --settings would win over it.
+    $own = Get-ChildItem -LiteralPath (Join-Path $PWD.ProviderPath '.claude') -Filter 'settings*.json' -ErrorAction SilentlyContinue | Select-String -SimpleMatch '"statusLine"' -Quiet
+    if (-not $exe) { Write-Error 'claude.exe was not found' } elseif ($own) { & $exe @args } else { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args }
   }
 }"#;
 
@@ -376,6 +378,33 @@ mod tests {
             "{cmdlet_failed:?}"
         );
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Needs PowerShell 7 on PATH; run with `cargo test -p nekominal-model -- --ignored`.
+    #[test]
+    #[ignore = "starts pwsh"]
+    fn real_powershell_claude_takes_the_settings_unless_the_project_has_its_own_status_line() {
+        let root = std::env::temp_dir().join(format!("nekominal-claude-fn-{}", std::process::id()));
+        let (bin, plain, own) = (root.join("bin"), root.join("plain"), root.join("own"));
+        for dir in [&bin, &plain, &own.join(".claude")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // A stand-in for claude.exe that says what it was given.
+        std::fs::write(bin.join("claude.cmd"), "@echo ARGS %*\r\n").unwrap();
+        std::fs::write(own.join(".claude").join("settings.local.json"), r#"{ "statusLine": { "type": "command", "command": "x" } }"#).unwrap();
+        let run = |dir: &std::path::Path| {
+            let probe = format!("{POWERSHELL_SCRIPT}\nSet-Location -LiteralPath '{}'\nclaude --resume", dir.display());
+            let output = Command::new(find_program(&["pwsh.exe"]).expect("pwsh is on PATH"))
+                .args(["-NoLogo", "-NoProfile", "-EncodedCommand", &encode_command(&probe)])
+                .env("PATH", format!("{};{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
+                .env("NEKOMINAL_CLAUDE_SETTINGS", "C:\\n\\claude-settings.json")
+                .output()
+                .expect("pwsh starts");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        assert_eq!(run(&plain), "ARGS --settings C:\\n\\claude-settings.json --resume");
+        assert_eq!(run(&own), "ARGS --resume", "the project's own status line stays");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Needs Git Bash on PATH or in the usual places.

@@ -97,11 +97,6 @@ impl Session {
         self.flow.ack(bytes);
     }
 
-    /// The file name of the program the session is running now; see [`Pty::job_name`].
-    pub fn job_name(&self) -> Option<String> {
-        self.pty.job_name()
-    }
-
     /// The program the session is running now, with its path; see [`Pty::job`].
     pub fn job(&self) -> Option<crate::conpty::Job> {
         self.pty.job()
@@ -423,14 +418,33 @@ mod tests {
         let (id, session, _rx) = start(&sessions, &config);
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        let name = loop {
-            match session.job_name() {
-                Some(name) if name.eq_ignore_ascii_case("ping.exe") => break name,
+        let job = loop {
+            match session.job() {
+                Some(job) if job.name.eq_ignore_ascii_case("ping.exe") => break job,
                 other => assert!(Instant::now() < deadline, "the job was {other:?}"),
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        assert!(name.eq_ignore_ascii_case("ping.exe"));
+        let path = job.path.expect("the path of the program, for its icon");
+        assert!(path.is_absolute() && path.file_name().is_some_and(|name| name.eq_ignore_ascii_case("ping.exe")), "{path:?}");
+        assert!(!job.root, "ping runs, the shell is not alone");
+        sessions.close(id);
+    }
+
+    #[test]
+    fn a_shell_with_nothing_running_is_alone_in_its_job() {
+        let sessions = Sessions::default();
+        let config = cmd_config(&["/d", "/k"]);
+        let (id, session, _rx) = start(&sessions, &config);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let job = loop {
+            match session.job() {
+                Some(job) if job.name.eq_ignore_ascii_case("cmd.exe") => break job,
+                other => assert!(Instant::now() < deadline, "the job was {other:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(job.root, "cmd at its prompt is the root of the job");
         sessions.close(id);
     }
 
