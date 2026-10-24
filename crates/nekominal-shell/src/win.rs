@@ -44,6 +44,8 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 const DRAG_TIMER: usize = 1;
 /// Looks at what the panes run, for the icons of the tabs: once a second.
 const JOB_TIMER: usize = 2;
+/// Asks for the next frame of the marks of the tabs that move (a spinner, a pulse), while one is on show.
+const MARK_TIMER: usize = 3;
 
 pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 /// Destroys the window from the message loop: the application asks for it from inside a handler, while it is borrowed, and
@@ -294,6 +296,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if next_frame {
                 with_app(hwnd, |app| app.redraw());
             }
+            // A moving mark asks for frames at its own pace, not at every refresh: the timer stops with the last of them.
+            // SAFETY: timers of this window, from its own thread.
+            if with_app(hwnd, |app| app.animating()).unwrap_or(false) {
+                unsafe { SetTimer(Some(hwnd), MARK_TIMER, crate::motion::MARK_FRAME_MS, None) };
+            } else {
+                unsafe { let _ = KillTimer(Some(hwnd), MARK_TIMER); }
+            }
             raise_access_events(hwnd, App::access_update);
             LRESULT(0)
         }
@@ -379,6 +388,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_TIMER if wparam.0 == DRAG_TIMER => {
             with_app(hwnd, App::on_drag_tick);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == MARK_TIMER => {
+            with_app(hwnd, |app| app.redraw());
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == JOB_TIMER => {
