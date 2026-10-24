@@ -1,4 +1,5 @@
-//! The settings page: a section list on the left, the rows of the section on the right, a search line above them.
+//! The settings page: a strip of tabs, one for each section, with the search line at its right, and the rows of the
+//! section below it.
 //!
 //! The page is a display list. `build` turns the state of the page and the settings into rectangles with what is drawn
 //! in them and what they do when pressed (`Part`), so that drawing and hit testing read the same geometry. The rows are
@@ -16,16 +17,17 @@ use nekominal_model::{
 };
 use nekominal_ui::Rect;
 
-/// Width of the section list, and where its first entry starts below the top of the page, in DIP.
-pub const NAV_WIDTH: f32 = 200.0;
-pub const NAV_TOP: f32 = 16.0;
-pub const NAV_ITEM: f32 = 40.0;
+/// The strip on top of the page: its height, where its tabs start below its top, and the room each tab leaves around its
+/// text, in DIP. The search line and the button for the file are at its right.
+pub const STRIP: f32 = 44.0;
+const TAB_TOP: f32 = 8.0;
+const TAB_PAD: f32 = 20.0;
+const STRIP_EDGE: f32 = 14.0;
+const SEARCH_WIDTH: f32 = 220.0;
+const SEARCH_HEIGHT: f32 = 28.0;
 const PAD: f32 = 24.0;
 const CONTENT_MAX: f32 = 720.0;
-const TITLE_Y: f32 = 16.0;
-const SEARCH_Y: f32 = 56.0;
-const SEARCH_HEIGHT: f32 = 36.0;
-const CONTENT_TOP: f32 = 108.0;
+const CONTENT_TOP: f32 = STRIP + 20.0;
 const ROW: f32 = 52.0;
 const ROW_GAP: f32 = 4.0;
 const CONTROL: f32 = 28.0;
@@ -102,7 +104,10 @@ pub enum Align {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fill {
-    Nav { selected: bool, hover: bool },
+    /// The band behind the tabs, darker than the page; it leaves the selected tab out.
+    Strip,
+    /// A tab of the strip: the selected one is of the colour of the page and joins it.
+    Tab { selected: bool, hover: bool },
     Row { focus: bool },
     Button { selected: bool, hover: bool },
     Field { editing: bool },
@@ -119,7 +124,6 @@ pub enum Fill {
 pub enum Visual {
     None,
     Plate(Fill),
-    Line,
     Label { text: String, size: f32, tone: Tone, bold: bool, align: Align },
     Glyph { ch: char, size: f32, tone: Tone },
     /// A color scheme: its background with its name and a few of its colours.
@@ -303,31 +307,34 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     let mut items = Vec::new();
     let hover = page.hover;
 
-    // The section list.
-    item(&mut items, Rect::new(ox + NAV_WIDTH - 1.0, oy, 1.0, height), None, Visual::Line, false);
+    // The strip: the sections as tabs side by side, as tall as the strip but for the space above them.
+    let searching = !page.query.trim().is_empty();
+    item(&mut items, Rect::new(ox, oy, width, STRIP), None, Visual::Plate(Fill::Strip), false);
+    let mut tabs_end = ox + STRIP_EDGE;
     for (i, section) in Section::ALL.iter().enumerate() {
-        let rect = Rect::new(ox + 12.0, oy + NAV_TOP + i as f32 * NAV_ITEM, NAV_WIDTH - 24.0, NAV_ITEM - 4.0);
-        let selected = page.query.trim().is_empty() && i == page.section;
+        let text = section.text().get(lang);
+        let rect = Rect::new(tabs_end, oy + TAB_TOP, measure(text, 13.0, false) + 2.0 * TAB_PAD, STRIP - TAB_TOP);
+        let selected = !searching && i == page.section;
         let part = Part::Nav(i);
-        item(&mut items, rect, Some(part), Visual::Plate(Fill::Nav { selected, hover: hover == Some(part) }), false);
+        item(&mut items, rect, Some(part), Visual::Plate(Fill::Tab { selected, hover: hover == Some(part) }), false);
         let tone = if selected { Tone::Text } else { Tone::Quiet };
-        item(&mut items, Rect::new(rect.x + 14.0, rect.y, rect.w - 28.0, rect.h), None, label(section.text().get(lang), 13.0, tone, false, Align::Left), false);
+        item(&mut items, rect, None, label(text, 13.0, tone, false, Align::Center), false);
+        tabs_end = rect.x + rect.w;
     }
 
-    let x0 = ox + NAV_WIDTH + PAD;
-    let x1 = (ox + width - PAD).min(x0 + CONTENT_MAX);
-    let content_width = (x1 - x0).max(0.0);
-
-    // The title, the button for the file, the search line.
-    let searching = !page.query.trim().is_empty();
-    let title = if searching { Text::SettingsSearch } else { Section::ALL[page.section.min(Section::ALL.len() - 1)].text() };
-    item(&mut items, Rect::new(x0, oy + TITLE_Y, content_width, 32.0), None, label(title.get(lang), 20.0, Tone::Text, true, Align::Left), false);
+    // The search line and, left of it, the button for the file: what room the tabs leave.
+    let search_width = (ox + width - STRIP_EDGE - (tabs_end + 12.0)).clamp(0.0, SEARCH_WIDTH);
+    let search = Rect::new(ox + width - STRIP_EDGE - search_width, oy + TAB_TOP + (STRIP - TAB_TOP - SEARCH_HEIGHT) / 2.0, search_width, SEARCH_HEIGHT);
     let file_text = Text::SettingsFile.get(lang);
     let file_width = measure(file_text, 13.0, false) + 24.0;
-    let file = Rect::new(x1 - file_width, oy + TITLE_Y + 2.0, file_width, CONTROL);
-    item(&mut items, file, Some(Part::File), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::File) }), false);
-    item(&mut items, file, None, label(file_text, 13.0, Tone::Text, false, Align::Center), false);
-    let search = Rect::new(x0, oy + SEARCH_Y, content_width, SEARCH_HEIGHT);
+    let file = Rect::new(search.x - 8.0 - file_width, search.y, file_width, SEARCH_HEIGHT);
+    if file.x >= tabs_end + 12.0 {
+        item(&mut items, file, Some(Part::File), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::File) }), false);
+        item(&mut items, file, None, label(file_text, 13.0, Tone::Text, false, Align::Center), false);
+    }
+
+    let content_width = (width - 2.0 * PAD).clamp(0.0, CONTENT_MAX);
+    let x0 = ox + (width - content_width) / 2.0;
     item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
     item(&mut items, Rect::new(search.x + 12.0, search.y, 20.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 14.0, tone: Tone::Quiet }, false);
     let text_x = search.x + 40.0;
@@ -336,9 +343,9 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
         item(&mut items, Rect::new(text_x + left, search.y + 8.0, right - left, search.h - 16.0), None, Visual::Plate(Fill::Selection), false);
     }
     if page.query.is_empty() {
-        item(&mut items, Rect::new(text_x + 6.0, search.y, search.w - 58.0, search.h), None, label(Text::SettingsSearch.get(lang), 13.0, Tone::Quiet, false, Align::Left), false);
+        item(&mut items, Rect::new(text_x + 6.0, search.y, (search.w - 58.0).max(0.0), search.h), None, label(Text::SettingsSearch.get(lang), 13.0, Tone::Quiet, false, Align::Left), false);
     } else {
-        item(&mut items, Rect::new(text_x, search.y, search.w - 52.0, search.h), None, label(page.query.as_str(), 13.0, Tone::Text, false, Align::Left), false);
+        item(&mut items, Rect::new(text_x, search.y, (search.w - 52.0).max(0.0), search.h), None, label(page.query.as_str(), 13.0, Tone::Text, false, Align::Left), false);
     }
     if page.editing.is_none() {
         let caret = text_x + measure(crate::textfield::prefix(&page.query, page.cursor.caret), 13.0, false) + 1.0;
@@ -348,7 +355,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     // The rows.
     let entries = entries(page, lang, view.keymap);
     let top = oy + CONTENT_TOP;
-    let viewport = Rect::new(ox + NAV_WIDTH, top, (width - NAV_WIDTH).max(0.0), (oy + height - top).max(0.0));
+    let viewport = Rect::new(ox, top, width, (oy + height - top).max(0.0));
     let mut rows = Vec::new();
     let mut y = top;
     if entries.is_empty() {
@@ -582,6 +589,44 @@ mod tests {
                     _ => false,
                 });
                 assert!(part || matches!(row.control, Control::Profiles), "{} has nothing to press", row.id);
+            }
+        }
+    }
+
+    #[test]
+    fn the_sections_are_tabs_side_by_side_and_the_one_shown_is_the_one_selected() {
+        let settings = Settings::default();
+        let tab_items = |frame: &Frame| -> Vec<Item> { frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).cloned().collect() };
+        let selected = |items: &[Item]| -> Vec<usize> {
+            items.iter().enumerate().filter(|(_, item)| matches!(item.visual, Visual::Plate(Fill::Tab { selected: true, .. }))).map(|(i, _)| i).collect()
+        };
+        let shown = tab_items(&frame(&Page { section: 2, ..Page::default() }, &settings));
+        assert_eq!(shown.len(), Section::ALL.len());
+        assert!(shown.windows(2).all(|pair| (pair[0].rect.x + pair[0].rect.w - pair[1].rect.x).abs() < 0.01 && pair[0].rect.y == pair[1].rect.y), "side by side");
+        assert_eq!(selected(&shown), vec![2]);
+        // What a search finds comes from every section, so no tab is the one shown.
+        let found = tab_items(&frame(&Page { query: "opacity".into(), ..Page::default() }, &settings));
+        assert!(selected(&found).is_empty());
+    }
+
+    #[test]
+    fn the_search_line_and_the_file_button_stay_in_the_strip_and_clear_of_the_tabs() {
+        let settings = Settings::default();
+        let keymap = keymap();
+        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1400.0] {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], area: Rect::new(0.0, 0.0, width, 650.0) };
+            let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
+            let tabs_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.x + item.rect.w).fold(0.0, f32::max);
+            // The search line is always there; the button for the file goes when the tabs leave no room for it.
+            let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
+            assert!(search.rect.w >= 100.0, "the search line is too narrow to use at {width}");
+            for part in [Part::Search, Part::File] {
+                let Some(item) = frame.items.iter().find(|item| item.part == Some(part)) else { continue };
+                assert!(item.rect.x >= tabs_end - 0.01, "{part:?} runs into the tabs at {width}");
+                assert!(item.rect.x + item.rect.w <= width + 0.01 && item.rect.y + item.rect.h <= STRIP, "{part:?} sticks out of the strip at {width}");
+            }
+            if width >= 1400.0 {
+                assert!(frame.items.iter().any(|item| item.part == Some(Part::File)), "the button for the file has room at {width}");
             }
         }
     }

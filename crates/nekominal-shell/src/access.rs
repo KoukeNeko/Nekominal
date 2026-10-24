@@ -99,6 +99,69 @@ pub fn tree(view: &View) -> TreeUpdate {
     TreeUpdate { nodes, tree: Some(Tree::new(WINDOW)), tree_id: TreeId::ROOT, focus }
 }
 
+/// What the tree of the window of the settings is built from.
+pub struct PageView {
+    pub window: String,
+    pub sections_label: String,
+    /// The name of each section and whether it is the one shown (none is while a search shows rows of every section).
+    pub sections: Vec<(String, bool)>,
+    pub search_label: String,
+    pub query: String,
+    /// The label and the value of each row on show.
+    pub rows: Vec<(String, String)>,
+    /// The row that has the keyboard.
+    pub focused: Option<usize>,
+}
+
+/// The settings: the sections as tabs, the search line, and the rows as a list. The keyboard is on the row that has it,
+/// on the search line otherwise.
+pub fn page_tree(view: &PageView) -> TreeUpdate {
+    const SEARCH: NodeId = NodeId(4);
+    let mut nodes = Vec::new();
+    let mut window = Node::new(Role::Window);
+    window.set_label(view.window.as_str());
+
+    let mut tabs = Node::new(Role::TabList);
+    tabs.set_label(view.sections_label.as_str());
+    let mut tab_ids = Vec::new();
+    for (i, (name, selected)) in view.sections.iter().enumerate() {
+        let id = NodeId(FIRST_TAB + i as u64);
+        let mut tab = Node::new(Role::Tab);
+        tab.set_label(name.as_str());
+        tab.set_selected(*selected);
+        nodes.push((id, tab));
+        tab_ids.push(id);
+    }
+    tabs.set_children(tab_ids);
+    nodes.push((TABS, tabs));
+
+    let mut search = Node::new(Role::SearchInput);
+    search.set_label(view.search_label.as_str());
+    search.set_value(view.query.as_str());
+    nodes.push((SEARCH, search));
+
+    let mut list = Node::new(Role::ListBox);
+    let mut row_ids = Vec::new();
+    for (i, (label, value)) in view.rows.iter().enumerate() {
+        let id = NodeId(FIRST_ROW + i as u64);
+        let mut row = Node::new(Role::ListBoxOption);
+        row.set_label(label.as_str());
+        if !value.is_empty() {
+            row.set_description(value.as_str());
+        }
+        row.set_selected(view.focused == Some(i));
+        nodes.push((id, row));
+        row_ids.push(id);
+    }
+    list.set_children(row_ids);
+    nodes.push((POPUP, list));
+
+    window.set_children(vec![TABS, SEARCH, POPUP]);
+    nodes.push((WINDOW, window));
+    let focus = view.focused.map_or(SEARCH, |i| NodeId(FIRST_ROW + i as u64));
+    TreeUpdate { nodes, tree: Some(Tree::new(WINDOW)), tree_id: TreeId::ROOT, focus }
+}
+
 /// The reader may ask for actions (focus, click); the window answers keys and the pointer only.
 pub struct NoActions;
 
@@ -147,6 +210,29 @@ mod tests {
         assert_eq!(node(&update, tabs[1]).label(), Some("claude"));
         let bounds = node(&update, tabs[1]).bounds().expect("a tab has bounds");
         assert_eq!((bounds.x0, bounds.x1), (114.0, 214.0));
+    }
+
+    #[test]
+    fn the_settings_are_tabs_a_search_line_and_a_list_of_rows_with_their_values() {
+        let view = PageView {
+            window: "Settings".into(),
+            sections_label: "Sections".into(),
+            sections: vec![("Appearance".into(), true), ("Terminal".into(), false)],
+            search_label: "Search settings".into(),
+            query: String::new(),
+            rows: vec![("Background opacity".into(), "72%".into()), ("Font size".into(), "14".into())],
+            focused: None,
+        };
+        let update = page_tree(&view);
+        assert_eq!(update.focus, NodeId(4), "the search line has the keyboard when no row has it");
+        assert_eq!(node(&update, WINDOW).children(), &[TABS, NodeId(4), POPUP]);
+        assert_eq!(node(&update, NodeId(FIRST_TAB)).is_selected(), Some(true));
+        assert_eq!(node(&update, NodeId(FIRST_ROW)).label(), Some("Background opacity"));
+        assert_eq!(node(&update, NodeId(FIRST_ROW)).description(), Some("72%"));
+        let update = page_tree(&PageView { focused: Some(1), query: "fo".into(), ..view });
+        assert_eq!(update.focus, NodeId(FIRST_ROW + 1));
+        assert_eq!(node(&update, NodeId(4)).value(), Some("fo"));
+        assert_eq!(node(&update, NodeId(FIRST_ROW + 1)).is_selected(), Some(true));
     }
 
     #[test]

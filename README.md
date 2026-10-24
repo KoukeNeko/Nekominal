@@ -21,9 +21,9 @@ the ConPTY pair (`conpty.dll`, `OpenConsole.exe`) the sessions run on; keep the 
 - Tabs and split panes. The tab chips slide to their places, and a dragged chip makes room as it passes. Drag a tab out of the title bar and it becomes a window that follows the pointer; over the tab strip of another window it joins that window, still held.
 - The button beside + lists the shells a new tab can start; the position plate ("2 / 5") lists all the tabs.
 - A status mark on each tab that asks for you: a bell, a notification, a finished or failed command, an agent that waits.
-- Menu, command palette, find bar, tab list, and the settings, which are a tab of their own, all over the blurred backdrop. Mica, Mica Alt, acrylic or none;
-  ten color schemes; the opacity of the background. The settings tab has a control for every setting, a search line, and
-  the shortcuts page rebinds a command by pressing the new chord.
+- Menu, command palette, find bar, tab list, and the settings, which are a window of their own, all over the blurred backdrop. Mica, Mica Alt, acrylic or none;
+  ten color schemes; the opacity of the background. The settings window has a tab for each section, a control for every
+  setting, a search line, and the shortcuts tab rebinds a command by pressing the new chord.
 - Optional: the tabs, the panes, their folders and the place of the window come back at the next start (estoreSession).
 - Copy and paste with confirmations for large or multi-line text, OSC 52, links, IME composition drawn in place (Zhuyin tested).
 - The kitty keyboard protocol, key releases included, for the programs that ask for it.

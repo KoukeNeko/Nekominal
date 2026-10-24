@@ -15,6 +15,7 @@ mod motion;
 mod open;
 mod popup;
 mod settings_page;
+mod settings_window;
 mod status;
 mod tab;
 mod textfield;
