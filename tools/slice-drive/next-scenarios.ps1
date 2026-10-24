@@ -52,6 +52,15 @@ function Next-At([double]$X, [double]$Y) {
     @([int]($r.Left + $X * $s), [int]($r.Top + $Y * $s))
 }
 
+# The middle of the menu button ("...") in DIP for a window `$Width` DIP wide: it is 32 wide and lies against the three
+# caption buttons (138 DIP together).
+function Next-MenuX([double]$Width) { $Width - 138 - 16 }
+
+# Where a pop-up that hangs from a button of the bar starts, in DIP from the top of the window: the buttons are as tall as
+# the bar (48), and the pop-up hangs 4 below them. Its rows start 6 further down and are 32 tall.
+function Next-PopupTop { 52 }
+function Next-PopupRowY([int]$Row) { (Next-PopupTop) + 6 + 32 * $Row + 16 }
+
 # The whole text of the selected tab, through select all and copy.
 function Next-Text {
     Set-Clipboard -Value ''
@@ -192,10 +201,10 @@ function Scenario-NextFullscreen {
 function Scenario-NextAppearance {
     Run-Next {
         $r = Win-Rect; $s = Get-Scale
-        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $menuX = Next-MenuX (($r.Right - $r.Left) / $s)
         $button = Next-At $menuX 24
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
-        $row = Next-At ($menuX - 60) (44 + 296)                  # the Mica row of the backdrop group
+        $row = Next-At ($menuX - 60) ((Next-PopupTop) + 296)                  # the Mica row of the backdrop group
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1200
         $file = Join-Path $global:NextAppData 'Nekominal\settings.json'
         $saved = if (Test-Path $file) { Get-Content $file -Raw } else { '' }
@@ -208,7 +217,7 @@ function Scenario-NextAppearance {
 function Scenario-NextTabMarks {
     Run-Next {
         $r = Win-Rect; $scale = Get-Scale
-        $region = @([int]($r.Left + 12 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
+        $region = @([int]($r.Left + 4 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
         $shots = 1..4 | ForEach-Object { Join-Path $env:TEMP "tabmark-$_.png" }
         Next-Line 'Start-Sleep 5; [Console]::Out.Write("`e]9;ping`a")'
         Start-Sleep -Milliseconds 300
@@ -230,12 +239,12 @@ function Scenario-NextMenu {
     Run-Next {
         Next-Line 'echo ONE'
         $r = Win-Rect; $s = Get-Scale
-        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16    # the middle of the "..." button, with 138 DIP of caption buttons
+        $menuX = Next-MenuX (($r.Right - $r.Left) / $s)    # the middle of the "..." button
         $button = Next-At $menuX 24
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
         if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 300) $button[1] 340 300 }
         Next-Check 'menu.is-drawn' ((Next-LightPixels ($button[0] - 300) ($button[1] + 10) 300 250) -gt 100) 'the pop-up shows text, not just its backdrop'
-        $row = Next-At ($menuX - 60) 98                        # second row: split right
+        $row = Next-At ($menuX - 60) (Next-PopupRowY 1)        # second row: split right
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 1500
         Next-Line 'echo TWO'
         $text = Next-Text
@@ -247,17 +256,18 @@ function Scenario-NextMenu {
     }
 }
 
-# The middle of the tab-list button in DIP, from the same arithmetic as crates/nekominal-shell/src/layout.rs.
+# The middle of the shell button (the one right of +) in DIP, from the same arithmetic as crates/nekominal-shell/src/layout.rs:
+# the tabs start at the left edge and touch, as wide as the strip allows, and the buttons are 32 wide and as tall as the bar.
 function Next-TabListX([int]$Tabs) {
     $r = Win-Rect; $scale = Get-Scale
     $width = ($r.Right - $r.Left) / $scale
-    $menuX = $width - 138 - 12 - 32
-    $stripEnd = $menuX - 48
-    $available = [Math]::Max(0.0, $stripEnd - 12 - 72)
-    $chip = [Math]::Min(216.0, [Math]::Max(48.0, ($available - 4 * ($Tabs - 1)) / $Tabs))
-    $shown = [Math]::Min($Tabs, [Math]::Max(1.0, [Math]::Floor(($available + 4) / ($chip + 4) + 0.001)))
-    $newTab = [Math]::Max(12.0, [Math]::Min(12 + $shown * ($chip + 4), $stripEnd - 72 - 4))
-    $newTab + 36 + 16
+    $menuLeft = $width - 138 - 32                       # the menu button, against the three caption buttons
+    $stripEnd = $menuLeft - 48                          # what stays free for dragging the window
+    $available = [Math]::Max(0.0, $stripEnd - 64)       # the + and the shell button take 32 each
+    $chip = [Math]::Min(216.0, [Math]::Max(48.0, $available / $Tabs))
+    $shown = [Math]::Min($Tabs, [Math]::Max(1.0, [Math]::Floor($available / $chip + 0.001)))
+    $newTab = [Math]::Max(0.0, [Math]::Min($shown * $chip, $stripEnd - 64))
+    $newTab + 32 + 16
 }
 
 function Scenario-NextTabList {
@@ -267,7 +277,7 @@ function Scenario-NextTabList {
         $button = Next-At ((Next-TabListX 6) + 36) 24    # the position plate, right of the shell button
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
         if ($env:NEXT_SHOT) { ShotRegion $env:NEXT_SHOT ($button[0] - 120) ($button[1] - 20) 420 340 }
-        $row = Next-At ((Next-TabListX 6) - 40) (44 + 6 + 32 * 1 + 16)    # the second row: tab 2
+        $row = Next-At ((Next-TabListX 6) - 40) (Next-PopupRowY 1)    # the second row: tab 2
         Click-At $row[0] $row[1]; Start-Sleep -Milliseconds 800
         $text = Next-Text
         Next-Check 'tablist.select-second' ($text -match 'MARK-2' -and $text -notmatch 'MARK-6') 'choosing the second row of the list selects the second tab'
@@ -734,7 +744,9 @@ function Next-BackdropSpread([string]$Path, [int]$X, [int]$Y, [int]$W, [int]$H) 
         if ($count) { $spread / $count } else { 0 }
     } finally { $bitmap.Dispose() }
 }
-# The stripes below the window (very transparent for this) must show through the pop-up that is open.
+# The stripes below the window (very transparent for this) must show through the pop-up that is open. A flat surface has no
+# spread at all; the stripes behind a pop-up may be grey for a good part of it (18 measured for the menu, 26 to 29 for the
+# palette and the confirmation), so the line is 10.
 function Next-CheckAcrylic([string]$Name, [string]$Shot) {
     $popup = Next-PopupWindow
     if ($popup -eq [IntPtr]::Zero) { Next-Check "acrylic.$Name-opens" $false 'no pop-up window'; return }
@@ -742,7 +754,7 @@ function Next-CheckAcrylic([string]$Name, [string]$Shot) {
     [void](Shot-WithPattern $Shot)
     $window = Win-Rect
     $spread = Next-BackdropSpread $Shot ($rect.Left - $window.Left + 40 + 4) ($rect.Top - $window.Top + 40 + 4) ($rect.Right - $rect.Left - 8) ($rect.Bottom - $rect.Top - 8)
-    Next-Check "acrylic.$Name-shows-the-stripes" ($spread -gt 20) ("colour spread {0:N1}" -f $spread)
+    Next-Check "acrylic.$Name-shows-the-stripes" ($spread -gt 10) ("colour spread {0:N1}" -f $spread)
 }
 
 # The menu, the command palette and a confirmation over a window of strong colours.
@@ -751,7 +763,7 @@ function Scenario-NextAcrylic {
         Start-Pattern
         Place-PatternUnderApp 40
         $r = Win-Rect; $s = Get-Scale
-        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $menuX = Next-MenuX (($r.Right - $r.Left) / $s)
         $button = Next-At $menuX 24
         $dir = if ($env:NEXT_SHOT) { Split-Path $env:NEXT_SHOT } else { $env:TEMP }
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
@@ -852,7 +864,7 @@ function Scenario-NextAccess {
         Next-Check 'access.new-tab-is-listed' (@($found | Where-Object { $_.Type -eq 'ControlType.TabItem' }).Count -eq 2) 'a second tab item after a new tab'
         Next-Check 'access.terminal-follows-the-selected-tab' (@($found | Where-Object { $_.Type -eq 'ControlType.Document' -and $_.Value -match 'ACCESS-MARK' }).Count -eq 0) 'the text of the new tab replaces the first one'
         $r = Win-Rect; $s = Get-Scale
-        $button = Next-At (($r.Right - $r.Left) / $s - 138 - 12 - 16) 24
+        $button = Next-At (Next-MenuX (($r.Right - $r.Left) / $s)) 24
         Click-At $button[0] $button[1]; Start-Sleep -Milliseconds 900
         $found = @(& $all)
         Next-Check 'access.menu-rows-are-listed' (@($found | Where-Object { $_.Type -eq 'ControlType.MenuItem' }).Count -gt 5) "$(@($found | Where-Object { $_.Type -eq 'ControlType.MenuItem' }).Count) menu items while the menu is open"
@@ -953,7 +965,7 @@ function Scenario-NextBehavior {
     foreach ($visual in $true, $false) {
         Run-Next {
             $r = Win-Rect; $scale = Get-Scale
-            $region = @([int]($r.Left + 12 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
+            $region = @([int]($r.Left + 4 * $scale), [int]($r.Top + 10 * $scale), [int](40 * $scale), [int](28 * $scale))
             $quiet = Join-Path $env:TEMP 'bell-quiet.png'; $rung = Join-Path $env:TEMP 'bell-rung.png'
             Next-Line 'Start-Sleep 5; [Console]::Out.Write([char]7)'
             Press 0x54 @(0x11, 0x10); Start-Sleep -Milliseconds 1500
@@ -972,7 +984,7 @@ function Scenario-NextBehavior {
         Next-Check 'behavior.right-click-opens-the-menu' ($popup -ne [IntPtr]::Zero) 'rightClick menu opens a menu'
         if ($popup -ne [IntPtr]::Zero) {
             $rect = New-Object D+RECT; [void][D]::GetWindowRect($popup, [ref]$rect)
-            Next-Check 'behavior.right-click-menu-is-drawn' ((Next-LightPixels ($rect.Left + 10) ($rect.Top + 10) ($rect.Right - $rect.Left - 20) ($rect.Bottom - $rect.Top - 20)) -gt 50) 'the menu shows its rows'
+            Next-Check 'behavior.right-click-menu-is-drawn' ((Next-LightPixels ($rect.Left + 10) ($rect.Top + 10) ($rect.Right - $rect.Left - 20) ($rect.Bottom - $rect.Top - 20)) -gt 20) 'the menu of two rows (Paste, Select all) shows them: 47 sampled light pixels, none when nothing is drawn'
         }
         Press 0x1B; Start-Sleep -Milliseconds 400
     } '{ "rightClick": "menu" }'
@@ -999,13 +1011,13 @@ function Scenario-NextBar {
         $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:Hwnd)
         $isTab = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::TabItem)
         $chips = { @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isTab) | ForEach-Object { [pscustomobject]@{ Name = $_.Current.Name; Rect = $_.Current.BoundingRectangle } }) }
-        $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+        $menuX = Next-MenuX (($r.Right - $r.Left) / $s)
         $plate = { param($path) $b = [System.Drawing.Bitmap]::FromFile($path); try { $at = Next-At ($menuX - 12) 24; $c = $b.GetPixel($at[0] - $r.Left, $at[1] - $r.Top); $c.R + $c.G + $c.B } finally { $b.Dispose() } }
         $bar = [int](60 * $s)
         Move-To ([int]($r.Left + 300)) ([int]($r.Top + 400)); Start-Sleep -Milliseconds 600
         $idle = Join-Path $env:TEMP 'bar-idle.png'; $open = Join-Path $env:TEMP 'bar-open.png'
         [void](ShotRegion $idle $r.Left $r.Top ($r.Right - $r.Left) $bar)
-        $list = Next-At 296 24
+        $list = Next-At (Next-TabListX 1) 24
         Click-At $list[0] $list[1]; Start-Sleep -Milliseconds 900
         [void](ShotRegion $open $r.Left $r.Top ($r.Right - $r.Left) $bar)
         Next-Check 'bar.shell-button-opens-the-list-of-shells' ((Next-PopupWindow) -ne [IntPtr]::Zero) 'the button right of + lists the shells a new tab can start'
@@ -1237,13 +1249,15 @@ function Scenario-NextCentre {
         [void](ShotRegion $path $r.Left $r.Top ($r.Right - $r.Left) ([int](60 * $s)))
         $bitmap = [System.Drawing.Bitmap]::FromFile($path)
         try {
-            $menuX = ($r.Right - $r.Left) / $s - 138 - 12 - 16
+            $menuX = Next-MenuX (($r.Right - $r.Left) / $s)
             $shellX = Next-TabListX 2
-            $spots = [ordered]@{ 'the mark before a title' = 19; 'the + button' = $shellX - 36; 'the shell button' = $shellX; 'the menu button' = $menuX }
+            $spots = [ordered]@{ 'the mark before a title' = 15; 'the + button' = $shellX - 32; 'the shell button' = $shellX; 'the menu button' = $menuX }
             foreach ($name in $spots.Keys) {
                 $rows = @()
+                # The mark of a failure is red, at 0.59 lighter than the bar but under the glyphs of the buttons (0.62 and more).
+                $light = if ($name -eq 'the mark before a title') { 0.5 } else { 0.62 }
                 for ($py = [int](4 * $s); $py -lt [int](44 * $s); $py++) {
-                    for ($px = [int](($spots[$name] - 10) * $s); $px -le [int](($spots[$name] + 10) * $s); $px++) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt 0.62) { $rows += $py; break } }
+                    for ($px = [int](($spots[$name] - 10) * $s); $px -le [int](($spots[$name] + 10) * $s); $px++) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt $light) { $rows += $py; break } }
                 }
                 $middle = if ($rows.Count) { ($rows[0] + $rows[-1]) / 2 } else { -100 }
                 Next-Check "centre.$($name -replace ' ', '-')" ([Math]::Abs($middle - 24 * $s) -le 1.2) ("{0}: the glyph is at {1} px, the middle of the bar at {2} px" -f $name, $middle, (24 * $s))
