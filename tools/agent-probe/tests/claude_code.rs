@@ -1153,6 +1153,54 @@ fn fullscreen_tiny_sizes_keep_the_session_alive() {
     checks.finish();
 }
 
+// ---- the status bar ------------------------------------------------------------------------------------
+
+/// What a pane of Nekominal does for Claude Code while its status bar is on: `--settings` names a file whose status line is
+/// `nekominal-next.exe --statusline`, and that command writes the session Claude Code hands it to the file of the pane. Needs
+/// the release build (`cargo build --release -p nekominal-shell`).
+#[test]
+#[ignore = "runs the real Claude Code CLI: needs the installed claude.exe and its signed-in state"]
+fn the_status_line_reaches_the_file_of_the_pane() {
+    let _turn = exclusive();
+    let mut checks = Checks::default();
+    let helper = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/nekominal-next.exe");
+    let helper = helper.canonicalize().expect("the release build of nekominal-next");
+    let local = default_tap_dir().join("statusline-localappdata");
+    let _ = std::fs::remove_dir_all(&local);
+    std::fs::create_dir_all(&local).unwrap();
+    let settings = local.join("claude-settings.json");
+    let command = format!("{} --statusline", helper.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/"));
+    std::fs::write(&settings, serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()).unwrap();
+    // Safe mode, which the other scenarios run in, turns every customization off, a status line among them.
+    let options = fullscreen("fs-statusline")
+        .env("CLAUDE_CODE_SAFE_MODE", "0")
+        .args(&["--settings", &settings.to_string_lossy()])
+        .env("NEKOMINAL_SESSION", "999-77")
+        .env("LOCALAPPDATA", &local.to_string_lossy());
+    let started = start(options);
+    let probe = &started.probe;
+    let file = local.join("Nekominal").join("agents").join("999-77.json");
+    let deadline = Instant::now() + 20 * SECOND;
+    while !file.exists() && Instant::now() < deadline {
+        pause(250);
+    }
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    let session: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let screen = probe.screen();
+    let bottom: Vec<String> = (screen.rows.saturating_sub(6)..screen.rows).map(|row| screen.line(row).trim_end().to_owned()).collect();
+    checks.info("statusline.screen-bottom", bottom.join(" / "));
+    checks.check("statusline.file-written", file.exists(), format!("{} after start", if file.exists() { "written" } else { "not written" }));
+    checks.check(
+        "statusline.has-the-numbers",
+        session.pointer("/model/display_name").is_some() && session.pointer("/workspace/current_dir").is_some(),
+        format!("model {:?}, context {:?}, cost {:?}", session.pointer("/model/display_name"), session.pointer("/context_window/used_percentage"), session.pointer("/cost/total_cost_usd")),
+    );
+    exit_with(probe, "/exit");
+    let _ = probe.wait_exit(10 * SECOND);
+    probe.shutdown();
+    checks.finish();
+}
+
 // ---- rendering sanity ----------------------------------------------------------------------------------
 
 #[test]

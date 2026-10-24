@@ -15,6 +15,7 @@ regex = "1.13"
 [dev-dependencies]
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true

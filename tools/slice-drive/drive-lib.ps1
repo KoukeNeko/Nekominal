@@ -135,7 +135,8 @@ function Assert-Foreground {
     while ([D]::ForegroundPid() -ne [uint32]$script:App.Id) {
         if ([DateTime]::UtcNow -gt $deadline) { throw "foreground window is not the test app (pid $([D]::ForegroundPid())); nothing sent" }
         $name = (Get-Process -Id ([D]::ForegroundPid()) -ErrorAction SilentlyContinue).ProcessName
-        if ($name -in 'claude', 'pwsh', 'powershell', 'WindowsTerminal', 'conhost', 'explorer', 'ShellExperienceHost', 'SearchHost' -or -not $name) {
+        # A launcher panel (Raycast) left open holds the foreground too; it only hides when the app comes to the front.
+        if ($name -in 'claude', 'pwsh', 'powershell', 'WindowsTerminal', 'conhost', 'explorer', 'ShellExperienceHost', 'SearchHost', 'Raycast' -or -not $name) {
             [void][D]::ShowWindow($script:Hwnd, 9); [D]::ForceForeground($script:Hwnd); Start-Sleep -Milliseconds 300
         } else { Start-Sleep -Milliseconds 500 }
     }

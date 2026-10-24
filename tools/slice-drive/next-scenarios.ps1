@@ -65,7 +65,8 @@ function Next-PopupRowY([int]$Row) { (Next-PopupTop) + 4 + 32 * $Row + 16 }
 function Next-Text {
     Set-Clipboard -Value ''
     Press 0x41 @(0x11, 0x10)    # Ctrl+Shift+A
-    Press 0x43 @(0x11, 0x10)    # Ctrl+Shift+C
+    # Ctrl+Insert, the other copy key: a launcher (Raycast) may take Ctrl+Shift+C for itself before the app sees it.
+    Press 0x2D @(0x11)          # Ctrl+Insert
     Start-Sleep -Milliseconds 300
     [string](Get-Clipboard -Raw)
 }
@@ -373,7 +374,7 @@ function Scenario-NextConfirm {
         Next-Check 'confirm.large-paste-asks' ($popup -ne [IntPtr]::Zero) 'large clipboard text opens a confirmation'
         if ($popup -eq [IntPtr]::Zero) { throw 'confirmation missing; no acceptance keys sent' }
         $rect = [D+RECT]::new(); [void][D]::GetWindowRect($popup, [ref]$rect)
-        Next-Check 'confirm.drawn' ((Next-LightPixels ($rect.Left + 15) ($rect.Top + 10) ($rect.Right - $rect.Left - 30) ($rect.Bottom - $rect.Top - 20)) -gt 100) 'question and buttons contain rendered text'
+        Next-Check 'confirm.drawn' ((Next-LightPixels ($rect.Left + 15) ($rect.Top + 10) ($rect.Right - $rect.Left - 30) ($rect.Bottom - $rect.Top - 20)) -gt 50) 'question and buttons contain rendered text'    # about 90 with the text alone; a pop-up that drew nothing has none
         Next-Check 'confirm.owner-stays-active' ([D]::GetForegroundWindow() -eq $script:Hwnd) 'the confirmation does not activate a different window'
         Press 0x0D; Start-Sleep -Milliseconds 400
         Next-Check 'confirm.enter-cancels' ((Next-PopupWindow) -eq [IntPtr]::Zero -and (Next-Text) -notmatch 'PASTE-GUARD-') 'Enter initially cancels without inserting clipboard text'
@@ -427,7 +428,7 @@ function Scenario-NextClipboard {
         # The second row of the terminal holds the output "SELECTME-12345"; drag across its first columns.
         $from = Next-At 2 (48 + 27); $to = Next-At 160 (48 + 27)
         Drag-To $from[0] $from[1] $to[0] $to[1] 15 20
-        Press 0x43 @(0x11, 0x10); Start-Sleep -Milliseconds 300
+        Press 0x2D @(0x11); Start-Sleep -Milliseconds 300    # Ctrl+Insert, as in Next-Text
         $copied = [string](Get-Clipboard -Raw)
         Next-Check 'clipboard.drag-copy' ($copied.Trim() -eq 'SELECTME-12345') "copied '$copied'"
         Set-Clipboard -Value 'PASTED-TEXT'
@@ -475,7 +476,8 @@ function Scenario-NextClaude([ValidateSet('fullscreen', 'classic')][string]$Mode
     $cwd = Join-Path $PSScriptRoot '..\..\target\agent-probe\cwd'
     New-Item -ItemType Directory -Force $cwd | Out-Null
     $cwd = (Resolve-Path $cwd).Path
-    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1' }
+    # A settings folder of its own, as in Run-Next: closing the window saves a session, which must not replace the user's.
+    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1'; APPDATA = (Join-Path $env:TEMP ('nk-appdata-' + [guid]::NewGuid())) }
     if ($Mode -eq 'fullscreen') { $envTable['CLAUDE_CODE_NO_FLICKER'] = '1' } else { $envTable['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1' }
     $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
     $global:NextFailures = @()
@@ -543,8 +545,9 @@ function Next-ExitClaude {
 
 # The text of a CLI screen with what changes from run to run (the suggestion in the empty box) made equal.
 function Next-Normalized([string]$Text) {
-    # The suggestion, the usage notice of the account and the effort indicator come and go with time and account state.
-    (($Text -split "`r?`n") | ForEach-Object { if ($_ -match 'Try "') { '<suggestion>' } elseif ($_ -match 'of your weekly limit|◉ \w+ · /effort') { '<status>' } else { $_.TrimEnd() } }) -join "`n"
+    # The suggestion, the usage notice of the account, the effort indicator and the hint about agents in the footer come and
+    # go with time and account state.
+    (($Text -split "`r?`n") | ForEach-Object { if ($_ -match 'Try "') { '<suggestion>' } elseif ($_ -match 'of your weekly limit|\S \w+ · /effort') { '<status>' } else { ($_ -replace ' · ← for agents', '').TrimEnd() } }) -join "`n"
 }
 
 # A storm of window sizes while the CLI runs, then the screen against a fresh run of the CLI at the final size (full-screen
@@ -555,7 +558,8 @@ function Scenario-NextResize([ValidateSet('fullscreen', 'classic')][string]$Mode
     $cwd = Join-Path $PSScriptRoot '..\..\target\agent-probe\cwd'
     New-Item -ItemType Directory -Force $cwd | Out-Null
     $cwd = (Resolve-Path $cwd).Path
-    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1' }
+    # A settings folder of its own, as in Run-Next: closing the window saves a session, which must not replace the user's.
+    $envTable = @{ DISABLE_AUTOUPDATER = '1'; CLAUDE_CODE_SAFE_MODE = '1'; APPDATA = (Join-Path $env:TEMP ('nk-appdata-' + [guid]::NewGuid())) }
     if ($Mode -eq 'fullscreen') { $envTable['CLAUDE_CODE_NO_FLICKER'] = '1' } else { $envTable['CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN'] = '1' }
     $saved = Get-Clipboard -Raw -ErrorAction SilentlyContinue
     $global:NextFailures = @()
