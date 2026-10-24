@@ -9,9 +9,10 @@ rust-version.workspace = true
 alacritty_terminal = { workspace = true }
 base64 = { workspace = true }
 memchr = { workspace = true }
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
-unicode-width = { workspace = true }
 nekominal-pty = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]

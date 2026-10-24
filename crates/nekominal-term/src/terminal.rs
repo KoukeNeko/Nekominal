@@ -24,6 +24,7 @@ use alacritty_terminal::{
 
 use crate::{
     agent_status::{AgentRecord, AgentStatus, Report},
+    graphemes::Clusters,
     guard::StringGuard,
     links::{self, Link},
     osc::{is_control_or_bidi, strip_control, Notification, Progress, PromptMark},
@@ -453,6 +454,8 @@ pub struct SearchSession {
 pub struct TerminalCore {
     term: Term<EventProxy>,
     processor: ansi::Processor,
+    /// The grapheme cluster of the cell printed last (see `graphemes`).
+    cluster: String,
     sniffer: Sniffer,
     guard: StringGuard,
     proxy: EventProxy,
@@ -549,6 +552,7 @@ impl TerminalCore {
         Self {
             term,
             processor: ansi::Processor::new(),
+            cluster: String::new(),
             sniffer: Sniffer::new(),
             guard: StringGuard::default(),
             proxy,
@@ -634,7 +638,7 @@ impl TerminalCore {
     /// Runs `bytes` through the emulator, containing upstream panics.
     fn advance_emulator(&mut self, bytes: &[u8]) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.processor.advance(&mut self.term, bytes)
+            self.processor.advance(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster }, bytes)
         }));
         if let Err(payload) = outcome {
             self.recover_from_panic(payload);
@@ -1383,6 +1387,33 @@ impl TerminalCore {
                         _ => {}
                     }
                 }
+            }
+            // A link whose text is its own address ends where the address does, not where the program ended it.
+            let text_of = |&(r, first, end): &(usize, usize, usize)| -> Vec<char> {
+                let cells = &grid[line_of(r)];
+                (first..end)
+                    .map(|c| {
+                        let cell = &cells[Column(c)];
+                        if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) { '\0' } else { cell.c }
+                    })
+                    .collect()
+            };
+            let text: Vec<char> = spans.iter().flat_map(text_of).collect();
+            if let Some(mut keep) = links::autolink_end(&text, hyperlink.uri()) {
+                let uri: String = text[..keep].iter().filter(|c| **c != '\0').collect();
+                let mut kept = Vec::new();
+                for (r, first, end) in spans {
+                    let take = keep.min(end - first);
+                    if take > 0 {
+                        kept.push((r, first, first + take));
+                    }
+                    keep -= take;
+                }
+                if !kept.iter().any(|&(r, first, end)| r == row && (first..end).contains(&column)) {
+                    return None;
+                }
+                links::open_target(&uri).ok()?;
+                return Some(Link { uri, spans: kept });
             }
             return Some(Link { uri: hyperlink.uri().to_owned(), spans });
         }

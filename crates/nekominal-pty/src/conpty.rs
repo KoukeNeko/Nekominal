@@ -55,13 +55,12 @@ const GLYPH_WIDTH_WCSWIDTH: u32 = 0x10;
 /// emulator that consumes the output, otherwise the cursor drifts after wide characters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WidthModel {
-    /// Per-code-point `wcswidth` widths (`PSEUDOCONSOLE_GLYPH_WIDTH_WCSWIDTH`). The only mode that
-    /// matches alacritty_terminal: it differs from the emulator in 8 of 4,808 measured cases,
-    /// the grapheme mode in 432.
-    #[default]
+    /// Per-code-point `wcswidth` widths (`PSEUDOCONSOLE_GLYPH_WIDTH_WCSWIDTH`): plain alacritty_terminal.
+    /// A ZWJ family is 6 columns here and 2 in the programs (string-width, Claude Code).
     Wcswidth,
-    /// Grapheme-cluster widths (`PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES`), for an emulator that
-    /// segments grapheme clusters.
+    /// Grapheme-cluster widths (`PSEUDOCONSOLE_GLYPH_WIDTH_GRAPHEMES`): what programs count, and what the
+    /// emulator does with the cluster layer `nekominal_term` puts over alacritty_terminal.
+    #[default]
     Graphemes,
 }
 
@@ -769,8 +768,8 @@ mod tests {
 
     #[test]
     fn the_default_width_model_is_wcswidth() {
-        assert_eq!(WidthModel::default(), WidthModel::Wcswidth);
-        assert_eq!(WidthModel::default().flag(), 0x10);
+        assert_eq!(WidthModel::default(), WidthModel::Graphemes);
+        assert_eq!(WidthModel::Wcswidth.flag(), 0x10);
         assert_eq!(WidthModel::Graphemes.flag(), 0x08);
     }
 
@@ -849,16 +848,16 @@ mod tests {
     fn creation_asks_for_the_requested_width_model_once() {
         let (result, flags) = create_with(create_accepting_any_flag, WidthModel::default());
         assert_eq!(result.unwrap(), 7);
-        assert_eq!(flags, [0x10]);
-        let (_, flags) = create_with(create_accepting_any_flag, WidthModel::Graphemes);
         assert_eq!(flags, [0x08]);
+        let (_, flags) = create_with(create_accepting_any_flag, WidthModel::Wcswidth);
+        assert_eq!(flags, [0x10]);
     }
 
     #[test]
     fn creation_retries_without_the_flag_when_an_implementation_rejects_it() {
         let (result, flags) = create_with(create_rejecting_flags, WidthModel::default());
         assert_eq!(result.unwrap(), 7);
-        assert_eq!(flags, [0x10, 0]);
+        assert_eq!(flags, [0x08, 0]);
     }
 
     #[test]
@@ -867,7 +866,7 @@ mod tests {
         let message = result.unwrap_err().to_string();
         assert!(message.contains("CreatePseudoConsole"), "{message}");
         assert!(message.contains("0x80070057"), "{message}");
-        assert_eq!(flags, [0x10, 0]);
+        assert_eq!(flags, [0x08, 0]);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! plus a chunk-boundary-safe sniffer for the sequences alacritty_terminal does not surface.
 
 pub mod agent_status;
+mod graphemes;
 pub mod guard;
 pub mod links;
 pub mod terminal;

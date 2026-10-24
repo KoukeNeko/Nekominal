@@ -13,6 +13,7 @@ use nekominal_term::{
     CellColor, CellSide, CoreConfig, CoreEvent, Damage, MouseExtensions, Palette, SelectionKind, Snapshot, TerminalCore,
     Unsupported,
 };
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 fn core(columns: usize, rows: usize) -> TerminalCore {
@@ -178,32 +179,55 @@ fn wide_char_that_does_not_fit_wraps_with_a_leading_spacer() {
 }
 
 #[test]
-fn emoji_zwj_sequence_is_three_wide_cells_with_zwj_attached() {
+fn emoji_zwj_sequence_is_one_wide_cell_with_the_rest_attached() {
     let mut core = core(20, 3);
-    feed(&mut core, "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}");
+    feed(&mut core, "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x");
     let s = snap(&mut core);
-    // unicode-width gives U+200D width 0, so alacritty never joins: 3 x 2 cells + ZWJ marks.
-    assert_eq!(core.cursor_cell(), (0, 6));
+    // Two columns, as Claude Code (string-width) and ConPTY's grapheme mode count it; alacritty alone makes six.
+    assert_eq!(core.cursor_cell(), (0, 3));
     assert!(s.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
-    assert_eq!(s.cell(0, 0).zerowidth.as_deref(), Some(&['\u{200d}'][..]));
-    assert_eq!(s.cell(0, 2).ch, '\u{1f469}');
-    assert_eq!(s.cell(0, 4).ch, '\u{1f467}');
-    assert_eq!(s.cell(0, 4).zerowidth, None);
-    assert_eq!(s.row_text(0), "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}");
+    assert_eq!(s.cell(0, 0).zerowidth.as_deref(), Some(&['\u{200d}', '\u{1f469}', '\u{200d}', '\u{1f467}'][..]));
+    assert_eq!(s.cell(0, 2).ch, 'x');
+    assert_eq!(s.row_text(0), "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x");
 }
 
 #[test]
-fn variation_selector_16_is_zero_width_so_text_emoji_stay_narrow() {
+fn a_cluster_that_fills_the_last_columns_does_not_wrap_the_row() {
+    // A row a program draws to the right edge: had it wrapped, every row of the frame below it would move down.
+    let mut core = core(10, 3);
+    feed(&mut core, "aaaaaaaa\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}");
+    let s = snap(&mut core);
+    assert_eq!(s.row_text(0), "aaaaaaaa\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}");
+    assert_eq!(s.row_text(1), "");
+    feed(&mut core, "\r\n\u{1f1f9}\u{1f1fc}\u{1f44d}\u{1f3fd}|");
+    assert_eq!(snap(&mut core).row_text(1), "\u{1f1f9}\u{1f1fc}\u{1f44d}\u{1f3fd}|");
+    assert_eq!(core.cursor_cell(), (1, 5), "a flag and a toned thumb are two columns each");
+}
+
+#[test]
+fn a_cluster_ends_when_the_program_does_anything_but_print() {
     let mut core = core(20, 3);
-    feed(&mut core, "\u{2764}\u{fe0f}x");
+    // The second regional indicator after a cursor move starts its own cell instead of joining the first.
+    feed(&mut core, "\u{1f1f9}\x1b[5G\u{1f1fc}");
+    let s = snap(&mut core);
+    assert_eq!(s.cell(0, 0).zerowidth, None);
+    assert_eq!(s.cell(0, 4).ch, '\u{1f1fc}');
+}
+
+#[test]
+fn variation_selector_16_makes_a_text_emoji_wide() {
+    let mut core = core(20, 3);
+    feed(&mut core, "\u{2764}\u{fe0f}x\u{2764}y");
     let s = snap(&mut core);
     assert_eq!(s.cell(0, 0).ch, '\u{2764}');
+    assert!(s.cell(0, 0).flags.contains(Flags::WIDE_CHAR));
     assert_eq!(s.cell(0, 0).zerowidth.as_deref(), Some(&['\u{fe0f}'][..]));
-    assert_eq!(s.cell(0, 1).ch, 'x');
-    // The string-level width in the same crate version says 2; the per-char path alacritty uses says 1.
+    assert!(s.cell(0, 1).flags.contains(Flags::WIDE_CHAR_SPACER));
+    assert_eq!(s.cell(0, 2).ch, 'x');
+    assert_eq!(s.cell(0, 4).ch, 'y', "without the selector the heart stays narrow");
+    // The string width the programs count; alacritty alone sums the code points to 1.
     assert_eq!(unicode_width::UnicodeWidthStr::width("\u{2764}\u{fe0f}"), 2);
     assert_eq!('\u{2764}'.width(), Some(1));
-    assert_eq!('\u{fe0f}'.width(), Some(0));
 }
 
 #[test]
@@ -221,7 +245,7 @@ fn ambiguous_width_is_always_narrow_and_combining_marks_attach() {
 }
 
 #[test]
-fn cursor_advance_always_equals_the_sum_of_unicode_width_per_char() {
+fn cursor_advance_always_equals_the_string_width_of_each_grapheme() {
     let samples = [
         "plain ascii",
         "你好，世界",
@@ -240,7 +264,7 @@ fn cursor_advance_always_equals_the_sum_of_unicode_width_per_char() {
     for sample in samples {
         let mut core = core(80, 3);
         feed(&mut core, sample);
-        let expected: usize = sample.chars().map(|c| c.width().unwrap_or(0)).sum();
+        let expected: usize = sample.graphemes(true).map(|g| unicode_width::UnicodeWidthStr::width(g).min(2)).sum();
         assert_eq!(core.cursor_cell(), (0, expected), "{sample:?}");
     }
 }
@@ -743,10 +767,10 @@ fn trailing_blanks_are_dropped_from_every_copied_line_and_inner_blanks_stay() {
 #[test]
 fn wide_characters_and_emoji_are_copied_once_whatever_part_of_them_is_selected() {
     let mut core = core(30, 2);
-    feed(&mut core, "你好😀 a👨\u{200d}👩\u{200d}👧b\tc");
+    feed(&mut core, "你好😀 a👨\u{200d}👩\u{200d}👧bcdef\tc");
     let whole = snap(&mut core).row_text(0);
     assert_eq!(copied(&mut core, (0, 0), (0, 29)).as_deref(), Some(whole.as_str()));
-    assert_eq!(whole, "你好😀 a👨\u{200d}👩\u{200d}👧b\tc");
+    assert_eq!(whole, "你好😀 a👨\u{200d}👩\u{200d}👧bcdef\tc");
     assert_eq!(copied(&mut core, (0, 0), (0, 0)).as_deref(), Some("你"), "the first half");
     assert_eq!(copied(&mut core, (0, 1), (0, 1)).as_deref(), Some("你"), "the second half (the spacer)");
     assert_eq!(copied(&mut core, (0, 1), (0, 2)).as_deref(), Some("你好"), "the end of one and the start of the next");
@@ -929,6 +953,16 @@ fn an_osc8_hyperlink_is_a_link_over_exactly_its_cells() {
     assert_eq!(core.link_at(1, 0), None);
     assert_eq!(core.link_at(0, 99), None, "outside the grid");
     assert_eq!(core.link_at(99, 0), None);
+}
+
+#[test]
+fn an_osc8_autolink_that_runs_into_full_width_punctuation_ends_before_it() {
+    let mut core = core(60, 2);
+    // What Claude Code writes for `https://example.com/full・結束・`: the whole run marked as one link.
+    feed(&mut core, "a \x1b]8;;https://example.com/full\u{30fb}結束\u{30fb}\x07https://example.com/full\u{30fb}結束\u{30fb}\x1b]8;;\x07");
+    let link = core.link_at(0, 5).expect("over the address");
+    assert_eq!((link.uri.as_str(), link.spans.as_slice()), ("https://example.com/full", [(0, 2, 26)].as_slice()));
+    assert_eq!(core.link_at(0, 28), None, "結束 after the middle dot is text");
 }
 
 #[test]
@@ -1434,12 +1468,12 @@ fn unterminated_osc_strings_are_bounded_and_text_after_them_still_prints() {
     core.feed(b"\x1b]2;");
     let filler = vec![b'x'; 1 << 20];
     for _ in 0..10 {
-        core.feed(&filler); // 10 MiB in total, the cap is 4 MiB
+        core.feed(&filler); // 10 MiB in total; a title is cut at the short cap
     }
     core.feed(b"\x07after");
     let events = core.take_events();
     let title = events.iter().find_map(|e| if let CoreEvent::Title(t) = e { Some(t.len()) } else { None });
-    assert_eq!(title, Some(4 * 1024 * 1024 - 2), "the prefix is dispatched when CAN ends the string");
+    assert_eq!(title, Some(nekominal_term::guard::MAX_SHORT_OSC - 2), "the prefix is dispatched when CAN ends the string");
     assert_eq!(snap(&mut core).text(), "after", "the dropped remainder and its BEL do not leak into the grid");
 }
 

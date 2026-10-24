@@ -578,8 +578,8 @@ impl Probe {
             env: env::child_environment(&options.env).map_err(ProbeError::Other)?,
             cols: options.cols,
             rows: options.rows,
-            // The mode that agrees with alacritty_terminal's per-code-point width model, as Pane::spawn uses.
-            width_model: WidthModel::Wcswidth,
+            // Grapheme widths, as Pane::spawn uses: what the CLI counts and what the emulator's cluster layer does.
+            width_model: WidthModel::Graphemes,
         };
         let sessions = Sessions::default();
         let spawned = env::with_process_environment(&config.env.clone(), || sessions.spawn(&config, sink));

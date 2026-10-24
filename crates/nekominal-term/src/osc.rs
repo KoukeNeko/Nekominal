@@ -14,10 +14,23 @@ pub fn parse_osc7(data: &str) -> Option<String> {
     let bytes = path.as_bytes();
     // "/C:/Users/me" has a drive letter; anything else is a POSIX path.
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
-        Some(path[1..].replace('/', "\\"))
+        local_dir(path[1..].replace('/', "\\"))
     } else {
-        Some(path)
+        local_dir(path)
     }
+}
+
+/// A working directory a program reported, when it names a folder of this machine: a drive path (`C:\x`) or a POSIX
+/// one (`/home/me`, from WSL). Anything else could make the shell reach out when it looks at the folder: `\\host\share`
+/// and `//host/share` are network shares (Windows connects and hands over the user's credentials), `\\?\` and `\??\`
+/// are device paths. Text with control or directional characters is refused as well: it is shown in the tab.
+fn local_dir(path: String) -> Option<String> {
+    let mut chars = path.chars();
+    let (first, second) = (chars.next()?, chars.next());
+    let separator = |c: Option<char>| matches!(c, Some('\\' | '/' | '?'));
+    let drive = first.is_ascii_alphabetic() && second == Some(':');
+    let posix = first == '/' && !separator(second);
+    ((drive || posix) && !path.chars().any(is_control_or_bidi)).then_some(path)
 }
 
 fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -88,7 +101,7 @@ pub fn parse_osc9(data: &str) -> Osc9 {
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
             .unwrap_or(&joined);
-        return Osc9::Cwd(path.to_owned());
+        return local_dir(path.to_owned()).map_or(Osc9::Ignored, Osc9::Cwd);
     }
     if command == "4" {
         let state = js_number(rest.first().copied().unwrap_or("0")).filter(|v| v.fract() == 0.0).map(|v| v as i64);
@@ -218,6 +231,20 @@ mod tests {
             assert!(!is_control_or_bidi(c), "U+{:04X} stays", u32::from(c));
         }
         assert_eq!(strip_control("a\u{200e}b\u{2028}c\u{fffe}d\u{202e}e"), "abcde");
+    }
+
+    #[test]
+    fn a_reported_folder_that_is_not_on_this_machine_is_dropped() {
+        // Network shares, written every way a program could write one: looking at them connects to the host.
+        for uri in ["file://h//evil.example/share", "file:///%5C%5Cevil%5Cshare", "file://h/%5C%5C?%5CUNC%5Ce%5Cs", "file://h/%5C??%5CUNC%5Ce"] {
+            assert_eq!(parse_osc7(uri), None, "{uri}");
+        }
+        for path in ["9;\"\\\\evil.example\\s\"", "9;//evil/s", "9;\\\\?\\UNC\\e\\s", "9;\\??\\UNC\\e", "9;relative\\dir", "9;C:\\a\u{202e}b"] {
+            assert_eq!(parse_osc9(path), Osc9::Ignored, "{path:?}");
+        }
+        assert_eq!(parse_osc7("file://h/C:/ok").as_deref(), Some("C:\\ok"));
+        assert_eq!(parse_osc7("file://wsl/home/me").as_deref(), Some("/home/me"));
+        assert_eq!(parse_osc9("9;D:/work"), Osc9::Cwd("D:/work".into()));
     }
 
     #[test]

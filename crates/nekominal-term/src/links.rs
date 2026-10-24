@@ -124,6 +124,30 @@ fn trim_end(url: &[char]) -> usize {
     end
 }
 
+/// Full-width and CJK punctuation, the ideographic space and the general punctuation of running text: no address a
+/// person writes goes on through them, though the letters around them may be any script.
+fn ends_text(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(c, '\u{2010}'..='\u{2027}' | '\u{2030}'..='\u{205e}' | '\u{3000}'..='\u{303f}' | '\u{30fb}' | '\u{fe10}'..='\u{fe6f}'
+            | '\u{ff01}'..='\u{ff0f}' | '\u{ff1a}'..='\u{ff20}' | '\u{ff3b}'..='\u{ff40}' | '\u{ff5b}'..='\u{ff65}')
+}
+
+/// How many of `cells` an OSC 8 link keeps when its text is its own address: a program that marks the URLs of its text
+/// itself (Claude Code does) can run one on into the sentence after it, `https://a.b/c・結束・`. The link then ends
+/// before the first full-width or CJK punctuation, without the punctuation that ends a sentence, as [`find_urls`]
+/// would end it. `None` when the text is not the address (a link with words of its own) or nothing has to go.
+/// `cells` is one `char` per cell, `'\0'` for the spacer of a wide character.
+pub fn autolink_end(cells: &[char], uri: &str) -> Option<usize> {
+    let text: String = cells.iter().filter(|c| **c != '\0').collect();
+    if text != uri && percent_decode(uri).as_deref() != Some(text.as_str()) {
+        return None;
+    }
+    let prefix = URL_PREFIXES.iter().find(|p| starts_with_ignore_case(cells, 0, p))?;
+    let cut = cells.iter().position(|c| ends_text(*c)).unwrap_or(cells.len());
+    let end = trim_end(&cells[..cut]);
+    (end < cells.len() && end > prefix.len()).then_some(end)
+}
+
 /// The only gate a link passes before anything is opened. See the module documentation.
 pub fn open_target(uri: &str) -> Result<OpenTarget, Refusal> {
     if uri.len() > MAX_LINK_BYTES || uri.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\' || is_invisible(c)) {
@@ -265,6 +289,24 @@ mod tests {
         assert_eq!(urls("https://example.com，下一句"), ["https://example.com"]);
         let cells: Vec<char> = "https://ex\0ample.com".chars().collect();
         assert_eq!(find_urls(&cells), [0..10]);
+    }
+
+    #[test]
+    fn a_program_s_autolink_ends_at_full_width_punctuation_and_keeps_letters_of_any_script() {
+        let end = |text: &str, uri: &str| autolink_end(&text.chars().collect::<Vec<_>>(), uri);
+        let text = "https://example.com/full・結束・";
+        assert_eq!(end(text, text), Some("https://example.com/full".chars().count()));
+        assert_eq!(end(text, "https://example.com/full%E3%83%BB%E7%B5%90%E6%9D%9F%E3%83%BB"), Some(24), "an encoded address is the same address");
+        assert_eq!(end("https://example.com/end，然後", "https://example.com/end，然後"), Some(23));
+        assert_eq!(end("https://example.com/end.", "https://example.com/end."), Some(23));
+        assert_eq!(end("https://example.com/in-parens)", "https://example.com/in-parens)"), Some(29));
+        let wiki = "https://zh.wikipedia.org/wiki/中華民國";
+        assert_eq!(end(wiki, wiki), None, "a path in Chinese is kept whole");
+        assert_eq!(end("可點的文字連結", "https://example.com/"), None, "a link with words of its own is the program's to say");
+        assert_eq!(end("https://example.com/x", "https://example.com/x"), None);
+        assert_eq!(end("https://・", "https://・"), None, "a scheme alone is not a link");
+        let spaced: Vec<char> = "https://a.b/貓\0。".chars().collect();
+        assert_eq!(autolink_end(&spaced, "https://a.b/貓。"), Some(14), "the spacer of a wide letter stays with it");
     }
 
     #[test]

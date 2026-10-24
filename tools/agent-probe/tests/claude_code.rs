@@ -28,6 +28,8 @@ use agent_probe::{
 };
 use nekominal_input::{MouseButton, MouseInput, MouseKind, WheelDirection};
 use nekominal_term::agent_status::{AgentState, Report};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 // ---- plumbing ----------------------------------------------------------------------------------------
 
@@ -549,6 +551,60 @@ fn fullscreen_switches_that_change_mouse_cursor_and_repaint() {
         screen.wide_cell_problems().is_empty() && box_bottom(&screen).is_some() && probe.modes().alt_screen,
         "CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT=1 draws a consistent screen",
     );
+    probe.shutdown();
+    checks.finish();
+}
+
+/// Text whose width the CLI and ConPTY may count differently (grapheme clusters against code points), typed
+/// into the box: the frame must stay where it is and match a full redraw.
+#[test]
+#[ignore = "runs the real Claude Code CLI: needs the installed claude.exe and its signed-in state"]
+fn fullscreen_wide_graphemes_keep_the_frame() {
+    let _turn = exclusive();
+    let mut checks = Checks::default();
+    let started = start(fullscreen("fs-graphemes").size(80, 24));
+    let probe = &started.probe;
+    let cases = [
+        ("cjk", "中文全形字|"),
+        ("zwj-family", "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}|"),
+        ("flag", "\u{1F1F9}\u{1F1FC}|"),
+        ("vs16", "\u{2764}\u{FE0F}|"),
+        ("combining", "e\u{301}a\u{303}n\u{303}|"),
+        ("halfwidth-kana", "\u{FF76}\u{FF9E}\u{FF8A}\u{FF9F}|"),
+        ("bopomofo-tone", "\u{3105}\u{02CA}\u{3106}\u{02C7}|"),
+        ("skin-tone", "\u{1F44D}\u{1F3FD}|"),
+    ];
+    // Each case alone, then pushed to the right edge of the 78 columns the box has, where a cell the CLI did not
+    // count wraps the row.
+    let padded: Vec<(String, String)> = cases
+        .iter()
+        .flat_map(|(id, text)| {
+            let width: usize = text.graphemes(true).map(|g| UnicodeWidthStr::width(g).clamp(1, 2)).sum();
+            [(id.to_string(), text.to_string()), (format!("{id}-at-edge"), format!("{}{text}", "a".repeat(77 - width)))]
+        })
+        .collect();
+    for (id, text) in &padded {
+        let id = id.as_str();
+        probe.send_text(text).unwrap();
+        pause(800);
+        let typed = probe.screen();
+        let found = claude::input_box(&typed);
+        let caret = probe.cursor();
+        probe.key("ctrl+l").unwrap();
+        pause(800);
+        let diffs = typed.diff(&probe.screen(), &normalize);
+        checks.check(
+            &format!("graphemes.{id}.redraw"),
+            diffs.is_empty() && found.is_some(),
+            format!("box {:?}, caret {caret:?}, {} differences after Ctrl+L, e.g. {:?}", found.map(|b| (b.row, b.text)), diffs.len(), diffs.first()),
+        );
+        checks.check(
+            &format!("graphemes.{id}.box-pinned"),
+            box_bottom(&typed).is_some(),
+            format!("rule under the box after typing: {:?}", box_bottom(&typed)),
+        );
+        clear_box(probe);
+    }
     probe.shutdown();
     checks.finish();
 }

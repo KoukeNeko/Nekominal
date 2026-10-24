@@ -985,7 +985,7 @@ isPrerelease: 1
         assert_eq!(config.args, ["-NoLogo"]);
         assert_eq!(config.cwd.as_deref(), Some(dir.as_path()));
         assert_eq!((config.cols, config.rows), (120, 30));
-        assert_eq!(config.width_model, WidthModel::Wcswidth);
+        assert_eq!(config.width_model, WidthModel::Graphemes);
         assert_eq!(config.env, default_environment());
     }
 

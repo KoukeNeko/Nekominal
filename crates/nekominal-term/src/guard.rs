@@ -16,6 +16,9 @@ use memchr::{memchr, memchr3};
 
 /// Larger than any legitimate OSC (OSC 52 clipboard writes are the biggest in practice).
 pub const MAX_OSC_PAYLOAD: usize = 4 * 1024 * 1024;
+/// Every other OSC (a title, a link, a folder, a notification) is short. The cap matters beyond the string itself: a title
+/// can be pushed onto a stack 4096 deep (`CSI 22 t`), so a 4 MiB title would cost 16 GiB.
+pub const MAX_SHORT_OSC: usize = 8 * 1024;
 
 const ESC: u8 = 0x1b;
 const CAN: u8 = 0x18;
@@ -37,6 +40,9 @@ pub struct StringGuard {
     state: State,
     payload: usize,
     limit: usize,
+    /// The first bytes of the OSC string, which say whether it is a clipboard write (`52;`) and may be long.
+    head: [u8; 3],
+    head_len: usize,
     /// Payload bytes dropped so far (for diagnostics).
     pub dropped: u64,
 }
@@ -59,7 +65,7 @@ fn find_terminator(bytes: &[u8]) -> Option<usize> {
 
 impl StringGuard {
     pub fn with_limit(limit: usize) -> Self {
-        Self { state: State::Ground, payload: 0, limit, dropped: 0 }
+        Self { state: State::Ground, payload: 0, limit, head: [0; 3], head_len: 0, dropped: 0 }
     }
 
     /// Returns the bytes to feed the parsers: `bytes` itself unless a payload went over the limit.
@@ -83,6 +89,7 @@ impl StringGuard {
                         b']' => {
                             self.state = State::Osc;
                             self.payload = 0;
+                            self.head_len = 0;
                         }
                         ESC => {}
                         _ => self.state = State::Ground,
@@ -93,7 +100,12 @@ impl StringGuard {
                     let rest = &bytes[i..];
                     let end = find_terminator(rest);
                     let segment = end.unwrap_or(rest.len());
-                    let room = self.limit - self.payload;
+                    let take = (self.head.len() - self.head_len).min(segment);
+                    self.head[self.head_len..self.head_len + take].copy_from_slice(&rest[..take]);
+                    self.head_len += take;
+                    let short = self.head_len == self.head.len() && self.head != *b"52;";
+                    let limit = if short { self.limit.min(MAX_SHORT_OSC) } else { self.limit };
+                    let room = limit.saturating_sub(self.payload);
                     if segment > room {
                         // Cut here: keep `room` bytes, end the string with CAN, drop the remainder.
                         out.extend_from_slice(&bytes[copy_from..i + room]);
@@ -181,6 +193,25 @@ mod tests {
         let mut guard = StringGuard::with_limit(4);
         let out = guard.filter(b"\x1b]2;toolongpayload\x07\x1b]2;ok\x07z").into_owned();
         assert_eq!(out, b"\x1b]2;to\x18\x1b]2;ok\x07z");
+    }
+
+    #[test]
+    fn only_a_clipboard_write_may_be_long() {
+        let mut guard = StringGuard::default();
+        let long = |head: &str| {
+            let mut data = format!("\x1b]{head}").into_bytes();
+            data.extend(std::iter::repeat_n(b'x', 2 * MAX_SHORT_OSC));
+            data.push(0x07);
+            data
+        };
+        // A title is cut at the short cap, whichever chunk its first bytes come in.
+        let out = guard.filter(&long("2;")).into_owned();
+        assert_eq!(out.len(), 2 + MAX_SHORT_OSC + 1, "ESC ] then the cap, then CAN");
+        let mut split = guard.filter(b"\x1b]2").into_owned();
+        split.extend_from_slice(&guard.filter(&long("")[2..]));
+        assert_eq!(split.len(), 2 + MAX_SHORT_OSC + 1);
+        // A clipboard write keeps the large cap.
+        assert!(matches!(guard.filter(&long("52;c;")), Cow::Borrowed(_)));
     }
 
     #[test]

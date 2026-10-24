@@ -12,6 +12,10 @@ nekominal-term = { workspace = true }
 nekominal-input = { workspace = true }
 regex = "1.13"
 
+[dev-dependencies]
+unicode-segmentation = { workspace = true }
+unicode-width = { workspace = true }
+
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = [
