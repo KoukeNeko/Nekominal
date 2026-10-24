@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
+        Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
         TabTitle, split_font_families,
     },
     strings::{Lang, Text},
@@ -80,6 +80,8 @@ pub enum Control {
     Themes,
     /// The profiles a tab can open, found at run time; the value is the id of the chosen one.
     Profiles,
+    /// The layouts of the tabs as pictures of the window; the value is the position of the chosen one, as for a choice.
+    Layouts(&'static [Text]),
     /// A line of text.
     Text,
 }
@@ -108,6 +110,16 @@ impl Descriptor {
         self.label.get(lang)
     }
 
+    /// Whether the setting does anything with the others as they are: the rows of the sidebar do nothing with the tabs on
+    /// top, and the groups only in a list.
+    pub fn applies(&self, settings: &Settings) -> bool {
+        match self.id {
+            "tabs.sidebarOpen" => settings.tabs.layout.is_side(),
+            "tabs.groupByState" => settings.tabs.layout == crate::settings::TabLayout::List,
+            _ => true,
+        }
+    }
+
     /// The row differs from the default.
     pub fn is_modified(&self, settings: &Settings) -> bool {
         (self.get)(settings) != (self.get)(&Settings::default())
@@ -125,7 +137,7 @@ impl Descriptor {
             Control::Toggle => {
                 names.extend([Text::ToggleOff, Text::ToggleOn].map(|text| text.get(lang).to_owned()));
             }
-            Control::Choice(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
+            Control::Choice(options) | Control::Layouts(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
             Control::Themes => names.extend(themes::theme_names().map(str::to_owned)),
             Control::Slider(_) | Control::Number(_) | Control::Profiles | Control::Text => {}
         }
@@ -199,6 +211,7 @@ const BELL_SOUNDS: [Text; 3] = [Text::BackdropNone, Text::BellSoundBackground, T
 const OSC52_POLICIES: [Text; 3] = [Text::ToggleOff, Text::Osc52Write, Text::Osc52ReadWrite];
 const LANGUAGES: [Text; 3] = [Text::CommonAuto, Text::LanguageZhTw, Text::LanguageEnUs];
 const NO_AGENT: [Text; 2] = [Text::StatusBarPlace, Text::StatusBarHide];
+const LAYOUTS: [Text; 3] = [Text::LayoutTop, Text::LayoutList, Text::LayoutIcons];
 
 const FONT_SIZE: Range = Range { min: FONT_SIZE_RANGE.0, max: FONT_SIZE_RANGE.1, step: 1.0, large: 4.0 };
 const LINE_HEIGHT: Range = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
@@ -210,6 +223,20 @@ const CLOSE_THRESHOLD: Range = Range { min: 1.0, max: 1000.0, step: 1.0, large: 
 /// Every row of the drawer, section by section, in the order the section shows them.
 pub const TABLE: &[Descriptor] = &[
     // Appearance
+    Descriptor {
+        id: "tabs.layout",
+        section: Section::Appearance,
+        label: Text::SettingsTabLayout,
+        control: Control::Layouts(&LAYOUTS),
+        get: |s| choice(&TabLayout::ALL, s.tabs.layout),
+        set: |s, v| {
+            if let Some(layout) = chosen(&TabLayout::ALL, v) {
+                s.tabs.layout = layout;
+            }
+        },
+    },
+    toggle!("tabs.sidebarOpen", Appearance, SettingsSidebarOpen, tabs.sidebar_open),
+    toggle!("tabs.groupByState", Appearance, SettingsGroupByState, tabs.group_by_state),
     Descriptor {
         id: "theme",
         section: Section::Appearance,
@@ -504,6 +531,7 @@ mod tests {
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("cursor.blink", "the terminals draw a steady cursor, so a row would change nothing"),
+        ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.
@@ -567,7 +595,7 @@ mod tests {
         assert_eq!(ids(Section::Advanced), ["language"]);
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
-        assert_eq!(ids(Section::Appearance)[..3], ["theme", "appearance.backdrop", "appearance.opacity"]);
+        assert_eq!(ids(Section::Appearance)[..6], ["tabs.layout", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
         assert_eq!(ids(Section::Agents).last(), Some(&"osc52"));
     }
 
@@ -591,7 +619,7 @@ mod tests {
         let default = (row.get)(&Settings::default());
         match (row.control, default) {
             (Control::Toggle, Value::Bool(on)) => Value::Bool(!on),
-            (Control::Choice(options), Value::Index(index)) => Value::Index((index + 1) % options.len()),
+            (Control::Choice(options) | Control::Layouts(options), Value::Index(index)) => Value::Index((index + 1) % options.len()),
             (Control::Slider(range) | Control::Number(range), Value::Number(n)) => {
                 let moved = if n + range.step <= range.max { n + range.step } else { n - range.step };
                 Value::Number((moved * 100.0).round() / 100.0)

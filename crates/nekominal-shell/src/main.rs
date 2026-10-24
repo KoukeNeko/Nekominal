@@ -22,6 +22,7 @@ mod settings_window;
 mod status;
 mod tab;
 mod textfield;
+mod welcome;
 mod widgets;
 mod win;
 

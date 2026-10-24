@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, clipboard, design, find, icons, motion, textfield,
+    access, agent, clipboard, design, find, icons, motion, textfield, welcome,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -90,16 +90,73 @@ const ICON_SIZE: f32 = 10.0;
 /// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
 /// icon font are drawn above the middle of their line.
 const ICON_NUDGE: f32 = 1.5;
-/// The height of the status bar at the bottom of the window, in DIP.
-const STATUS_BAR: f32 = 26.0;
 /// The icon of the program a tab runs, in DIP.
 const TAB_ICON: f32 = 16.0;
+/// The size of the text of the right of the bar, of the second line of a row of the sidebar, the space between the parts
+/// of the right of the bar and the length of the meter of the context, in DIP.
+const PIECE_SIZE: f32 = 12.0;
+const SMALL_SIZE: f32 = 11.5;
+const PIECE_GAP: f32 = 14.0;
+const METER: f32 = 32.0;
+/// A tab of the strip narrower than this shows its number instead of its title, and one narrower than `ICON_FROM` leaves the
+/// icon of its program out, in DIP.
+const ORDINAL_BELOW: f32 = 64.0;
+const ICON_FROM: f32 = 132.0;
 
-/// What a part of the status bar does when it is clicked.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum StatusPart {
-    /// The state of the agent: goes to the next tab that waits for the user.
-    State,
+fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
+    match piece {
+        Piece::State(_, text) => 12.0 + ui.measure(text, PIECE_SIZE, false),
+        Piece::Meter(_) => METER + 6.0 + ui.measure("100%", PIECE_SIZE, false),
+        Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, PIECE_SIZE, false),
+        Piece::Text(text) => ui.measure(text, PIECE_SIZE, false),
+    }
+}
+
+/// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese).
+fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for ch in text.chars() {
+        line.push(ch);
+        if ui.measure(&line, size, false) <= width {
+            continue;
+        }
+        line.pop();
+        // A word that does not fit goes to the next line whole.
+        let rest = match line.rfind(' ').filter(|_| ch != ' ') {
+            Some(at) => { let rest = line[at + 1..].to_owned(); line.truncate(at); rest }
+            None => String::new(),
+        };
+        lines.push(std::mem::take(&mut line));
+        line = rest;
+        if ch != ' ' {
+            line.push(ch);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// The word for what a tab is doing, none for a tab at rest.
+fn state_text(state: logic::TabState) -> Option<Text> {
+    match state {
+        logic::TabState::Working => Some(Text::AgentWorking),
+        logic::TabState::Blocked => Some(Text::AgentBlocked),
+        logic::TabState::Done => Some(Text::AgentDone),
+        logic::TabState::Error => Some(Text::AgentError),
+        logic::TabState::Idle | logic::TabState::Attention => None,
+    }
+}
+
+/// One part of what the right of the title bar says about the focused pane: a dot in a colour before its text, a meter,
+/// a glyph before its text, or text alone.
+enum Piece {
+    State(Color, String),
+    Meter(f32),
+    Glyph(char, String),
+    Text(String),
 }
 
 pub struct App {
@@ -138,9 +195,14 @@ pub struct App {
     drag: Option<ChipDrag>,
     /// Where the position plate of the tab strip is drawn, when it is: it opens the list of all tabs.
     plate_rect: Option<Rect>,
-    /// The status bar takes the bottom of the window now, and what its parts that can be clicked are.
-    status_shown: bool,
-    status_parts: Vec<(Rect, StatusPart)>,
+    /// Where the count of the tabs that wait is drawn, when there is one: it goes to the next of them.
+    waiting_rect: Option<Rect>,
+    /// The room the right of the title bar takes (the waiting count and the numbers of the agent), and the tabs of the
+    /// sidebar by group, as the layout was last made with them.
+    right_width: f32,
+    groups: Vec<Vec<usize>>,
+    /// The first start: the window shows the choice of the layout of the tabs over everything until it is made.
+    welcome: Option<welcome::Welcome>,
     /// Claude Code as the Agent page last found it.
     claude: agent::Claude,
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
@@ -262,6 +324,7 @@ fn wired(command: Command) -> bool {
             | Command::AppNewWindow
             | Command::EditFind
             | Command::ViewFullscreen
+            | Command::ViewSidebar
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -382,8 +445,10 @@ impl App {
             chip_size: (0, 0),
             drag: None,
             plate_rect: None,
-            status_shown: false,
-            status_parts: Vec::new(),
+            waiting_rect: None,
+            right_width: 0.0,
+            groups: Vec::new(),
+            welcome: None,
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
@@ -392,7 +457,7 @@ impl App {
             window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
-            layout: Layout::new(1.0, 1.0, 0, 0.0, 0),
+            layout: Layout::new(1.0, 1.0, 0, 0.0, 0, layout::Mode::TOP, 0.0, &[]),
             hover: Hit::None,
             pressed: Hit::None,
             buttons: [false; 3],
@@ -411,6 +476,9 @@ impl App {
             text: Utf16Assembler::default(),
             access: Some(Adapter::new(hwnd, true, access::NoActions)),
         };
+        if first_window && !app.settings.welcomed {
+            app.welcome = Some(welcome::Welcome::default());
+        }
         app.relayout();
         // Only the window the process starts with picks up the saved session; a window opened later starts empty.
         let first_window = first_window && app.settings.restore_session;
@@ -443,8 +511,36 @@ impl App {
     fn pane_area(&self) -> PxRect {
         let (w, h) = self.surface.size();
         let top = self.pane_top() as i32;
-        let bottom = if self.status_shown { (STATUS_BAR * self.scale).round() as i32 } else { 0 };
-        PxRect { x: 0, y: top, w: w as i32, h: (h as i32 - top - bottom).max(1) }
+        let left = (self.mode().side_width() * self.scale).round() as i32;
+        PxRect { x: left, y: top, w: (w as i32 - left).max(1), h: (h as i32 - top).max(1) }
+    }
+
+    /// Where the tabs are shown, as the settings say.
+    fn mode(&self) -> layout::Mode {
+        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open }
+    }
+
+    /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, or, when the list is
+    /// grouped by state, those that wait for the user, those that work and the others.
+    fn sidebar_groups(&self) -> Vec<Vec<usize>> {
+        if !self.settings.tabs.group_by_state || self.settings.tabs.layout != settings::TabLayout::List {
+            return vec![(0..self.tabs.len()).collect()];
+        }
+        let mut groups = vec![Vec::new(), Vec::new(), Vec::new()];
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let state = tab.status().state;
+            let group = if logic::is_urgent(state) { 0 } else if state == logic::TabState::Working { 1 } else { 2 };
+            groups[group].push(i);
+        }
+        groups
+    }
+
+    /// Makes the layout again from the size of the window, the settings, the room the right of the bar takes and the
+    /// groups of the sidebar. The panes do not move with it: only the width of the sidebar moves them, and `relayout` places
+    /// them.
+    fn rebuild_layout(&mut self) {
+        let (w, h) = self.surface.size();
+        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups);
     }
 
     /// Pixels between the top of the window and the top of the panes.
@@ -680,7 +776,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !matches!(self.hit_test(x, y), Hit::Pane | Hit::Status | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -780,9 +876,8 @@ impl App {
 
     /// Chips, panes and the cells each shown pane has.
     fn relayout(&mut self) {
-        self.status_shown = self.status_wanted();
-        let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected);
+        self.groups = self.sidebar_groups();
+        self.rebuild_layout();
         let area = self.pane_area();
         let divider = logic::divider_px(f64::from(self.scale));
         let Some(tab) = self.tabs.get_mut(self.selected) else { return };
@@ -928,8 +1023,8 @@ impl App {
         if self.plate_rect.is_some_and(|plate| plate.contains(x, y)) {
             return Hit::Plate;
         }
-        if self.status_shown && y >= self.layout.size.1 - STATUS_BAR {
-            return Hit::Status;
+        if self.waiting_rect.is_some_and(|rect| rect.contains(x, y)) {
+            return Hit::Waiting;
         }
         self.layout.hit(x, y)
     }
@@ -959,6 +1054,11 @@ impl App {
 
     pub fn on_mouse_move(&mut self, x: i32, y: i32, time_ms: u32) {
         if self.popup_keeps_owner_active() { return; }
+        if self.welcome.is_some() {
+            let (x, y) = self.point(x, y);
+            self.welcome_hover(x, y);
+            return;
+        }
         let hit = self.hit_test(x, y);
         if hit != self.hover {
             self.hover = hit;
@@ -1073,12 +1173,22 @@ impl App {
                 return Capture::None;
             }
         }
+        if self.welcome.is_some() {
+            if button == MouseButton::Left && !down {
+                let (x, y) = self.point(x, y);
+                self.welcome_click(x, y);
+            }
+            return Capture::None;
+        }
         let hit = self.hit_test(x, y);
         // A left press outside the panes, and its release, are for the chrome.
         if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
             if down {
                 self.pressed = hit;
-                if let Hit::Chip(i) = hit {
+                // shortcut: only the strip on top reorders by dragging; the rows of the sidebar are clicked, not dragged.
+                if let Hit::Chip(i) = hit
+                    && !self.mode().layout.is_side()
+                {
                     let (pointer, _) = self.point(x, y);
                     let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
                     self.drag = Some(ChipDrag { tab: i, grab: pointer - chip.x, start: pointer, x: pointer, active: false });
@@ -1111,7 +1221,8 @@ impl App {
                     Hit::Profiles => self.open_profiles(),
                     Hit::Plate => self.open_tab_list(),
                     Hit::Menu => self.open_menu(),
-                    Hit::Status => self.status_click(x as f32 / self.scale),
+                    Hit::Waiting => self.run(Command::TabNextNeedsResponse),
+                    Hit::Sidebar => self.run(Command::ViewSidebar),
                     _ => {}
                 }
             }
@@ -1230,10 +1341,6 @@ impl App {
             }
         }
         changed |= self.refresh_usage();
-        if self.status_wanted() != self.status_shown {
-            self.relayout();
-            changed = true;
-        }
         if changed {
             self.redraw();
         }
@@ -1432,6 +1539,11 @@ impl App {
                 if let Some(next) = logic::next_waiting(&waiting, self.selected) {
                     self.select(next);
                 }
+            }
+            Command::ViewSidebar => {
+                let before = self.settings.clone();
+                self.settings.tabs.sidebar_open = !self.settings.tabs.sidebar_open;
+                self.apply_settings(&before);
             }
             Command::PaneSplitRight => self.split(Axis::Row),
             Command::PaneSplitDown => self.split(Axis::Column),
@@ -1703,10 +1815,11 @@ impl App {
 
         self.ui.begin_frame(size, self.scale);
         let sliding = self.advance_chips();
-        self.paint_chrome();
+        let relaid = self.paint_chrome();
+        self.paint_welcome();
         self.ui.end_frame(&view);
         self.surface.present();
-        sliding
+        sliding || relaid
     }
 
     /// Draws a frame of the window of the settings.
@@ -1744,8 +1857,9 @@ impl App {
             widgets::bar_button(&mut self.ui, &g, cell, State { hover: hover == button, pressed: pressed == button, chosen: false });
             self.icon_centered(cell, glyph, ICON_SIZE, col(g.text()));
         }
-        // The tab that is selected is the page itself: the band behind the tabs and its lower edge leave it out.
-        let joined = frame.items.iter().find(|item| matches!(item.visual, settings_page::Visual::Plate(settings_page::Fill::Tab { selected: true, .. }))).map(|item| item.rect);
+        self.ui.fill(Rect::new(0.0, settings_window::TITLE - 1.0, window_width, 1.0), col(g.divider()));
+        let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
+        let background = Color([g.background.r, g.background.g, g.background.b, 255]);
         let schemes: Vec<&str> = themes::theme_names().collect();
         let tone_color = |tone: settings_page::Tone| match tone {
             settings_page::Tone::Text => col(g.text()),
@@ -1765,24 +1879,22 @@ impl App {
                 settings_page::Visual::None => {}
                 settings_page::Visual::Plate(fill) => match *fill {
                     settings_page::Fill::Strip => {
-                        // The band goes on above the selected tab: only the tab itself, from its top down, is the colour of
-                        // the page.
-                        let above = joined.map_or(rect.h, |tab| (tab.y - rect.y).clamp(0.0, rect.h));
-                        self.ui.fill(Rect::new(rect.x, rect.y, rect.w, above), col(g.tab_rest()));
-                        let (left, right) = joined.map_or((rect.w, rect.w), |tab| ((tab.x - rect.x).clamp(0.0, rect.w), (tab.x + tab.w - rect.x).clamp(0.0, rect.w)));
-                        for (x, w) in [(rect.x, left), (rect.x + right, rect.w - right)] {
-                            self.ui.fill(Rect::new(x, rect.y + above, w, rect.h - above), col(g.tab_rest()));
-                            self.ui.fill(Rect::new(x, rect.y + rect.h - 1.0, w, 1.0), col(g.divider()));
-                        }
+                        self.ui.fill(rect, col(g.tab_rest()));
+                        self.ui.fill(Rect::new(rect.x + rect.w - 1.0, rect.y, 1.0, rect.h), col(g.divider()));
                     }
                     settings_page::Fill::Tab { selected, hover } => {
                         if selected {
-                            widgets::tab(&mut self.ui, rect, rect.y + rect.h, Color::TRANSPARENT, Some((col(g.divider()), 1.0)));
+                            widgets::plate(&mut self.ui, rect, col(g.hover()));
                         } else if hover {
-                            widgets::tab(&mut self.ui, rect, rect.y + rect.h - 1.0, col(g.hover()), None);
+                            widgets::plate(&mut self.ui, rect, soft);
                         }
                     }
-                    settings_page::Fill::Row { focus } => widgets::row(&mut self.ui, &g, rect, focus),
+                    settings_page::Fill::Row { focus } => {
+                        if focus {
+                            widgets::plate(&mut self.ui, rect, soft);
+                        }
+                        self.ui.fill(Rect::new(rect.x, rect.y, rect.w, 1.0), col(g.divider()));
+                    }
                     settings_page::Fill::Button { selected, hover } => widgets::button(&mut self.ui, &g, rect, State::chosen(selected, hover)),
                     settings_page::Fill::Field { editing } => widgets::field(&mut self.ui, &g, rect, editing),
                     settings_page::Fill::Switch { on, hover } => widgets::switch(&mut self.ui, &g, rect, on, hover),
@@ -1810,6 +1922,12 @@ impl App {
                 settings_page::Visual::Edit { text, cursor, placeholder } => {
                     widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder });
                 }
+                settings_page::Visual::Layout { layout, selected, hover } => {
+                    let style = settings::TabLayout::ALL.get(*layout).copied().unwrap_or(settings::TabLayout::Top);
+                    let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text_secondary()), 1.0) } else { (col(g.divider()), 1.0) };
+                    self.paint_miniature(Rect::new(rect.x, rect.y, rect.w, rect.h), style, background);
+                    self.ui.rrect(rect, 6.0, Color::TRANSPARENT, Some(border));
+                }
                 settings_page::Visual::Tile { scheme, selected, hover } => {
                     let Some(scheme) = schemes.get(*scheme).map(|name| themes::scheme(name)) else { continue };
                     let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text()), 1.0) } else { (col(g.divider()), 1.0) };
@@ -1834,29 +1952,104 @@ impl App {
         widgets::bar_button(&mut self.ui, &g, Rect::new(button.x, 0.0, button.w, layout::TITLE_HEIGHT - 1.0), state);
     }
 
-    fn paint_chrome(&mut self) {
+    /// A button of the bar: its plate while the pointer is on it or its pop-up hangs from it, and its glyph, quiet unless
+    /// it is on or under the pointer.
+    fn bar_icon(&mut self, rect: Rect, hit: Hit, glyph: char, on: bool) {
         let g = self.glass;
+        let lit = self.hover == hit || self.popup_from == Some(hit);
+        if lit {
+            self.bar_plate(rect, State::hover(true));
+        }
+        let color = if on || lit { col(g.text()) } else { col(g.text_secondary()) };
+        self.icon_centered(rect, glyph, 12.0, color);
+    }
+
+    /// The glyph of what a tab is doing in its colour, from `x` and centred on `y`: a shape for each state, so that the
+    /// colour is not all that tells them apart. False for a tab at rest, which has none.
+    fn state_dot(&mut self, x: f32, y: f32, state: logic::TabState) -> bool {
+        let Some(glyph) = status::glyph(state) else { return false };
+        let g = self.glass;
+        let line = self.ui.line_height(ICON_SIZE);
+        self.ui.icon(x, y - line / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, state)));
+        true
+    }
+
+    /// The icon of the program tab `i` runs, in `square`: the icon of its file, as the automatic icon of iTerm2 has it, or
+    /// a glyph for one without.
+    fn tab_icon(&mut self, i: usize, square: Rect, color: Color) {
+        let path = self.tabs[i].job_path().map(std::path::Path::to_owned);
+        if path.is_some_and(|path| program_icon(&mut self.ui, &path, square)) {
+            return;
+        }
+        let glyph = self.tabs[i].job().map_or('\u{E756}', logic::job_icon);
+        self.icon_centered(square, glyph, ICON_SIZE, color);
+    }
+
+    /// Where tab `i` is: the folder of its focused pane, and the branch of that folder when there is one. A title that is
+    /// the folder already (the default) has the program instead of the folder repeated.
+    fn place_text(&self, i: usize) -> Option<String> {
+        let entry = self.tabs.get(i)?.focused_entry()?;
+        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone())?;
+        let home = std::env::var("USERPROFILE").ok();
+        let mut folder = logic::folder_label(&folder, home.as_deref());
+        if folder == self.tab_label(i)
+            && let Some(program) = self.tabs[i].job()
+        {
+            folder = std::path::Path::new(program).file_stem().map_or_else(|| program.to_owned(), |stem| stem.to_string_lossy().into_owned());
+        }
+        Some(match &entry.branch {
+            Some(branch) => format!("{folder} · {branch}"),
+            None => folder,
+        })
+    }
+
+    /// Draws the bar, the sidebar and the dividers. True when the layout changed with what the bar says: the chips go to
+    /// their new places in the frames after this one (a redraw asked for while painting would be cleared with the frame).
+    fn paint_chrome(&mut self) -> bool {
+        let g = self.glass;
+        let lang = self.language();
         let width = self.layout.size.0;
+        let bar = layout::TITLE_HEIGHT;
+
+        // What the right of the bar says and how wide it is: the layout keeps that room free of tabs. The numbers of the
+        // agent give way when the window is narrow; the count of the tabs that wait stays.
+        let mut pieces = self.bar_pieces();
+        let waiting = self.tabs.iter().enumerate().filter(|(i, tab)| *i != self.selected && logic::is_urgent(tab.status().state)).count();
+        let badge = (waiting > 0).then(|| Text::TabsWaiting.format(lang, &[&waiting]));
+        let badge_width = badge.as_ref().map_or(0.0, |text| 23.0 + self.ui.measure(text, PIECE_SIZE, false) + 10.0);
+        let mut widths: Vec<f32> = pieces.iter().map(|piece| piece_width(&mut self.ui, piece)).collect();
+        // A narrow window keeps its room for the tabs: the numbers go before the tabs shrink to their numbers.
+        let room = ((width - 640.0).clamp(0.0, width * 0.45) - badge_width).max(0.0);
+        while widths.iter().map(|w| w + PIECE_GAP).sum::<f32>() > room && widths.pop().is_some() {
+            pieces.pop();
+        }
+        let right_width = badge_width + if badge.is_some() { 12.0 } else { 0.0 } + widths.iter().map(|w| w + PIECE_GAP).sum::<f32>();
+        // The groups of the sidebar follow the states of the tabs, but not while the pointer is over the sidebar: a row does
+        // not move from under it.
+        let over_side = matches!(self.hover, Hit::Chip(_) | Hit::ChipClose(_) | Hit::Side);
+        let groups = if over_side { self.groups.clone() } else { self.sidebar_groups() };
+        let relaid = right_width != self.right_width || groups != self.groups;
+        if relaid {
+            (self.right_width, self.groups) = (right_width, groups);
+            self.rebuild_layout();
+        }
+
         let opacity = glass::terminal_opacity(self.settings.appearance.backdrop, self.settings.appearance.opacity, glass::Material { window_active: self.active, effects_on: true });
         let tint = {
             let alpha = glass::bar_tint_alpha(opacity);
             Color([g.background.r, g.background.g, g.background.b, (alpha * 255.0).round() as u8])
         };
-        self.ui.fill(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT), tint);
-        // The lower edge of the bar, broken where the selected tab joins the terminal.
-        let dragged = self.drag.filter(|drag| drag.active).map(|drag| drag.tab);
-        let joined = self.chip_rects.get(self.selected).copied().or_else(|| self.layout.chips.get(self.selected).copied()).filter(|_| {
-            self.layout.is_shown(self.selected) || Some(self.selected) == dragged
-        });
-        let edge = layout::TITLE_HEIGHT - 1.0;
-        // The bar is darker than the terminal everywhere but under the selected tab, which is the terminal's own colour.
-        let (left, right) = joined.map_or((width, width), |chip| (chip.x.clamp(0.0, width), (chip.x + chip.w).clamp(0.0, width)));
-        for (x, w) in [(0.0, left), (right, width - right)] {
-            self.ui.fill(Rect::new(x, 0.0, w, layout::TITLE_HEIGHT), col(g.tab_rest()));
-            self.ui.fill(Rect::new(x, edge, w, 1.0), col(g.divider()));
+        // The bar and the sidebar: one band darker than the terminal, a hairline where they meet it.
+        for band in [Some(Rect::new(0.0, 0.0, width, bar)), self.layout.sidebar].into_iter().flatten() {
+            self.ui.fill(band, tint);
+            self.ui.fill(band, col(g.tab_rest()));
+        }
+        self.ui.fill(Rect::new(0.0, bar - 1.0, width, 1.0), col(g.divider()));
+        if let Some(side) = self.layout.sidebar {
+            self.ui.fill(Rect::new(side.x + side.w - 1.0, side.y, 1.0, side.h), col(g.divider()));
         }
 
-        // The caption buttons: square plates as tall as the bar, like the tabs, the glyph in the middle of the plate.
+        // The caption buttons: square plates as tall as the bar, the glyph in the middle of the plate.
         let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if self.maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
         for (cell, (hit, glyph)) in self.layout.caption_buttons.into_iter().zip(glyphs) {
             let pressed = self.pressed == hit;
@@ -1877,118 +2070,364 @@ impl App {
             }
         }
 
+        if self.mode().layout.is_side() {
+            self.paint_title();
+            self.paint_sidebar();
+        } else {
+            self.paint_strip();
+        }
+        if let Some(button) = self.layout.sidebar_button {
+            let open = self.settings.tabs.sidebar_open;
+            self.bar_icon(button, Hit::Sidebar, '\u{E8A0}', open);
+        }
+        let (plus, list, menu) = (self.layout.new_tab, self.layout.profiles, self.layout.menu);
+        self.bar_icon(plus, Hit::NewTab, '\u{E710}', false);
+        self.bar_icon(list, Hit::Profiles, '\u{E70D}', false);
+        // The position plate: with more tabs than the strip shows, where the selected one is among all of them.
+        self.plate_rect = None;
+        if !self.mode().layout.is_side() && self.layout.shown < self.tabs.len() {
+            let text = format!("{} / {}", self.selected + 1, self.tabs.len());
+            let line = self.ui.line_height(TEXT_SIZE);
+            let x = list.x + list.w + 8.0;
+            let plate = Rect::new(x - 8.0, 0.0, self.ui.measure(&text, TEXT_SIZE, false) + 16.0, bar);
+            self.plate_rect = Some(plate);
+            if self.hover == Hit::Plate || self.popup_from == Some(Hit::Plate) {
+                self.bar_plate(plate, State::hover(true));
+            }
+            self.ui.text(x, (bar - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
+        }
+        self.bar_icon(menu, Hit::Menu, '\u{E712}', false);
+
+        // The right of the bar: the count of the tabs that wait, then what the focused pane's agent is doing.
+        let right = self.layout.right;
+        self.waiting_rect = None;
+        self.ui.push_clip(right);
+        let mut x = right.x;
+        if let Some(text) = &badge {
+            let pill = Rect::new(x, (bar - 22.0) / 2.0, badge_width, 22.0);
+            let wait = col(status::color(g, logic::TabState::Blocked));
+            let alpha = if self.hover == Hit::Waiting { 64 } else { 36 };
+            self.ui.rrect(pill, 11.0, Color([wait.0[0], wait.0[1], wait.0[2], alpha]), None);
+            self.ui.rrect(Rect::new(pill.x + 10.0, bar / 2.0 - 3.0, 6.0, 6.0), 3.0, wait, None);
+            let line = self.ui.line_height(PIECE_SIZE);
+            self.ui.text(pill.x + 23.0, (bar - line) / 2.0, text, PIECE_SIZE, wait, false);
+            self.waiting_rect = Some(pill);
+            x += badge_width + 12.0;
+        }
+        for (piece, w) in pieces.iter().zip(&widths) {
+            self.paint_piece(piece, x);
+            x += w + PIECE_GAP;
+        }
+        self.ui.pop_clip();
+        relaid
+    }
+
+    /// The tabs on top: words on the bar, the selected one with a line in the accent under it, the one under the pointer
+    /// on a plate. A tab shows the dot of its state, the icon of its program and its title.
+    fn paint_strip(&mut self) {
+        let g = self.glass;
+        let width = self.layout.size.0;
         let line = self.ui.line_height(TEXT_SIZE);
-        // The selected tab is the colour of the terminal below it: the bar's tint is under it, so it takes only what the
-        // terminal has more of (the glass shows through the terminal as much as its opacity says).
-        let joined_fill = {
-            let bar = glass::bar_tint_alpha(opacity);
-            let alpha = if bar >= 1.0 { 1.0 } else { (1.0 - (1.0 - opacity) / (1.0 - bar)).clamp(0.0, 1.0) };
-            Color([g.background.r, g.background.g, g.background.b, (alpha * 255.0).round() as u8])
-        };
         // The dragged chip last, over the others.
+        let dragged = self.drag.filter(|drag| drag.active).map(|drag| drag.tab);
         let order: Vec<usize> = (0..self.layout.chips.len()).filter(|i| Some(*i) != dragged).chain(dragged).collect();
         for i in order {
             if !self.layout.is_shown(i) && Some(i) != dragged {
                 continue;
             }
             let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
-            if Some(i) == dragged {
-                self.ui.push_clip(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT));
-                self.ui.shadow(chip, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
-                self.ui.pop_clip();
-            }
+            let plate = Rect::new(chip.x, chip.y + 4.0, chip.w, chip.h - 8.0);
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
-            if selected {
-                widgets::tab(&mut self.ui, chip, layout::TITLE_HEIGHT, joined_fill, Some((col(g.divider()), 1.0)));
-            } else if hover {
-                widgets::tab(&mut self.ui, chip, edge, col(g.hover()), None);
+            if Some(i) == dragged {
+                self.ui.push_clip(Rect::new(0.0, 0.0, width, layout::TITLE_HEIGHT));
+                self.ui.shadow(plate, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
+                self.ui.rrect(plate, CORNER_RADIUS, Color([g.background.r, g.background.g, g.background.b, 255]), None);
+                self.ui.pop_clip();
+            } else if hover && !selected {
+                // The selected tab has its line: a plate under the pointer is for the others.
+                widgets::plate(&mut self.ui, plate, col(g.hover()));
             }
-            // A line between two tabs that are not selected (the selected one has its own outline).
-            if !selected && i + 1 != self.selected && i + 1 < self.layout.chips.len() {
-                self.ui.fill(Rect::new(chip.x + chip.w - 1.0, chip.y, 1.0, chip.h - 1.0), col(g.divider()));
-            }
-            let title = if logic::shows_ordinal(f64::from(chip.w)) {
-                (i + 1).to_string()
-            } else {
-                self.tab_label(i)
-            };
             let close = Layout::close_button(chip).filter(|_| selected || hover);
-            let right = close.map_or(chip.x + chip.w - design::INSET, |c| c.x - design::GAP);
+            let right = close.map_or(chip.x + chip.w - 8.0, |c| c.x - design::GAP);
+            let color = if selected || hover { col(g.text()) } else { col(g.text_secondary()) };
             self.ui.push_clip(Rect::new(chip.x, chip.y, (right - chip.x).max(0.0), chip.h));
-            let color = if selected { col(g.text()) } else { col(g.text_secondary()) };
-            // What the tab asks for: its glyph in the status colour, ahead of the title.
-            let status = self.tabs[i].status();
-            let mut title_x = chip.x + 12.0;
-            if let Some(glyph) = status::glyph(status.state) {
-                let icon_line = self.ui.line_height(ICON_SIZE);
-                let at = chip.x + design::INSET;
-                self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, col(status::color(g, status.state)));
-                title_x = at + ICON_SIZE + 2.0 * design::GAP;
-            } else if let Some(glyph) = self.tabs[i].job().map(logic::job_icon) {
-                // A tab at rest shows the program it runs, as the automatic icon of iTerm2 does: the icon of its file, or a
-                // glyph for one without.
-                let at = chip.x + design::INSET;
-                let square = Rect::new(at, chip.y + (chip.h - TAB_ICON) / 2.0, TAB_ICON, TAB_ICON);
-                let path = self.tabs[i].job_path().map(std::path::Path::to_owned);
-                if path.is_some_and(|path| program_icon(&mut self.ui, &path, square)) {
-                    title_x = at + TAB_ICON + 2.0 * design::GAP;
-                } else {
-                    let icon_line = self.ui.line_height(ICON_SIZE);
-                    self.ui.icon(at, chip.y + (chip.h - icon_line) / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, color);
-                    title_x = at + ICON_SIZE + 2.0 * design::GAP;
-                }
+            let mut x = chip.x + 8.0;
+            if self.state_dot(x, chip.y + chip.h / 2.0, self.tabs[i].status().state) {
+                x += ICON_SIZE + 6.0;
             }
-            self.ui.text(title_x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
+            // A narrow tab gives up the icon of its program first, its title only when even a few letters do not fit.
+            let ordinal = chip.w < ORDINAL_BELOW;
+            if chip.w >= ICON_FROM {
+                self.tab_icon(i, Rect::new(x, chip.y + (chip.h - TAB_ICON) / 2.0, TAB_ICON, TAB_ICON), color);
+                x += TAB_ICON + 7.0;
+            }
+            let title = if ordinal { (i + 1).to_string() } else { self.tab_label(i) };
+            self.ui.text(x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
+            if selected {
+                self.ui.rrect(Rect::new(chip.x + 2.0, chip.y + chip.h - 2.0, chip.w - 4.0, 2.0), 1.0, col(g.accent), None);
+            }
             if let Some(close) = close {
                 if self.hover == Hit::ChipClose(i) {
                     widgets::plate(&mut self.ui, close, col(g.pressed()));
                 }
-                self.icon_centered(close, '\u{E711}', ICON_SIZE, col(g.text()));
+                self.icon_centered(close, '\u{E711}', ICON_SIZE, col(g.text_secondary()));
             }
         }
-        let plus = self.layout.new_tab;
-        if self.hover == Hit::NewTab {
-            self.bar_plate(plus, State::hover(true));
-        }
-        self.icon_centered(plus, '\u{E710}', 12.0, col(g.text()));
-        let list = self.layout.profiles;
-        if self.hover == Hit::Profiles || self.popup_from == Some(Hit::Profiles) {
-            self.bar_plate(list, State::hover(true));
-        }
-        self.icon_centered(list, '\u{E70D}', 12.0, col(g.text()));
-        // The position plate: where the selected tab is among all of them, which a strip of narrow chips cannot say.
-        let strip = self.layout.profiles.x;
-        let tier = if self.layout.size.0 < logic::MEDIUM_FROM as f32 { logic::BarTier::Narrow } else { logic::BarTier::Wide };
-        if let Some(plate) = logic::plate(self.selected, self.tabs.len(), f64::from(strip), tier) {
-            let text = match plate {
-                logic::Plate::Position { current, total } => format!("{current} / {total}"),
-                logic::Plate::Total(total) => total.to_string(),
-            };
-            let (x, room) = (list.x + list.w + 8.0, self.layout.menu.x - list.x - list.w - 12.0);
-            let line = self.ui.line_height(TEXT_SIZE);
-            let width = self.ui.measure(&text, TEXT_SIZE, false).min(room.max(0.0));
-            let plate = Rect::new(x - 8.0, list.y, width + 16.0, list.h);
-            self.plate_rect = Some(plate);
-            if self.hover == Hit::Plate || self.popup_from == Some(Hit::Plate) {
-                self.bar_plate(plate, State::hover(true));
-            }
-            self.ui.push_clip(Rect::new(x, list.y, room.max(0.0), list.h));
-            self.ui.text(x, list.y + (list.h - line) / 2.0, &text, TEXT_SIZE, col(g.text_secondary()), false);
-            self.ui.pop_clip();
-        } else {
-            self.plate_rect = None;
-        }
-        let menu = self.layout.menu;
-        if self.hover == Hit::Menu || self.popup_from == Some(Hit::Menu) {
-            self.bar_plate(menu, State::hover(true));
-        }
-        self.icon_centered(menu, '\u{E712}', 12.0, col(g.text()));
-        self.paint_status_bar();
     }
 
-    // --- the status bar -----------------------------------------------------------------------------------------
+    /// With the tabs in the sidebar, the bar names the selected tab: the dot of its state, its title, and where it is.
+    fn paint_title(&mut self) {
+        let g = self.glass;
+        let title = self.layout.title;
+        if title.w <= 0.0 || self.selected >= self.tabs.len() {
+            return;
+        }
+        let line = self.ui.line_height(TEXT_SIZE);
+        self.ui.push_clip(title);
+        let mut x = title.x;
+        if self.state_dot(x, title.y + title.h / 2.0, self.tabs[self.selected].status().state) {
+            x += ICON_SIZE + 8.0;
+        }
+        let label = self.tab_label(self.selected);
+        self.ui.text(x, title.y + (title.h - line) / 2.0, &label, TEXT_SIZE, col(g.text()), false);
+        x += self.ui.measure(&label, TEXT_SIZE, false) + 10.0;
+        if let Some(place) = self.place_text(self.selected) {
+            let small = self.ui.line_height(SMALL_SIZE);
+            self.ui.text(x, title.y + (title.h - small) / 2.0, &place, SMALL_SIZE, col(g.text_secondary()), false);
+        }
+        self.ui.pop_clip();
+    }
+
+    /// The sidebar: a row a tab, in the user's order or by group. As a list a row has the icon of its program, its title
+    /// and its state on a line and where it is under them; as icons, the icon of its program in a ring of the colour of its
+    /// state, with its title beside it while the pointer is on it.
+    fn paint_sidebar(&mut self) {
+        let Some(side) = self.layout.sidebar else { return };
+        let g = self.glass;
+        let lang = self.language();
+        let list = self.settings.tabs.layout == settings::TabLayout::List;
+        let quiet = col(g.text_secondary());
+        let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
+        self.ui.push_clip(side);
+        let names = [Text::GroupWaiting, Text::AgentWorking, Text::GroupOther];
+        let small = self.ui.line_height(SMALL_SIZE);
+        for (rect, group) in self.layout.headings.clone() {
+            let text = names.get(group).map_or("", |name| name.get(lang));
+            self.ui.text(rect.x + 10.0, rect.y + rect.h - small - 4.0, text, SMALL_SIZE, quiet, false);
+        }
+        let line = self.ui.line_height(TEXT_SIZE);
+        let mut tip = None;
+        for i in 0..self.tabs.len() {
+            if !self.layout.is_shown(i) {
+                continue;
+            }
+            let row = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
+            let selected = i == self.selected;
+            let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
+            let state = self.tabs[i].status().state;
+            if selected {
+                widgets::plate(&mut self.ui, row, col(g.hover()));
+            } else if hover {
+                widgets::plate(&mut self.ui, row, soft);
+            }
+            if !list {
+                self.tab_icon(i, Rect::new(row.x + (row.w - 18.0) / 2.0, row.y + (row.h - 18.0) / 2.0, 18.0, 18.0), quiet);
+                if state != logic::TabState::Idle {
+                    let ring = Rect::new(row.x - 2.0, row.y - 2.0, row.w + 4.0, row.h + 4.0);
+                    self.ui.rrect(ring, 10.0, Color::TRANSPARENT, Some((col(status::color(g, state)), 1.5)));
+                }
+                if hover {
+                    tip = Some((i, row));
+                }
+                continue;
+            }
+            let wait = logic::is_urgent(state);
+            let name_color = if wait { col(status::color(g, state)) } else if selected || hover { col(g.text()) } else { quiet };
+            let top = row.y + 7.0;
+            let icon = Rect::new(row.x + 10.0, top, TAB_ICON, TAB_ICON);
+            self.tab_icon(i, icon, name_color);
+            // The right of the first line: the close button under the pointer, the state otherwise.
+            let mut right = row.x + row.w - 10.0;
+            if let Some(close) = Layout::close_button(Rect::new(row.x, top - 1.0, row.w, 18.0)).filter(|_| hover) {
+                if self.hover == Hit::ChipClose(i) {
+                    widgets::plate(&mut self.ui, close, col(g.pressed()));
+                }
+                self.icon_centered(close, '\u{E711}', ICON_SIZE, quiet);
+                right = close.x - 4.0;
+            } else if let Some(text) = state_text(state) {
+                let text = text.get(lang);
+                let w = self.ui.measure(text, SMALL_SIZE, false);
+                right -= w;
+                self.ui.text(right, top + (TAB_ICON - small) / 2.0, text, SMALL_SIZE, col(status::color(g, state)), false);
+                right -= 8.0;
+            }
+            let x = icon.x + TAB_ICON + 10.0;
+            let label = self.tab_label(i);
+            self.ui.push_clip(Rect::new(x, row.y, (right - x).max(0.0), row.h));
+            self.ui.text(x, top + (TAB_ICON - line) / 2.0, &label, TEXT_SIZE, name_color, false);
+            let panes = self.tabs[i].panes.len();
+            if panes > 1 {
+                // A split tab is one row: the number of its panes after its title.
+                let at = x + self.ui.measure(&label, TEXT_SIZE, false) + 6.0;
+                let count = panes.to_string();
+                let badge = Rect::new(at, top + 1.0, self.ui.measure(&count, SMALL_SIZE, false) + 8.0, 14.0);
+                self.ui.rrect(badge, 3.0, Color::TRANSPARENT, Some((col(g.divider()), 1.0)));
+                self.ui.text(badge.x + 4.0, badge.y + (badge.h - small) / 2.0, &count, SMALL_SIZE, quiet, false);
+            }
+            self.ui.pop_clip();
+            if let Some(place) = self.place_text(i) {
+                self.ui.push_clip(Rect::new(x, row.y, (row.x + row.w - 10.0 - x).max(0.0), row.h));
+                self.ui.text(x, row.y + row.h - 7.0 - small, &place, SMALL_SIZE, quiet, false);
+                self.ui.pop_clip();
+            }
+        }
+        self.ui.pop_clip();
+        if let Some((i, row)) = tip {
+            // The ring says the state by its colour alone: the tip says it in words.
+            let state = state_text(self.tabs[i].status().state).map(|text| text.get(lang));
+            let text = [Some(self.tab_label(i)), state.map(str::to_owned), self.place_text(i)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            let line = self.ui.line_height(PIECE_SIZE);
+            let rect = Rect::new(row.x + row.w + 10.0, row.y + (row.h - 26.0) / 2.0, self.ui.measure(&text, PIECE_SIZE, false) + 20.0, 26.0);
+            self.ui.shadow(rect, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
+            self.ui.rrect(rect, CORNER_RADIUS, Color([g.background.r, g.background.g, g.background.b, 250]), Some((col(g.divider()), 1.0)));
+            self.ui.text(rect.x + 10.0, rect.y + (rect.h - line) / 2.0, &text, PIECE_SIZE, col(g.text()), false);
+        }
+    }
+
+    // --- the first start ----------------------------------------------------------------------------------------
+
+    /// The choice of where the tabs go, over everything below the bar, until it is made.
+    fn paint_welcome(&mut self) {
+        let Some(state) = self.welcome.clone() else { return };
+        let g = self.glass;
+        let lang = self.language();
+        let (width, height) = self.layout.size;
+        let geo = welcome::geometry(width, height);
+        let background = Color([g.background.r, g.background.g, g.background.b, 255]);
+        self.ui.fill(Rect::new(0.0, layout::TITLE_HEIGHT, width, height - layout::TITLE_HEIGHT), background);
+        let (text, quiet, accent) = (col(g.text()), col(g.text_secondary()), col(g.accent));
+        for (words, size, bold, y, color) in [(Text::WelcomeTitle, 22.0, true, geo.title_y, text), (Text::WelcomeLater, TEXT_SIZE, false, geo.lead_y, quiet)] {
+            let words = words.get(lang);
+            let w = self.ui.measure(words, size, bold);
+            self.ui.text((width - w) / 2.0, y, words, size, color, bold);
+        }
+        let pad = welcome::CARD_PAD;
+        for (card, side) in [(geo.top, false), (geo.side, true)] {
+            let on = state.layout.is_side() == side;
+            let hover = state.hover == Some(if side { welcome::Part::Side } else { welcome::Part::Top });
+            let border = if on { (accent, 2.0) } else if hover { (quiet, 1.0) } else { (col(g.divider()), 1.0) };
+            // The card is a little lighter than the page under it.
+            let lift = |c: u8| c.saturating_add(10);
+            self.ui.rrect(card, 10.0, Color([lift(background.0[0]), lift(background.0[1]), lift(background.0[2]), 255]), Some(border));
+            let mini = Rect::new(card.x + pad, card.y + pad, card.w - 2.0 * pad, welcome::MINI_HEIGHT);
+            let style = if side && state.layout == settings::TabLayout::Icons { settings::TabLayout::Icons } else if side { settings::TabLayout::List } else { settings::TabLayout::Top };
+            self.paint_miniature(mini, style, background);
+            let name_y = mini.y + mini.h + 14.0;
+            let pick = Rect::new(card.x + pad + 2.0, name_y + 2.0, 16.0, 16.0);
+            widgets::radio(&mut self.ui, &g, pick, on, hover);
+            let name = if side { Text::WelcomeSide } else { Text::LayoutTop };
+            let line = self.ui.line_height(14.0);
+            self.ui.text(pick.x + 24.0, name_y + (20.0 - line) / 2.0, name.get(lang), 14.0, text, true);
+            let note = if side { Text::WelcomeSideNote } else { Text::WelcomeTopNote };
+            let small = self.ui.line_height(SMALL_SIZE + 1.0);
+            for (n, line) in wrap(&mut self.ui, note.get(lang), SMALL_SIZE + 1.0, card.w - 2.0 * pad - 4.0).iter().enumerate() {
+                self.ui.text(card.x + pad + 2.0, name_y + 26.0 + n as f32 * (small + 2.0), line, SMALL_SIZE + 1.0, quiet, false);
+            }
+        }
+        // The style of the sidebar, in its card.
+        let small = self.ui.line_height(PIECE_SIZE);
+        let label = geo.style_label;
+        self.ui.text(label.x + 2.0, label.y + (label.h - small) / 2.0, Text::WelcomeStyle.get(lang), PIECE_SIZE, quiet, false);
+        for (rect, part, layout, words) in [(geo.list, welcome::Part::List, settings::TabLayout::List, Text::StyleList), (geo.icons, welcome::Part::Icons, settings::TabLayout::Icons, Text::StyleIcons)] {
+            let chosen = state.layout == layout || (state.layout == settings::TabLayout::Top && layout == settings::TabLayout::List);
+            widgets::button(&mut self.ui, &g, rect, State::chosen(chosen, state.hover == Some(part)));
+            let words = words.get(lang);
+            let w = self.ui.measure(words, PIECE_SIZE, false);
+            self.ui.text(rect.x + (rect.w - w) / 2.0, rect.y + (rect.h - small) / 2.0, words, PIECE_SIZE, if chosen { text } else { quiet }, false);
+        }
+        let start = geo.start;
+        let lift = if state.hover == Some(welcome::Part::Start) { 24 } else { 0 };
+        self.ui.rrect(start, 6.0, Color([accent.0[0].saturating_add(lift), accent.0[1].saturating_add(lift), accent.0[2].saturating_add(lift), 255]), None);
+        let words = Text::WelcomeStart.get(lang);
+        let (w, line) = (self.ui.measure(words, TEXT_SIZE, true), self.ui.line_height(TEXT_SIZE));
+        self.ui.text(start.x + (start.w - w) / 2.0, start.y + (start.h - line) / 2.0, words, TEXT_SIZE, background, true);
+    }
+
+    /// A window in a few rectangles: its bar, the tabs on it or in a sidebar, and lines of a terminal.
+    fn paint_miniature(&mut self, mini: Rect, style: settings::TabLayout, background: Color) {
+        let g = self.glass;
+        let line = col(g.divider());
+        let faint = col(g.hover());
+        let colors = [logic::TabState::Blocked, logic::TabState::Working, logic::TabState::Done].map(|state| col(status::color(g, state)));
+        self.ui.rrect(mini, 6.0, background, Some((line, 1.0)));
+        self.ui.fill(Rect::new(mini.x, mini.y + 14.0, mini.w, 1.0), line);
+        let wait = colors[0];
+        self.ui.rrect(Rect::new(mini.x + mini.w - 38.0, mini.y + 4.0, 30.0, 6.0), 3.0, Color([wait.0[0], wait.0[1], wait.0[2], 128]), None);
+        let side = match style {
+            settings::TabLayout::Top => {
+                for n in 0..3 {
+                    let color = if n == 0 { col(g.accent) } else { faint };
+                    self.ui.rrect(Rect::new(mini.x + 8.0 + n as f32 * 33.0, mini.y + 5.0, 26.0, 4.0), 2.0, color, None);
+                }
+                0.0
+            }
+            settings::TabLayout::List => {
+                self.ui.rrect(Rect::new(mini.x + 8.0, mini.y + 5.0, 10.0, 4.0), 2.0, faint, None);
+                for n in 0..4 {
+                    let row = Rect::new(mini.x + 6.0, mini.y + 23.0 + n as f32 * 18.0, 84.0, 12.0);
+                    self.ui.rrect(row, 3.0, faint, None);
+                    self.ui.rrect(Rect::new(row.x + 4.0, row.y + 4.0, 4.0, 4.0), 2.0, colors.get(n).copied().unwrap_or(line), None);
+                }
+                96.0
+            }
+            settings::TabLayout::Icons => {
+                self.ui.rrect(Rect::new(mini.x + 8.0, mini.y + 5.0, 10.0, 4.0), 2.0, faint, None);
+                for n in 0..4 {
+                    let cell = Rect::new(mini.x + 8.0, mini.y + 23.0 + n as f32 * 20.0, 12.0, 12.0);
+                    self.ui.rrect(cell, 3.0, faint, colors.get(n).map(|c| (*c, 1.0)));
+                }
+                28.0
+            }
+        };
+        if side > 0.0 {
+            self.ui.fill(Rect::new(mini.x + side, mini.y + 15.0, 1.0, mini.h - 15.0), line);
+        }
+        for (n, share) in [0.7, 0.5, 0.8, 0.4].into_iter().enumerate() {
+            let x = mini.x + side + 10.0;
+            self.ui.rrect(Rect::new(x, mini.y + 25.0 + n as f32 * 10.0, (mini.w - side - 20.0) * share, 4.0), 2.0, faint, None);
+        }
+    }
+
+    /// The pointer moved over the first start: what it is on lights.
+    fn welcome_hover(&mut self, x: f32, y: f32) {
+        let part = welcome::geometry(self.layout.size.0, self.layout.size.1).hit(x, y);
+        if let Some(state) = self.welcome.as_mut()
+            && state.hover != part
+        {
+            state.hover = part;
+            self.redraw();
+        }
+    }
+
+    /// A click on the first start: a card or a style picks it, the button keeps the choice and ends the screen.
+    fn welcome_click(&mut self, x: f32, y: f32) {
+        let Some(part) = welcome::geometry(self.layout.size.0, self.layout.size.1).hit(x, y) else { return };
+        let Some(state) = self.welcome.as_mut() else { return };
+        let done = state.click(part);
+        let layout = state.layout;
+        if done {
+            self.welcome = None;
+            let before = self.settings.clone();
+            self.settings.tabs.layout = layout;
+            self.settings.welcomed = true;
+            self.apply_settings(&before);
+        }
+        self.redraw();
+    }
+
+    // --- what the bar says about the focused pane ---------------------------------------------------------------
 
     /// Whether the pane runs an agent: one that reported its state or its session, or Claude Code, seen by the name of its
     /// program, until the shell is alone again (a tool it runs, `bash.exe`, does not end it).
@@ -1996,151 +2435,81 @@ impl App {
         entry.agent_seen || entry.usage.is_some() || entry.pane.agent_summary().is_some()
     }
 
-    /// Whether the status bar takes the bottom of the window: switched on, and for a pane without an agent only when it
-    /// keeps the folder and the branch there.
-    fn status_wanted(&self) -> bool {
-        let bar = &self.settings.status_bar;
-        bar.show && (bar.no_agent == settings::NoAgent::Place || self.focused().is_some_and(Self::runs_agent))
-    }
-
-    fn status_click(&mut self, x: f32) {
-        match self.status_parts.iter().find(|(rect, _)| rect.x <= x && x < rect.x + rect.w).map(|(_, part)| *part) {
-            Some(StatusPart::State) => self.run(Command::TabNextNeedsResponse),
-            None => {}
-        }
-    }
-
-    /// The bar at the bottom of the window, for the focused pane: what its agent is doing on the left (its state, model,
-    /// context, cost and time), where the pane is on the right (branch and folder). What does not fit goes, from the right
-    /// end of the right side first, then from the end of the left side.
-    fn paint_status_bar(&mut self) {
-        self.status_parts.clear();
-        if !self.status_shown {
-            return;
-        }
+    /// What the right of the bar says about the focused pane, as the settings of the status bar choose: what its agent is
+    /// doing (its state, model, context, cost and time), or without an agent the branch of its folder.
+    fn bar_pieces(&self) -> Vec<Piece> {
         let g = self.glass;
         let lang = self.language();
-        let (width, height) = self.layout.size;
-        let bar = Rect::new(0.0, height - STATUS_BAR, width, STATUS_BAR);
-        self.ui.fill(bar, col(g.tab_rest()));
-        self.ui.fill(Rect::new(0.0, bar.y, width, 1.0), col(g.divider()));
-        let Some(entry) = self.focused() else { return };
-        let show = self.settings.status_bar.clone();
-
-        /// One part of the bar: a dot in a colour before its text, a meter, a glyph before its text, or text alone.
-        enum Piece {
-            State(Color, String),
-            Meter(f32),
-            Glyph(char, String),
-            Text(String),
-        }
-        let mut left = Vec::new();
-        if Self::runs_agent(entry) {
-            if show.state
-                && let Some(record) = entry.pane.agent_summary()
+        let show = &self.settings.status_bar;
+        let mut pieces = Vec::new();
+        let Some(entry) = self.focused().filter(|_| show.show) else { return pieces };
+        if !Self::runs_agent(entry) {
+            if show.no_agent == settings::NoAgent::Place
+                && let Some(branch) = entry.branch.clone().filter(|_| show.branch)
             {
-                use nekominal_term::agent_status::AgentState;
-                let (state, text) = match record.state {
-                    AgentState::Working => (logic::TabState::Working, Text::AgentWorking),
-                    AgentState::Blocked => (logic::TabState::Blocked, Text::AgentBlocked),
-                    AgentState::Done => (logic::TabState::Done, Text::AgentDone),
-                    AgentState::Error => (logic::TabState::Error, Text::AgentError),
-                    AgentState::Idle => (logic::TabState::Idle, Text::AgentDone),
-                };
-                left.push(Piece::State(col(status::color(g, state)), text.get(lang).to_owned()));
+                pieces.push(Piece::Glyph('\u{E81C}', branch));
             }
-            if let Some(usage) = &entry.usage {
-                if let Some(model) = usage.model.clone().filter(|_| show.model) {
-                    left.push(Piece::Text(model));
-                }
-                if let Some(share) = usage.context.filter(|_| show.context) {
-                    left.push(Piece::Meter(share as f32));
-                }
-                if let Some(cost) = usage.cost.filter(|_| show.cost) {
-                    left.push(Piece::Text(format!("${cost:.2}")));
-                }
-                if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
-                    let s = ms / 1000;
-                    let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
-                    left.push(Piece::Text(time));
-                }
+            return pieces;
+        }
+        if show.state
+            && let Some(record) = entry.pane.agent_summary()
+        {
+            use nekominal_term::agent_status::AgentState;
+            let state = match record.state {
+                AgentState::Working => logic::TabState::Working,
+                AgentState::Blocked => logic::TabState::Blocked,
+                AgentState::Done | AgentState::Idle => logic::TabState::Done,
+                AgentState::Error => logic::TabState::Error,
+            };
+            if let Some(text) = state_text(state) {
+                pieces.push(Piece::State(col(status::color(g, state)), text.get(lang).to_owned()));
             }
         }
-        let mut right = Vec::new();
-        if let Some(branch) = entry.branch.clone().filter(|_| show.branch) {
-            right.push(Piece::Glyph('\u{E81C}', branch));
+        if let Some(usage) = &entry.usage {
+            if let Some(model) = usage.model.clone().filter(|_| show.model) {
+                pieces.push(Piece::Text(model));
+            }
+            if let Some(share) = usage.context.filter(|_| show.context) {
+                pieces.push(Piece::Meter(share as f32));
+            }
+            if let Some(cost) = usage.cost.filter(|_| show.cost) {
+                pieces.push(Piece::Text(format!("${cost:.2}")));
+            }
+            if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
+                let s = ms / 1000;
+                let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
+                pieces.push(Piece::Text(time));
+            }
         }
-        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
-        if let Some(folder) = folder.filter(|_| show.folder) {
-            let home = std::env::var("USERPROFILE").ok();
-            right.push(Piece::Glyph('\u{E838}', logic::folder_label(&folder, home.as_deref())));
-        }
+        pieces
+    }
 
-        const PAD: f32 = 10.0;
-        const METER: f32 = 44.0;
-        let size = 12.0;
-        let measure = |ui: &mut Ui, piece: &Piece| -> f32 {
-            2.0 * PAD
-                + match piece {
-                    Piece::State(_, text) => 8.0 + 6.0 + ui.measure(text, size, false),
-                    Piece::Meter(_) => METER + 6.0 + ui.measure("100%", size, false),
-                    Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, size, false),
-                    Piece::Text(text) => ui.measure(text, size, false),
-                }
-        };
-        let mut widths_left: Vec<f32> = left.iter().map(|p| measure(&mut self.ui, p)).collect();
-        let mut widths_right: Vec<f32> = right.iter().map(|p| measure(&mut self.ui, p)).collect();
-        let room = width - 2.0 * design::GAP;
-        while widths_left.iter().chain(&widths_right).sum::<f32>() > room {
-            if widths_right.pop().is_some() {
-                right.pop();
-            } else if widths_left.pop().is_some() {
-                left.pop();
-            } else {
-                break;
-            }
-        }
-
-        let line = self.ui.line_height(size);
-        // A line box holds room for descenders under the letters, so centring the box puts the letters low: up by one.
-        let text_y = bar.y + (bar.h - line) / 2.0 - 1.0;
+    fn paint_piece(&mut self, piece: &Piece, x: f32) {
+        let g = self.glass;
+        let bar = layout::TITLE_HEIGHT;
+        let line = self.ui.line_height(PIECE_SIZE);
+        let text_y = (bar - line) / 2.0;
         let quiet = col(g.text_secondary());
-        let draw = |app: &mut App, piece: &Piece, x: f32, w: f32| {
-            let cell = Rect::new(x, bar.y + 1.0, w, bar.h - 1.0);
-            let mut at = x + PAD;
-            match piece {
-                Piece::State(color, text) => {
-                    app.ui.rrect(Rect::new(at, bar.y + (bar.h - 8.0) / 2.0, 8.0, 8.0), 4.0, *color, None);
-                    app.ui.text(at + 14.0, text_y, text, size, col(g.text()), false);
-                    app.status_parts.push((cell, StatusPart::State));
-                }
-                Piece::Meter(share) => {
-                    let track = Rect::new(at, bar.y + (bar.h - 4.0) / 2.0, METER, 4.0);
-                    let warn = col(if *share > 90.0 { g.mark(g.danger) } else if *share > 70.0 { g.mark(g.warning) } else { g.accent });
-                    app.ui.rrect(track, 2.0, col(g.divider()), None);
-                    app.ui.rrect(Rect::new(track.x, track.y, METER * (share / 100.0).clamp(0.0, 1.0), 4.0), 2.0, warn, None);
-                    app.ui.text(at + METER + 6.0, text_y, &format!("{share:.0}%"), size, quiet, false);
-                }
-                Piece::Glyph(ch, text) => {
-                    let icon_line = app.ui.line_height(ICON_SIZE);
-                    app.ui.icon(at, bar.y + (bar.h - icon_line) / 2.0 + ICON_NUDGE, *ch, ICON_SIZE, quiet);
-                    at += ICON_SIZE + 6.0;
-                    app.ui.text(at, text_y, text, size, quiet, false);
-                }
-                Piece::Text(text) => {
-                    app.ui.text(at, text_y, text, size, quiet, false);
-                }
+        match piece {
+            Piece::State(color, text) => {
+                self.ui.rrect(Rect::new(x, bar / 2.0 - 3.0, 6.0, 6.0), 3.0, *color, None);
+                self.ui.text(x + 12.0, text_y, text, PIECE_SIZE, col(g.text()), false);
             }
-        };
-        let mut x = design::GAP;
-        for (piece, w) in left.iter().zip(&widths_left) {
-            draw(self, piece, x, *w);
-            x += w;
-        }
-        let mut x = width - design::GAP - widths_right.iter().sum::<f32>();
-        for (piece, w) in right.iter().zip(&widths_right) {
-            draw(self, piece, x, *w);
-            x += w;
+            Piece::Meter(share) => {
+                let track = Rect::new(x, (bar - 3.0) / 2.0, METER, 3.0);
+                let fill = col(if *share > 90.0 { g.mark(g.danger) } else if *share > 70.0 { g.mark(g.warning) } else { g.accent });
+                self.ui.rrect(track, 1.5, col(g.divider()), None);
+                self.ui.rrect(Rect::new(track.x, track.y, METER * (share / 100.0).clamp(0.0, 1.0), 3.0), 1.5, fill, None);
+                self.ui.text(x + METER + 6.0, text_y, &format!("{share:.0}%"), PIECE_SIZE, quiet, false);
+            }
+            Piece::Glyph(ch, text) => {
+                let icon_line = self.ui.line_height(ICON_SIZE);
+                self.ui.icon(x, (bar - icon_line) / 2.0 + ICON_NUDGE, *ch, ICON_SIZE, quiet);
+                self.ui.text(x + ICON_SIZE + 6.0, text_y, text, PIECE_SIZE, quiet, false);
+            }
+            Piece::Text(text) => {
+                self.ui.text(x, text_y, text, PIECE_SIZE, quiet, false);
+            }
         }
     }
 
@@ -2979,6 +3348,9 @@ impl App {
     fn apply_changes(&mut self, before: &Settings) {
         if self.settings.theme != before.theme || self.settings.appearance != before.appearance {
             self.apply_look();
+        }
+        if self.settings.tabs != before.tabs {
+            self.relayout();
         }
         let effects = logic::effects(before, &self.settings);
         if effects.font {

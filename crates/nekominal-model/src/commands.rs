@@ -47,6 +47,8 @@ pub enum Command {
     PromptPrevious,
     PromptNext,
     ViewFullscreen,
+    /// Hides or shows the sidebar of the tabs.
+    ViewSidebar,
     ViewZoomIn,
     ViewZoomOut,
     ViewZoomReset,
@@ -108,6 +110,7 @@ impl Command {
         Command::PromptPrevious,
         Command::PromptNext,
         Command::ViewFullscreen,
+        Command::ViewSidebar,
         Command::ViewZoomIn,
         Command::ViewZoomOut,
         Command::ViewZoomReset,
@@ -170,6 +173,7 @@ impl Command {
             Command::PromptPrevious => "prompt.previous",
             Command::PromptNext => "prompt.next",
             Command::ViewFullscreen => "view.fullscreen",
+            Command::ViewSidebar => "view.sidebar",
             Command::ViewZoomIn => "view.zoomIn",
             Command::ViewZoomOut => "view.zoomOut",
             Command::ViewZoomReset => "view.zoomReset",
@@ -231,6 +235,7 @@ impl Command {
             Command::PromptPrevious => Text::PromptPrevious,
             Command::PromptNext => Text::PromptNext,
             Command::ViewFullscreen => Text::ViewFullscreen,
+            Command::ViewSidebar => Text::ViewSidebar,
             Command::ViewZoomIn => Text::ViewZoomIn,
             Command::ViewZoomOut => Text::ViewZoomOut,
             Command::ViewZoomReset => Text::ViewZoomReset,
@@ -300,6 +305,7 @@ impl Command {
             Command::PromptPrevious => &["Ctrl+Alt+Up"],
             Command::PromptNext => &["Ctrl+Alt+Down"],
             Command::ViewFullscreen => &["F11"],
+            Command::ViewSidebar => &["Ctrl+Shift+B"],
             Command::ViewZoomIn => &["Ctrl+="],
             Command::ViewZoomOut => &["Ctrl+-"],
             Command::ViewZoomReset => &["Ctrl+0"],
@@ -378,6 +384,7 @@ impl Command {
                 | Command::PaneRestart
                 | Command::EditFind
                 | Command::ViewFullscreen
+                | Command::ViewSidebar
                 | Command::AppPalette
                 | Command::AppNewWindow
                 | Command::AppSettings
@@ -473,9 +480,10 @@ mod tests {
             Command::TabSelectLeft => 39,
             Command::TabSelectRight => 40,
             Command::AppNewWindow => 41,
+            Command::ViewSidebar => 42,
         }
     }
-    const VARIANTS: usize = 42;
+    const VARIANTS: usize = 43;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -752,6 +760,7 @@ mod tests {
             Command::AppPalette,
             Command::AppSettings,
             Command::ViewFullscreen,
+        Command::ViewSidebar,
             Command::EditFind,
             Command::TabNew,
             Command::TabGoto(2),
@@ -803,6 +812,7 @@ mod tests {
             | Command::PaneRestart
             | Command::EditFind
             | Command::ViewFullscreen
+            | Command::ViewSidebar
             | Command::AppPalette
             | Command::AppNewWindow
             | Command::AppSettings

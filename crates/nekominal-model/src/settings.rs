@@ -300,9 +300,47 @@ impl Default for TabTitle {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+/// Where the tabs are: a row in the title bar, or a column at the left of the window as a list or as icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabLayout {
+    Top,
+    List,
+    Icons,
+}
+
+impl TabLayout {
+    pub const ALL: [TabLayout; 3] = [TabLayout::Top, TabLayout::List, TabLayout::Icons];
+
+    pub fn text(self) -> Text {
+        match self {
+            TabLayout::Top => Text::LayoutTop,
+            TabLayout::List => Text::LayoutList,
+            TabLayout::Icons => Text::LayoutIcons,
+        }
+    }
+
+    /// The tabs stand in a sidebar.
+    pub fn is_side(self) -> bool {
+        self != TabLayout::Top
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tabs {
     pub title: TabTitle,
+    pub layout: TabLayout,
+    /// The sidebar is shown; it is hidden and shown again with the button of the title bar or Ctrl+B.
+    pub sidebar_open: bool,
+    /// The list of the sidebar puts the tabs that wait for the user first instead of keeping their order.
+    pub group_by_state: bool,
+}
+
+impl Default for Tabs {
+    fn default() -> Self {
+        Tabs { title: TabTitle::default(), layout: TabLayout::Top, sidebar_open: true, group_by_state: false }
+    }
 }
 
 /// Window backdrop shown behind (and through) the translucent terminal.
@@ -453,6 +491,8 @@ pub struct Settings {
     pub confirm_close_threshold: u32,
     /// Reopen the tabs and panes of the previous run on start.
     pub restore_session: bool,
+    /// The welcome of the first start, where the layout is picked, was seen.
+    pub welcomed: bool,
     /// Command id to shortcuts; an empty list unbinds a default.
     pub keybindings: BTreeMap<String, Vec<String>>,
 }
@@ -495,6 +535,7 @@ impl Default for Settings {
             confirm_close: true,
             confirm_close_threshold: 1,
             restore_session: false,
+            welcomed: false,
             keybindings: BTreeMap::new(),
         }
     }
@@ -878,7 +919,12 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 &mut problems,
             ),
         },
-        tabs: Tabs { title: TabTitle { parts: title_slots(&tab_title, &d.tabs.title.parts, &mut problems) } },
+        tabs: Tabs {
+            title: TabTitle { parts: title_slots(&tab_title, &d.tabs.title.parts, &mut problems) },
+            layout: one_of(&tabs, "layout", &[("top", TabLayout::Top), ("list", TabLayout::List), ("icons", TabLayout::Icons)], d.tabs.layout, "tabs", &mut problems),
+            sidebar_open: boolean(&tabs, "sidebarOpen", d.tabs.sidebar_open, "tabs", &mut problems),
+            group_by_state: boolean(&tabs, "groupByState", d.tabs.group_by_state, "tabs", &mut problems),
+        },
         scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 1_000_000.0), "", &mut problems) as u32,
         default_profile: text(&root, "defaultProfile", &d.default_profile, "", &mut problems),
         profiles: read_profiles(&root, &mut problems),
@@ -936,6 +982,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         confirm_close: boolean(&root, "confirmClose", d.confirm_close, "", &mut problems),
         confirm_close_threshold: number(&root, "confirmCloseThreshold", d.confirm_close_threshold as f64, (1.0, 1000.0), "", &mut problems) as u32,
         restore_session: boolean(&root, "restoreSession", d.restore_session, "", &mut problems),
+        welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
         keybindings: read_keybindings(&root, &mut problems),
     };
     Parsed { settings, problems: problems.0 }

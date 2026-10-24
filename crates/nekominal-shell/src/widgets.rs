@@ -47,11 +47,6 @@ pub fn plate(ui: &mut Ui, rect: Rect, fill: Color) {
     ui.rrect(rect, RADIUS, fill, None);
 }
 
-/// The surface of a row of the settings; the outline of the accent while it has the keyboard.
-pub fn row(ui: &mut Ui, g: &Glass, rect: Rect, focus: bool) {
-    ui.rrect(rect, RADIUS, col(g.cluster()), focus.then_some((col(g.accent), 1.5)));
-}
-
 /// A button: at rest a plate of the cluster, lighter under the pointer, lighter still pressed; the one chosen (an option of a
 /// choice, the button of the dialog the keyboard is on) is lifted off the glass and outlined.
 pub fn button(ui: &mut Ui, g: &Glass, rect: Rect, state: State) {
@@ -187,14 +182,6 @@ pub fn line_edit(ui: &mut Ui, g: &Glass, area: Rect, size: f32, edit: &LineEdit)
     ui.fill(Rect::new(caret, y, 1.5, line), col(g.text()));
     ui.pop_clip();
     (caret, y, line)
-}
-
-/// A tab: a rectangle with rounded top corners that runs down to `bottom`. The rounded rectangle is drawn taller than the tab
-/// and cut there, which leaves the lower corners out.
-pub fn tab(ui: &mut Ui, rect: Rect, bottom: f32, fill: Color, border: Option<(Color, f32)>) {
-    ui.push_clip(Rect::new(rect.x, 0.0, rect.w, bottom));
-    ui.rrect(Rect::new(rect.x, rect.y, rect.w, rect.h + RADIUS * 2.0), RADIUS, fill, border);
-    ui.pop_clip();
 }
 
 /// What stands before a row (the logo of a shell) in `square`: a badge of a colour with its letters in white, or a glyph of the

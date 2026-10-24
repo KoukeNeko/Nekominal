@@ -1,5 +1,5 @@
-//! The settings page: a strip of tabs, one for each section, with the search line at its right, and the rows of the
-//! section below it.
+//! The settings page: a column of the sections at the left, with the search line on top of it, and at the right the title
+//! of the section and its rows.
 //!
 //! The page is a display list. `build` turns the state of the page and the settings into rectangles with what is drawn
 //! in them and what they do when pressed (`Part`), so that drawing and hit testing read the same geometry. The rows are
@@ -24,17 +24,21 @@ use crate::{
     widgets::{MARK_SIZE, THUMB},
 };
 
-/// The strip on top of the page: its height, where its tabs start below its top, and the room each tab leaves around its
-/// text, in DIP. The search line and the button for the file are at its right.
-pub const STRIP: f32 = 44.0;
-const TAB_TOP: f32 = 8.0;
-const TAB_PAD: f32 = MARGIN;
-const STRIP_EDGE: f32 = INSET;
-const SEARCH_WIDTH: f32 = 220.0;
-const SEARCH_HEIGHT: f32 = 28.0;
-const PAD: f32 = 24.0;
-const CONTENT_MAX: f32 = 720.0;
-const CONTENT_TOP: f32 = STRIP + 20.0;
+/// The column of the sections at the left of the page: its width, the room inside its edges and the height of a line, in
+/// DIP. The search line is at its top and the button for the file at its bottom.
+pub const NAV: f32 = 220.0;
+const NAV_PAD: f32 = INSET;
+const NAV_ITEM: f32 = 34.0;
+const SEARCH_HEIGHT: f32 = 30.0;
+const PAD: f32 = 32.0;
+const CONTENT_MAX: f32 = 680.0;
+/// Where the rows start below the top of the page: the title of the page is above them.
+const CONTENT_TOP: f32 = 66.0;
+/// The name of a section over what a search finds in it.
+const HEADING: f32 = 34.0;
+/// The miniatures of the layouts of the tabs: at most this wide, three in a line, as tall as this share of their width.
+const LAYOUT_THUMB: f32 = 170.0;
+const LAYOUT_RATIO: f32 = 0.6;
 const ROW: f32 = 52.0;
 const ROW_GAP: f32 = 4.0;
 const CONTROL: f32 = 28.0;
@@ -112,10 +116,11 @@ pub enum Align {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Fill {
-    /// The band behind the tabs, darker than the page; it leaves the selected tab out.
+    /// The column of the sections, darker than the page, with a hairline where it meets the page.
     Strip,
-    /// A tab of the strip: the selected one is of the colour of the page and joins it.
+    /// A line of the column of the sections: the selected one on a plate.
     Tab { selected: bool, hover: bool },
+    /// A row of the page: a hairline above it, and a plate while it has the keyboard.
     Row { focus: bool },
     Button { selected: bool, hover: bool },
     Field { editing: bool },
@@ -139,6 +144,8 @@ pub enum Visual {
     Edit { text: String, cursor: Option<crate::textfield::Cursor>, placeholder: String },
     /// A color scheme: its background with its name and a few of its colours.
     Tile { scheme: usize, selected: bool, hover: bool },
+    /// A layout of the tabs (an index into `TabLayout::ALL`): a window in a few rectangles.
+    Layout { layout: usize, selected: bool, hover: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,6 +164,28 @@ pub enum Entry {
     Key(Command),
     /// Claude Code: where it is and whether its status line goes to the status bar.
     Claude,
+}
+
+impl Entry {
+    pub fn section(&self) -> Section {
+        match self {
+            Entry::Setting(row) => row.section,
+            Entry::Key(_) => Section::Keys,
+            Entry::Claude => Section::Agents,
+        }
+    }
+}
+
+/// The glyph before the name of a section in the column of the sections.
+fn section_glyph(section: Section) -> char {
+    match section {
+        Section::Appearance => '\u{E790}',
+        Section::Terminal => '\u{E756}',
+        Section::Profiles => '\u{E77B}',
+        Section::Agents => '\u{E99A}',
+        Section::Keys => '\u{E765}',
+        Section::Advanced => '\u{E713}',
+    }
 }
 
 pub struct Frame {
@@ -220,13 +249,16 @@ impl Frame {
 /// The rows on show: the matches of the query, or the section.
 pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
     if !page.query.trim().is_empty() {
-        return settings_ui::search(&page.query, lang, keymap)
+        let mut found: Vec<Entry> = settings_ui::search(&page.query, lang, keymap)
             .into_iter()
             .map(|row| match row {
                 settings_ui::Row::Setting(descriptor) => Entry::Setting(descriptor),
                 settings_ui::Row::Key(command) => Entry::Key(command),
             })
             .collect();
+        // By section, in the order of the sections; the best match first within each.
+        found.sort_by_key(|entry| Section::ALL.iter().position(|s| *s == entry.section()));
+        return found;
     }
     let section = Section::ALL[page.section.min(Section::ALL.len() - 1)];
     if section == Section::Keys {
@@ -255,7 +287,7 @@ pub fn claude_note(claude: &crate::agent::Claude, settings: &Settings) -> Text {
 pub fn value_text(row: &Descriptor, settings: &Settings, profiles: &[Profile], lang: Lang) -> String {
     match (row.control, (row.get)(settings)) {
         (Control::Toggle, Value::Bool(on)) => (if on { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned(),
-        (Control::Choice(options), Value::Index(i)) => options.get(i).map(|text| text.get(lang).to_owned()).unwrap_or_default(),
+        (Control::Choice(options) | Control::Layouts(options), Value::Index(i)) => options.get(i).map(|text| text.get(lang).to_owned()).unwrap_or_default(),
         (Control::Slider(_), Value::Number(n)) => format!("{n:.0}%"),
         (Control::Number(range), Value::Number(n)) => number_text(range, n),
         (Control::Profiles, Value::Text(id)) => profiles.iter().find(|p| p.id == id).map_or(id, |p| p.name.clone()),
@@ -274,7 +306,7 @@ pub fn stepped(row: &Descriptor, settings: &Settings, profiles: &[Profile], forw
     let cycle = |len: usize, at: usize| (at as isize + step).rem_euclid(len.max(1) as isize) as usize;
     Some(match (row.control, (row.get)(settings)) {
         (Control::Toggle, Value::Bool(on)) => Value::Bool(!on),
-        (Control::Choice(options), Value::Index(i)) => Value::Index(cycle(options.len(), i)),
+        (Control::Choice(options) | Control::Layouts(options), Value::Index(i)) => Value::Index(cycle(options.len(), i)),
         (Control::Slider(range) | Control::Number(range), Value::Number(n)) => {
             let amount = if large { range.large } else { range.step };
             // Rounded to hundredths so that repeated steps of 0.05 do not drift.
@@ -328,44 +360,48 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     let mut items = Vec::new();
     let hover = page.hover;
 
-    // The strip: the sections as tabs side by side, as tall as the strip but for the space above them.
+    // The column of the sections at the left: the search line on top, a line a section (with what a search finds in it),
+    // and the button for the file at the bottom.
     let searching = !page.query.trim().is_empty();
-    item(&mut items, Rect::new(ox, oy, width, STRIP), None, Visual::Plate(Fill::Strip), false);
-    let mut tabs_end = ox + STRIP_EDGE;
+    let entries = entries(page, lang, view.keymap);
+    let nav = Rect::new(ox, oy, NAV.min(width / 2.0), height);
+    item(&mut items, nav, None, Visual::Plate(Fill::Strip), false);
+    let (inner_x, inner_w) = (nav.x + NAV_PAD, (nav.w - 2.0 * NAV_PAD).max(0.0));
+    let search = Rect::new(inner_x, oy + NAV_PAD, inner_w, SEARCH_HEIGHT);
+    item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
+    item(&mut items, Rect::new(search.x + 10.0, search.y, 16.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 12.0, tone: Tone::Quiet }, false);
+    let edit = Visual::Edit { text: page.query.clone(), cursor: page.editing.is_none().then_some(page.cursor), placeholder: Text::SettingsSearch.get(lang).to_owned() };
+    item(&mut items, Rect::new(search.x + 32.0, search.y, (search.w - 40.0).max(0.0), search.h), None, edit, false);
+    let mut nav_y = search.y + search.h + 12.0;
     for (i, section) in Section::ALL.iter().enumerate() {
-        let text = section.text().get(lang);
-        let rect = Rect::new(tabs_end, oy + TAB_TOP, measure(text, 13.0, false) + 2.0 * TAB_PAD, STRIP - TAB_TOP);
+        let rect = Rect::new(inner_x, nav_y, inner_w, NAV_ITEM);
         let selected = !searching && i == page.section;
         let part = Part::Nav(i);
         item(&mut items, rect, Some(part), Visual::Plate(Fill::Tab { selected, hover: hover == Some(part) }), false);
-        let tone = if selected { Tone::Text } else { Tone::Quiet };
-        item(&mut items, rect, None, label(text, 13.0, tone, false, Align::Center), false);
-        tabs_end = rect.x + rect.w;
+        let found = entries.iter().filter(|entry| entry.section() == *section).count();
+        let tone = if selected || (searching && found > 0) { Tone::Text } else { Tone::Quiet };
+        item(&mut items, Rect::new(rect.x + 8.0, rect.y, 18.0, rect.h), None, Visual::Glyph { ch: section_glyph(*section), size: 13.0, tone }, false);
+        item(&mut items, Rect::new(rect.x + 34.0, rect.y, (rect.w - 64.0).max(0.0), rect.h), None, label(section.text().get(lang), 13.0, tone, false, Align::Left), false);
+        if searching {
+            item(&mut items, Rect::new(rect.x + rect.w - 40.0, rect.y, 30.0, rect.h), None, label(found.to_string(), 12.0, Tone::Quiet, false, Align::Right), false);
+        }
+        nav_y += NAV_ITEM + 2.0;
+    }
+    let file = Rect::new(inner_x, oy + height - NAV_PAD - NAV_ITEM, inner_w, NAV_ITEM);
+    if file.y >= nav_y + 8.0 {
+        item(&mut items, file, Some(Part::File), Visual::Plate(Fill::Tab { selected: false, hover: hover == Some(Part::File) }), false);
+        item(&mut items, Rect::new(file.x + 8.0, file.y, 18.0, file.h), None, Visual::Glyph { ch: '\u{E8A5}', size: 13.0, tone: Tone::Quiet }, false);
+        item(&mut items, Rect::new(file.x + 34.0, file.y, (file.w - 40.0).max(0.0), file.h), None, label(Text::SettingsFile.get(lang), 13.0, Tone::Quiet, false, Align::Left), false);
     }
 
-    // The search line and, left of it, the button for the file: what room the tabs leave.
-    let search_width = (ox + width - STRIP_EDGE - (tabs_end + 12.0)).clamp(0.0, SEARCH_WIDTH);
-    let search = Rect::new(ox + width - STRIP_EDGE - search_width, oy + TAB_TOP + (STRIP - TAB_TOP - SEARCH_HEIGHT) / 2.0, search_width, SEARCH_HEIGHT);
-    let file_text = Text::SettingsFile.get(lang);
-    let file_width = measure(file_text, 13.0, false) + 24.0;
-    let file = Rect::new(search.x - 8.0 - file_width, search.y, file_width, SEARCH_HEIGHT);
-    if file.x >= tabs_end + 12.0 {
-        item(&mut items, file, Some(Part::File), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::File) }), false);
-        item(&mut items, file, None, label(file_text, 13.0, Tone::Text, false, Align::Center), false);
-    }
-
-    let content_width = (width - 2.0 * PAD).clamp(0.0, CONTENT_MAX);
-    let x0 = ox + (width - content_width) / 2.0;
-    item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
-    item(&mut items, Rect::new(search.x + 12.0, search.y, 20.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 14.0, tone: Tone::Quiet }, false);
-    let text_x = search.x + 40.0;
-    let edit = Visual::Edit { text: page.query.clone(), cursor: page.editing.is_none().then_some(page.cursor), placeholder: Text::SettingsSearch.get(lang).to_owned() };
-    item(&mut items, Rect::new(text_x, search.y, (search.w - 52.0).max(0.0), search.h), None, edit, false);
-
-    // The rows.
-    let entries = entries(page, lang, view.keymap);
+    // The page: its title, then its rows, under it and scrolling.
+    let page_x = nav.x + nav.w;
+    let content_width = (width - nav.w - 2.0 * PAD).clamp(0.0, CONTENT_MAX);
+    let x0 = page_x + PAD;
+    let title = if searching { Text::SettingsResults } else { Section::ALL[page.section.min(Section::ALL.len() - 1)].text() };
+    item(&mut items, Rect::new(x0, oy + 18.0, content_width, 32.0), None, label(title.get(lang), 20.0, Tone::Text, true, Align::Left), false);
     let top = oy + CONTENT_TOP;
-    let viewport = Rect::new(ox, top, width, (oy + height - top).max(0.0));
+    let viewport = Rect::new(page_x, top, (width - nav.w).max(0.0), (oy + height - top).max(0.0));
     let mut rows = Vec::new();
     let mut y = top;
     if entries.is_empty() {
@@ -373,8 +409,15 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
         y += ROW;
     }
     let theme_names: Vec<&str> = themes::theme_names().collect();
+    let mut last_section = None;
     for (n, entry) in entries.iter().enumerate() {
         let focus = page.focus == Some(n);
+        // What a search finds comes by section, under the name of each.
+        if searching && last_section != Some(entry.section()) {
+            last_section = Some(entry.section());
+            item(&mut items, Rect::new(x0, y + 8.0, content_width, HEADING - 8.0), None, label(entry.section().text().get(lang), 12.0, Tone::Quiet, true, Align::Left), true);
+            y += HEADING;
+        }
         let start = y;
         match *entry {
             Entry::Key(command) => {
@@ -432,8 +475,10 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     Control::Slider(_) => 48.0 + 12.0 + SLIDER_WIDTH,
                     Control::Number(_) => 2.0 * CONTROL + 72.0,
                     Control::Text => FIELD_WIDTH,
-                    Control::Themes | Control::Profiles => 0.0,
+                    Control::Themes | Control::Profiles | Control::Layouts(_) => 0.0,
                 };
+                // A setting that does nothing with the others as they are is greyed and cannot be pressed.
+                let applies = row.applies(view.settings);
                 let stacked = control_width > 0.0 && label_width + control_width + 48.0 + RESET_ROOM > content_width;
                 let drop = if stacked { STACK } else { 0.0 };
                 // What fits on the line of the control under the label: the options of a choice go on more lines when they do not.
@@ -451,10 +496,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let right = rect.x + rect.w - MARGIN - RESET_ROOM;
                 let value = (row.get)(view.settings);
                 // A toggle is pressed anywhere on its row.
-                let row_part = matches!(row.control, Control::Toggle).then_some(Part::Toggle(id));
+                let row_part = (applies && matches!(row.control, Control::Toggle)).then_some(Part::Toggle(id));
                 item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
                 let label_room = if stacked { rect.w - 32.0 - RESET_ROOM } else { (rect.w - 32.0 - RESET_ROOM) / 2.0 };
-                item(&mut items, Rect::new(rect.x + MARGIN, rect.y, label_room, ROW - ROW_GAP), None, label(row.label(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let tone = if applies { Tone::Text } else { Tone::Quiet };
+                item(&mut items, Rect::new(rect.x + MARGIN, rect.y, label_room, ROW - ROW_GAP), None, label(row.label(lang), 13.0, tone, false, Align::Left), true);
                 if row.is_modified(view.settings) {
                     let reset = Rect::new(rect.x + rect.w - MARGIN - 24.0, rect.y + (ROW - ROW_GAP - 24.0) / 2.0, 24.0, 24.0);
                     let part = Part::Reset(id);
@@ -464,7 +510,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 match (row.control, value) {
                     (Control::Toggle, Value::Bool(on)) => {
                         let switch = Rect::new(right - SWITCH.0, line.y + (line.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
-                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(Part::Toggle(id)) }), true);
+                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on: on && applies, hover: hover == Some(Part::Toggle(id)) }), true);
                         y += ROW + drop;
                     }
                     (Control::Choice(options), Value::Index(chosen)) => {
@@ -515,6 +561,18 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             item(&mut items, inner, None, label(text, 13.0, Tone::Quiet, false, Align::Left), true);
                         }
                         y += ROW + drop;
+                    }
+                    (Control::Layouts(options), Value::Index(chosen)) => {
+                        y += ROW;
+                        let w = ((content_width - 2.0 * TILE_GAP) / 3.0).clamp(0.0, LAYOUT_THUMB);
+                        for (i, option) in options.iter().enumerate() {
+                            let thumb = Rect::new(x0 + i as f32 * (w + TILE_GAP), y, w, w * LAYOUT_RATIO);
+                            let part = Part::Option(id, i);
+                            item(&mut items, thumb, Some(part), Visual::Layout { layout: i, selected: i == chosen, hover: hover == Some(part) }, true);
+                            let tone = if i == chosen { Tone::Text } else { Tone::Quiet };
+                            item(&mut items, Rect::new(thumb.x, thumb.y + thumb.h + 4.0, w, 22.0), None, label(option.get(lang), 12.0, tone, false, Align::Center), true);
+                        }
+                        y += w * LAYOUT_RATIO + 4.0 + 22.0 + 2.0 * GAP;
                     }
                     (Control::Themes, Value::Text(current)) => {
                         y += ROW;
@@ -604,6 +662,9 @@ mod tests {
             let frame = frame(&page, &settings);
             for entry in &frame.entries {
                 let Entry::Setting(row) = entry else { continue };
+                if !row.applies(&settings) {
+                    continue;
+                }
                 let part = frame.items.iter().filter_map(|item| item.part).any(|part| match part {
                     Part::Toggle(id) | Part::Option(id, _) | Part::Plus(id) | Part::Slider(id) | Part::Field(id) => id == row.id,
                     Part::Tile(_) => matches!(row.control, Control::Themes),
@@ -617,41 +678,64 @@ mod tests {
     }
 
     #[test]
-    fn the_sections_are_tabs_side_by_side_and_the_one_shown_is_the_one_selected() {
+    fn the_sections_are_a_column_and_the_one_shown_is_the_one_selected() {
         let settings = Settings::default();
-        let tab_items = |frame: &Frame| -> Vec<Item> { frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).cloned().collect() };
+        let nav_items = |frame: &Frame| -> Vec<Item> { frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).cloned().collect() };
         let selected = |items: &[Item]| -> Vec<usize> {
             items.iter().enumerate().filter(|(_, item)| matches!(item.visual, Visual::Plate(Fill::Tab { selected: true, .. }))).map(|(i, _)| i).collect()
         };
-        let shown = tab_items(&frame(&Page { section: 2, ..Page::default() }, &settings));
+        let shown = nav_items(&frame(&Page { section: 2, ..Page::default() }, &settings));
         assert_eq!(shown.len(), Section::ALL.len());
-        assert!(shown.windows(2).all(|pair| (pair[0].rect.x + pair[0].rect.w - pair[1].rect.x).abs() < 0.01 && pair[0].rect.y == pair[1].rect.y), "side by side");
+        assert!(shown.windows(2).all(|pair| pair[0].rect.x == pair[1].rect.x && pair[0].rect.y + pair[0].rect.h <= pair[1].rect.y), "one under the other");
+        assert!(shown.iter().all(|item| item.rect.x + item.rect.w <= NAV), "in the column");
         assert_eq!(selected(&shown), vec![2]);
-        // What a search finds comes from every section, so no tab is the one shown.
-        let found = tab_items(&frame(&Page { query: "opacity".into(), ..Page::default() }, &settings));
+        // What a search finds comes from every section, so no section is the one shown.
+        let found = nav_items(&frame(&Page { query: "opacity".into(), ..Page::default() }, &settings));
         assert!(selected(&found).is_empty());
     }
 
     #[test]
-    fn the_search_line_and_the_file_button_stay_in_the_strip_and_clear_of_the_tabs() {
+    fn the_search_line_and_the_file_button_stay_in_the_column_and_the_rows_right_of_it() {
         let settings = Settings::default();
         let keymap = keymap();
-        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1400.0] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, 650.0) };
+        for (width, height) in [crate::settings_window::MIN_SIZE, (900.0, 650.0), (1400.0, 900.0)] {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
-            let tabs_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.x + item.rect.w).fold(0.0, f32::max);
-            // The search line is always there; the button for the file goes when the tabs leave no room for it.
+            let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
-            assert!(search.rect.w >= 100.0, "the search line is too narrow to use at {width}");
-            for part in [Part::Search, Part::File] {
-                let Some(item) = frame.items.iter().find(|item| item.part == Some(part)) else { continue };
-                assert!(item.rect.x >= tabs_end - 0.01, "{part:?} runs into the tabs at {width}");
-                assert!(item.rect.x + item.rect.w <= width + 0.01 && item.rect.y + item.rect.h <= STRIP, "{part:?} sticks out of the strip at {width}");
+            assert!(search.rect.w >= 100.0 && search.rect.x + search.rect.w <= NAV, "the search line at {width}");
+            if let Some(file) = frame.items.iter().find(|item| item.part == Some(Part::File)) {
+                assert!(file.rect.y >= nav_end && file.rect.y + file.rect.h <= height, "the button for the file at {width}");
             }
-            if width >= 1400.0 {
-                assert!(frame.items.iter().any(|item| item.part == Some(Part::File)), "the button for the file has room at {width}");
-            }
+            assert!(frame.rows.iter().all(|row| row.x >= NAV.min(width / 2.0)), "the rows are right of the column at {width}");
         }
+    }
+
+    #[test]
+    fn a_search_finds_by_section_and_counts_in_the_column() {
+        let settings = Settings::default();
+        let frame = frame(&Page { query: "tab".into(), ..Page::default() }, &settings);
+        let order: Vec<usize> = frame.entries.iter().map(|e| Section::ALL.iter().position(|s| *s == e.section()).unwrap()).collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "by section");
+        let total: usize = frame.items.iter().filter(|item| item.rect.x < NAV && !item.scrolls).filter_map(|item| match &item.visual {
+            Visual::Label { text, align: Align::Right, .. } => text.parse::<usize>().ok(),
+            _ => None,
+        }).sum();
+        assert_eq!(total, frame.entries.len(), "the counts of the sections add up to what is found");
+    }
+
+    #[test]
+    fn the_rows_of_the_sidebar_are_greyed_and_cannot_be_pressed_with_the_tabs_on_top() {
+        let mut settings = Settings::default();
+        let page = Page { section: 0, ..Page::default() };
+        let can_press = |settings: &Settings, id: &'static str| frame(&page, settings).items.iter().any(|item| item.part == Some(Part::Toggle(id)));
+        assert!(!can_press(&settings, "tabs.sidebarOpen") && !can_press(&settings, "tabs.groupByState"));
+        settings.tabs.layout = nekominal_model::settings::TabLayout::Icons;
+        assert!(can_press(&settings, "tabs.sidebarOpen") && !can_press(&settings, "tabs.groupByState"), "the groups are only for the list");
+        settings.tabs.layout = nekominal_model::settings::TabLayout::List;
+        assert!(can_press(&settings, "tabs.groupByState"));
+        let thumbs = frame(&page, &settings).items.iter().filter(|item| matches!(item.visual, Visual::Layout { .. })).count();
+        assert_eq!(thumbs, 3, "a miniature for each layout");
     }
 
     #[test]
@@ -727,14 +811,15 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let measure = |text: &str, size: f32| text.chars().count() as f32 * size * 0.55;
-        for width in [460.0, 560.0, 700.0, 1100.0, 1600.0] {
+        // The window is never narrower than its smallest size, column of the sections included.
+        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
                 let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };
-                    if matches!(setting.control, Control::Themes | Control::Profiles) {
+                    if matches!(setting.control, Control::Themes | Control::Profiles | Control::Layouts(_)) {
                         continue;
                     }
                     let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + row.h + 0.01;
