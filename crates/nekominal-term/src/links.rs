@@ -53,7 +53,8 @@ const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "wsh", "ws", "hta", "msi", "msp", "mst", "msc", "cpl", "dll", "sys", "lnk", "url", "reg", "inf", "scf", "jar",
     "application", "gadget", "appref-ms", "settingcontent-ms", "library-ms", "search-ms", "chm", "hlp", "iqy", "slk",
     "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm", "py", "pyw", "sh", "wsc", "sct",
-    "xll", "rdp",
+    "xll", "rdp", "pyz", "pyzw", "pyc", "pyo", "theme", "themepack", "deskthemepack", "searchconnector-ms", "diagcab",
+    "appinstaller", "msix", "msixbundle", "appx", "appxbundle",
 ];
 
 /// Characters that show nothing or reorder what is shown around them: a link that has one is not what it looks like.
@@ -416,6 +417,8 @@ mod tests {
             "file:///C:/x/a.msi", "file:///C:/x/a.lnk", "file:///C:/x/a.url", "file:///C:/x/a.hta", "file:///C:/x/a.reg", "file:///C:/x/a.jar", "file:///C:/x/a.docm",
             "file:///C:/x/a.exe.", "file:///C:/x/a.exe%20", "file:///C:/x/a.exe%20.", "file:///C:/x/a.Exe", "file:///C:/x/a.txt.exe", "file:///C:/x/a.scr", "file:///C:/x/a.settingcontent-ms",
             "file:///C:/x/a.py", "file:///C:/x/a.PYW", "file:///C:/x/a.sh", "file:///C:/x/a.wsc", "file:///C:/x/a.sct", "file:///C:/x/a.xll", "file:///C:/x/a.rdp",
+            "file:///C:/x/a.pyz", "file:///C:/x/a.pyc", "file:///C:/x/a.themepack", "file:///C:/x/a.searchConnector-ms", "file:///C:/x/a.diagcab",
+            "file:///C:/x/a.appinstaller", "file:///C:/x/a.msixbundle", "file:///C:/x/a.appx",
         ] {
             assert_eq!(open_target(uri), Err(Refusal::Executable), "{uri}");
         }
