@@ -60,6 +60,17 @@ fn main() {
     if agent::statusline_main() {
         return;
     }
+    // Started from a Claude Code session, the panes would inherit its variables, and `claude` in them would act as if it
+    // ran inside that session (it never titles the tab, for one). What the user set for good stays.
+    let session: Vec<std::ffi::OsString> = std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| nekominal_pty::profiles::is_claude_session_variable(&name.to_string_lossy()))
+        .filter(|name| !integration::in_saved_environment(&name.to_string_lossy()))
+        .collect();
+    for name in session {
+        // SAFETY: still before any other thread runs.
+        unsafe { std::env::remove_var(name) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     cli::set_launch(cli::parse(&args));
     if let Err(e) = win::run() {

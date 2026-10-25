@@ -41,6 +41,17 @@ pub fn set_explorer_menu(on: bool, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a variable is in the environment Windows gives every new program (the user's or the machine's), as opposed to
+/// one only the program that started this one set.
+pub fn in_saved_environment(name: &str) -> bool {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_ANY, RegGetValueW};
+    let name = HSTRING::from(name);
+    [(HKEY_CURRENT_USER, r"Environment"), (HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")]
+        .into_iter()
+        // SAFETY: asks only whether the value is there; no buffer is handed over.
+        .any(|(root, key)| unsafe { RegGetValueW(root, &HSTRING::from(key), &name, RRF_RT_ANY, None, None, None) }.is_ok())
+}
+
 /// The arguments of a task of the jump list: the profile with this id.
 pub fn profile_arguments(id: &str) -> String {
     format!("-p \"{}\"", id.replace('"', ""))
