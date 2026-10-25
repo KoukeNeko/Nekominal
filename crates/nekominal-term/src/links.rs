@@ -46,12 +46,14 @@ pub enum Refusal {
 }
 
 /// File types that `ShellExecute` runs, or that run code once opened: programs, scripts, installers, shortcuts,
-/// registry and help files, ClickOnce and the other things Explorer treats as launchers.
+/// registry and help files, ClickOnce and the other things Explorer treats as launchers. The scripting, add-in and
+/// remote desktop types at the end run code once a common developer tool (Python, Git Bash, Excel) is installed.
 const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "exe", "com", "scr", "pif", "bat", "cmd", "ps1", "ps1xml", "psm1", "psd1", "psc1", "vbs", "vbe", "js", "jse", "wsf",
     "wsh", "ws", "hta", "msi", "msp", "mst", "msc", "cpl", "dll", "sys", "lnk", "url", "reg", "inf", "scf", "jar",
     "application", "gadget", "appref-ms", "settingcontent-ms", "library-ms", "search-ms", "chm", "hlp", "iqy", "slk",
-    "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm",
+    "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm", "py", "pyw", "sh", "wsc", "sct",
+    "xll", "rdp",
 ];
 
 /// Characters that show nothing or reorder what is shown around them: a link that has one is not what it looks like.
@@ -388,6 +390,7 @@ mod tests {
             "file:///C:/Windows/System32/calc.exe", "file:///C:/x/run.BAT", "file:///C:/x/a.cmd", "file:///C:/x/a.ps1", "file:///C:/x/a.vbs", "file:///C:/x/a.js",
             "file:///C:/x/a.msi", "file:///C:/x/a.lnk", "file:///C:/x/a.url", "file:///C:/x/a.hta", "file:///C:/x/a.reg", "file:///C:/x/a.jar", "file:///C:/x/a.docm",
             "file:///C:/x/a.exe.", "file:///C:/x/a.exe%20", "file:///C:/x/a.exe%20.", "file:///C:/x/a.Exe", "file:///C:/x/a.txt.exe", "file:///C:/x/a.scr", "file:///C:/x/a.settingcontent-ms",
+            "file:///C:/x/a.py", "file:///C:/x/a.PYW", "file:///C:/x/a.sh", "file:///C:/x/a.wsc", "file:///C:/x/a.sct", "file:///C:/x/a.xll", "file:///C:/x/a.rdp",
         ] {
             assert_eq!(open_target(uri), Err(Refusal::Executable), "{uri}");
         }
