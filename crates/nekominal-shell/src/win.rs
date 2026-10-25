@@ -34,7 +34,7 @@ use windows::{
 };
 
 use crate::{
-    app::{App, Capture, Cursor, Detach, WM_WAKE},
+    app::{App, Capture, Cursor, Detach, WM_GPU_LOST, WM_WAKE},
     layout::{Hit, STRIP_LEFT},
 };
 
@@ -130,6 +130,29 @@ fn with_app<T>(hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
 fn raise_access_events(hwnd: HWND, events: impl FnOnce(&mut App) -> Option<accesskit_windows::QueuedEvents>) {
     if let Some(events) = with_app(hwnd, events).flatten() {
         events.raise();
+    }
+}
+
+/// The device is gone: a new one, and every window made again on it. Several windows may say so; once one has done it,
+/// the device works again and the others have nothing to do.
+fn recover_gpu(hwnd: HWND, forced: bool) {
+    if !forced && with_app(hwnd, |app| app.gpu_works()).unwrap_or(true) {
+        return;
+    }
+    let gpu = match crate::gpu::device_for(hwnd) {
+        Ok(gpu) => gpu,
+        Err(e) => {
+            crate::util::log(&format!("device lost, and no new one: {e}"));
+            return;
+        }
+    };
+    let apps: Vec<Rc<RefCell<App>>> = APPS.with(|apps| apps.borrow().values().cloned().collect());
+    for app in apps {
+        if let Ok(mut app) = app.try_borrow_mut()
+            && let Err(e) = app.recreate_gpu(&gpu)
+        {
+            crate::util::log(&format!("device lost: {e}"));
+        }
     }
 }
 
@@ -553,6 +576,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SYSCHAR => LRESULT(0),
         // The default answer to an Alt chord that matches no menu is a beep.
         WM_MENUCHAR => LRESULT((1isize) << 16),
+        WM_GPU_LOST => {
+            // lParam 1 makes it all again on a device that still works: how the rebuild is tried by hand.
+            recover_gpu(hwnd, lparam.0 == 1);
+            LRESULT(0)
+        }
         WM_WAKE => {
             with_app(hwnd, App::on_wake);
             LRESULT(0)

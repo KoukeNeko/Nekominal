@@ -127,6 +127,12 @@ impl PaneRenderer {
         Ok(())
     }
 
+    /// Makes the GPU side again on a new device (the old one was lost); the session and what it shows are kept.
+    pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
+        self.force_draw = true;
+        self.renderer.recreate_gpu(gpu)
+    }
+
     pub fn set_theme(&mut self, theme: r::Theme) {
         self.theme = theme;
         self.force_draw = true;

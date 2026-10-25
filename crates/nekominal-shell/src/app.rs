@@ -63,6 +63,8 @@ use crate::{
 
 /// Posted by a reader thread when a pane has output to draw.
 pub const WM_WAKE: u32 = WM_APP + 1;
+/// The device was lost: posted by a window whose frame did not show, and handled outside every borrow of the windows.
+pub const WM_GPU_LOST: u32 = WM_APP + 5;
 
 /// What the window does with the mouse capture after a button event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,6 +347,12 @@ enum Confirmation {
     /// The tabs with these uids, closed together.
     CloseTabs(Vec<u64>),
     CloseWindow,
+}
+
+/// Tells window `hwnd` that the device is gone; it makes everything again once no window is borrowed.
+fn post_gpu_lost(hwnd: HWND) {
+    // SAFETY: posting to a window of this thread.
+    unsafe { let _ = PostMessageW(Some(hwnd), WM_GPU_LOST, WPARAM(0), LPARAM(0)); }
 }
 
 /// A font size with the zoom of the window on it, kept in the range the settings allow.
@@ -634,6 +642,10 @@ impl App {
         if let Some((program, args)) = target.command.split_first() {
             profile.program = program.clone();
             profile.args = args.to_vec();
+            // What runs is the command, not the profile's shell: `-- cmd /k` on a PowerShell profile must not get
+            // PowerShell's integration arguments.
+            profile.kind = profiles::kind_for_program(program);
+            profile.icon = profiles::icon_for_program(program);
         }
         profile
     }
@@ -2273,12 +2285,13 @@ impl App {
         let relaid = self.paint_chrome();
         self.paint_welcome();
         self.ui.end_frame(&view);
-        self.surface.present();
+        if self.surface.present() { self.report_gpu_lost(); }
         sliding || relaid
     }
 
     /// Draws a frame of the window of the settings.
     pub fn settings_paint(&mut self) {
+        let owner = self.hwnd;
         // The About page looks for a newer version the first time it is shown.
         let about = self.page.as_ref().is_some_and(|page| page.query.trim().is_empty() && Section::ALL.get(page.section) == Some(&Section::About));
         if about && self.update_check() == update::Check::Idle {
@@ -2292,7 +2305,7 @@ impl App {
         self.paint_page();
         self.ui.end_frame(&view);
         if let Some(win) = self.settings_win.as_mut() {
-            win.surface.present();
+            if win.surface.present() { post_gpu_lost(owner); }
         }
     }
 
@@ -4202,6 +4215,39 @@ impl App {
         self.sync_size();
     }
 
+    fn report_gpu_lost(&self) {
+        post_gpu_lost(self.hwnd);
+    }
+
+    /// Whether the device this window draws with still works (a removed one says why it went).
+    pub fn gpu_works(&self) -> bool {
+        // SAFETY: a query of a device this window holds.
+        unsafe { self.gpu.device.GetDeviceRemovedReason() }.is_ok()
+    }
+
+    /// Makes everything this window draws with again on gpu, the old device being lost: its swap chains, the chrome's
+    /// renderer and the renderers of the panes. The sessions in the panes go on as they were; a menu that was open closes.
+    pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
+        self.close_popup();
+        self.gpu = gpu.clone();
+        let size = self.surface.size();
+        self.surface.detach();
+        self.surface = gpu::create_surface(gpu, self.hwnd, size)?;
+        self.ui = Ui::new(gpu)?;
+        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+            entry.view.recreate_gpu(gpu)?;
+        }
+        if let Some(win) = self.settings_win.as_mut() {
+            let size = win.surface.size();
+            win.surface.detach();
+            win.surface = gpu::create_surface(gpu, win.hwnd, size)?;
+        }
+        self.relayout();
+        self.redraw();
+        self.page_redraw();
+        Ok(())
+    }
+
     /// Takes the size the window has now. A move this window makes of itself sends WM_SIZE while the application is borrowed,
     /// so the window procedure cannot hand it over: without this the panes and the swap chain keep the old size.
     fn sync_size(&mut self) {
@@ -5129,6 +5175,7 @@ impl App {
     }
 
     pub fn popup_paint(&mut self) {
+        let owner = self.hwnd;
         let scale = self.scale;
         let g = self.glass;
         let Some(popup) = self.popup.as_mut() else { return };
@@ -5144,7 +5191,7 @@ impl App {
         if popup.kind == popup::Kind::Confirm {
             popup::paint_confirmation(ui, &popup.heading, &popup.rows, popup.hover, popup.size.0, g);
             ui.end_frame(&view);
-            popup.surface.present();
+            if popup.surface.present() { post_gpu_lost(owner); }
             return;
         }
         // The rows scroll under the query line, so they are clipped to the part below it.
@@ -5193,7 +5240,7 @@ impl App {
             }
         }
         ui.end_frame(&view);
-        popup.surface.present();
+        if popup.surface.present() { post_gpu_lost(owner); }
     }
 
     fn icon_centered(&mut self, rect: Rect, ch: char, size: f32, color: Color) {

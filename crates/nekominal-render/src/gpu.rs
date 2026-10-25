@@ -86,9 +86,9 @@ pub struct GrowBuffer {
 }
 
 impl GrowBuffer {
-    pub fn new(gpu: &Gpu, stride: u32, capacity: u64) -> Self {
+    pub fn new(gpu: &Gpu, stride: u32, capacity: u64) -> Result<Self, String> {
         let capacity = capacity.max(256).next_power_of_two();
-        GrowBuffer { buffer: dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity), stride, capacity, count: 0 }
+        Ok(GrowBuffer { buffer: dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity)?, stride, capacity, count: 0 })
     }
 
     pub fn write(&mut self, gpu: &Gpu, bytes: &[u8], count: u32) {
@@ -97,8 +97,16 @@ impl GrowBuffer {
             return;
         }
         if bytes.len() as u64 > self.capacity {
-            self.capacity = (bytes.len() as u64).next_power_of_two();
-            self.buffer = dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, self.capacity);
+            let capacity = (bytes.len() as u64).next_power_of_two();
+            match dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity) {
+                Ok(buffer) => (self.buffer, self.capacity) = (buffer, capacity),
+                // The device is gone (it is made again then): draw what the old buffer holds, not past it.
+                Err(_) => {
+                    self.count = (self.capacity / u64::from(self.stride.max(1))) as u32;
+                    write_buffer(gpu, &self.buffer, &bytes[..(u64::from(self.count) * u64::from(self.stride)) as usize]);
+                    return;
+                }
+            }
         }
         write_buffer(gpu, &self.buffer, bytes);
     }

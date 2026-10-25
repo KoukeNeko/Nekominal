@@ -292,8 +292,8 @@ impl Renderer {
         };
         init_timings.push(("pipelines (HLSL, 3 pixel shaders)", t.elapsed()));
         let t = std::time::Instant::now();
-        let atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, cfg.atlas_initial, cfg.atlas_max);
-        let atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, cfg.atlas_initial, cfg.atlas_max);
+        let atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, cfg.atlas_initial, cfg.atlas_max)?;
+        let atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, cfg.atlas_initial, cfg.atlas_max)?;
         init_timings.push(("atlas textures", t.elapsed()));
         let t = std::time::Instant::now();
         let fonts = FontStack::new(cfg.fonts.clone())?;
@@ -429,8 +429,8 @@ impl Renderer {
     pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
         self.gpu = gpu.clone();
         self.pipelines = Arc::new(Pipelines::new(gpu)?);
-        self.atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, self.cfg.atlas_initial, self.cfg.atlas_max);
-        self.atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, self.cfg.atlas_initial, self.cfg.atlas_max);
+        self.atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, self.cfg.atlas_initial, self.cfg.atlas_max)?;
+        self.atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, self.cfg.atlas_initial, self.cfg.atlas_max)?;
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
@@ -461,17 +461,17 @@ impl Renderer {
         Ok([x, y])
     }
 
-    pub(crate) fn pane_gpu(&self) -> PaneGpu {
+    pub(crate) fn pane_gpu(&self) -> Result<PaneGpu, String> {
         let gpu = &self.gpu;
-        PaneGpu {
-            bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096),
-            glyphs: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192),
-            lcd: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192),
-            deco: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096),
-            overlay: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 1024),
-            pane_bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 256),
-            uniforms: constant_buffer(gpu, std::mem::size_of::<Uniforms>()),
-        }
+        Ok(PaneGpu {
+            bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096)?,
+            glyphs: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192)?,
+            lcd: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 8192)?,
+            deco: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 4096)?,
+            overlay: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 1024)?,
+            pane_bg: GrowBuffer::new(gpu, std::mem::size_of::<RectInstance>() as u32, 256)?,
+            uniforms: constant_buffer(gpu, std::mem::size_of::<Uniforms>())?,
+        })
     }
 
     fn uniforms_for(&self, w: u32, h: u32) -> Uniforms {

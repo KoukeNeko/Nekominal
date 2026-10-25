@@ -288,8 +288,8 @@ pub fn input_layout(gpu: &Gpu, vertex_code: &[u8], attributes: &[Attribute]) -> 
     layout.ok_or_else(|| "no input layout".into())
 }
 
-/// A buffer the CPU rewrites wholesale: `Map` with discard.
-pub fn dynamic_buffer(gpu: &Gpu, bind: D3D11_BIND_FLAG, size: u64) -> ID3D11Buffer {
+/// A buffer the CPU rewrites wholesale: `Map` with discard. An error when the device cannot make it (it was removed).
+pub fn dynamic_buffer(gpu: &Gpu, bind: D3D11_BIND_FLAG, size: u64) -> Result<ID3D11Buffer, String> {
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: size as u32,
         Usage: D3D11_USAGE_DYNAMIC,
@@ -299,11 +299,11 @@ pub fn dynamic_buffer(gpu: &Gpu, bind: D3D11_BIND_FLAG, size: u64) -> ID3D11Buff
     };
     let mut buffer = None;
     // SAFETY: the descriptor lives through the call.
-    unsafe { gpu.device.CreateBuffer(&desc, None, Some(&mut buffer)) }.expect("CreateBuffer");
-    buffer.expect("CreateBuffer returned no buffer")
+    unsafe { gpu.device.CreateBuffer(&desc, None, Some(&mut buffer)) }.map_err(|e| format!("CreateBuffer: {e}"))?;
+    buffer.ok_or_else(|| "CreateBuffer returned no buffer".into())
 }
 
-pub fn constant_buffer(gpu: &Gpu, size: usize) -> ID3D11Buffer {
+pub fn constant_buffer(gpu: &Gpu, size: usize) -> Result<ID3D11Buffer, String> {
     dynamic_buffer(gpu, D3D11_BIND_CONSTANT_BUFFER, size.next_multiple_of(16) as u64)
 }
 
@@ -329,7 +329,7 @@ pub fn bind_uniforms(gpu: &Gpu, buffer: &ID3D11Buffer) {
 }
 
 /// A 2D texture of `size` x `size` texels that is only sampled, with a view of it.
-pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> (ID3D11Texture2D, ID3D11ShaderResourceView) {
+pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView), String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: size,
         Height: size,
@@ -345,10 +345,10 @@ pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> (ID3D11Textur
     let mut view = None;
     // SAFETY: the descriptor lives through the calls.
     unsafe {
-        gpu.device.CreateTexture2D(&desc, None, Some(&mut texture)).expect("CreateTexture2D");
-        let texture = texture.expect("CreateTexture2D returned no texture");
-        gpu.device.CreateShaderResourceView(&texture, None, Some(&mut view)).expect("CreateShaderResourceView");
-        (texture, view.expect("CreateShaderResourceView returned no view"))
+        gpu.device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|e| format!("CreateTexture2D: {e}"))?;
+        let texture = texture.ok_or("CreateTexture2D returned no texture")?;
+        gpu.device.CreateShaderResourceView(&texture, None, Some(&mut view)).map_err(|e| format!("CreateShaderResourceView: {e}"))?;
+        Ok((texture, view.ok_or("CreateShaderResourceView returned no view")?))
     }
 }
 

@@ -39,9 +39,9 @@ pub struct AtlasTexture {
 pub struct AtlasFull;
 
 impl AtlasTexture {
-    pub fn new(gpu: &Gpu, format: DXGI_FORMAT, bytes_per_texel: u32, initial: u32, max_size: u32) -> Self {
-        let (texture, view) = atlas_texture(gpu, format, initial);
-        AtlasTexture {
+    pub fn new(gpu: &Gpu, format: DXGI_FORMAT, bytes_per_texel: u32, initial: u32, max_size: u32) -> Result<Self, String> {
+        let (texture, view) = atlas_texture(gpu, format, initial)?;
+        Ok(AtlasTexture {
             texture,
             view,
             alloc: BucketedAtlasAllocator::new(size2(initial as i32, initial as i32)),
@@ -55,7 +55,7 @@ impl AtlasTexture {
             clears: 0,
             grows: 0,
             flushes: 0,
-        }
+        })
     }
 
     /// GPU texture bytes (the CPU shadow doubles the host-side footprint).
@@ -88,14 +88,15 @@ impl AtlasTexture {
             if self.size >= self.max_size {
                 return Err(AtlasFull);
             }
-            self.grow(gpu, (self.size * 2).min(self.max_size));
+            // A texture the device cannot make (it was removed) is as good as no room.
+            self.grow(gpu, (self.size * 2).min(self.max_size)).map_err(|_| AtlasFull)?;
         }
     }
 
-    fn grow(&mut self, gpu: &Gpu, new_size: u32) {
+    fn grow(&mut self, gpu: &Gpu, new_size: u32) -> Result<(), String> {
         // The old texture must be complete before the GPU-side copy.
         self.flush(gpu);
-        let (texture, view) = atlas_texture(gpu, self.format, new_size);
+        let (texture, view) = atlas_texture(gpu, self.format, new_size)?;
         copy_texture(gpu, &texture, &self.texture);
         // Grow the shadow keeping existing rows (pitch changes).
         let bpt = self.bytes_per_texel as usize;
@@ -112,6 +113,7 @@ impl AtlasTexture {
         self.size = new_size;
         self.generation += 1;
         self.grows += 1;
+        Ok(())
     }
 
     /// Copy a bitmap into the shadow and mark it dirty. Returns its atlas position.

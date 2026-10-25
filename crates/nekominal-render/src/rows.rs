@@ -71,7 +71,12 @@ impl Renderer {
         let theme = self.theme.clone();
         let gpu_stale = pane.gpu.is_none() || pane.gpu_gen != self.gpu_gen;
         if gpu_stale {
-            pane.gpu = Some(self.pane_gpu());
+            // The device may be gone (it is made again then): no buffers, and the pane is not drawn until it is.
+            let Ok(buffers) = self.pane_gpu() else {
+                pane.gpu = None;
+                return Ok(UpdateStats { rows_total: view.rows, ..Default::default() });
+            };
+            pane.gpu = Some(buffers);
             pane.gpu_gen = self.gpu_gen;
         }
         let mut force = gpu_stale || pane.epoch != self.epoch;

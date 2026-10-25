@@ -27,9 +27,10 @@ pub struct Surface {
     target: Option<ID3D11RenderTargetView>,
     size: (u32, u32),
     dcomp: IDCompositionDevice,
-    // Dropping the target or the visual takes the content off the window.
-    _target: IDCompositionTarget,
-    _visual: IDCompositionVisual,
+    // Dropping the target or the visual takes the content off the window: a window holds one target at a time, so a
+    // surface made anew for it (after the device was lost) waits for the old one to let go of it.
+    _target: Option<IDCompositionTarget>,
+    _visual: Option<IDCompositionVisual>,
     committed: bool,
 }
 
@@ -37,12 +38,18 @@ pub struct Surface {
 /// on: with another one, every frame would be copied from one graphics card to the other, which is what makes a window slow
 /// on a computer with two. Where no adapter claims the monitor it is the low-power one.
 pub fn create(hwnd: HWND, size: (u32, u32)) -> Result<(Gpu, Surface), String> {
+    let gpu = device_for(hwnd)?;
+    let surface = create_surface(&gpu, hwnd, size)?;
+    Ok((gpu, surface))
+}
+
+/// A device on the adapter that drives the monitor `hwnd` is on.
+pub fn device_for(hwnd: HWND) -> Result<Gpu, String> {
     // SAFETY: a plain query for a window of this thread.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let gpu = Gpu::new(AdapterKind::Display(monitor.0 as isize))?;
     crate::util::log(&format!("adapter: {}", gpu.adapter_name));
-    let surface = create_surface(&gpu, hwnd, size)?;
-    Ok((gpu, surface))
+    Ok(gpu)
 }
 
 /// A swap chain of `size` pixels for another window, on the device the first window made.
@@ -74,7 +81,7 @@ pub fn create_surface(gpu: &Gpu, hwnd: HWND, size: (u32, u32)) -> Result<Surface
         let visual = dcomp.CreateVisual().map_err(|e| format!("CreateVisual: {e}"))?;
         visual.SetContent(&swap).map_err(|e| format!("SetContent: {e}"))?;
         target.SetRoot(&visual).map_err(|e| format!("SetRoot: {e}"))?;
-        let mut surface = Surface { swap, target: None, size, dcomp, _target: target, _visual: visual, committed: false };
+        let mut surface = Surface { swap, target: None, size, dcomp, _target: Some(target), _visual: Some(visual), committed: false };
         surface.target = Some(surface.create_target(gpu)?);
         Ok(surface)
     }
@@ -119,14 +126,26 @@ impl Surface {
         self.target.clone()
     }
 
-    pub fn present(&mut self) {
-        // SAFETY: the swap chain is alive. A removed device shows up here; the window then keeps its last frame.
-        unsafe { self.swap.Present(1, Default::default()).ok().ok() };
+    /// Shows the frame. True when the device is gone (removed, or reset by a driver update or a timeout): everything made on
+    /// it has to be made again on a new one.
+    pub fn present(&mut self) -> bool {
+        use windows::Win32::Graphics::Dxgi::{DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET};
+        // SAFETY: the swap chain is alive.
+        let result = unsafe { self.swap.Present(1, Default::default()) };
         if !self.committed {
             // The first Commit shows the swap chain the visual was given.
             // SAFETY: the DirectComposition device is alive.
             unsafe { self.dcomp.Commit().ok() };
             self.committed = true;
         }
+        result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET
+    }
+
+    /// Lets go of the window, so that a new surface can be made for it.
+    pub fn detach(&mut self) {
+        self.target = None;
+        (self._visual, self._target) = (None, None);
+        // SAFETY: the DirectComposition device is alive; what it showed is gone with the target.
+        unsafe { self.dcomp.Commit().ok() };
     }
 }
