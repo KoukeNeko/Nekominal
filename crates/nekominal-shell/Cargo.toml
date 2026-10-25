@@ -23,6 +23,9 @@ base64 = { workspace = true }
 accesskit = { workspace = true }
 accesskit_windows = { workspace = true }
 windows = { workspace = true, features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_DirectComposition",

@@ -49,7 +49,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, buffers, clipboard, design, find, icons, mark, motion, textfield, update, welcome,
+    access, agent, buffers, clipboard, design, find, icons, mark, motion, notify, textfield, update, welcome,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -60,6 +60,8 @@ use crate::{
     tab::{PaneEntry, Tab, WakeTarget},
     util,
 };
+
+mod notifications;
 
 /// Posted by a reader thread when a pane has output to draw.
 pub const WM_WAKE: u32 = WM_APP + 1;
@@ -212,6 +214,8 @@ pub struct App {
     settings_win: Option<SettingsWin>,
     /// When the taskbar button last flashed or a sound last played: they are limited to one a second.
     last_alert: Option<Instant>,
+    /// What the notifications of Windows are told and when (`notify.rs`, shown by `app/notifications.rs`).
+    notifier: notify::Notifier,
     /// The right button opened the menu and is still down: letting go of it must not close the menu.
     context_release: bool,
     /// The button of the bar that opened the pop-up that is open: it stays lit while the pop-up hangs from it.
@@ -558,6 +562,7 @@ impl App {
             page: None,
             settings_win: None,
             last_alert: None,
+            notifier: notify::Notifier::default(),
             context_release: false,
             popup_from: None,
             chip_view: HashMap::new(),
@@ -1241,7 +1246,7 @@ impl App {
         for (t, tab) in self.tabs.iter_mut().enumerate() {
             // Bells and notifications are for what the user is not looking at.
             let watched = t == selected && active;
-            let focused = tab.focused;
+            let (focused, uid) = (tab.focused, tab.uid);
             for entry in &mut tab.panes {
                 while let Ok(event) = entry.pane.events.try_recv() {
                     entry.progress = status::progress_after(entry.progress, &event);
@@ -1267,13 +1272,22 @@ impl App {
                             }
                             ring.taskbar_flash |= effects.taskbar_flash;
                             ring.sound |= effects.sound;
+                            if effects.taskbar_flash {
+                                self.notifier.queue(uid, notify::Event::Bell);
+                            }
                         }
                         UiEvent::Notification(notification) if !watched => {
                             if entry.attention != Some(Attention::Exit) {
                                 entry.attention = Some(Attention::Notification);
                             }
                             let text = format!("{} {}", notification.title, notification.body);
-                            entry.note = Some(logic::clean_title(&text));
+                            let note = logic::clean_title(&text);
+                            self.notifier.queue(uid, notify::Event::Message(note.clone()));
+                            entry.note = Some(note);
+                        }
+                        UiEvent::PromptMark(mark) => {
+                            let pane = &entry.pane;
+                            self.notifier.on_mark(uid, entry.id, mark, Instant::now(), self.settings.notifications.long_command, || pane.term.lock().last_command_line());
                         }
                         UiEvent::Exit(code) => {
                             entry.exited = true;
@@ -1293,6 +1307,7 @@ impl App {
             self.close_pane(t, id);
         }
         self.alert(ring);
+        self.notify();
         self.update_window_title();
         // shortcut: at most four searches a second while output streams, so the count can lag the last burst until the next
         // output; a timer would settle it if that ever matters.

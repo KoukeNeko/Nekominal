@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
+        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
         TabTitle, split_font_families,
     },
     strings::{Lang, Text},
@@ -225,6 +225,7 @@ const SCROLLBACK: Range = Range { min: 0.0, max: 1_000_000.0, step: 1000.0, larg
 const LARGE_PASTE: Range = Range { min: 0.0, max: 97_656.0, step: 1.0, large: 100.0 };
 const CLOSE_THRESHOLD: Range = Range { min: 1.0, max: 1000.0, step: 1.0, large: 5.0 };
 const BLINK_RATE: Range = Range { min: BLINK_RATE_RANGE.0, max: BLINK_RATE_RANGE.1, step: 50.0, large: 250.0 };
+const LONG_COMMAND: Range = Range { min: LONG_COMMAND_RANGE.0, max: LONG_COMMAND_RANGE.1, step: 5.0, large: 60.0 };
 
 /// Every row of the drawer, section by section, in the order the section shows them.
 pub const TABLE: &[Descriptor] = &[
@@ -390,6 +391,8 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
+    toggle!("notifications.toast", Terminal, SettingsToast, notifications.toast),
+    count!("notifications.longCommand", Terminal, SettingsLongCommand, LONG_COMMAND, notifications.long_command),
     toggle!("confirmClose", Terminal, SettingsConfirmClose, confirm_close),
     count!("confirmCloseThreshold", Terminal, SettingsConfirmCloseThreshold, CLOSE_THRESHOLD, confirm_close_threshold),
     toggle!("restoreSession", Terminal, SettingsRestoreSession, restore_session),

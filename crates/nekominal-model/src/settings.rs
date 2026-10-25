@@ -231,6 +231,20 @@ pub struct Bell {
     pub sound: BellSound,
 }
 
+/// Notifications of Windows (toasts) for what happens out of sight.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notifications {
+    /// An agent that finished, waits for an answer or failed, a bell and a program's own notification show a toast
+    /// while the window is in the background.
+    pub toast: bool,
+    /// A command that ran at least this many seconds tells when it ends out of sight; 0 turns that off.
+    pub long_command: u32,
+}
+
+/// Valid range of `notifications.longCommand`, in seconds: up to a day.
+pub const LONG_COMMAND_RANGE: (f64, f64) = (0.0, 86_400.0);
+
 /// A thing a tab title can say (`tabs.title.parts`). The names are the words of `settings.json`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TitlePart {
@@ -500,6 +514,7 @@ pub struct Settings {
     pub paste: PasteSettings,
     pub osc52: Osc52Policy,
     pub bell: Bell,
+    pub notifications: Notifications,
     pub keyboard: Keyboard,
     /// Sets environment variables that make coding-agent CLIs use their full terminal features.
     pub agent_environment: bool,
@@ -557,6 +572,7 @@ impl Default for Settings {
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
             osc52: Osc52Policy::Write,
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
+            notifications: Notifications { toast: true, long_command: 10 },
             keyboard: Keyboard { kitty_protocol: true },
             agent_environment: true,
             status_bar: StatusBar::default(),
@@ -1051,6 +1067,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let appearance = section(&root, "appearance", "", &mut problems);
     let paste = section(&root, "paste", "", &mut problems);
     let bell = section(&root, "bell", "", &mut problems);
+    let notifications = section(&root, "notifications", "", &mut problems);
     let keyboard = section(&root, "keyboard", "", &mut problems);
     let status_bar = section(&root, "statusBar", "", &mut problems);
     let tabs = section(&root, "tabs", "", &mut problems);
@@ -1155,6 +1172,10 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 "bell",
                 &mut problems,
             ),
+        },
+        notifications: Notifications {
+            toast: boolean(&notifications, "toast", d.notifications.toast, "notifications", &mut problems),
+            long_command: number(&notifications, "longCommand", f64::from(d.notifications.long_command), LONG_COMMAND_RANGE, "notifications", &mut problems).round() as u32,
         },
         keyboard: Keyboard { kitty_protocol: boolean(&keyboard, "kittyProtocol", d.keyboard.kitty_protocol, "keyboard", &mut problems) },
         agent_environment: boolean(&root, "agentEnvironment", d.agent_environment, "", &mut problems),
@@ -1755,6 +1776,20 @@ mod tests {
         assert_eq!(result.problems.len(), 1);
         let written = round_trips(Settings { bell: Bell { sound: BellSound::Background, ..defaults }, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "bell": { "sound": "background" } }));
+    }
+
+    #[test]
+    fn notifications_are_on_by_default_and_a_long_command_is_ten_seconds() {
+        assert_eq!(Settings::default().notifications, Notifications { toast: true, long_command: 10 });
+        let result = parsed(r#"{ "notifications": { "toast": false, "longCommand": 0 } }"#);
+        assert!(result.problems.is_empty(), "{:?}", result.problems);
+        assert_eq!(result.settings.notifications, Notifications { toast: false, long_command: 0 });
+        // A time out of range keeps the default and is reported.
+        let result = parsed(r#"{ "notifications": { "longCommand": -5 } }"#);
+        assert_eq!(result.settings.notifications.long_command, 10);
+        assert_eq!(result.problems.len(), 1);
+        let written = round_trips(Settings { notifications: Notifications { toast: true, long_command: 30 }, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "notifications": { "longCommand": 30 } }));
     }
 
     #[test]
