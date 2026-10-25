@@ -284,19 +284,35 @@ impl Ui {
             return *cached;
         }
         let advance = face.font_ref().glyph_metrics(&[]).scale(px).advance_width(glyph);
-        let bitmap = self
-            .raster
-            .rasterize(face, &choice, glyph, px, 0.0, RasterOptions { lcd: false, hint })
-            .filter(|r| r.width > 0 && r.height > 0)
-            .and_then(|r| {
-                let atlas = if r.kind == GlyphKind::Color { &mut self.atlas_rgba } else { &mut self.atlas_gray };
-                let src = atlas.insert(&self.gpu, r.width, r.height, &r.data).ok()?;
-                let kind = if r.kind == GlyphKind::Color { KIND_COLOR } else { KIND_MASK };
-                Some(Bitmap { src: [src.0, src.1], size: [r.width as u16, r.height as u16], left: r.left, top: r.top, kind })
-            });
+        let raster = self.raster.rasterize(face, &choice, glyph, px, 0.0, RasterOptions { lcd: false, hint });
+        let bitmap = raster.filter(|r| r.width > 0 && r.height > 0).and_then(|r| {
+            let color = r.kind == GlyphKind::Color;
+            let src = self.insert(color, r.width, r.height, &r.data)?;
+            let kind = if color { KIND_COLOR } else { KIND_MASK };
+            Some(Bitmap { src, size: [r.width as u16, r.height as u16], left: r.left, top: r.top, kind })
+        });
         let cached = Cached { advance, bitmap };
         self.cache.insert(key, cached);
         cached
+    }
+
+    /// Places a bitmap in the colour or the gray atlas. A full atlas is cleared, with every cached glyph and picture that
+    /// pointed into it, and the insert tried once more; `None` only for a bitmap larger than an empty atlas.
+    fn insert(&mut self, color: bool, w: u32, h: u32, data: &[u8]) -> Option<[u16; 2]> {
+        for retry in [false, true] {
+            if retry {
+                // shortcut: glyphs recorded earlier in this frame may show reused atlas slots until the next frame.
+                self.atlas_gray.clear();
+                self.atlas_rgba.clear();
+                self.cache.clear();
+                self.images.clear();
+            }
+            let atlas = if color { &mut self.atlas_rgba } else { &mut self.atlas_gray };
+            if let Ok((x, y)) = atlas.insert(&self.gpu, w, h, data) {
+                return Some([x, y]);
+            }
+        }
+        None
     }
 
     fn primary_metrics(&mut self, px: f32) -> (f32, f32) {
@@ -346,8 +362,8 @@ impl Ui {
             Some(cached) => *cached,
             None => {
                 let made = pixels(px).filter(|data| px > 0 && data.len() == (px * px * 4) as usize).and_then(|data| {
-                    let src = self.atlas_rgba.insert(&self.gpu, px, px, &data).ok()?;
-                    Some(Bitmap { src: [src.0, src.1], size: [px as u16, px as u16], left: 0, top: 0, kind: KIND_COLOR })
+                    let src = self.insert(true, px, px, &data)?;
+                    Some(Bitmap { src, size: [px as u16, px as u16], left: 0, top: 0, kind: KIND_COLOR })
                 });
                 self.images.insert((key, px), made);
                 made

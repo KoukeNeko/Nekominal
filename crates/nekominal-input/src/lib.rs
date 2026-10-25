@@ -3,7 +3,7 @@
 //! [`KeyInput`] / [`MouseInput`] and writes the returned bytes to the PTY.
 //!
 //! [`KeyAssembler`] and [`MouseAssembler`] sit on top of the encoders and take the raw event
-//! streams of the toolkit (WinUI 3 key and pointer events), so the window code only forwards events.
+//! streams of the window (key and pointer events), so the window code only forwards events.
 
 pub mod key;
 pub mod key_assembler;

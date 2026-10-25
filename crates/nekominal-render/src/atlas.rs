@@ -68,6 +68,11 @@ impl AtlasTexture {
         self.alloc.allocated_space() as f32 / (self.size as f32 * self.size as f32)
     }
 
+    /// Raise the size limit; the texture itself grows only when an insert needs the room.
+    pub fn set_max_size(&mut self, max_size: u32) {
+        self.max_size = self.max_size.max(max_size);
+    }
+
     pub fn clear(&mut self) {
         self.alloc.clear();
         self.dirty = None;

@@ -68,6 +68,31 @@ fn rounded_rectangles_text_and_clips_land_where_they_are_told() {
 }
 
 #[test]
+fn a_full_atlas_is_cleared_and_new_glyphs_and_pictures_still_draw() {
+    let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a D3D11 adapter");
+    let mut ui = Ui::new(&gpu).expect("ui");
+    ui.begin_frame((100, 100), 1.0);
+    // The colour atlas tops out at 1024x1024: four 500 px pictures fill it, the fifth needs it cleared.
+    for key in 0..6 {
+        assert!(ui.image(key, 0.0, 0.0, 500.0, |px| Some(vec![255; (px * px * 4) as usize])), "picture {key}");
+    }
+    // The gray atlas tops out at 2048x2048: 80 different 300 px ideographs overflow it.
+    let mut ideographs = (0x4E00u32..).filter_map(char::from_u32);
+    for ch in ideographs.by_ref().take(80) {
+        ui.text(0.0, 0.0, &ch.to_string(), 300.0, Color::rgb(255, 255, 255), false);
+    }
+    let size = (320, 320);
+    let target = OffscreenTarget::new(&gpu, size.0, size.1);
+    gpu.clear(&target.view, [0.0, 0.0, 0.0, 1.0]);
+    ui.begin_frame(size, 1.0);
+    ui.text(0.0, 0.0, &ideographs.next().unwrap().to_string(), 200.0, Color::rgb(255, 255, 255), false);
+    ui.end_frame(&target.view);
+    let rgba = target.read_rgba(&gpu).expect("readback");
+    let lit = rgba.chunks(4).filter(|p| p[0] > 150).count();
+    assert!(lit > 200, "the glyph after the atlas filled drew {lit} pixels");
+}
+
+#[test]
 fn text_is_measured_the_way_it_is_drawn() {
     let gpu = create_gpu(AdapterKind::Real).or_else(|_| create_gpu(AdapterKind::Warp)).expect("a D3D11 adapter");
     let mut ui = Ui::new(&gpu).expect("ui");

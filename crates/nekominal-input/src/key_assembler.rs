@@ -31,7 +31,7 @@
 
 use crate::{
     key::{Key, KeyEvent, KeyInput, KeypadKey, ModifierKey, Mods, is_altgr, is_control},
-    keyboard::encode_text,
+    keyboard::{encode_text, lower, upper},
     modes::InputModes,
     scancode::{PhysicalKey, physical_key},
     utf16::Utf16Assembler,
@@ -227,22 +227,6 @@ fn modifier_physical(key: ModifierKey) -> Option<PhysicalKey> {
         RightSuper => PhysicalKey::MetaRight,
         _ => return None,
     })
-}
-
-fn lower(c: char) -> char {
-    let mut it = c.to_lowercase();
-    match (it.next(), it.next()) {
-        (Some(l), None) => l,
-        _ => c,
-    }
-}
-
-fn upper(c: char) -> char {
-    let mut it = c.to_uppercase();
-    match (it.next(), it.next()) {
-        (Some(u), None) => u,
-        _ => c,
-    }
 }
 
 /// The `UnicodeChar` of a Win32 key record for a key press the OS produced no text for, as the
