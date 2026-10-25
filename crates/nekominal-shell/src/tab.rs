@@ -51,6 +51,8 @@ pub struct PaneEntry {
     pub session: String,
     pub usage: Option<crate::agent::Usage>,
     pub usage_stamp: Option<std::time::SystemTime>,
+    /// When the hook of the pane's agent (`hooks.rs`) last wrote its file, as last read.
+    pub hook_stamp: Option<std::time::SystemTime>,
     /// The Git branch of the folder the pane is in.
     pub branch: Option<String>,
     /// The scheme and the font size of its profile, when the profile sets its own.

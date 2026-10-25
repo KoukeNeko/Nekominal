@@ -387,6 +387,12 @@ impl Pane {
         self.term.lock().agent_summary().cloned()
     }
 
+    /// A report of the pane's agent that came another way than its output (a hook of the agent), kept as if the program
+    /// had written it, so that it lives and goes as those do. True when the records changed.
+    pub fn report_agent(&self, report: &Report) -> bool {
+        self.term.lock().agent_mut().apply(report)
+    }
+
     /// The user has seen what a finished or failed agent reported: those records go away.
     pub fn dismiss_finished(&self) -> bool {
         self.term.lock().agent_mut().dismiss_finished()

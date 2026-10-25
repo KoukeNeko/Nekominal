@@ -11,6 +11,7 @@ mod design;
 mod find;
 mod glass;
 mod gpu;
+mod hooks;
 mod icons;
 mod integration;
 mod layout;
@@ -57,7 +58,7 @@ fn main() {
         }
     }
     // Claude Code's status line command is this program too: it hands the session over and is gone.
-    if agent::statusline_main() {
+    if agent::statusline_main() || hooks::hook_main() {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
