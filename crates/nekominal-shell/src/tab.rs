@@ -99,18 +99,23 @@ impl Tab {
         zoomed: bool,
         mut make: impl FnMut(PaneId) -> Result<PaneEntry, String>,
     ) -> Option<Tab> {
-        let ids = layout.pane_ids();
+        let mut layout = layout;
         let mut panes = Vec::new();
-        for id in &ids {
-            match make(*id) {
+        for id in layout.pane_ids() {
+            match make(id) {
                 Ok(entry) => panes.push(entry),
-                Err(e) => crate::util::log(&format!("restore: {e}")),
+                Err(e) => {
+                    crate::util::log(&format!("restore: {e}"));
+                    // The panes that started keep their tab; the one that could not leaves the layout, as a closed one
+                    // does. A tab none of whose panes start is not restored.
+                    layout = layout.remove_pane(id)?;
+                }
             }
         }
-        // A pane that could not start leaves a hole in the layout: the tab is not restored then, whole.
-        if panes.len() != ids.len() || panes.is_empty() {
+        if panes.is_empty() {
             return None;
         }
+        let ids = layout.pane_ids();
         let focused = if ids.contains(&active) { active } else { ids[0] };
         let next = ids.iter().max().map_or(1, |highest| highest + 1);
         Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, broadcast: false, next })
