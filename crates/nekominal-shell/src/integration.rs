@@ -46,6 +46,18 @@ pub fn profile_arguments(id: &str) -> String {
     format!("-p \"{}\"", id.replace('"', ""))
 }
 
+/// Starts this program elevated (Windows asks the user) with `args`: a profile set to run as administrator cannot run
+/// inside a window that is not.
+pub fn run_elevated(args: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    // SAFETY: the strings live through the call.
+    let result = unsafe { ShellExecuteW(None, windows::core::w!("runas"), &HSTRING::from(exe.as_os_str()), &HSTRING::from(args), None, SW_SHOWNORMAL) };
+    let code = result.0 as isize;
+    if code > 32 { Ok(()) } else { Err(format!("ShellExecute returned {code}")) }
+}
+
 /// Fills the tasks of the jump list (the right-click menu of the taskbar button) with the profiles, up to as many as
 /// Windows shows: each starts a window with its profile.
 pub fn set_jump_list(profiles: &[(String, String, Option<PathBuf>)]) -> Result<(), String> {

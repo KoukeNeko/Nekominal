@@ -613,6 +613,9 @@ impl App {
             match action {
                 crate::cli::Action::NewTab(target) => {
                     let profile = self.target_profile(target);
+                    if target.command.is_empty() && self.opens_elevated(&profile) {
+                        continue;
+                    }
                     match Tab::new(|id| self.make_entry_with(id, size, &profile, target.directory.as_deref())) {
                         Ok(tab) => {
                             self.tabs.push(tab);
@@ -703,6 +706,7 @@ impl App {
         }
         // Which pane a program runs in, for the status line command of Claude Code, and the settings that make that command
         // this program, while the status bar is on and Claude Code has no status line of the user's own.
+        env.extend(profile.options.env.clone());
         env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
         if self.settings.status_bar.show && !self.claude.own_status_line && let Some(file) = agent::claude_settings_file() {
             env.insert(agent::CLAUDE_SETTINGS_VAR.to_owned(), file.to_string_lossy().into_owned());
@@ -736,6 +740,14 @@ impl App {
         }
     }
 
+    /// The theme of a pane: the window's, or the scheme its profile names with the window's opacity.
+    fn pane_theme(&self, scheme: Option<&str>) -> r::Theme {
+        match scheme {
+            Some(name) => glass::render_theme(themes::scheme(name), self.theme.background_opacity),
+            None => self.theme.clone(),
+        }
+    }
+
     /// A pane that will have about `size_px` pixels: its renderer and the session of the profile.
     fn make_entry(&self, id: PaneId, size_px: (u32, u32)) -> Result<PaneEntry, String> {
         self.make_entry_with(id, size_px, &self.profile, None)
@@ -744,7 +756,11 @@ impl App {
     /// A pane that runs profile in directory (the directory of the profile when there is none).
     fn make_entry_with(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
-        let view = PaneRenderer::new_sharing(&self.gpu, self.renderer_config(), self.theme.clone(), sibling)?;
+        let mut config = self.renderer_config();
+        if let Some(size) = profile.options.font_size {
+            config.font_size_pt = size as f32;
+        }
+        let view = PaneRenderer::new_sharing(&self.gpu, config, self.pane_theme(profile.options.color_scheme.as_deref()), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
         let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
         let reader_target = target.clone();
@@ -782,6 +798,8 @@ impl App {
             usage: None,
             usage_stamp: None,
             branch: None,
+            scheme: profile.options.color_scheme.clone(),
+            font_size: profile.options.font_size,
         })
     }
 
@@ -3133,7 +3151,8 @@ impl App {
         let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::NORMAL);
         self.theme = glass::render_theme(scheme, shown);
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
-            entry.view.set_theme(self.theme.clone());
+            let theme = entry.scheme.as_deref().map_or_else(|| self.theme.clone(), |name| glass::render_theme(themes::scheme(name), shown));
+            entry.view.set_theme(theme);
         }
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
         if let Some(win) = self.settings_win.as_ref() {
@@ -3814,7 +3833,7 @@ impl App {
                     if self.settings.font.family != before.font.family {
                         entry.view.set_font_families(self.settings.font.family.clone())?;
                     }
-                    entry.view.set_font_size(self.settings.font.size as f32)?;
+                    entry.view.set_font_size(entry.font_size.unwrap_or(self.settings.font.size) as f32)?;
                     entry.view.set_line_height(self.settings.font.line_height as f32)
                 })();
                 if let Err(e) = result {
@@ -3861,9 +3880,24 @@ impl App {
         self.popup_from = self.popup.as_ref().map(|_| Hit::Profiles);
     }
 
+    /// A profile set to run as administrator, opened from a window that is not elevated, gets an elevated window of its
+    /// own (Windows asks first) instead of a tab here. A split keeps the window's rights: a pane cannot be elevated alone.
+    fn opens_elevated(&self, profile: &Profile) -> bool {
+        if !profile.options.elevate || elevated() {
+            return false;
+        }
+        if let Err(e) = crate::integration::run_elevated(&crate::integration::profile_arguments(&profile.id)) {
+            util::log(&format!("elevate: {e}"));
+        }
+        true
+    }
+
     /// A tab with the profile at `index`; the tabs and panes made later still use the default profile.
     fn new_tab_with(&mut self, index: usize) {
         let Some(profile) = self.profiles.get(index).cloned() else { return };
+        if self.opens_elevated(&profile) {
+            return;
+        }
         let default = std::mem::replace(&mut self.profile, profile);
         if let Err(e) = self.new_tab() {
             util::log(&format!("new tab: {e}"));

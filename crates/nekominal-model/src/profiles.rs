@@ -1,6 +1,6 @@
 //! The profiles a new tab can open: the shells found on the machine plus the ones written in `settings.json`.
 
-use crate::{settings::CustomProfile, shell_integration};
+use crate::{settings::{CustomProfile, ProfileOptions}, shell_integration};
 
 /// Icon of a profile whose program is not one of the known shells.
 pub const GENERIC_ICON: &str = "terminal";
@@ -51,7 +51,7 @@ pub struct DiscoveredProfile {
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     /// Unique and stable across runs; what `defaultProfile` and a saved session refer to.
     pub id: String,
@@ -64,6 +64,8 @@ pub struct Profile {
     pub cwd: Option<String>,
     /// Written in `settings.json` rather than found on the machine.
     pub custom: bool,
+    /// What `settings.json` sets for this profile alone: its environment, scheme, font size and elevation.
+    pub options: ProfileOptions,
 }
 
 fn from_discovered(found: &DiscoveredProfile) -> Profile {
@@ -76,6 +78,7 @@ fn from_discovered(found: &DiscoveredProfile) -> Profile {
         args: found.args.clone(),
         cwd: None,
         custom: false,
+        options: ProfileOptions::default(),
     }
 }
 
@@ -89,6 +92,7 @@ fn from_custom(entry: &CustomProfile) -> Profile {
         args: entry.args.clone(),
         cwd: entry.cwd.clone(),
         custom: true,
+        options: entry.options.clone(),
     }
 }
 
@@ -140,6 +144,18 @@ pub fn merge(discovered: &[DiscoveredProfile], custom: &[CustomProfile]) -> Vec<
             continue;
         }
         taken.push(&entry.id);
+        // An entry without a program adjusts the profile found on the machine that it names: its name and its folder.
+        // One that names none has nothing to run and is left out.
+        if entry.program.is_empty() {
+            if let Some(found) = profiles.iter_mut().find(|existing| !existing.custom && existing.id == entry.id) {
+                if entry.name != entry.id {
+                    found.name = entry.name.clone();
+                }
+                found.cwd = entry.cwd.clone().or(found.cwd.take());
+                found.options = entry.options.clone();
+            }
+            continue;
+        }
         let mut profile = from_custom(entry);
         match profiles
             .iter()
@@ -196,6 +212,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_entry_without_a_program_adjusts_the_profile_found_with_its_id() {
+        let found = discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe");
+        let adjust = CustomProfile { id: "pwsh".into(), name: "Work shell".into(), program: String::new(), args: vec![], cwd: Some("D:\\work".into()), options: ProfileOptions { elevate: true, ..Default::default() } };
+        let merged = merge(&[found], &[adjust]);
+        assert_eq!(merged.len(), 1, "it adds no profile");
+        assert_eq!((merged[0].name.as_str(), merged[0].program.as_str(), merged[0].cwd.as_deref()), ("Work shell", "pwsh.exe", Some("D:\\work")));
+        assert!(!merged[0].custom, "it is still the shell found on the machine");
+        assert!(merged[0].options.elevate, "it takes the options of the entry");
+        let stray = CustomProfile { id: "nope".into(), name: "nope".into(), program: String::new(), args: vec![], cwd: None, options: Default::default() };
+        assert!(merge(&[], &[stray]).is_empty(), "naming no profile, it has nothing to run");
+    }
+
     fn custom(id: &str, program: &str) -> CustomProfile {
         CustomProfile {
             id: id.into(),
@@ -203,6 +232,7 @@ mod tests {
             program: program.into(),
             args: vec!["-x".into()],
             cwd: Some("C:\\work".into()),
+            options: Default::default(),
         }
     }
 
@@ -336,7 +366,13 @@ mod tests {
             ("", ProfileKind::Other),
         ] {
             assert_eq!(kind_for_program(program), kind, "{program}");
-            assert_eq!(merge(&[], &[custom("mine", program)])[0].kind, kind, "{program}");
+            // An entry without a program adjusts a profile found on the machine; it is no profile of its own.
+            let merged = merge(&[], &[custom("mine", program)]);
+            if program.is_empty() {
+                assert!(merged.is_empty());
+            } else {
+                assert_eq!(merged[0].kind, kind, "{program}");
+            }
         }
     }
 

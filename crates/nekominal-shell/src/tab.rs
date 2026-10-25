@@ -53,6 +53,9 @@ pub struct PaneEntry {
     pub usage_stamp: Option<std::time::SystemTime>,
     /// The Git branch of the folder the pane is in.
     pub branch: Option<String>,
+    /// The scheme and the font size of its profile, when the profile sets its own.
+    pub scheme: Option<String>,
+    pub font_size: Option<f64>,
 }
 
 impl Drop for PaneEntry {

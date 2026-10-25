@@ -140,6 +140,7 @@ mod tests {
             program: "node.exe".into(),
             args: vec![],
             cwd: None,
+            options: Default::default(),
         };
         merge(&[found], &[mine])
     }

@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn a_profile_shows_the_logo_of_its_shell_between_the_radio_and_its_name() {
         use nekominal_model::profiles::ProfileKind;
-        let profile = |id: &str, name: &str, icon: &'static str| Profile { id: id.into(), name: name.into(), kind: ProfileKind::Other, icon, program: String::new(), args: Vec::new(), cwd: None, custom: false };
+        let profile = |id: &str, name: &str, icon: &'static str| Profile { id: id.into(), name: name.into(), kind: ProfileKind::Other, icon, program: String::new(), args: Vec::new(), cwd: None, custom: false, options: Default::default() };
         let profiles = [profile("a", "PowerShell", "pwsh"), profile("b", "Ubuntu", "wsl"), profile("c", "Whatever", "terminal")];
         let settings = Settings::default();
         let keymap = keymap();

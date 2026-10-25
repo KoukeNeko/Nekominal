@@ -131,10 +131,30 @@ impl TabBarDensity {
 pub struct CustomProfile {
     pub id: String,
     pub name: String,
+    /// Empty for an entry that only adjusts a profile found on the machine (its id is that profile's).
     pub program: String,
     pub args: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(flatten)]
+    pub options: ProfileOptions,
+}
+
+/// What a profile changes for its own panes, against the settings of all of them.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ProfileOptions {
+    /// Environment variables its program gets, besides those of every pane.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// The color scheme of its panes, instead of the window's.
+    #[serde(rename = "colorScheme", skip_serializing_if = "Option::is_none")]
+    pub color_scheme: Option<String>,
+    /// The size of the text of its panes, in points.
+    #[serde(rename = "fontSize", skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    /// It runs as administrator: from a window that is not, choosing it opens an elevated window (UAC asks first).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub elevate: bool,
 }
 
 /// Text the palette and the suggestions type into the focused pane, by its name: a command with `"\r`" at its end runs it.
@@ -805,24 +825,38 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             continue;
         };
         let program = text(map, "program", "", &path, problems);
-        if program.is_empty() {
+        let given_id = text(map, "id", "", &path, problems);
+        // Without a program an entry can only adjust a profile found on the machine, which its id names.
+        if program.is_empty() && given_id.is_empty() {
             problems.fail(&path, "program", Expected::Required);
             continue;
         }
-        let name = text(map, "name", &program, &path, problems);
+        let name = text(map, "name", if program.is_empty() { &given_id } else { &program }, &path, problems);
         let args = match map.get("args") {
             Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
             _ => Vec::new(),
         };
         let cwd = text(map, "cwd", "", &path, problems);
         // An empty id could never be picked (the empty default profile means "the first one").
-        let id = Some(text(map, "id", "", &path, problems)).filter(|id| !id.is_empty()).unwrap_or_else(|| format!("custom-{name}"));
+        let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| format!("custom-{name}"));
+        let env = match map.get("env") {
+            Some(Value::Object(vars)) => vars.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect(),
+            Some(_) => {
+                problems.fail(&path, "env", Expected::Object);
+                BTreeMap::new()
+            }
+            None => BTreeMap::new(),
+        };
+        let scheme = text(map, "colorScheme", "", &path, problems);
+        let font_size = map.get("fontSize").and_then(Value::as_f64).filter(|size| (FONT_SIZE_RANGE.0..=FONT_SIZE_RANGE.1).contains(size));
+        let elevate = boolean(map, "elevate", false, &path, problems);
         profiles.push(CustomProfile {
             id,
             name,
             program,
             args,
             cwd: (!cwd.is_empty()).then_some(cwd),
+            options: ProfileOptions { env, color_scheme: (!scheme.is_empty()).then_some(scheme), font_size, elevate },
         });
     }
     profiles
@@ -1209,6 +1243,7 @@ mod tests {
                 program: "node.exe".into(),
                 args: vec!["-i".into()],
                 cwd: Some("C:\\work".into()),
+                options: Default::default(),
             }]
         );
         assert_eq!(result.problems.len(), 1);
@@ -1269,7 +1304,7 @@ mod tests {
         let mut changed = Settings::default();
         changed.font.size = 13.5;
         changed.font.family = vec!["Fira Code".into()];
-        changed.profiles.push(CustomProfile { id: "a".into(), name: "A".into(), program: "a.exe".into(), args: vec![], cwd: None });
+        changed.profiles.push(CustomProfile { id: "a".into(), name: "A".into(), program: "a.exe".into(), args: vec![], cwd: None, options: Default::default() });
         let written = serialize(&changed);
         assert_eq!(parse(Some(&written)).settings, changed);
     }
@@ -1320,6 +1355,26 @@ mod tests {
         assert_eq!(Language::Auto.resolve("ja-JP"), Lang::EnUs);
         assert_eq!(Language::ZhTw.resolve("en-US"), Lang::ZhTw);
         assert_eq!(Language::EnUs.resolve("zh-TW"), Lang::EnUs);
+    }
+
+    #[test]
+    fn a_profile_carries_its_own_environment_scheme_font_size_and_elevation() {
+        let result = parsed(r#"{ "profiles": [
+            { "id": "pwsh-admin", "name": "Admin", "program": "pwsh.exe", "env": { "LANG": "zh_TW", "BAD": 1 }, "colorScheme": "Nord", "fontSize": 14, "elevate": true },
+            { "id": "cmd", "cwd": "D:\\" },
+            { "name": "nothing" }
+        ] }"#);
+        let admin = &result.settings.profiles[0];
+        assert_eq!(admin.options.env.get("LANG").map(String::as_str), Some("zh_TW"));
+        assert!(!admin.options.env.contains_key("BAD"), "a value that is not text is left out");
+        assert_eq!((admin.options.color_scheme.as_deref(), admin.options.font_size, admin.options.elevate), (Some("Nord"), Some(14.0), true));
+        assert_eq!((result.settings.profiles[1].program.as_str(), result.settings.profiles[1].cwd.as_deref()), ("", Some("D:\\")), "an id alone adjusts a profile found on the machine");
+        assert_eq!(result.settings.profiles.len(), 2, "no program and no id: nothing to run, reported");
+        assert_eq!(result.problems.len(), 1, "{:?}", result.problems);
+        let written = round_trips(Settings { profiles: vec![admin.clone()], ..Settings::default() });
+        let value: Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(value["profiles"][0]["colorScheme"], "Nord");
+        assert_eq!(value["profiles"][0]["elevate"], true);
     }
 
     #[test]
