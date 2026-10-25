@@ -41,6 +41,69 @@ pub fn set_explorer_menu(on: bool, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The arguments of a task of the jump list: the profile with this id.
+pub fn profile_arguments(id: &str) -> String {
+    format!("-p \"{}\"", id.replace('"', ""))
+}
+
+/// Fills the tasks of the jump list (the right-click menu of the taskbar button) with the profiles, up to as many as
+/// Windows shows: each starts a window with its profile.
+pub fn set_jump_list(profiles: &[(String, String, Option<PathBuf>)]) -> Result<(), String> {
+    use windows::Win32::Storage::EnhancedStorage::PKEY_Title;
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx};
+    use windows::Win32::UI::Shell::Common::{IObjectArray, IObjectCollection};
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{DestinationList, EnumerableObjectCollection, ICustomDestinationList, IShellLinkW, ShellLink};
+    use windows::core::Interface;
+    let exe = launch_exe().ok_or("the program's path is not known")?;
+    let exe = HSTRING::from(exe.as_os_str());
+    // SAFETY: COM objects of this thread, released when they go out of scope; the strings live through the calls.
+    unsafe {
+        // The thread may be in an apartment already (UI Automation): then this only counts it again.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let list: ICustomDestinationList = CoCreateInstance(&DestinationList, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+        let mut slots = 0u32;
+        let _removed: IObjectArray = list.BeginList(&mut slots).map_err(|e| e.to_string())?;
+        let tasks: IObjectCollection = CoCreateInstance(&EnumerableObjectCollection, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+        for (id, name, program) in profiles.iter().take(slots.max(1) as usize) {
+            let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+            link.SetPath(&exe).map_err(|e| e.to_string())?;
+            link.SetArguments(&HSTRING::from(profile_arguments(id))).map_err(|e| e.to_string())?;
+            let icon = program.as_ref().map_or_else(|| exe.clone(), |path| HSTRING::from(path.as_os_str()));
+            let _ = link.SetIconLocation(&icon, 0);
+            let store: IPropertyStore = link.cast().map_err(|e| e.to_string())?;
+            store.SetValue(&PKEY_Title, &lpwstr_value(name)?).map_err(|e| e.to_string())?;
+            store.Commit().map_err(|e| e.to_string())?;
+            tasks.AddObject(&link).map_err(|e| e.to_string())?;
+        }
+        let array: IObjectArray = tasks.cast().map_err(|e| e.to_string())?;
+        list.AddUserTasks(&array).map_err(|e| e.to_string())?;
+        list.CommitList().map_err(|e| e.to_string())
+    }
+}
+
+/// `text` as the value of a string property of the shell (VT_LPWSTR, which the title of a link is): the string in memory of
+/// COM, which the value frees when it is dropped.
+fn lpwstr_value(text: &str) -> Result<windows::Win32::System::Com::StructuredStorage::PROPVARIANT, String> {
+    use windows::Win32::System::Com::CoTaskMemAlloc;
+    use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    let units: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    // SAFETY: a block of the size of the string, filled before it is handed to the value, which owns it from then on.
+    unsafe {
+        let block = CoTaskMemAlloc(units.len() * 2).cast::<u16>();
+        if block.is_null() {
+            return Err("out of memory".into());
+        }
+        std::ptr::copy_nonoverlapping(units.as_ptr(), block, units.len());
+        Ok(PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 { vt: VT_LPWSTR, wReserved1: 0, wReserved2: 0, wReserved3: 0, Anonymous: PROPVARIANT_0_0_0 { pwszVal: windows::core::PWSTR(block) } }),
+            },
+        })
+    }
+}
+
 /// Writes the string value `name` (the default value when none) of the key at `path` under the current user, making the
 /// key when it is not there.
 fn write_string(path: &str, name: Option<&str>, value: &str) -> Result<(), String> {
@@ -75,6 +138,23 @@ mod tests {
         assert!(text.contains("Icon"), "{text}");
         let gone = std::process::Command::new("reg").args(["query", &format!(r"HKCU\{path}")]).output().expect("reg runs");
         assert!(!gone.status.success(), "the key is gone again");
+    }
+
+    #[test]
+    fn a_task_of_the_jump_list_names_its_profile_and_its_title_is_a_string_of_the_shell() {
+        assert_eq!(profile_arguments("wsl-Ubuntu"), r#"-p "wsl-Ubuntu""#);
+        assert_eq!(profile_arguments(r#"a"b"#), r#"-p "ab""#, "a quote cannot end the argument early");
+        let args: Vec<String> = ["-p", "wsl-Ubuntu"].map(str::to_owned).to_vec();
+        assert!(matches!(&crate::cli::parse(&args)[..], [crate::cli::Action::NewTab(t)] if t.profile.as_deref() == Some("wsl-Ubuntu")));
+        let value = lpwstr_value("設定檔").expect("a value");
+        assert_eq!(value.vt(), windows::Win32::System::Variant::VT_LPWSTR);
+        assert_eq!(value.to_string(), "設定檔");
+    }
+
+    #[test]
+    fn the_jump_list_takes_the_profiles() {
+        // The list of this test program, not of Nekominal: it is written and read by Windows like any other.
+        set_jump_list(&[("pwsh".into(), "PowerShell".into(), None)]).expect("the jump list is written");
     }
 
     #[test]

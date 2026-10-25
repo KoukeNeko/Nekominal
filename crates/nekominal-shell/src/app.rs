@@ -561,6 +561,14 @@ impl App {
         if first_window && app.settings.explorer_menu {
             app.sync_explorer_menu();
         }
+        // The taskbar button's menu lists the profiles, each starting a window with it.
+        if first_window {
+            let profiles: Vec<(String, String, Option<std::path::PathBuf>)> =
+                app.profiles.iter().zip(&app.programs).map(|(p, program)| (p.id.clone(), p.name.clone(), program.clone())).collect();
+            if let Err(e) = crate::integration::set_jump_list(&profiles) {
+                util::log(&format!("jump list: {e}"));
+            }
+        }
         app.relayout();
         // What the command line asks for (a folder, a profile, a program, more tabs and panes) is what the first window
         // opens, instead of the saved session.
