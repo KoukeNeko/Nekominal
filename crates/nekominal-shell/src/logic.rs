@@ -457,6 +457,19 @@ pub const TAB_COLORS: [(nekominal_model::strings::Text, (u8, u8, u8)); 8] = {
     ]
 };
 
+/// The file name "export the text" offers for a tab called `label`: the label without what Windows forbids in a name,
+/// "terminal" when nothing is left, with `.txt`.
+pub fn export_file_name(label: &str) -> String {
+    let clean: String = label.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) || c.is_control() { '_' } else { c }).collect();
+    let clean = clean.trim().trim_matches('.').trim();
+    format!("{}.txt", if clean.is_empty() { "terminal" } else { clean })
+}
+
+/// The text as Windows' own editors want it in a file: lines ended by CR LF.
+pub fn with_crlf(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\n', "\r\n")
+}
+
 /// The tabs "close the other tabs" closes when tab `keep` of `count` stays: every other one, the last first, so that
 /// closing one does not move the places of those still to close.
 pub fn tabs_other_than(count: usize, keep: usize) -> Vec<usize> {
@@ -1268,6 +1281,15 @@ mod tests {
             tabs.remove(i);
         }
         assert_eq!(tabs, ["c"]);
+    }
+
+    #[test]
+    fn an_exported_file_is_named_after_its_tab_without_what_windows_forbids() {
+        assert_eq!(export_file_name("Nekominal"), "Nekominal.txt");
+        assert_eq!(export_file_name(r#"C:\src: "build" <2>"#), "C__src_ _build_ _2_.txt");
+        assert_eq!(export_file_name("  ..  "), "terminal.txt", "nothing usable left");
+        assert_eq!(export_file_name("設定"), "設定.txt");
+        assert_eq!(with_crlf("a\nb\r\nc\n"), "a\r\nb\r\nc\r\n", "every line once, never CR CR LF");
     }
 
     #[test]

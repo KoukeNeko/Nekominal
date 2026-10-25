@@ -237,6 +237,8 @@ pub struct App {
     origin: Option<(i32, i32)>,
     /// The line of the open palette is the new name of the tab with this uid, not a search of the commands.
     renaming: Option<u64>,
+    /// How the find bar searches (the case, a regular expression); kept from one opening of the bar to the next.
+    find_options: find::Options,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -375,6 +377,7 @@ fn wired(command: Command) -> bool {
             | Command::PaneSwap(_)
             | Command::PaneToTab
             | Command::PaneBroadcast
+            | Command::EditExport
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -504,6 +507,7 @@ impl App {
             marks_epoch: Instant::now(),
             origin: None,
             renaming: None,
+            find_options: find::Options::default(),
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -1756,6 +1760,7 @@ impl App {
                     self.redraw();
                 }
             }
+            Command::EditExport => self.export_text(),
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
             Command::TabDuplicate => self.duplicate_tab(),
@@ -3788,7 +3793,7 @@ impl App {
     fn find_search(&mut self, query: &str) {
         let matches = match self.focused() {
             Some(entry) if !query.is_empty() => {
-                entry.pane.term.lock().search_all(&find::literal_pattern(query), FIND_LIMIT).unwrap_or_default()
+                entry.pane.term.lock().search_all(&find::pattern(query, self.find_options), FIND_LIMIT).unwrap_or_default()
             }
             _ => Vec::new(),
         };
@@ -3806,13 +3811,13 @@ impl App {
             return;
         }
         let matches = match self.focused() {
-            Some(entry) => entry.pane.term.lock().search_all(&find::literal_pattern(&query), FIND_LIMIT).unwrap_or_default(),
+            Some(entry) => entry.pane.term.lock().search_all(&find::pattern(&query, self.find_options), FIND_LIMIT).unwrap_or_default(),
             None => Vec::new(),
         };
         let Some(old) = self.find.as_ref() else { return };
         let last = matches.len().saturating_sub(1);
         let current = if old.current + 1 >= old.matches.len() { last } else { old.current.min(last) };
-        let status = find::status(&query, current, matches.len());
+        let status = find::status_with(self.find_options, &find::status(&query, current, matches.len()));
         self.find = Some(FindState { matches, current });
         if let Some(popup) = self.popup.as_mut() {
             popup.status = status;
@@ -3832,7 +3837,7 @@ impl App {
     fn find_show_current(&mut self) {
         let Some(find) = self.find.as_ref() else { return };
         let query = self.popup.as_ref().and_then(|p| p.query.clone()).unwrap_or_default();
-        let status = find::status(&query, find.current, find.matches.len());
+        let status = find::status_with(self.find_options, &find::status(&query, find.current, find.matches.len()));
         if let (Some(found), Some(entry)) = (find.matches.get(find.current), self.focused()) {
             let mut core = entry.pane.term.lock();
             let (rows, top) = (core.rows() as i32, -(core.display_offset() as i32));
@@ -4007,6 +4012,34 @@ impl App {
         }
     }
 
+    /// Writes all the text of the focused pane, its scrollback with it, to a file the save dialog asks for.
+    fn export_text(&mut self) {
+        use windows::Win32::UI::Controls::Dialogs::{GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+        let Some(text) = self.focused().map(|entry| entry.pane.term.lock().all_text()) else { return };
+        let mut file = [0u16; 1024];
+        let name: Vec<u16> = logic::export_file_name(&self.tab_label(self.selected)).encode_utf16().take(file.len() - 1).collect();
+        file[..name.len()].copy_from_slice(&name);
+        let mut dialog = OPENFILENAMEW {
+            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: self.hwnd,
+            lpstrFilter: windows::core::w!("Text (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0"),
+            lpstrFile: windows::core::PWSTR(file.as_mut_ptr()),
+            nMaxFile: file.len() as u32,
+            lpstrDefExt: windows::core::w!("txt"),
+            Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+            ..Default::default()
+        };
+        // SAFETY: the structure and the buffer it points at live through the call, which is modal on this thread.
+        if !unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
+            return;
+        }
+        let length = file.iter().position(|unit| *unit == 0).unwrap_or(file.len());
+        let path = String::from_utf16_lossy(&file[..length]);
+        if let Err(e) = std::fs::write(&path, logic::with_crlf(&text)) {
+            util::log(&format!("export: {path}: {e}"));
+        }
+    }
+
     /// Closes the tabs at `indices` together, asking once when shells in them are busy.
     fn request_close_tabs(&mut self, indices: Vec<usize>) {
         if indices.is_empty() {
@@ -4158,6 +4191,17 @@ impl App {
             return;
         }
         if popup.kind == popup::Kind::Find {
+            // Alt+C: the case of the letters counts or not; Alt+R: what is typed is a regular expression or text.
+            if held().alt && !repeat && (vk_code == 0x43 || vk_code == 0x52) {
+                if vk_code == 0x43 {
+                    self.find_options.match_case = !self.find_options.match_case;
+                } else {
+                    self.find_options.regex = !self.find_options.regex;
+                }
+                let query = popup.query.clone().unwrap_or_default();
+                self.find_search(&query);
+                return;
+            }
             // Enter goes to the next match, with Shift to the one before; the arrows go the same ways.
             let forward = match vk_code {
                 VK_RETURN => Some(!held().shift),

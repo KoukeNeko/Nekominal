@@ -13,6 +13,22 @@ pub fn literal_pattern(text: &str) -> String {
     pattern
 }
 
+/// How the bar searches: whether the case of the letters counts (Alt+C), and whether what is typed is a regular expression
+/// (Alt+R) rather than text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    pub match_case: bool,
+    pub regex: bool,
+}
+
+/// The pattern the search takes for `query`: the text as it is, or escaped to be matched literally, with the case of its
+/// letters counting or not. The flag is said in the pattern, so that the search's own rule (ignore the case unless there
+/// is a capital) does not decide.
+pub fn pattern(query: &str, options: Options) -> String {
+    let body = if options.regex { query.to_owned() } else { literal_pattern(query) };
+    format!("{}{body}", if options.match_case { "(?-i)" } else { "(?i)" })
+}
+
 /// What the bar says of the search: nothing before anything is typed, the count when there are matches.
 pub fn status(query: &str, current: usize, total: usize) -> String {
     if query.is_empty() {
@@ -21,6 +37,16 @@ pub fn status(query: &str, current: usize, total: usize) -> String {
         "0".to_owned()
     } else {
         format!("{} / {total}", current + 1)
+    }
+}
+
+/// `status` with the options that are on before it: "Aa" for the case, ".*" for a regular expression.
+pub fn status_with(options: Options, count: &str) -> String {
+    let flags: Vec<&str> = [(options.match_case, "Aa"), (options.regex, ".*")].into_iter().filter(|(on, _)| *on).map(|(_, flag)| flag).collect();
+    match (flags.is_empty(), count.is_empty()) {
+        (true, _) => count.to_owned(),
+        (false, true) => flags.join(" "),
+        (false, false) => format!("{}  {count}", flags.join(" ")),
     }
 }
 
@@ -45,6 +71,17 @@ mod tests {
         assert_eq!(literal_pattern("f(x) [1]"), r"f\(x\) \[1\]");
         assert_eq!(literal_pattern("設定 ABC"), "設定 ABC");
         assert_eq!(literal_pattern(r"C:\dir"), r"C:\\dir");
+    }
+
+    #[test]
+    fn the_options_decide_the_case_and_whether_the_query_is_escaped() {
+        let plain = Options::default();
+        assert_eq!(pattern("a.b", plain), r"(?i)a\.b", "text, any case");
+        assert_eq!(pattern("Ab", Options { match_case: true, ..plain }), "(?-i)Ab", "text, its case");
+        assert_eq!(pattern(r"err(or)?\d+", Options { regex: true, ..plain }), r"(?i)err(or)?\d+", "a regular expression as typed");
+        assert_eq!(status_with(plain, "3 / 12"), "3 / 12");
+        assert_eq!(status_with(Options { match_case: true, regex: true }, "3 / 12"), "Aa .*  3 / 12");
+        assert_eq!(status_with(Options { regex: true, ..plain }, ""), ".*", "the options show before anything is typed");
     }
 
     #[test]

@@ -1147,6 +1147,16 @@ impl TerminalCore {
         self.term.history_size()
     }
 
+    /// All the text the terminal holds, the scrollback and the screen, as lines; the blank lines after the last text are
+    /// left out. What "export the text" writes to a file.
+    pub fn all_text(&self) -> String {
+        let (top, bottom) = (self.term.topmost_line().0, self.term.bottommost_line().0);
+        let text = self.text_between((top, 0), (bottom, self.term.last_column().0));
+        let mut text = text.trim_end_matches(['\n', '\r', ' ']).to_owned();
+        text.push('\n');
+        text
+    }
+
     /// Another program takes the place of the one that ran. What the old one left in the emulator goes: the alternate
     /// screen, the modes it set (mouse reports, bracketed paste, a changed scroll region), a keyboard protocol it
     /// pushed and the reports of an agent. The screen it drew moves into the scrollback, so it stays to be read, and

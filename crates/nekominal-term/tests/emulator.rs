@@ -868,6 +868,22 @@ fn search_finds_matches_in_scrollback_with_smart_case() {
     assert_eq!(core.text_between(digits[0].start, digits[0].end), "Alpha 50 beta");
     assert!(core.search_all("(", 10).is_err());
     assert_eq!(core.search_all("alpha", 5).unwrap().len(), 5, "limit applies");
+    // A flag in the pattern wins over smart case: the find bar's "match case" and its default.
+    assert_eq!(core.search_all("(?-i)alpha", 1000).unwrap().len(), 1, "case counts: only the lowercase line");
+    assert_eq!(core.search_all("(?i)Alpha", 1000).unwrap().len(), 61, "case ignored though the pattern has a capital");
+}
+
+#[test]
+fn all_text_is_the_scrollback_and_the_screen_without_trailing_blank_lines() {
+    let mut core = TerminalCore::new(20, 5, CoreConfig { scrollback_lines: 100, ..CoreConfig::default() });
+    for i in 0..12 {
+        feed(&mut core, &format!("line {i}\r\n"));
+    }
+    let text = core.all_text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.first(), Some(&"line 0"), "from the oldest line of the scrollback");
+    assert_eq!(lines.last(), Some(&"line 11"), "to the last line written, no blank rows after it");
+    assert_eq!(lines.len(), 12);
 }
 
 #[test]
