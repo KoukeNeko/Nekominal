@@ -1610,6 +1610,13 @@ fn decstr_soft_reset_clears_modes_and_attributes_but_keeps_screen_and_cursor() {
 }
 
 #[test]
+fn decstr_inside_a_synchronized_update_keeps_the_cursor_the_update_moved() {
+    let mut core = core(20, 12);
+    feed(&mut core, "\x1b[?2026h\x1b[10;10H\x1b[!p\x1b[?2026l");
+    assert_eq!(core.cursor_cell(), (9, 9));
+}
+
+#[test]
 fn decstr_resets_the_sniffed_mouse_extensions_and_ris_does_too() {
     let mut core = core(20, 3);
     feed(&mut core, "\x1b[?9h\x1b[?1015h\x1b[?1016h");

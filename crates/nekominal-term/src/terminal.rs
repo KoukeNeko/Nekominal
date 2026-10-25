@@ -770,6 +770,11 @@ impl TerminalCore {
 
     /// DECSTR (`CSI ! p`), which alacritty_terminal does not implement. Cursor position and screen content stay.
     fn soft_reset(&mut self) {
+        // Inside a synchronized update the emulator has not applied the bytes before DECSTR yet, so its cursor is
+        // stale: apply them first, or the cursor is put back where the update found it.
+        if self.is_sync_pending() {
+            self.processor.stop_sync(&mut self.term);
+        }
         let (line, column) = self.cursor_cell();
         self.advance_emulator(SOFT_RESET);
         // DECSTBM homes the cursor; DECSTR must not move it.
