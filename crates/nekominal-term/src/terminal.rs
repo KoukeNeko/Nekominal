@@ -289,7 +289,7 @@ pub struct StyledRun {
     pub underline: bool,
 }
 
-fn cell_color(color: Color) -> CellColor {
+pub(crate) fn cell_color(color: Color) -> CellColor {
     match color {
         Color::Spec(rgb) => CellColor::Rgb(rgb.r, rgb.g, rgb.b),
         Color::Indexed(index) => CellColor::Indexed(index),
@@ -1168,19 +1168,51 @@ impl TerminalCore {
     /// clears the blank grid that goes inactive; the alternate grid then returns, cut or padded to the new size and
     /// not reflowed, with its content and cursor as the program left them.
     fn resize_hidden_primary(&mut self, target: TermDims) {
+        self.with_hidden_primary(|core| {
+            core.clear_rows_the_cut_drops(target.screen_lines);
+            core.reflow_into_blank_rows(target.columns);
+            core.term.resize(target);
+        });
+    }
+
+    /// Runs `work` with the primary grid active while the alternate screen is shown (see `resize_hidden_primary`); the
+    /// alternate grid comes back cut or padded to the size the work left.
+    fn with_hidden_primary<R>(&mut self, work: impl FnOnce(&mut Self) -> R) -> R {
         // `swap_alt` loads the kitty bits from the top of the stack, and `CSI = flags ; mode u` changes the bits
         // without touching the stack: the swaps below would turn the program's flags into the stack's.
         let kitty = ansi::KeyboardModes::from_bits_truncate(self.kitty_flags());
         let blank = Grid::new(self.term.screen_lines(), self.term.columns(), 0);
         let mut alternate = mem::replace(self.term.grid_mut(), blank);
         self.term.swap_alt();
-        self.clear_rows_the_cut_drops(target.screen_lines);
-        self.reflow_into_blank_rows(target.columns);
-        self.term.resize(target);
+        let result = work(self);
         self.term.swap_alt();
-        alternate.resize(false, target.screen_lines, target.columns);
+        alternate.resize(false, self.term.screen_lines(), self.term.columns());
         *self.term.grid_mut() = alternate;
         self.term.set_keyboard_mode(kitty, ansi::KeyboardModesApplyBehavior::Replace);
+        result
+    }
+
+    /// The primary buffer, scrollback and screen, as text with SGR for a later run to show again (bounded by
+    /// `restore::SAVED_ROWS` and `SAVED_BYTES`); empty when it holds nothing. A full-screen program on the alternate
+    /// screen (vim, an agent's full-screen view) is left out: what is saved is the shell under it.
+    pub fn saved_text(&mut self) -> String {
+        let text = |core: &mut Self| crate::restore::grid_text(core.term.grid(), crate::restore::SAVED_ROWS, crate::restore::SAVED_BYTES);
+        if self.term.mode().contains(TermMode::ALT_SCREEN) { self.with_hidden_primary(text) } else { text(self) }
+    }
+
+    /// Shows `saved` (what [`TerminalCore::saved_text`] wrote in an earlier run) and a dim line `label` under it, before
+    /// the program of a restored pane starts. Only its text and SGR are fed (`restore::sanitize`), so nothing of the old
+    /// session acts again. The screen is then cleared into the scrollback: the restored text stays above, to be scrolled
+    /// to, and the program starts at the top of an empty screen.
+    pub fn show_restored(&mut self, saved: &str, label: &str) {
+        let mut text = crate::restore::sanitize(saved);
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push_str("\x1b[0m\r\n");
+        }
+        text.push_str(&format!("\x1b[0;2m── {} ──\x1b[0m\r\n\x1b[H\x1b[2J", crate::restore::sanitize(label)));
+        self.feed(text.as_bytes());
+        // Text and colours ask nothing of anyone; what the feed reported is not the new program's.
+        self.take_events();
     }
 
     pub fn scroll_display(&mut self, scroll: Scroll) {

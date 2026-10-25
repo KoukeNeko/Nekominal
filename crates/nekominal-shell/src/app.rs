@@ -49,7 +49,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, clipboard, design, find, icons, mark, motion, textfield, update, welcome,
+    access, agent, buffers, clipboard, design, find, icons, mark, motion, textfield, update, welcome,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -827,6 +827,12 @@ impl App {
 
     /// A pane that runs profile in directory (the directory of the profile when there is none).
     fn make_entry_with(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>) -> Result<PaneEntry, String> {
+        self.make_entry_restoring(id, size_px, profile, directory, None)
+    }
+
+    /// `make_entry_with` for a pane of a restored session: `restored`, the text it held and the line shown under it,
+    /// goes into its terminal before its shell starts.
+    fn make_entry_restoring(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>, restored: Option<(String, String)>) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
         let mut config = self.renderer_config();
         config.font_size_pt = zoomed(profile.options.font_size.unwrap_or(self.settings.font.size), self.zoom);
@@ -844,7 +850,12 @@ impl App {
         let session = agent::new_session();
         let config = self.spawn_config(profile, directory, &session, cols as u16, rows as u16);
         let core = logic::core_config(&self.settings);
-        let pane = Pane::spawn_woken(config, core, wake).map_err(|e| format!("pty: {e}"))?;
+        let pane = Pane::spawn_prepared(config, core, wake, |term| {
+            if let Some((text, label)) = &restored {
+                term.show_restored(text, label);
+            }
+        })
+        .map_err(|e| format!("pty: {e}"))?;
         Ok(PaneEntry {
             id,
             pane,
@@ -5270,12 +5281,23 @@ impl App {
             return;
         }
         let Some(path) = store::session_path() else { return };
+        // The text of each pane, for a restore to show again; none is kept while restoring is off.
+        let buffer_dir = if self.settings.restore_session { buffers::dir() } else { None };
+        let stamp = buffers::stamp();
+        let mut kept = Vec::new();
         let tabs = self
             .tabs
             .iter()
             .map(|tab| TabRecord {
                 layout: tab.tree.clone(),
-                panes: tab.panes.iter().map(|entry| (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone() })).collect(),
+                panes: tab
+                    .panes
+                    .iter()
+                    .map(|entry| {
+                        let buffer = buffer_dir.as_deref().and_then(|dir| buffers::save(dir, stamp, &mut kept, &mut entry.pane.term.lock()));
+                        (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone(), buffer })
+                    })
+                    .collect(),
                 active: tab.focused,
                 zoomed: tab.zoomed.then_some(tab.focused),
                 name: tab.name.clone(),
@@ -5295,6 +5317,10 @@ impl App {
         if let Err(e) = store::save(&path, &session.to_json()) {
             util::log(&format!("session: {e}"));
         }
+        // The files of an earlier save, and of panes closed since, go: only what this session refers to stays.
+        if let Some(dir) = buffers::dir() {
+            buffers::prune(&dir, &kept);
+        }
     }
 
     /// Starts the tabs of the saved session. False when there is nothing to restore (or nothing could be started).
@@ -5311,7 +5337,10 @@ impl App {
             let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
                 let pane = record.panes.get(&id);
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
-                self.make_entry_with(id, size, profile, pane.and_then(|pane| pane.cwd.as_deref()))
+                let restored = pane.and_then(|pane| pane.buffer.as_deref()).and_then(buffers::take).map(|(text, written)| {
+                    (text, Text::PaneRestored.format(self.language(), &[&buffers::local_time(written)]))
+                });
+                self.make_entry_restoring(id, size, profile, pane.and_then(|pane| pane.cwd.as_deref()), restored)
             });
             if let Some(mut tab) = restored {
                 (tab.name, tab.color) = (record.name.clone(), record.color.filter(|c| *c < logic::TAB_COLORS.len()));

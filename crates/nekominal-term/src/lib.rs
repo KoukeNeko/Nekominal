@@ -7,6 +7,7 @@ pub mod guard;
 pub mod links;
 pub mod terminal;
 pub mod osc;
+pub mod restore;
 pub mod sniffer;
 pub mod theme;
 

@@ -280,6 +280,8 @@ texts! {
     LanguageZhTw "language.zhTw" "繁體中文" "繁體中文";
     LanguageEnUs "language.enUs" "English" "English";
     SettingsRestoreSession "settings.restoreSession" "啟動時還原工作階段" "Restore sessions on start";
+    // The line under the text a restored pane shows again from the last session; {0} is when that session ended.
+    PaneRestored "pane.restored" "已還原 {0} 的內容" "Restored from {0}";
     SettingsConfirmClose "settings.confirmClose" "關閉前確認" "Confirm before closing";
     SettingsConfirmCloseThreshold "settings.confirmCloseThreshold" "觸發確認的工作階段數" "Sessions that trigger confirmation";
 
