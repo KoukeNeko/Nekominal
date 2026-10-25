@@ -739,16 +739,14 @@ impl App {
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, or, when the list is
-    /// grouped by state, those that wait for the user, those that work and the others.
+    /// grouped by state, the groups of `logic::sidebar_group`.
     fn sidebar_groups(&self) -> Vec<Vec<usize>> {
         if !self.settings.tabs.group_by_state || self.settings.tabs.layout != settings::TabLayout::List {
             return vec![(0..self.tabs.len()).collect()];
         }
-        let mut groups = vec![Vec::new(), Vec::new(), Vec::new()];
+        let mut groups = vec![Vec::new(); logic::SIDEBAR_GROUPS];
         for (i, tab) in self.tabs.iter().enumerate() {
-            let state = tab.status().state;
-            let group = if logic::is_urgent(state) { 0 } else if state == logic::TabState::Working { 1 } else { 2 };
-            groups[group].push(i);
+            groups[logic::sidebar_group(tab.status().state)].push(i);
         }
         groups
     }
@@ -2791,7 +2789,7 @@ impl App {
         let quiet = col(g.text_secondary());
         let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
         self.ui.push_clip(side);
-        let names = [Text::GroupWaiting, Text::AgentWorking, Text::GroupOther];
+        let names = [Text::GroupWaiting, Text::AgentWorking, Text::AgentDone, Text::GroupOther];
         let small = self.ui.line_height(SMALL_SIZE);
         for (rect, group) in self.layout.headings.clone() {
             let text = names.get(group).map_or("", |name| name.get(lang));
@@ -3048,11 +3046,21 @@ impl App {
         let show = &self.settings.status_bar;
         let mut pieces = Vec::new();
         let Some(entry) = self.focused().filter(|_| show.show) else { return pieces };
-        if !Self::runs_agent(entry) {
-            if show.no_agent == settings::NoAgent::Place
-                && let Some(branch) = entry.branch.clone().filter(|_| show.branch)
-            {
+        // Where the pane is, as the settings choose it: the branch of its folder and the folder, the agent's own folder
+        // first when it said one. With an agent they follow what it says; without one they are all there is.
+        let place = |pieces: &mut Vec<Piece>| {
+            if let Some(branch) = entry.branch.clone().filter(|_| show.branch) {
                 pieces.push(Piece::Glyph('\u{E81C}', branch));
+            }
+            let cwd = entry.usage.as_ref().and_then(|usage| usage.cwd.clone()).or_else(|| entry.cwd.clone());
+            if let Some(cwd) = cwd.filter(|_| show.folder) {
+                let home = std::env::var("USERPROFILE").ok();
+                pieces.push(Piece::Glyph('\u{E8B7}', logic::folder_label(&cwd, home.as_deref())));
+            }
+        };
+        if !Self::runs_agent(entry) {
+            if show.no_agent == settings::NoAgent::Place {
+                place(&mut pieces);
             }
             return pieces;
         }
@@ -3063,7 +3071,9 @@ impl App {
             let state = match record.state {
                 AgentState::Working => logic::TabState::Working,
                 AgentState::Blocked => logic::TabState::Blocked,
-                AgentState::Done | AgentState::Idle => logic::TabState::Done,
+                AgentState::Done => logic::TabState::Done,
+                // Idle says nothing, in the bar as on the tab (`logic::tab_status` passes over it).
+                AgentState::Idle => logic::TabState::Idle,
                 AgentState::Error => logic::TabState::Error,
             };
             if let Some(text) = state_text(state) {
@@ -3086,6 +3096,7 @@ impl App {
                 pieces.push(Piece::Text(time));
             }
         }
+        place(&mut pieces);
         pieces
     }
 

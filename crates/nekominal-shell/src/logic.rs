@@ -114,6 +114,21 @@ pub enum TabState {
     Attention,
 }
 
+/// The groups of the sidebar when it lists the tabs by state, in their order: what waits for the user (an agent's
+/// question, a failure, a bell or a notification out of sight), what works, what is done (an agent that finished and
+/// waits for the next message), and the rest.
+pub const SIDEBAR_GROUPS: usize = 4;
+
+/// The group of [`SIDEBAR_GROUPS`] a tab in this state goes in.
+pub fn sidebar_group(state: TabState) -> usize {
+    match state {
+        TabState::Blocked | TabState::Error | TabState::Attention => 0,
+        TabState::Working => 1,
+        TabState::Done => 2,
+        TabState::Idle => 3,
+    }
+}
+
 /// A reason for a pane to want attention that no agent record gives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attention {
@@ -1306,6 +1321,15 @@ pub fn step_number(value: f64, steps: i32, range: Range) -> f64 {
 mod tests {
     use nekominal_model::layout::{Axis, Node, UNIT};
     use nekominal_model::settings::TabTitle;
+
+    #[test]
+    fn a_finished_agent_has_a_group_of_its_own_and_a_bell_goes_with_what_waits() {
+        assert_eq!(sidebar_group(TabState::Done), 2, "not with the idle shells");
+        assert_eq!(sidebar_group(TabState::Attention), sidebar_group(TabState::Blocked));
+        assert_eq!(sidebar_group(TabState::Error), 0);
+        assert_eq!(sidebar_group(TabState::Working), 1);
+        assert_eq!(sidebar_group(TabState::Idle), SIDEBAR_GROUPS - 1);
+    }
 
     #[test]
     fn a_path_becomes_a_file_uri_the_link_checks_take() {
