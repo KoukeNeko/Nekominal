@@ -134,17 +134,16 @@ impl Descriptor {
         (self.set)(settings, (self.get)(&Settings::default()));
     }
 
-    /// The names the row can be found by besides its label: its options, the names of the colour schemes and the key.
-    fn other_names(&self, lang: Lang) -> Vec<String> {
+    /// The names the row can be found by besides its label: its options, the names of the colour schemes (the user's own
+    /// among them) and the key.
+    fn other_names(&self, lang: Lang, schemes: &[themes::Scheme]) -> Vec<String> {
         let mut names = Vec::new();
         match self.control {
             Control::Toggle => {
                 names.extend([Text::ToggleOff, Text::ToggleOn].map(|text| text.get(lang).to_owned()));
             }
             Control::Choice(options) | Control::Layouts(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
-            // shortcut: the search of the drawer finds the row by the built-in names only; pass the settings in if
-            // the user's own schemes should find it too.
-            Control::Themes => names.extend(themes::theme_names(&[]).map(str::to_owned)),
+            Control::Themes => names.extend(themes::theme_names(schemes).map(str::to_owned)),
             Control::Slider(_) | Control::Number(_) | Control::Profiles | Control::Text => {}
         }
         names.push(self.id.to_owned());
@@ -502,12 +501,17 @@ fn best(query: &str, texts: &[String], bonus: f64) -> Option<f64> {
 /// the colour schemes, the key in `settings.json` and the shortcuts bound to a command also find it. An empty query
 /// finds nothing: the drawer then shows the section that is chosen.
 pub fn search(query: &str, lang: Lang, keymap: &Keymap) -> Vec<Row> {
+    search_with(query, lang, keymap, &[])
+}
+
+/// [`search`], the user's own colour schemes (`schemes`) also finding the row of the colour scheme by their names.
+pub fn search_with(query: &str, lang: Lang, keymap: &Keymap, schemes: &[themes::Scheme]) -> Vec<Row> {
     if query.trim().is_empty() {
         return Vec::new();
     }
     let settings = TABLE.iter().map(|row| {
         let label = best(query, &[row.label(lang).to_owned()], LABEL_BONUS);
-        let other = best(query, &row.other_names(lang), 0.0);
+        let other = best(query, &row.other_names(lang, schemes), 0.0);
         (Row::Setting(row), label.into_iter().chain(other).max_by(f64::total_cmp))
     });
     let keys = key_rows().map(|command| {
@@ -741,6 +745,16 @@ mod tests {
         assert_eq!(first("語言", Lang::ZhTw), "language");
         assert!(search("   ", Lang::ZhTw, &keymap).is_empty());
         assert!(search("zzzzqqqq", Lang::EnUs, &keymap).is_empty());
+    }
+
+    #[test]
+    fn a_colour_scheme_of_ones_own_finds_the_row_of_the_colour_scheme() {
+        let keymap = keymap();
+        let mut mine = themes::scheme("Nord").clone();
+        mine.name = "Zebrafish Night".into();
+        let found = |schemes: &[themes::Scheme]| search_with("zebrafish", Lang::EnUs, &keymap, schemes).into_iter().any(|row| row == Row::Setting(find("theme").unwrap()));
+        assert!(found(&[mine]));
+        assert!(!found(&[]));
     }
 
     #[test]

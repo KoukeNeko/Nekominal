@@ -320,9 +320,9 @@ impl Frame {
 }
 
 /// The rows on show: the matches of the query, or the section.
-pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
+pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Scheme]) -> Vec<Entry> {
     if !page.query.trim().is_empty() {
-        let mut found: Vec<Entry> = settings_ui::search(&page.query, lang, keymap)
+        let mut found: Vec<Entry> = settings_ui::search_with(&page.query, lang, keymap, schemes)
             .into_iter()
             .map(|row| match row {
                 settings_ui::Row::Setting(descriptor) => Entry::Setting(descriptor),
@@ -466,7 +466,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     // The column of the sections at the left: the search line on top, a line a section (with what a search finds in it),
     // and the button for the file at the bottom.
     let searching = !page.query.trim().is_empty();
-    let entries = entries(page, lang, view.keymap);
+    let entries = entries(page, lang, view.keymap, &view.settings.schemes);
     let nav = Rect::new(ox, oy, NAV.min(width / 2.0), height);
     item(&mut items, nav, None, Visual::Plate(Fill::Strip), false);
     let (inner_x, inner_w) = (nav.x + NAV_PAD, (nav.w - 2.0 * NAV_PAD).max(0.0));

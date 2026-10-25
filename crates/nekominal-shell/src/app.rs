@@ -2247,7 +2247,7 @@ impl App {
             sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section, tab_bounds(i))).collect(),
             search_label: Text::SettingsSearch.get(lang).to_owned(),
             query: page.query.clone(),
-            rows: settings_page::entries(page, lang, &self.keymap)
+            rows: settings_page::entries(page, lang, &self.keymap, &self.settings.schemes)
                 .iter()
                 .map(|entry| match entry {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
