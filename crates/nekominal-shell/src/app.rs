@@ -2181,7 +2181,8 @@ impl App {
                 continue;
             }
             let chip = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
-            let plate = Rect::new(chip.x, chip.y + 4.0, chip.w, chip.h - 8.0);
+            // As tall as the bar, like the plates of its buttons.
+            let plate = Rect::new(chip.x, 0.0, chip.w, layout::TITLE_HEIGHT - 1.0);
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
             if Some(i) == dragged {
@@ -2191,7 +2192,7 @@ impl App {
                 self.ui.pop_clip();
             } else if hover && !selected {
                 // The selected tab has its line: a plate under the pointer is for the others.
-                widgets::plate(&mut self.ui, plate, col(g.hover()));
+                self.bar_plate(plate, State::hover(true));
             }
             let close = Layout::close_button(chip).filter(|_| selected || hover);
             let right = close.map_or(chip.x + chip.w - 8.0, |c| c.x - design::GAP);
