@@ -14,6 +14,7 @@ use nekominal_model::{
     commands::{self, Command},
     keybindings,
     palette::{self, PaletteAction, PaletteTab},
+    profile_edit,
     keymap::{self, Keymap, Modifiers},
     layout::{Axis, PaneId},
     menu::{APP_MENU, MenuRow},
@@ -202,6 +203,8 @@ pub struct App {
     /// Every profile a tab can open, the default among them, and the program file of each, for its icon.
     profiles: Vec<Profile>,
     programs: Vec<Option<std::path::PathBuf>>,
+    /// The shells found on the machine at start, which the profiles of the settings are merged over again when they change.
+    found: Vec<DiscoveredProfile>,
     /// What the settings page remembers while its window is open, and that window.
     page: Option<Page>,
     settings_win: Option<SettingsWin>,
@@ -504,6 +507,7 @@ impl App {
             profile,
             programs: all.iter().map(|p| nekominal_pty::profiles::resolve_program(&p.program)).collect(),
             profiles: all,
+            found,
             page: None,
             settings_win: None,
             last_alert: None,
@@ -2115,6 +2119,9 @@ impl App {
                     settings_page::Entry::About => (format!("Nekominal {}", update::CURRENT), settings_page::update_note(&self.update_check(), lang)),
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
+                    settings_page::Entry::NewProfile => (Text::ProfileNew.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
+                    settings_page::Entry::ProfileField(field) => (field.label().get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| if *field == profile_edit::Field::Elevate { (if p.options.elevate { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned() } else { profile_edit::text(p, *field) })),
                 })
                 .collect(),
             focused: page.focus,
@@ -3196,7 +3203,7 @@ impl App {
         let page = self.page.as_ref()?;
         let ui = &mut self.ui;
         let update = self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed);
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some() };
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some() };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 
@@ -3413,7 +3420,7 @@ impl App {
         let page = self.page.as_ref()?;
         let (scroll, editing) = (page.scroll, page.editing.as_ref().map(|(id, _)| *id));
         let frame = self.page_frame()?;
-        let wanted = editing.map_or(Part::Search, Part::Field);
+        let wanted = editing.map_or(Part::Search, |id| profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField));
         let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
         let rect = frame.on_screen(item, scroll);
         let left = rect.x + if editing.is_some() { 10.0 } else { 40.0 };
@@ -3437,7 +3444,12 @@ impl App {
     /// The text field of a row stops being edited; what was typed becomes the value.
     fn page_commit_edit(&mut self) {
         let Some((id, text)) = self.page.as_mut().and_then(|page| page.editing.take()) else { return };
-        if let Some(row) = settings_ui::find(id) {
+        if let Some(field) = profile_edit::Field::from_id(id) {
+            // What the profile cannot take (an empty name, a scheme there is none of) is dropped: the field shows the value it had.
+            self.edit_profile(|settings, profile| {
+                profile_edit::set(settings, profile, field, &text);
+            });
+        } else if let Some(row) = settings_ui::find(id) {
             self.set_setting(row, Value::Text(text));
         }
         self.page_redraw();
@@ -3489,7 +3501,13 @@ impl App {
                 (page.capturing, page.reserved) = (None, false);
             }
         }
-        if !matches!(part, Some(Part::Field(id)) if self.page.as_ref().and_then(|p| p.editing.as_ref()).is_some_and(|(editing, _)| *editing == id)) {
+        let editing = self.page.as_ref().and_then(|p| p.editing.as_ref()).map(|(id, _)| *id);
+        let same_field = match part {
+            Some(Part::Field(id)) => editing == Some(id),
+            Some(Part::ProfileField(field)) => editing == Some(field.id()),
+            _ => false,
+        };
+        if !same_field {
             self.page_commit_edit();
         }
         let Some(part) = part else { return Capture::None };
@@ -3498,6 +3516,7 @@ impl App {
             Part::Nav(i) => {
                 if let Some(page) = self.page.as_mut() {
                     (page.section, page.query, page.scroll, page.focus) = (i, String::new(), 0.0, None);
+                    page.profile = None;
                     page.cursor = textfield::Cursor::default();
                 }
             }
@@ -3560,6 +3579,7 @@ impl App {
                     open_link(&format!("https://github.com/{login}"));
                 }
             }
+            Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) => self.press_profile_part(part),
         }
         self.page_redraw();
         capture
@@ -3604,13 +3624,21 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+        });
+        let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
+            settings_page::Entry::NewProfile => Some(Part::NewProfile),
+            settings_page::Entry::ProfileHeader => Some(Part::ProfileBack),
+            settings_page::Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
+            _ => None,
         });
         match vk_code {
+            // Out of the editor of a profile, back to the list.
+            VK_ESCAPE if page.query.is_empty() && page.profile.is_some() => self.show_profile(None),
             VK_ESCAPE => {
                 if page.query.is_empty() {
                     self.request_close_settings();
@@ -3641,6 +3669,11 @@ impl App {
             VK_RETURN if !repeat && focused_command.is_some() => {
                 if let (Some(command), Some(page)) = (focused_command, self.page.as_mut()) {
                     (page.capturing, page.reserved) = (Some(command), false);
+                }
+            }
+            VK_RETURN if !repeat && focused_profile_part.is_some() => {
+                if let Some(part) = focused_profile_part {
+                    self.press_profile_part(part);
                 }
             }
             VK_RETURN if !repeat => {
@@ -3683,6 +3716,65 @@ impl App {
         }
         self.page_redraw();
         true
+    }
+
+    /// Shows the editor of the profile with this id on the Profiles page, or the list with none.
+    fn show_profile(&mut self, id: Option<String>) {
+        if let Some(page) = self.page.as_mut() {
+            (page.profile, page.scroll, page.focus, page.editing) = (id, 0.0, None, None);
+        }
+    }
+
+    /// Changes the profile whose editor the page shows, and keeps the settings.
+    fn edit_profile(&mut self, change: impl FnOnce(&mut Settings, &Profile)) {
+        let Some(id) = self.page.as_ref().and_then(|page| page.profile.clone()) else { return };
+        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else { return };
+        let before = self.settings.clone();
+        change(&mut self.settings, &profile);
+        self.apply_settings(&before);
+    }
+
+    /// What a press does on the buttons and rows of the profiles: open an editor, add, delete, edit a field.
+    fn press_profile_part(&mut self, part: Part) {
+        match part {
+            Part::EditProfile(i) => {
+                let id = self.profiles.get(i).map(|p| p.id.clone());
+                if id.is_some() {
+                    self.show_profile(id);
+                }
+            }
+            Part::ProfileBack => self.show_profile(None),
+            Part::NewProfile => {
+                let before = self.settings.clone();
+                let base = self.profile.clone();
+                let name = Text::ProfileNew.get(self.language());
+                let id = profile_edit::add(&mut self.settings, &base, &self.profiles, name);
+                self.apply_settings(&before);
+                self.show_profile(Some(id));
+            }
+            Part::DeleteProfile => {
+                let Some(id) = self.page.as_ref().and_then(|page| page.profile.clone()) else { return };
+                let before = self.settings.clone();
+                profile_edit::remove(&mut self.settings, &id);
+                self.apply_settings(&before);
+                // A shell found on the machine is still there, as it was found.
+                if !self.profiles.iter().any(|p| p.id == id) {
+                    self.show_profile(None);
+                }
+            }
+            Part::ProfileField(profile_edit::Field::Elevate) => self.edit_profile(profile_edit::toggle_elevate),
+            Part::ProfileField(field) => {
+                let text = self.page.as_ref().and_then(|page| page.profile.as_deref()).and_then(|id| self.profiles.iter().find(|p| p.id == id)).map(|p| profile_edit::text(p, field));
+                if let (Some(text), Some(page)) = (text, self.page.as_mut())
+                    && page.editing.is_none()
+                {
+                    page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
+                    page.editing = Some((field.id(), text));
+                }
+            }
+            _ => {}
+        }
+        self.page_redraw();
     }
 
     /// Changes the shortcuts the user bound, puts the new key map in effect and keeps the settings.
@@ -3851,6 +3943,13 @@ impl App {
             }
             if effects.scrollback {
                 entry.pane.set_scrollback_lines(self.settings.scrollback as usize);
+            }
+        }
+        if self.settings.profiles != before.profiles {
+            self.profiles = profiles::merge(&self.found, &self.settings.profiles);
+            self.programs = self.profiles.iter().map(|p| nekominal_pty::profiles::resolve_program(&p.program)).collect();
+            if let Some(profile) = profiles::resolve_default(&self.profiles, &self.settings.default_profile) {
+                self.profile = profile.clone();
             }
         }
         if self.settings.default_profile != before.default_profile

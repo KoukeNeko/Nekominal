@@ -293,6 +293,17 @@ texts! {
 
     SettingsScrollback "settings.scrollback" "捲動緩衝區行數" "Scrollback lines";
     SettingsDefaultProfile "settings.defaultProfile" "預設設定檔" "Default profile";
+    ProfileName "profile.name" "名稱" "Name";
+    ProfileProgram "profile.program" "程式" "Program";
+    ProfileArgs "profile.args" "引數" "Arguments";
+    ProfileCwd "profile.cwd" "起始資料夾" "Starting folder";
+    ProfileEnv "profile.env" "環境變數" "Environment variables";
+    ProfileElevate "profile.elevate" "以系統管理員身分執行" "Run as administrator";
+    ProfileSameAsWindow "profile.sameAsWindow" "與視窗相同" "Same as the window";
+    ProfileNew "profile.new" "新增設定檔" "New profile";
+    ProfileDelete "profile.delete" "刪除設定檔" "Delete profile";
+    ProfileRestore "profile.restore" "還原為偵測到的設定" "Restore as found";
+    ProfileBack "profile.back" "所有設定檔" "All profiles";
     SettingsCopyOnSelect "settings.copyOnSelect" "選取時複製" "Copy on select";
     SettingsRightClick "settings.rightClick" "右鍵" "Right click";
     RightClickSmart "rightClick.smart" "複製或貼上" "Copy or paste";

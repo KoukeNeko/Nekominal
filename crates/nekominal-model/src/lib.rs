@@ -8,6 +8,7 @@ pub mod keymap;
 pub mod layout;
 pub mod menu;
 pub mod palette;
+pub mod profile_edit;
 pub mod profiles;
 pub mod session;
 pub mod settings;

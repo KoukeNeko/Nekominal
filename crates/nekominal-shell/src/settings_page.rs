@@ -9,6 +9,7 @@
 use nekominal_model::{
     commands::Command,
     keymap::Keymap,
+    profile_edit::{self, Field},
     profiles::Profile,
     settings::Settings,
     settings_ui::{self, Control, Descriptor, Range, Section, Value},
@@ -86,6 +87,8 @@ pub struct Page {
     /// The caret and the selection of the search line, and of the text field being edited.
     pub cursor: crate::textfield::Cursor,
     pub edit_cursor: crate::textfield::Cursor,
+    /// The id of the profile whose editor the Profiles page shows instead of the list.
+    pub profile: Option<String>,
 }
 
 /// What a rectangle does when it is pressed.
@@ -116,6 +119,13 @@ pub enum Part {
     /// Opens the repository, and the GitHub page of the contributor at this index of `update::contributors`.
     OpenRepo,
     Contributor(usize),
+    /// The editor of the profile at this index, a new profile, back to the list, and deleting (or putting back) the one edited.
+    EditProfile(usize),
+    NewProfile,
+    ProfileBack,
+    DeleteProfile,
+    /// A row of the editor of a profile: its text field, or the switch of running as administrator.
+    ProfileField(Field),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,6 +196,11 @@ pub enum Entry {
     /// Where its source is, and who has worked on it.
     Repo,
     Contributors,
+    /// Under the profiles: the button that adds one.
+    NewProfile,
+    /// The editor of a profile: the way back and its name on top, then a row a field.
+    ProfileHeader,
+    ProfileField(Field),
 }
 
 impl Entry {
@@ -195,6 +210,7 @@ impl Entry {
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
             Entry::About | Entry::Repo | Entry::Contributors => Section::About,
+            Entry::NewProfile | Entry::ProfileHeader | Entry::ProfileField(_) => Section::Profiles,
         }
     }
 }
@@ -239,6 +255,8 @@ pub struct View<'a> {
     pub settings: &'a Settings,
     pub keymap: &'a Keymap,
     pub profiles: &'a [Profile],
+    /// The shells found on the machine: deleting the entry of one of them puts it back as found rather than removing it.
+    pub found: &'a [nekominal_model::profiles::DiscoveredProfile],
     /// The program file of each profile, in the order of `profiles`, for its icon.
     pub programs: &'a [Option<std::path::PathBuf>],
     pub claude: &'a crate::agent::Claude,
@@ -301,11 +319,14 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
     let section = Section::ALL[page.section.min(Section::ALL.len() - 1)];
     if section == Section::Keys {
         settings_ui::key_rows().map(Entry::Key).collect()
+    } else if section == Section::Profiles && page.profile.is_some() {
+        std::iter::once(Entry::ProfileHeader).chain(Field::ALL.map(Entry::ProfileField)).collect()
     } else {
         // The Agent page starts with the agents it knows, before the rows of the table.
         let agents = (section == Section::Agents).then_some(Entry::Claude);
         let about = if section == Section::About { vec![Entry::About, Entry::Repo, Entry::Contributors] } else { Vec::new() };
-        agents.into_iter().chain(about).chain(settings_ui::in_section(section).map(Entry::Setting)).collect()
+        let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile);
+        agents.into_iter().chain(about).chain(settings_ui::in_section(section).map(Entry::Setting)).chain(new_profile).collect()
     }
 }
 
@@ -387,6 +408,19 @@ fn wrap(widths: &[f32], room: f32, gap: f32) -> Vec<(usize, f32)> {
 
 fn item(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, visual: Visual, scrolls: bool) {
     items.push(Item { rect, part, visual, scrolls });
+}
+
+/// A button with a glyph before its text.
+fn icon_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, text: &str, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+    item(items, Rect::new(rect.x + 8.0, rect.y, 16.0, rect.h), None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
+    item(items, Rect::new(rect.x + 28.0, rect.y, (rect.w - 32.0).max(0.0), rect.h), None, label(text, 13.0, Tone::Text, false, Align::Left), true);
+}
+
+/// The profile whose editor the page shows.
+pub fn edited<'a>(page: &Page, view: &View<'a>) -> Option<&'a Profile> {
+    let id = page.profile.as_deref()?;
+    view.profiles.iter().find(|p| p.id == id)
 }
 
 fn label(text: impl Into<String>, size: f32, tone: Tone, bold: bool, align: Align) -> Visual {
@@ -569,6 +603,69 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 }
                 y += height;
             }
+            Entry::NewProfile => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                let text = Text::ProfileNew.get(lang);
+                let button = Rect::new(rect.x + INNER, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
+                icon_button(&mut items, button, Part::NewProfile, '\u{E710}', text, hover);
+                y += ROW;
+            }
+            Entry::ProfileHeader => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                let mid = rect.y + (rect.h - CONTROL) / 2.0;
+                let text = Text::ProfileBack.get(lang);
+                let back = Rect::new(rect.x + INNER, mid, measure(text, 13.0, false) + 40.0, CONTROL);
+                icon_button(&mut items, back, Part::ProfileBack, '\u{E72B}', text, hover);
+                let profile = edited(page, view);
+                let mut right = rect.x + rect.w - INNER;
+                // A profile written in the settings is deleted; the entry of a shell found on the machine is taken out, which
+                // puts it back as found. A shell nothing changes has neither.
+                if let Some(profile) = profile.filter(|p| profile_edit::has_entry(view.settings, &p.id)) {
+                    let action = if view.found.iter().any(|f| f.id == profile.id) { Text::ProfileRestore } else { Text::ProfileDelete };
+                    let text = action.get(lang);
+                    let button = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
+                    item(&mut items, button, Some(Part::DeleteProfile), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::DeleteProfile) }), true);
+                    item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                    right = button.x - GAP;
+                }
+                let name_x = back.x + back.w + 2.0 * GAP;
+                let name = profile.map_or(String::new(), |p| p.name.clone());
+                item(&mut items, Rect::new(name_x, rect.y, (right - name_x).max(0.0), rect.h), None, label(name, 13.0, Tone::Text, true, Align::Left), true);
+                y += ROW;
+            }
+            Entry::ProfileField(field) => {
+                let profile = edited(page, view);
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                let part = Part::ProfileField(field);
+                // The switch is pressed anywhere on its row, like a toggle of the table.
+                item(&mut items, rect, (field == Field::Elevate).then_some(part), Visual::Plate(Fill::Row { focus }), true);
+                let room = rect.w - 2.0 * INNER;
+                item(&mut items, Rect::new(rect.x + INNER, rect.y, room / 3.0, rect.h), None, label(field.label().get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let right = rect.x + rect.w - INNER;
+                if field == Field::Elevate {
+                    let switch = Rect::new(right - SWITCH.0, rect.y + (rect.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
+                    let on = profile.is_some_and(|p| p.options.elevate);
+                    item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(part) }), true);
+                } else {
+                    let width = room * 2.0 / 3.0 - GAP;
+                    let field_rect = Rect::new(right - width, rect.y + (rect.h - CONTROL) / 2.0, width, CONTROL);
+                    let editing = page.editing.as_ref().filter(|(id, _)| *id == field.id()).map(|(_, text)| text.clone());
+                    item(&mut items, field_rect, Some(part), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
+                    let inner = Rect::new(field_rect.x + 10.0, field_rect.y, field_rect.w - 20.0, field_rect.h);
+                    let shown = match editing {
+                        Some(text) => Visual::Edit { text, cursor: Some(page.edit_cursor), placeholder: String::new() },
+                        None => {
+                            let text = profile.map(|p| profile_edit::text(p, field)).unwrap_or_default();
+                            let text = if text.is_empty() { field.placeholder().map_or("", |t| t.get(lang)).to_owned() } else { text };
+                            label(text, 13.0, Tone::Quiet, false, Align::Left)
+                        }
+                    };
+                    item(&mut items, inner, None, shown, true);
+                }
+                y += ROW;
+            }
             Entry::Setting(row) => {
                 let id = row.id;
                 // A control that does not fit beside the label goes on a line of its own under it.
@@ -708,7 +805,12 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             let mark = Rect::new(radio.x + radio.w + 12.0, line.y + (line.h - MARK_SIZE) / 2.0, MARK_SIZE, MARK_SIZE);
                             item(&mut items, mark, None, Visual::Program { path: view.programs.get(i).cloned().flatten(), mark: profile_mark(profile.icon) }, true);
                             let name_x = mark.x + MARK_SIZE + MARK_GAP;
-                            item(&mut items, Rect::new(name_x, line.y, (line.x + line.w - INNER - name_x).max(0.0), line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
+                            let edit = Rect::new(line.x + line.w - INNER - CONTROL, line.y + (line.h - CONTROL) / 2.0, CONTROL, CONTROL);
+                            item(&mut items, Rect::new(name_x, line.y, (edit.x - GAP - name_x).max(0.0), line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
+                            // Its editor, pressed over the row that makes it the default.
+                            let part = Part::EditProfile(i);
+                            item(&mut items, edit, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                            item(&mut items, edit, None, Visual::Glyph { ch: '\u{E70F}', size: 11.0, tone: Tone::Quiet }, true);
                             y += RADIO_ROW;
                         }
                     }
@@ -743,7 +845,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -762,6 +864,7 @@ mod tests {
             let own = match section {
                 Section::Agents => 1,
                 Section::About => 3,
+                Section::Profiles => 1,
                 _ => 0,
             };
             let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own };
@@ -822,7 +925,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for (width, height) in [crate::settings_window::MIN_SIZE, (900.0, 650.0), (1400.0, 900.0)] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -884,7 +987,7 @@ mod tests {
         let keymap = keymap();
         let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
         let parts = |update: Check, scoop: bool| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
             let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let texts: Vec<String> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect();
             (frame.items.iter().filter_map(|item| item.part).filter(|p| matches!(p, Part::Update | Part::CheckUpdate)).collect::<Vec<_>>(), texts)
@@ -896,7 +999,7 @@ mod tests {
         assert_eq!(newer, [Part::Update, Part::CheckUpdate]);
         assert!(texts.iter().any(|t| t.contains("9.9.9")));
         let all: Vec<Part> = {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, scoop: true };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, scoop: true };
             build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5).items.iter().filter_map(|item| item.part).collect()
         };
         assert!(all.contains(&Part::OpenRepo), "the repository can be opened");
@@ -929,7 +1032,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, programs: &[None, None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         // The profiles come first on their page: the Agent page has a mark of its own.
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
@@ -942,6 +1045,36 @@ mod tests {
             assert!(name.rect.x >= item.rect.x + item.rect.w, "{}: the name is right of the logo", profile.name);
             assert!(item.rect.y >= name.rect.y && item.rect.y + item.rect.h <= name.rect.y + name.rect.h, "{}: the logo is within the line of the name", profile.name);
         }
+    }
+
+    #[test]
+    fn a_profile_is_edited_on_its_own_page_and_only_an_entry_of_the_settings_can_be_deleted() {
+        use nekominal_model::profiles::{DiscoveredProfile, ProfileKind};
+        let profile = |id: &str| Profile { id: id.into(), name: id.into(), kind: ProfileKind::Other, icon: "terminal", program: "x.exe".into(), args: Vec::new(), cwd: None, custom: false, options: Default::default() };
+        let profiles = [profile("pwsh"), profile("mine")];
+        let found = [DiscoveredProfile { id: "pwsh".into(), name: "pwsh".into(), kind: "powershell", icon: "pwsh", program: "x.exe".into(), args: Vec::new() }];
+        let mut settings = Settings::default();
+        settings.profiles.push(nekominal_model::settings::CustomProfile { id: "mine".into(), name: "mine".into(), program: "x.exe".into(), args: Vec::new(), cwd: None, options: Default::default() });
+        let keymap = keymap();
+        let section = Section::ALL.iter().position(|s| *s == Section::Profiles).unwrap();
+        let build_for = |page: &Page| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+            build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
+        };
+        let parts = |frame: &Frame| frame.items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
+        let list = build_for(&Page { section, ..Page::default() });
+        assert!(matches!(list.entries.last(), Some(Entry::NewProfile)));
+        assert!(parts(&list).contains(&Part::EditProfile(0)) && parts(&list).contains(&Part::EditProfile(1)) && parts(&list).contains(&Part::NewProfile));
+        let edit = list.items.iter().find(|item| item.part == Some(Part::EditProfile(1))).unwrap();
+        assert_eq!(list.part_at(0.0, edit.rect.x + 2.0, edit.rect.y + 2.0), Some(Part::EditProfile(1)), "the pencil wins over the row under it");
+        let mine = build_for(&Page { section, profile: Some("mine".into()), ..Page::default() });
+        assert_eq!(mine.entries.len(), 1 + Field::ALL.len());
+        for field in Field::ALL {
+            assert!(parts(&mine).contains(&Part::ProfileField(field)), "{field:?}");
+        }
+        assert!(parts(&mine).contains(&Part::DeleteProfile) && parts(&mine).contains(&Part::ProfileBack));
+        let pwsh = build_for(&Page { section, profile: Some("pwsh".into()), ..Page::default() });
+        assert!(!parts(&pwsh).contains(&Part::DeleteProfile), "a shell nothing changes has nothing to put back");
     }
 
     #[test]
@@ -998,7 +1131,7 @@ mod tests {
         for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

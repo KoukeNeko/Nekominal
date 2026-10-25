@@ -534,7 +534,7 @@ mod tests {
 
     /// The keys of `settings.json` the drawer has no row for, and why.
     const NOT_SHOWN: &[(&str, &str)] = &[
-        ("profiles", "the profiles page lists them; adding one is an edit of the file"),
+        ("profiles", "the profiles page lists and edits them, a page of its own for each"),
         ("snippets", "the palette and the suggestions list them; adding one is an edit of the file"),
         ("keybindings", "the shortcuts page edits them"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
