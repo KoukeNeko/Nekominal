@@ -124,6 +124,13 @@ pub struct Parsed {
 impl Session {
     /// The file contents. Pane ids are not written: panes are identified by their place in the tree.
     pub fn to_json(&self) -> String {
+        let text = serde_json::to_string_pretty(&self.to_value())
+            .expect("a JSON value always serializes");
+        format!("{text}\n")
+    }
+
+    /// The object of [`Session::to_json`], for a file that keeps several sessions (the saved layouts).
+    pub fn to_value(&self) -> Value {
         let mut root = Map::new();
         root.insert("version".into(), json!(VERSION));
         if let Some(placement) = &self.window {
@@ -134,9 +141,7 @@ impl Session {
             "tabs".into(),
             Value::Array(self.tabs.iter().map(tab_to_value).collect()),
         );
-        let text = serde_json::to_string_pretty(&Value::Object(root))
-            .expect("a JSON value always serializes");
-        format!("{text}\n")
+        Value::Object(root)
     }
 
     /// Reads the file contents. Pane ids are assigned afresh, from 1, in tab order and then tree order, so
