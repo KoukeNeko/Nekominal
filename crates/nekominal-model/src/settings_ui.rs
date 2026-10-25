@@ -142,7 +142,9 @@ impl Descriptor {
                 names.extend([Text::ToggleOff, Text::ToggleOn].map(|text| text.get(lang).to_owned()));
             }
             Control::Choice(options) | Control::Layouts(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
-            Control::Themes => names.extend(themes::theme_names().map(str::to_owned)),
+            // shortcut: the search of the drawer finds the row by the built-in names only; pass the settings in if
+            // the user's own schemes should find it too.
+            Control::Themes => names.extend(themes::theme_names(&[]).map(str::to_owned)),
             Control::Slider(_) | Control::Number(_) | Control::Profiles | Control::Text => {}
         }
         names.push(self.id.to_owned());
@@ -250,7 +252,7 @@ pub const TABLE: &[Descriptor] = &[
         get: |s| Value::Text(s.theme.clone()),
         set: |s, v| {
             if let Value::Text(name) = v
-                && themes::is_known(&name)
+                && themes::is_known(&s.schemes, &name)
             {
                 s.theme = name;
             }
@@ -538,6 +540,7 @@ mod tests {
         ("profiles", "the profiles page lists and edits them, a page of its own for each"),
         ("snippets", "the palette and the suggestions list them; adding one is an edit of the file"),
         ("keybindings", "the shortcuts page edits them"),
+        ("schemes", "the colour scheme tiles list them; adding one is an edit of the file or the import from Windows Terminal"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),

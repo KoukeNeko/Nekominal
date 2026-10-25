@@ -59,8 +59,8 @@ pub enum Action {
     ShowSetting(&'static str),
     /// Open a tab with the profile at this index.
     NewTab(usize),
-    /// Use the color scheme with this name.
-    ColorScheme(&'static str),
+    /// Use the color scheme at this index of `themes::theme_names` of the settings.
+    ColorScheme(usize),
     /// A command of the menu of the window (`SC_MINIMIZE`, `SC_CLOSE`…), for the window the menu was opened on.
     Window(u32),
     /// Name the tab the line of the palette is for after what the line holds, or give it back its automatic title.

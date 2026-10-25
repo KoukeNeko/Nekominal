@@ -202,7 +202,7 @@ pub fn set(settings: &mut Settings, profile: &Profile, field: Field, typed: &str
 
 /// Gives `profile` the scheme with this name, or the window's with none. A name there is no scheme of changes nothing.
 pub fn set_scheme(settings: &mut Settings, profile: &Profile, scheme: Option<&str>) {
-    if scheme.is_some_and(|name| !themes::is_known(name)) {
+    if scheme.is_some_and(|name| !themes::is_known(&settings.schemes, name)) {
         return;
     }
     entry(settings, profile).options.color_scheme = scheme.map(str::to_owned);

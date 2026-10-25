@@ -241,6 +241,7 @@ texts! {
     ProblemFontFamily "problem.fontFamily" "需要字型名稱的陣列或以逗號分隔的文字" "Needs an array of font names or a comma separated text";
     ProblemOneOf "problem.oneOf" "需要 {0} 其中之一" "Needs one of {0}";
     ProblemRequired "problem.required" "必填" "Required";
+    ProblemColor "problem.color" "需要 #RRGGBB 格式的顏色" "Needs a color such as #RRGGBB";
     ProblemUnknownTheme "problem.unknownTheme" "找不到「{0}」" "No color scheme \"{0}\"";
     ProblemUnknownCommand "problem.unknownCommand" "找不到命令" "No such command";
     ProblemBadShortcut "problem.badShortcut" "「{0}」不是有效的快速鍵" "\"{0}\" is not a valid shortcut";
