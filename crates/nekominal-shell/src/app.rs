@@ -1916,24 +1916,37 @@ impl App {
                 }
             }
             Command::TabSelectLeft | Command::TabSelectRight => {
-                if let Some(index) = Command::tab_neighbour(self.selected, self.tabs.len(), command == Command::TabSelectRight) {
-                    self.select(index);
+                // In the order on show: the sidebar grouped by state lists the tabs by group.
+                let order: Vec<usize> = self.groups.concat();
+                if let Some(at) = order.iter().position(|i| *i == self.selected)
+                    && let Some(next) = Command::tab_neighbour(at, order.len(), command == Command::TabSelectRight)
+                {
+                    self.select(order[next]);
                 }
             }
             Command::TabMoveLeft | Command::TabMoveRight => {
-                if let Some(index) = Command::tab_neighbour(self.selected, self.tabs.len(), command == Command::TabMoveRight) {
+                // A tab moves one place, not past the ends (there it would trade places with the tab at the other end), and
+                // not while the sidebar orders the tabs by state, where its place is not the user's to choose.
+                let right = command == Command::TabMoveRight;
+                let grouped = self.groups.len() > 1;
+                let index = if right { self.selected + 1 } else { self.selected.wrapping_sub(1) };
+                if !grouped && index < self.tabs.len() {
                     self.forget_tab_positions();
-                    self.tabs.swap(self.selected, index);
+                    let tab = self.tabs.remove(self.selected);
+                    self.tabs.insert(index, tab);
                     self.selected = index;
                     self.relayout();
                 }
             }
             Command::ViewZoomIn | Command::ViewZoomOut | Command::ViewZoomReset => {
+                // Kept where it still changes something: past the largest size a press of Zoom Out must be felt at once.
+                let base = self.settings.font.size;
                 self.zoom = match command {
                     Command::ViewZoomIn => self.zoom + 1.0,
                     Command::ViewZoomOut => self.zoom - 1.0,
                     _ => 0.0,
-                };
+                }
+                .clamp(settings::FONT_SIZE_RANGE.0 - base, settings::FONT_SIZE_RANGE.1 - base);
                 for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
                     if let Err(e) = entry.view.set_font_size(zoomed(entry.font_size.unwrap_or(self.settings.font.size), self.zoom)) {
                         util::log(&format!("zoom: {e}"));
@@ -3624,7 +3637,8 @@ impl App {
             Part::Nav(i) => {
                 if let Some(page) = self.page.as_mut() {
                     (page.section, page.query, page.scroll, page.focus) = (i, String::new(), 0.0, None);
-                    page.profile = None;
+                    // A field left open with a refused value goes with the page it was on.
+                    (page.profile, page.editing, page.error) = (None, None, None);
                     page.cursor = textfield::Cursor::default();
                 }
             }
@@ -3829,7 +3843,7 @@ impl App {
     /// Shows the editor of the profile with this id on the Profiles page, or the list with none.
     fn show_profile(&mut self, id: Option<String>) {
         if let Some(page) = self.page.as_mut() {
-            (page.profile, page.scroll, page.focus, page.editing) = (id, 0.0, None, None);
+            (page.profile, page.scroll, page.focus, page.editing, page.error) = (id, 0.0, None, None, None);
         }
     }
 
@@ -3898,6 +3912,7 @@ impl App {
                 let Some(current) = self.edited_profile().map(|p| profile_edit::text(p, field)) else { return };
                 let owner = self.settings_win.as_ref().map_or(self.hwnd, |win| win.hwnd);
                 let chosen = if field == profile_edit::Field::Program { crate::pick::program(owner, &current) } else { crate::pick::folder(owner, &current) };
+                self.wake_after_dialog();
                 if let Some(path) = chosen {
                     self.edit_profile(|settings, profile| profile_edit::set(settings, profile, field, &path));
                 }
@@ -4168,8 +4183,11 @@ impl App {
             // `\.` so that a drive root (`C:\`) does not escape the closing quote.
             args.push_str(&format!(" -d \"{}\\.\"", directory.trim_end_matches('\\').replace('"', "")));
         }
+        // Declined (the user said no to Windows' prompt) or failed: the tab opens here after all, without elevation, rather
+        // than nowhere.
         if let Err(e) = crate::integration::run_elevated(&args) {
             util::log(&format!("elevate: {e}"));
+            return false;
         }
         true
     }
@@ -4233,7 +4251,6 @@ impl App {
     /// renderer and the renderers of the panes. The sessions in the panes go on as they were; a menu that was open closes.
     pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
         self.close_popup();
-        self.gpu = gpu.clone();
         let size = self.surface.size();
         self.surface.detach();
         self.surface = gpu::create_surface(gpu, self.hwnd, size)?;
@@ -4246,6 +4263,9 @@ impl App {
             win.surface.detach();
             win.surface = gpu::create_surface(gpu, win.hwnd, size)?;
         }
+        // Last: a rebuild that failed halfway leaves the window on the lost device, so that the next frame says so again
+        // and the rebuild is tried once more.
+        self.gpu = gpu.clone();
         self.relayout();
         self.redraw();
         self.page_redraw();
@@ -4691,7 +4711,8 @@ impl App {
         let core = entry.pane.term.lock();
         let (Some(text), Some(lines)) = (core.selection_text(), core.selection_runs()) else { return };
         drop(core);
-        let theme = &self.theme;
+        // The colours the pane shows: its profile's scheme when it has one.
+        let theme = &self.pane_theme(entry.scheme.as_deref());
         let color = |c: nekominal_term::CellColor| match c {
             nekominal_term::CellColor::Default => r::Color::Default,
             nekominal_term::CellColor::Indexed(i) => r::Color::Indexed(i),
@@ -4701,6 +4722,13 @@ impl App {
         let font = self.settings.font.family.first().cloned().unwrap_or_default();
         let html = clipboard::html_fragment(&lines, &font, |run| (rgb(theme.resolve_fg(color(run.fg))), rgb(theme.resolve_bg(color(run.bg)))), (rgb(theme.foreground), rgb(theme.background)));
         clipboard::write_rich(&text, &html);
+    }
+
+    /// A modal dialog ran while this window was borrowed: the wakes of the panes in that time were dropped, with their
+    /// pending marks left set, so that they would never wake the window again. One wake now takes all of them.
+    fn wake_after_dialog(&self) {
+        // SAFETY: posting to our own window.
+        unsafe { let _ = PostMessageW(Some(self.hwnd), WM_WAKE, WPARAM(0), LPARAM(0)); }
     }
 
     /// Writes all the text of the focused pane, its scrollback with it, to a file the save dialog asks for.
@@ -4721,7 +4749,9 @@ impl App {
             ..Default::default()
         };
         // SAFETY: the structure and the buffer it points at live through the call, which is modal on this thread.
-        if !unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
+        let saved = unsafe { GetSaveFileNameW(&mut dialog) }.as_bool();
+        self.wake_after_dialog();
+        if !saved {
             return;
         }
         let length = file.iter().position(|unit| *unit == 0).unwrap_or(file.len());
@@ -5005,9 +5035,9 @@ impl App {
     /// Writes the tabs, the layout of their panes, the directories they were in and the place of the window, for the next run
     /// to start where this one stopped. A window with no tab left writes an empty session: the next run starts afresh.
     pub fn save_session(&self) {
-        // A window with no tab (one that handed its tab to an elevated window) must not wipe the session of the others, and
-        // a session a newer version wrote is kept for it.
-        if self.tabs.is_empty() || self.newer_session {
+        // A session a newer version wrote is kept for it. A process started for a folder or a command (Explorer's menu, the
+        // taskbar's list, an elevated window) is a window beside the user's own: it must not write over their session.
+        if self.newer_session || !crate::cli::launch().is_empty() {
             return;
         }
         let Some(path) = store::session_path() else { return };

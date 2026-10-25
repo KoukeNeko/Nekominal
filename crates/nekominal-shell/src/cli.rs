@@ -77,7 +77,9 @@ pub fn parse(args: &[String]) -> Vec<Action> {
 /// `"C:\"` becomes on a command line, its backslash escaping the quote (an entry written by an older version).
 fn folder(raw: &str) -> String {
     let fixed = raw.strip_suffix('"').map_or_else(|| raw.to_owned(), |rest| format!("{rest}\\"));
-    std::path::Path::new(&fixed).components().collect::<std::path::PathBuf>().display().to_string()
+    let path: std::path::PathBuf = std::path::Path::new(&fixed).components().collect();
+    // A relative folder (`-d .`) is of the folder this was started in, which an elevated copy of it would not share.
+    std::path::absolute(&path).unwrap_or(path).display().to_string()
 }
 
 #[cfg(test)]
@@ -111,6 +113,8 @@ mod tests {
         for (raw, wanted) in [(r"D:\src\.", r"D:\src"), (r"C:\\.", r"C:\"), (r#"C:""#, r"C:\"), (r"D:\a b", r"D:\a b"), (r"C:\", r"C:\")] {
             assert_eq!(folder(raw), wanted, "{raw}");
         }
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(folder("."), here.display().to_string(), "a relative folder is made whole where it was given");
     }
 
     #[test]
