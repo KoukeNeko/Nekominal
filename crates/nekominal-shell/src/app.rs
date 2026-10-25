@@ -2081,6 +2081,8 @@ impl App {
             if !repeat {
                 self.run(command);
                 self.shortcut_keys.push(scan);
+            } else if command.repeats() {
+                self.run(command);
             }
             return true;
         }

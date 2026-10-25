@@ -414,6 +414,28 @@ impl Command {
         }
     }
 
+    /// Acts again while its key is held, as moving and scrolling do. Everything that opens, closes or toggles acts once a
+    /// press: a held Ctrl+Shift+T must not open a tab a repeat.
+    pub fn repeats(self) -> bool {
+        matches!(
+            self,
+            Command::TabNext
+                | Command::TabPrevious
+                | Command::TabSelectLeft
+                | Command::TabSelectRight
+                | Command::TabMoveLeft
+                | Command::TabMoveRight
+                | Command::PaneFocus(_)
+                | Command::PaneResize(_)
+                | Command::ScrollPageUp
+                | Command::ScrollPageDown
+                | Command::PromptPrevious
+                | Command::PromptNext
+                | Command::ViewZoomIn
+                | Command::ViewZoomOut
+        )
+    }
+
     /// Listed in the command palette. Hidden are the duplicate of Copy, the nine tab numbers and the profile
     /// menu (the palette lists each profile as its own entry).
     pub fn in_palette(self) -> bool {
@@ -487,6 +509,16 @@ mod tests {
 
     use super::*;
     use crate::keymap::{Key, KeyClass, Modifiers, Shortcut, build_keymap};
+
+    #[test]
+    fn moving_and_scrolling_repeat_while_held_and_opening_closing_or_toggling_does_not() {
+        for command in [Command::PaneResize(Direction::Left), Command::TabSelectRight, Command::ScrollPageUp, Command::ViewZoomIn] {
+            assert!(command.repeats(), "{}", command.id());
+        }
+        for command in [Command::TabNew, Command::TabClose, Command::PaneClose, Command::PaneSplitRight, Command::EditPaste, Command::AppPalette, Command::ViewFullscreen, Command::PaneZoom, Command::ViewZoomReset] {
+            assert!(!command.repeats(), "{} acts once a press", command.id());
+        }
+    }
 
     const DIRECTIONS: [Direction; 4] = [
         Direction::Left,
