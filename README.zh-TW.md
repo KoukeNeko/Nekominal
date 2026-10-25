@@ -55,6 +55,10 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
   **等待回應**、**工作中**、**已完成**、**其他**。Ctrl+Shift+U 跳到下一個等你的分頁。
 - **標題列上的 Claude Code。** 在你沒有自己的 status line 時，Nekominal 會交給 Claude Code 一個自己的 status line，
   並顯示模型、context 用量、費用與時間，還有分支與資料夾。
+- **Codex、Gemini CLI 與 Aider 也一樣。** 在 PowerShell 分頁輸入它們時，Nekominal 只在這次執行交給它們自己的 hook
+  （不寫入它們的設定檔，你已經自己設定該 hook 時也不會取代），分頁就會顯示工作中、等待或已完成。
+- **代理程式面板（Ctrl+Shift+G）。** 列出每個視窗中執行 agent 的窗格：狀態、時間、模型、context 與費用，
+  等你的排在最前面，最下方是 Claude Code 今天的費用。選一列就會跳過去。
 - 任何程式都能用 **agent 狀態協定（OSC 7501）**、進度（OSC 9;4）與通知（OSC 9、OSC 777）回報，顯示在它的分頁上，
   視窗在背景時也會提醒工作列。
 
@@ -150,7 +154,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | --- | --- |
 | 新增分頁 · 選擇設定檔 | Ctrl+Shift+T · Ctrl+Shift+N |
 | 下一個分頁 · 第 1–9 個分頁 · 左／右側分頁 | Ctrl+Tab · Ctrl+Shift+1–9 · Ctrl+PageUp／PageDown |
-| 下一個等你的分頁 | Ctrl+Shift+U |
+| 下一個等你的分頁 · 代理程式面板 | Ctrl+Shift+U · Ctrl+Shift+G |
 | 向右分割 · 向下分割 | Alt+Shift+D · Alt+Shift+S |
 | 在窗格間移動 · 調整大小 | Alt+方向鍵 · Alt+Shift+方向鍵 |
 | 放大窗格 · 關閉窗格 | Ctrl+Shift+Z · Ctrl+Shift+W |
