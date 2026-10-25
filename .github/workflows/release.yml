@@ -1,10 +1,10 @@
 name: Release
 
-# Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds and tests the Windows archive, publishes
-# it as a release, and then writes the Scoop manifest into KoukeNeko/scoop-bucket. Run by hand it does everything up to
-# publishing and keeps the archive as an artifact, which is how to try the pipeline.
+# Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds the Windows archives (x64, tested, and
+# ARM64, cross-compiled), publishes them as a release, and then writes the Scoop manifest into KoukeNeko/scoop-bucket. Run by
+# hand it does everything up to publishing and keeps the archives as an artifact, which is how to try the pipeline.
 #
-# This repository is private and Scoop downloads without credentials, so the archive is attached to a release of the bucket
+# This repository is private and Scoop downloads without credentials, so the archives are attached to a release of the bucket
 # (a public repository), tagged nekominal-vX.Y.Z, as well as to the release of this repository. SCOOP_BUCKET_TOKEN is a token
 # that can write to the bucket.
 on:
@@ -27,7 +27,7 @@ env:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -45,7 +45,7 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
       - name: Install the Rust toolchain
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup toolchain install stable --profile minimal --target aarch64-pc-windows-msvc
           rustup default stable
       # Pinned: this job builds what the public bucket serves.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -72,6 +72,9 @@ jobs:
           -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell
       - name: Package
         run: scripts\package.ps1
+      # Cross-compiled with the MSVC ARM64 tools of the image; an ARM64 binary cannot run here, so the tests above are x64's.
+      - name: Package ARM64
+        run: scripts\package.ps1 -Arch arm64
       - uses: actions/upload-artifact@v7
         with:
           name: windows
@@ -121,20 +124,22 @@ jobs:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
         run: |
           tag="nekominal-v$VERSION"
-          zip="Nekominal-$VERSION-windows-x64.zip"
           if gh release view "$tag" -R "$BUCKET" >/dev/null 2>&1; then
             assets=$(gh release view "$tag" -R "$BUCKET" --json assets --jq '.assets[].name')
-            if printf '%s\n' "$assets" | grep -qxF "$zip" && printf '%s\n' "$assets" | grep -qxF "$zip.sha256"; then
-              # A run again rebuilds an archive with other bytes (the zip keeps the time of its files). What is published
-              # stays, and the manifest takes its hash, so an install never meets a hash that does not match.
-              gh release download "$tag" -R "$BUCKET" -p '*.sha256' -D dist --clobber
-            else
-              # An earlier run made the release but not all its files: no manifest names them yet, so this build's go up.
-              gh release upload "$tag" dist/* -R "$BUCKET" --clobber
-            fi
+            for arch in x64 arm64; do
+              zip="Nekominal-$VERSION-windows-$arch.zip"
+              if printf '%s\n' "$assets" | grep -qxF "$zip" && printf '%s\n' "$assets" | grep -qxF "$zip.sha256"; then
+                # A run again rebuilds an archive with other bytes (the zip keeps the time of its files). What is published
+                # stays, and the manifest takes its hash, so an install never meets a hash that does not match.
+                gh release download "$tag" -R "$BUCKET" -p "$zip.sha256" -D dist --clobber
+              else
+                # An earlier run made the release but not all its files: no manifest names them yet, so this build's go up.
+                gh release upload "$tag" "dist/$zip" "dist/$zip.sha256" -R "$BUCKET" --clobber
+              fi
+            done
           else
             gh release create "$tag" dist/* -R "$BUCKET" --title "Nekominal $VERSION" \
-              --notes "The Windows archive of Nekominal $VERSION for the Scoop manifest." --latest=false
+              --notes "The Windows archives of Nekominal $VERSION for the Scoop manifest." --latest=false
           fi
       - uses: actions/checkout@v7
         with:
@@ -145,10 +150,12 @@ jobs:
       - name: Write the manifest
         shell: pwsh
         run: |
-          $name = "Nekominal-$env:VERSION-windows-x64.zip"
-          $hash = ((Get-Content "dist/$name.sha256" -Raw).Trim() -split '\s+')[0]
-          ./scripts/render-scoop-manifest.ps1 -Version $env:VERSION -Sha256 $hash `
-            -Url "https://github.com/$env:BUCKET/releases/download/nekominal-v$env:VERSION/$name" `
+          $base = "https://github.com/$env:BUCKET/releases/download/nekominal-v$env:VERSION"
+          $x64, $arm64 = 'x64', 'arm64' | ForEach-Object { "Nekominal-$env:VERSION-windows-$_.zip" }
+          $hash = { param($name) ((Get-Content "dist/$name.sha256" -Raw).Trim() -split '\s+')[0] }
+          ./scripts/render-scoop-manifest.ps1 -Version $env:VERSION `
+            -Url "$base/$x64" -Sha256 (& $hash $x64) `
+            -Arm64Url "$base/$arm64" -Arm64Sha256 (& $hash $arm64) `
             -Output bucket/bucket/nekominal.json
       - name: Commit the manifest to the bucket
         run: |

@@ -4,12 +4,16 @@ param(
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$Url,
     [Parameter(Mandatory)][string]$Sha256,
+    [Parameter(Mandatory)][string]$Arm64Url,
+    [Parameter(Mandatory)][string]$Arm64Sha256,
     [Parameter(Mandatory)][string]$Output
 )
 
 $ErrorActionPreference = 'Stop'
 
-if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "Not a SHA-256: $Sha256" }
+foreach ($hash in $Sha256, $Arm64Sha256) {
+    if ($hash -notmatch '^[0-9a-fA-F]{64}$') { throw "Not a SHA-256: $hash" }
+}
 
 # The running window is stopped first: Scoop replaces the files of the version in place.
 $stop = 'Get-Process Nekominal -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process'
@@ -24,6 +28,7 @@ $manifest = [ordered]@{
     license      = 'Proprietary'
     architecture = [ordered]@{
         '64bit' = [ordered]@{ url = $Url; hash = $Sha256.ToLowerInvariant() }
+        'arm64' = [ordered]@{ url = $Arm64Url; hash = $Arm64Sha256.ToLowerInvariant() }
     }
     bin           = 'Nekominal.exe'
     shortcuts     = @(, @('Nekominal.exe', 'Nekominal'))
