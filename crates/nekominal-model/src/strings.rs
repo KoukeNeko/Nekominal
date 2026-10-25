@@ -330,6 +330,10 @@ texts! {
     SettingsBellSound "settings.bellSound" "鈴聲音效" "Bell sound";
     BellSoundBackground "bellSound.background" "僅背景" "Background only";
     BellSoundAlways "bellSound.always" "一律" "Always";
+    SettingsToast "settings.toast" "顯示 Windows 通知" "Show Windows notifications";
+    SettingsLongCommand "settings.longCommand" "長指令結束時通知（秒，0 為關閉）" "Notify when a long command ends (seconds, 0 is off)";
+    ToastCommandDone "toast.commandDone" "指令完成，耗時 {0} 秒" "Command finished after {0} s";
+    ToastCommandFailed "toast.commandFailed" "指令失敗，結束代碼 {0}，耗時 {1} 秒" "Command failed with exit code {0} after {1} s";
     SettingsKitty "settings.kitty" "kitty 鍵盤協定" "kitty keyboard protocol";
     SettingsAgentEnvironment "settings.agentEnvironment" "代理程式環境變數" "Agent environment variables";
     SettingsShellIntegration "settings.shellIntegration" "PowerShell 整合" "PowerShell integration";
