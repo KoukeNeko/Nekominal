@@ -22,6 +22,8 @@ pub enum PaletteAction {
     SetColorScheme(String),
     /// Open the settings drawer at the row with this id (`settings_ui::Descriptor::id`).
     OpenSetting(String),
+    /// Type the snippet at this index of the settings into the focused pane.
+    Snippet(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +94,20 @@ pub fn items(
         .collect()
 }
 
+/// An entry per snippet of the settings, by its name: choosing it types the snippet.
+pub fn snippet_items(lang: Lang, snippets: &[crate::settings::Snippet]) -> Vec<PaletteItem> {
+    snippets
+        .iter()
+        .enumerate()
+        .map(|(index, snippet)| PaletteItem {
+            id: format!("snippet.{index}"),
+            label: Text::PaletteSnippet.format(lang, &[&snippet.name]),
+            shortcut: String::new(),
+            action: PaletteAction::Snippet(index),
+        })
+        .collect()
+}
+
 /// The entries matching `query`, best match first; an empty query keeps the order of `items`.
 pub fn search(items: Vec<PaletteItem>, query: &str) -> Vec<PaletteItem> {
     fuzzy::rank(items, query, |item| item.label.as_str())
@@ -126,6 +142,15 @@ mod tests {
             cwd: None,
         };
         merge(&[found], &[mine])
+    }
+
+    #[test]
+    fn a_snippet_is_an_entry_by_its_name_and_found_by_it() {
+        let snippets = [crate::settings::Snippet { name: "git status".into(), input: "git status\r".into() }];
+        let entries = snippet_items(Lang::EnUs, &snippets);
+        assert_eq!(entries[0].label, "Snippet: git status");
+        assert_eq!(entries[0].action, PaletteAction::Snippet(0));
+        assert_eq!(search(entries, "gst").len(), 1);
     }
 
     fn default_items(lang: Lang) -> Vec<PaletteItem> {

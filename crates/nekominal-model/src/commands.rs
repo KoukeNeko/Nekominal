@@ -48,6 +48,8 @@ pub enum Command {
     ViewAlwaysOnTop,
     ViewFocusMode,
     ViewQuake,
+    /// Lists the snippets and the recent commands of PowerShell; the one chosen is typed at the prompt.
+    EditSuggestions,
     EditCopy,
     /// Ctrl+C: copies only while text is selected, otherwise the key reaches the program as an interrupt.
     EditSmartCopy,
@@ -132,6 +134,7 @@ impl Command {
         Command::ViewAlwaysOnTop,
         Command::ViewFocusMode,
         Command::ViewQuake,
+        Command::EditSuggestions,
         Command::EditSmartCopy,
         Command::EditCopy,
         Command::EditPaste,
@@ -213,6 +216,7 @@ impl Command {
             Command::ViewAlwaysOnTop => "view.alwaysOnTop",
             Command::ViewFocusMode => "view.focusMode",
             Command::ViewQuake => "view.quake",
+            Command::EditSuggestions => "edit.suggestions",
             Command::EditCopy => "edit.copy",
             Command::EditSmartCopy => "edit.smartCopy",
             Command::EditPaste => "edit.paste",
@@ -293,6 +297,7 @@ impl Command {
             Command::ViewAlwaysOnTop => Text::ViewAlwaysOnTop,
             Command::ViewFocusMode => Text::ViewFocusMode,
             Command::ViewQuake => Text::ViewQuake,
+            Command::EditSuggestions => Text::EditSuggestions,
             // Copying with and without a selection check is one action, so it keeps one label.
             Command::EditCopy | Command::EditSmartCopy => Text::EditCopy,
             Command::EditPaste => Text::EditPaste,
@@ -373,6 +378,7 @@ impl Command {
             Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport | Command::EditCopyFormatted => &[],
             Command::EditMarkMode => &["Ctrl+Shift+M"],
             Command::ViewAlwaysOnTop | Command::ViewFocusMode | Command::ViewQuake => &[],
+            Command::EditSuggestions => &["Ctrl+Shift+H"],
             Command::EditSmartCopy => &["Ctrl+C"],
             Command::EditCopy => &["Ctrl+Shift+C", "Ctrl+Insert"],
             Command::EditPaste => &["Ctrl+V", "Ctrl+Shift+V", "Shift+Insert"],
@@ -472,6 +478,7 @@ impl Command {
                 | Command::ViewAlwaysOnTop
                 | Command::ViewFocusMode
                 | Command::ViewQuake
+                | Command::EditSuggestions
                 | Command::EditFind
                 | Command::ViewFullscreen
                 | Command::ViewSidebar
@@ -592,9 +599,10 @@ mod tests {
             Command::ViewAlwaysOnTop => 55,
             Command::ViewFocusMode => 56,
             Command::ViewQuake => 57,
+            Command::EditSuggestions => 58,
         }
     }
-    const VARIANTS: usize = 58;
+    const VARIANTS: usize = 59;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -930,6 +938,7 @@ mod tests {
             | Command::ViewAlwaysOnTop
             | Command::ViewFocusMode
             | Command::ViewQuake
+            | Command::EditSuggestions
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar

@@ -137,6 +137,13 @@ pub struct CustomProfile {
     pub cwd: Option<String>,
 }
 
+/// Text the palette and the suggestions type into the focused pane, by its name: a command with `"\r`" at its end runs it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Snippet {
+    pub name: String,
+    pub input: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Font {
@@ -479,6 +486,7 @@ pub struct Settings {
     /// Profile id; empty selects the first discovered profile.
     pub default_profile: String,
     pub profiles: Vec<CustomProfile>,
+    pub snippets: Vec<Snippet>,
     pub copy_on_select: bool,
     pub right_click: RightClick,
     pub paste: PasteSettings,
@@ -531,6 +539,7 @@ impl Default for Settings {
             scrollback: 10_000,
             default_profile: String::new(),
             profiles: Vec::new(),
+            snippets: Vec::new(),
             copy_on_select: false,
             right_click: RightClick::Smart,
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
@@ -819,6 +828,32 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
     profiles
 }
 
+fn read_snippets(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Snippet> {
+    let Some(value) = source.get("snippets") else { return Vec::new() };
+    let Value::Array(entries) = value else {
+        problems.fail("", "snippets", Expected::Array);
+        return Vec::new();
+    };
+    let mut snippets = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let path = format!("snippets[{index}]");
+        let Value::Object(map) = entry else {
+            problems.fail("", &path, Expected::Object);
+            continue;
+        };
+        let input = text(map, "input", "", &path, problems);
+        if input.is_empty() {
+            problems.fail(&path, "input", Expected::Required);
+            continue;
+        }
+        // A snippet without a name is called by what it types, up to its first line.
+        let fallback: String = input.lines().next().unwrap_or_default().chars().take(40).collect();
+        let name = text(map, "name", &fallback, &path, problems);
+        snippets.push(Snippet { name, input });
+    }
+    snippets
+}
+
 fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTreeMap<String, Vec<String>> {
     let Some(value) = source.get("keybindings") else { return BTreeMap::new() };
     let Value::Object(map) = value else {
@@ -938,6 +973,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 1_000_000.0), "", &mut problems) as u32,
         default_profile: text(&root, "defaultProfile", &d.default_profile, "", &mut problems),
         profiles: read_profiles(&root, &mut problems),
+        snippets: read_snippets(&root, &mut problems),
         copy_on_select: boolean(&root, "copyOnSelect", d.copy_on_select, "", &mut problems),
         right_click: one_of(
             &root,
@@ -1284,6 +1320,17 @@ mod tests {
         assert_eq!(Language::Auto.resolve("ja-JP"), Lang::EnUs);
         assert_eq!(Language::ZhTw.resolve("en-US"), Lang::ZhTw);
         assert_eq!(Language::EnUs.resolve("zh-TW"), Lang::EnUs);
+    }
+
+    #[test]
+    fn snippets_are_read_with_their_names_and_written_back() {
+        let result = parsed(r#"{ "snippets": [ { "name": "status", "input": "git status\r" }, { "input": "cargo test -p nekominal-shell" }, { "name": "empty" } ] }"#);
+        assert_eq!(result.problems.len(), 1, "the one without input is reported: {:?}", result.problems);
+        let names: Vec<&str> = result.settings.snippets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["status", "cargo test -p nekominal-shell"], "a snippet without a name is called by what it types");
+        assert_eq!(result.settings.snippets[0].input, "git status\r");
+        let written = round_trips(Settings { snippets: result.settings.snippets.clone(), ..Settings::default() });
+        assert!(written.contains("git status\\r"), "{written}");
     }
 
     #[test]

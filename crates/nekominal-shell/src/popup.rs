@@ -69,6 +69,9 @@ pub enum Action {
     AutoTitle,
     /// Give the selected tab this colour of `logic::TAB_COLORS`, or none.
     TabColor(Option<usize>),
+    /// Type the snippet at this index of the settings; type the suggestion at this index of the list on show.
+    Snippet(usize),
+    Suggestion(usize),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).

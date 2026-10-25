@@ -183,6 +183,10 @@ texts! {
     PaletteGotoTab "palette.gotoTab" "切換到分頁：{0}" "Go to tab: {0}";
     // An entry that opens the settings drawer at a row.
     PaletteSetting "palette.setting" "設定：{0}" "Settings: {0}";
+    PaletteSnippet "palette.snippet" "片段：{0}" "Snippet: {0}";
+    SuggestionHistory "suggestion.history" "最近的指令" "Recent command";
+    SuggestionSnippet "suggestion.snippet" "片段" "Snippet";
+    EditSuggestions "edit.suggestions" "建議（片段與最近的指令）" "Suggestions (snippets and recent commands)";
 
     // Buttons shared by dialogs. A confirmation's button names the action; Paste uses `EditPaste`.
     CommonClose "common.close" "關閉" "Close";

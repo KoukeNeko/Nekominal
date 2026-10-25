@@ -92,6 +92,8 @@ const ICON_SIZE: f32 = 10.0;
 const ICON_NUDGE: f32 = 1.5;
 /// The icon of the program a tab runs, in DIP.
 const TAB_ICON: f32 = 16.0;
+/// The most recent commands the suggestions offer.
+const SUGGESTED_COMMANDS: usize = 200;
 /// The size of the text of the right of the bar, of the second line of a row of the sidebar, the space between the parts
 /// of the right of the bar and the length of the meter of the context, in DIP.
 const PIECE_SIZE: f32 = 12.0;
@@ -237,6 +239,8 @@ pub struct App {
     origin: Option<(i32, i32)>,
     /// The line of the open palette is the new name of the tab with this uid, not a search of the commands.
     renaming: Option<u64>,
+    /// The open palette lists these suggestions (what each says, what it types), not the commands.
+    suggestions: Option<Vec<(String, String)>>,
     /// How the find bar searches (the case, a regular expression); kept from one opening of the bar to the next.
     find_options: find::Options,
     /// Selecting with the keyboard in the focused pane: the caret and where the selection started.
@@ -390,6 +394,7 @@ fn wired(command: Command) -> bool {
             | Command::ViewAlwaysOnTop
             | Command::ViewFocusMode
             | Command::ViewQuake
+            | Command::EditSuggestions
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -519,6 +524,7 @@ impl App {
             marks_epoch: Instant::now(),
             origin: None,
             renaming: None,
+            suggestions: None,
             find_options: find::Options::default(),
             mark: None,
             on_top: false,
@@ -1849,6 +1855,7 @@ impl App {
             }
             Command::EditExport => self.export_text(),
             Command::EditMarkMode => self.toggle_mark_mode(),
+            Command::EditSuggestions => self.open_suggestions(),
             Command::ViewAlwaysOnTop => self.toggle_on_top(),
             Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
             // The drop-down window is the process's, not this window's: the window code shows or makes it.
@@ -3077,7 +3084,8 @@ impl App {
     /// The command palette: what matches `query` of the commands the shell can run and the open tabs.
     fn palette_rows(&self, query: &str) -> Vec<popup::Row> {
         let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
-        let items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs);
+        let mut items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs);
+        items.extend(palette::snippet_items(self.language(), &self.settings.snippets));
         palette::search(items, query)
             .into_iter()
             .filter_map(|item| {
@@ -3087,6 +3095,7 @@ impl App {
                     PaletteAction::NewTab(id) => popup::Action::NewTab(self.profiles.iter().position(|p| p.id == id)?),
                     PaletteAction::SetColorScheme(name) => popup::Action::ColorScheme(themes::theme_names().find(|n| *n == name)?),
                     PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
+                    PaletteAction::Snippet(index) => popup::Action::Snippet(index),
                     PaletteAction::Run(_) => return None,
                 };
                 Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false, mark: None, program: None })
@@ -4002,7 +4011,13 @@ impl App {
             self.find_search(&query);
             return;
         }
-        let rows = if self.renaming.is_some() { self.rename_rows(&query) } else { self.palette_rows(&query) };
+        let rows = if self.renaming.is_some() {
+            self.rename_rows(&query)
+        } else if self.suggestions.is_some() {
+            self.suggestion_rows(&query)
+        } else {
+            self.palette_rows(&query)
+        };
         let Some(popup) = self.popup.as_mut() else { return };
         popup.set_rows(rows);
         if self.renaming.is_some() {
@@ -4045,6 +4060,54 @@ impl App {
             popup.hover = Some(selected);
             popup.reveal(selected);
         }
+    }
+
+    /// Types `text` into the focused pane (and the others of its tab while it broadcasts), as if from the keyboard.
+    fn type_text(&mut self, text: &str) {
+        for entry in self.typed_panes() {
+            entry.pane.send_text(text);
+        }
+        self.redraw();
+    }
+
+    /// The suggestions: the snippets of the settings, then the recent commands of PowerShell, in the palette; the one
+    /// chosen is typed at the prompt (a snippet as written, a command without running it).
+    fn open_suggestions(&mut self) {
+        let mut list: Vec<(String, String)> = self.settings.snippets.iter().map(|s| (s.name.clone(), s.input.clone())).collect();
+        let history = std::env::var_os("APPDATA").map(|appdata| std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"));
+        if let Some(text) = history.and_then(|path| std::fs::read_to_string(path).ok()) {
+            list.extend(logic::recent_commands(&text, SUGGESTED_COMMANDS).into_iter().map(|command| (command.clone(), command)));
+        }
+        let anchor = self.screen_point((self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale, (layout::TITLE_HEIGHT + 16.0) * self.scale);
+        self.open_popup(Vec::new(), popup::Kind::Palette, anchor);
+        if self.popup.is_some() {
+            self.suggestions = Some(list);
+            self.query_changed();
+        }
+    }
+
+    /// The suggestions that match `query`, best first; the snippets marked as such, the commands as recent ones.
+    fn suggestion_rows(&self, query: &str) -> Vec<popup::Row> {
+        let lang = self.language();
+        let Some(list) = self.suggestions.as_ref() else { return Vec::new() };
+        let snippets = self.settings.snippets.len();
+        let mut found: Vec<(f64, usize)> = list.iter().enumerate().filter_map(|(i, (label, _))| nekominal_model::fuzzy::fuzzy_score(query, label).map(|score| (score, i))).collect();
+        // The best first; with no query the order of the list (the snippets, then the latest commands).
+        if !query.trim().is_empty() {
+            found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        }
+        found
+            .into_iter()
+            .take(SUGGESTED_COMMANDS)
+            .map(|(_, i)| popup::Row {
+                label: list[i].0.lines().next().unwrap_or_default().to_owned(),
+                hint: if i < snippets { Text::SuggestionSnippet } else { Text::SuggestionHistory }.get(lang).to_owned(),
+                action: Some(popup::Action::Suggestion(i)),
+                current: false,
+                mark: None,
+                program: None,
+            })
+            .collect()
     }
 
     /// The rows under the line of a rename: name the tab after the line, or give it back its automatic title.
@@ -4354,6 +4417,7 @@ impl App {
         self.popup_from = None;
         self.confirmation = None;
         self.renaming = None;
+        self.suggestions = None;
         self.text = Utf16Assembler::default();
         self.find = None;
         self.popup_closed = Some(Instant::now());
@@ -4513,8 +4577,9 @@ impl App {
     fn choose(&mut self, row: usize) {
         let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
         let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
-        // What the line of a rename held, and the tab it was for, before the pop-up goes.
+        // What the line of a rename held, and the tab it was for, and what the suggestions were, before the pop-up goes.
         let renamed = self.renaming.zip(self.popup.as_ref().and_then(|p| p.query.clone()));
+        let suggestions = self.suggestions.take();
         self.close_popup();
         // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
         self.popup_closed = None;
@@ -4549,6 +4614,16 @@ impl App {
                     let name = query.trim();
                     tab.name = (action == Some(popup::Action::RenameTab) && !name.is_empty()).then(|| name.to_owned());
                     self.redraw();
+                }
+            }
+            Some(popup::Action::Snippet(index)) => {
+                if let Some(input) = self.settings.snippets.get(index).map(|s| s.input.clone()) {
+                    self.type_text(&input);
+                }
+            }
+            Some(popup::Action::Suggestion(index)) => {
+                if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
+                    self.type_text(input);
                 }
             }
             Some(popup::Action::TabColor(color)) => {

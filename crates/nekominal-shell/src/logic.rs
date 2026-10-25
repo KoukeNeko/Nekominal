@@ -442,6 +442,27 @@ pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
 /// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
 /// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
 /// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
+/// The commands of a PowerShell history file (PSReadLine's `ConsoleHost_history.txt`), the latest first, each once, at
+/// most `limit` of them. The lines that go on a command (it ends with a backtick) are joined to it.
+pub fn recent_commands(history: &str, limit: usize) -> Vec<String> {
+    let mut commands: Vec<String> = Vec::new();
+    let mut pending = String::new();
+    for line in history.lines() {
+        if let Some(head) = line.strip_suffix('`') {
+            pending.push_str(head);
+            pending.push('\n');
+            continue;
+        }
+        pending.push_str(line);
+        let command = std::mem::take(&mut pending).trim().to_owned();
+        if !command.is_empty() {
+            commands.push(command);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    commands.into_iter().rev().filter(|command| seen.insert(command.clone())).take(limit).collect()
+}
+
 /// How much of the height of the screen the drop-down window takes.
 pub const QUAKE_SHARE: f32 = 0.45;
 
@@ -1293,6 +1314,14 @@ mod tests {
         assert_eq!(export_file_name("  ..  "), "terminal.txt", "nothing usable left");
         assert_eq!(export_file_name("設定"), "設定.txt");
         assert_eq!(with_crlf("a\nb\r\nc\n"), "a\r\nb\r\nc\r\n", "every line once, never CR CR LF");
+    }
+
+    #[test]
+    fn recent_commands_are_the_latest_first_each_once_with_continued_lines_joined() {
+        let history = "git status\ncargo build\ngit status\nGet-ChildItem `\n  -Recurse\n\ncargo test\n";
+        assert_eq!(recent_commands(history, 10), ["cargo test", "Get-ChildItem \n  -Recurse", "git status", "cargo build"]);
+        assert_eq!(recent_commands(history, 2), ["cargo test", "Get-ChildItem \n  -Recurse"]);
+        assert!(recent_commands("", 5).is_empty());
     }
 
     #[test]
