@@ -60,7 +60,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 
 ### 指令與它們的輸出
 
-- **PowerShell 的 shell integration** 會標記每個提示字元、指令與結束代碼（OSC 133）以及目前資料夾（OSC 9;9），
+- **PowerShell、cmd、Git Bash 與 WSL bash 的 shell integration** 會標記每個提示字元、指令與結束代碼（OSC 133）以及目前資料夾（OSC 9;9），
   不必修改你的 profile。
 - 從命令選擇區 **選取或複製指令的輸出**；再按一次會換成前一個指令。失敗的指令在捲軸上有紅色標記，
   Ctrl+Alt+Up／Down 在提示字元之間跳動。
@@ -166,7 +166,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 
 - Windows 11（背景效果需要 build 22621 以上），x64 與 ARM64。
 - Shell 與 agent 透過 ConPTY 執行，使用每個版本隨附的 ConPTY。
-- PowerShell 7 與 Windows PowerShell 5.1 會套用 shell integration；其他 shell 照原樣執行。
+- PowerShell 7、Windows PowerShell 5.1、cmd、Git Bash 與 WSL 的 bash 會套用 shell integration（cmd 沒有結束代碼）；
+  其他 shell 照原樣執行。
 
 ---
 
@@ -201,7 +202,7 @@ nekominal [-d <資料夾>] [-p <設定檔>] [-- <指令> ...]
 ```
 
 `-p` 可用設定檔的 id 或名稱。在 PowerShell 裡，`;` 要寫成 `` `; ``，避免被 PowerShell 吃掉。`--` 之後的指令會直接執行，
-不經過 shell integration；要讓 Claude Code 取得 status line，請在 PowerShell 分頁輸入 `claude`。
+不經過 shell integration；要讓 Claude Code 取得 status line，請在 PowerShell、cmd、Git Bash 或 WSL bash 分頁輸入 `claude`。
 
 ### 建置
 
