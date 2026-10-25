@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
+    commands::Command,
     strings::{Lang, Text},
     themes,
 };
@@ -640,6 +641,8 @@ pub enum Expected {
     /// A colour scheme that exists; this is the name that was not found.
     KnownTheme(String),
     KnownCommand,
+    /// A shortcut no other binding of the user has; this is the command that has it.
+    Clash(Command),
     /// A shortcut that can be read; this is the text that could not be.
     Shortcut(String),
     /// The whole file is not JSON; this is what the parser said.
@@ -668,6 +671,7 @@ impl Expected {
             Expected::Required => Text::ProblemRequired.get(lang).to_owned(),
             Expected::KnownTheme(name) => Text::ProblemUnknownTheme.format(lang, &[name]),
             Expected::KnownCommand => Text::ProblemUnknownCommand.get(lang).to_owned(),
+            Expected::Clash(owner) => Text::KeyConflict.format(lang, &[&owner.label(lang)]),
             Expected::Shortcut(text) => Text::ProblemBadShortcut.format(lang, &[text]),
             Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
             Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),

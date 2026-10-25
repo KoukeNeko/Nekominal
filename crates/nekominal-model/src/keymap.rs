@@ -287,9 +287,14 @@ pub fn build_keymap<'a>(
         };
         let mut shortcuts = Vec::new();
         for text in texts {
-            match Shortcut::parse(text) {
-                Some(shortcut) => shortcuts.push(shortcut),
-                None => problems.push(Problem::new(format!("keybindings.{id}"), Expected::Shortcut(text.clone()))),
+            let Some(shortcut) = Shortcut::parse(text) else {
+                problems.push(Problem::new(format!("keybindings.{id}"), Expected::Shortcut(text.clone())));
+                continue;
+            };
+            // Two of the user's bindings with one chord: the first (by command id) keeps it, and the clash is told.
+            match bindings.iter().find(|(_, taken)| taken.contains(&shortcut)) {
+                Some((owner, _)) => problems.push(Problem::new(format!("keybindings.{id}"), Expected::Clash(*owner))),
+                None => shortcuts.push(shortcut),
             }
         }
         overridden.push(command);
@@ -298,13 +303,16 @@ pub fn build_keymap<'a>(
         }
     }
 
+    let claimed = bindings.len();
     for (command, texts) in defaults {
         if overridden.contains(&command) {
             continue;
         }
+        // A chord the user gave another command is that command's alone: menus and tooltips must not list it here.
         let shortcuts: Vec<Shortcut> = texts
             .iter()
             .filter_map(|text| Shortcut::parse(text))
+            .filter(|shortcut| !bindings[..claimed].iter().any(|(_, taken)| taken.contains(shortcut)))
             .collect();
         if !shortcuts.is_empty() {
             bindings.push((command, shortcuts));
@@ -664,6 +672,15 @@ mod tests {
             Some(Command::TabNew)
         );
         assert_eq!(keymap.find(mods(true, true, false), "KeyT"), None);
+        assert!(keymap.shortcuts(Command::PaneClose).is_empty(), "pane.close no longer lists the chord it lost");
+    }
+
+    #[test]
+    fn two_bindings_the_user_wrote_on_one_chord_are_reported() {
+        let built = build_keymap(defaults(), &overrides(&[("tab.close", &["Ctrl+K"]), ("tab.new", &["Ctrl+K", "Ctrl+J"])]));
+        assert_eq!(built.problems, [Problem::new("keybindings.tab.new", Expected::Clash(Command::TabClose))]);
+        assert_eq!(built.keymap.shortcut_text(Command::TabNew), "Ctrl+J");
+        assert_eq!(built.problems[0].text(Lang::EnUs), "keybindings.tab.new: Conflicts with \"Close tab\"");
     }
 
     #[test]
