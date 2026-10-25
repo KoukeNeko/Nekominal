@@ -244,6 +244,21 @@ fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
 }
 
 #[test]
+fn a_flood_of_spacing_marks_or_skin_tones_is_capped_too() {
+    // These have a width, so the cap on zero-width characters alone let them join forever.
+    for (base, mark) in [('\u{0915}', '\u{0903}'), ('\u{1f44d}', '\u{1f3fb}')] {
+        let mut core = core(200, 70);
+        let flood = format!("{base}{}", mark.to_string().repeat(100_000));
+        let started = std::time::Instant::now();
+        feed(&mut core, &flood);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        let s = snap(&mut core);
+        assert_eq!(s.cell(0, 0).ch, base);
+        assert!(s.cell(0, 0).zerowidth.as_ref().is_some_and(|marks| (1..64).contains(&marks.len())));
+    }
+}
+
+#[test]
 fn ambiguous_width_is_always_narrow_and_combining_marks_attach() {
     let mut core = core(20, 3);
     feed(&mut core, "\u{2500}\u{00b0}e\u{0301}x");
