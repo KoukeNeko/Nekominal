@@ -345,6 +345,9 @@ enum Confirmation {
     CloseWindow,
 }
 
+/// Why a window is not made: the tabs it was to open went to an elevated window. Not a failure.
+pub const HANDED_OFF: &str = "the tabs went to an elevated window";
+
 /// Matches kept at most: more than this are of no use to anyone and cost a scan of the whole buffer.
 const FIND_LIMIT: usize = 10_000;
 
@@ -586,15 +589,22 @@ impl App {
         // opens, instead of the saved session.
         let launch = crate::cli::launch();
         if first_tab && first_window && !launch.is_empty() {
-            app.launch(launch);
+            let handed_off = app.launch(launch);
             if !app.tabs.is_empty() {
                 return Ok(app);
+            }
+            if handed_off {
+                return Err(HANDED_OFF.to_owned());
             }
         }
         // Only the window the process starts with picks up the saved session; a window opened later starts empty.
         let first_window = first_window && app.settings.restore_session;
         if first_tab && !(first_window && app.restore_session()) {
             app.new_tab()?;
+        }
+        // The default profile runs as administrator: its window is the elevated one, and this one has nothing to show.
+        if first_tab && app.tabs.is_empty() {
+            return Err(HANDED_OFF.to_owned());
         }
         Ok(app)
     }
@@ -611,15 +621,18 @@ impl App {
         profile
     }
 
-    /// Opens the tabs and panes the command line asks for. A pane that cannot start is told in the log and left out.
-    fn launch(&mut self, actions: &[crate::cli::Action]) {
+    /// Opens the tabs and panes the command line asks for. A pane that cannot start is told in the log and left out. True
+    /// when a tab went to an elevated window instead.
+    fn launch(&mut self, actions: &[crate::cli::Action]) -> bool {
+        let mut handed_off = false;
         let area = self.pane_area();
         let size = (area.w.max(1) as u32, area.h.max(1) as u32);
         for action in actions {
             match action {
                 crate::cli::Action::NewTab(target) => {
                     let profile = self.target_profile(target);
-                    if target.command.is_empty() && self.opens_elevated(&profile) {
+                    if target.command.is_empty() && self.opens_elevated(&profile, target.directory.as_deref()) {
+                        handed_off = true;
                         continue;
                     }
                     match Tab::new(|id| self.make_entry_with(id, size, &profile, target.directory.as_deref())) {
@@ -638,6 +651,7 @@ impl App {
         }
         self.relayout();
         self.sync_focus();
+        handed_off
     }
 
     pub fn backdrop(&self) -> Backdrop {
@@ -811,6 +825,9 @@ impl App {
     }
 
     fn new_tab(&mut self) -> Result<(), String> {
+        if self.opens_elevated(&self.profile, None) {
+            return Ok(());
+        }
         let area = self.pane_area();
         let tab = Tab::new(|id| self.make_entry(id, (area.w as u32, area.h as u32)))?;
         self.tabs.push(tab);
@@ -4049,11 +4066,16 @@ impl App {
 
     /// A profile set to run as administrator, opened from a window that is not elevated, gets an elevated window of its
     /// own (Windows asks first) instead of a tab here. A split keeps the window's rights: a pane cannot be elevated alone.
-    fn opens_elevated(&self, profile: &Profile) -> bool {
+    fn opens_elevated(&self, profile: &Profile, directory: Option<&str>) -> bool {
         if !profile.options.elevate || elevated() {
             return false;
         }
-        if let Err(e) = crate::integration::run_elevated(&crate::integration::profile_arguments(&profile.id)) {
+        let mut args = crate::integration::profile_arguments(&profile.id);
+        if let Some(directory) = directory {
+            // `\.` so that a drive root (`C:\`) does not escape the closing quote.
+            args.push_str(&format!(" -d \"{}\\.\"", directory.trim_end_matches('\\').replace('"', "")));
+        }
+        if let Err(e) = crate::integration::run_elevated(&args) {
             util::log(&format!("elevate: {e}"));
         }
         true
@@ -4062,7 +4084,7 @@ impl App {
     /// A tab with the profile at `index`; the tabs and panes made later still use the default profile.
     fn new_tab_with(&mut self, index: usize) {
         let Some(profile) = self.profiles.get(index).cloned() else { return };
-        if self.opens_elevated(&profile) {
+        if self.opens_elevated(&profile, None) {
             return;
         }
         let default = std::mem::replace(&mut self.profile, profile);
@@ -4857,6 +4879,10 @@ impl App {
     /// Writes the tabs, the layout of their panes, the directories they were in and the place of the window, for the next run
     /// to start where this one stopped. A window with no tab left writes an empty session: the next run starts afresh.
     pub fn save_session(&self) {
+        // A window with no tab (one that handed its tab to an elevated window) must not wipe the session of the others.
+        if self.tabs.is_empty() {
+            return;
+        }
         let Some(path) = store::session_path() else { return };
         let tabs = self
             .tabs

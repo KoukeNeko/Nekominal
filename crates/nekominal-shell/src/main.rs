@@ -62,7 +62,9 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     cli::set_launch(cli::parse(&args));
-    if let Err(e) = win::run() {
+    if let Err(e) = win::run()
+        && e != app::HANDED_OFF
+    {
         std::fs::write(std::env::temp_dir().join("nekominal-next.log"), format!("{e}\n")).ok();
     }
 }
