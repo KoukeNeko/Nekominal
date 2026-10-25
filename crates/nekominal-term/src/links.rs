@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 /// The most bytes a link may have. Browsers cope with much more; a link that long is not one a person follows.
-const MAX_LINK_BYTES: usize = 2048;
+pub const MAX_LINK_BYTES: usize = 2048;
 
 /// Schemes [`find_urls`] looks for, written with what must follow the scheme: `//` for the ones with an authority.
 const URL_PREFIXES: [&str; 5] = ["https://", "http://", "ftp://", "file://", "mailto:"];
@@ -46,12 +46,14 @@ pub enum Refusal {
 }
 
 /// File types that `ShellExecute` runs, or that run code once opened: programs, scripts, installers, shortcuts,
-/// registry and help files, ClickOnce and the other things Explorer treats as launchers.
+/// registry and help files, ClickOnce and the other things Explorer treats as launchers. The scripting, add-in and
+/// remote desktop types at the end run code once a common developer tool (Python, Git Bash, Excel) is installed.
 const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "exe", "com", "scr", "pif", "bat", "cmd", "ps1", "ps1xml", "psm1", "psd1", "psc1", "vbs", "vbe", "js", "jse", "wsf",
     "wsh", "ws", "hta", "msi", "msp", "mst", "msc", "cpl", "dll", "sys", "lnk", "url", "reg", "inf", "scf", "jar",
     "application", "gadget", "appref-ms", "settingcontent-ms", "library-ms", "search-ms", "chm", "hlp", "iqy", "slk",
-    "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm",
+    "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm", "py", "pyw", "sh", "wsc", "sct",
+    "xll", "rdp",
 ];
 
 /// Characters that show nothing or reorder what is shown around them: a link that has one is not what it looks like.
@@ -205,6 +207,11 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     if names.iter().any(|name| name.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c))) {
         return Err(Refusal::Malformed);
     }
+    // Windows collapses `.` and `..` (and names of only dots and spaces), so `a.exe/.` or `a.exe/x/..` runs a.exe:
+    // the last name checked below would not be the file opened.
+    if names.iter().any(|name| !name.is_empty() && name.trim_end_matches(['.', ' ']).is_empty()) {
+        return Err(Refusal::Malformed);
+    }
     // Windows ignores trailing dots and spaces when it opens a file, so `a.exe.` runs a.exe.
     let last = names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default();
     let last = last.trim_end_matches(['.', ' ']);
@@ -215,6 +222,14 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     }
     let path: Vec<&str> = std::iter::once(drive).chain(names.iter().copied()).collect();
     Ok(if names.iter().all(|name| name.is_empty()) { format!("{drive}\\") } else { path.join("\\") })
+}
+
+/// What to hand to the shell for a link, or `None` when it may not be opened: [`open_target`]'s target, and for a file
+/// only one that exists as named, because `ShellExecute` tries `.exe`, `.bat` and the other program extensions on a
+/// name that does not (`file:///C:/x/setup` runs setup.exe).
+pub fn openable(uri: &str) -> Option<String> {
+    let open = open_target(uri).ok()?;
+    (open.kind != LinkKind::File || std::path::Path::new(&open.target).exists()).then_some(open.target)
 }
 
 /// `decodeURIComponent` of a path: an invalid escape, or a result that is not UTF-8, is an error.
@@ -241,6 +256,8 @@ fn percent_decode(input: &str) -> Option<String> {
 pub struct Link {
     /// What the link points at, as the program or the text wrote it.
     pub uri: String,
+    /// What to open: the target [`openable`] checked, never the raw `uri`.
+    pub target: String,
     /// The cells it covers, one span per row of the viewport: (row, first column, end column), the end exclusive.
     pub spans: Vec<(usize, usize, usize)>,
 }
@@ -369,7 +386,10 @@ mod tests {
         for uri in ["file://server/share/x.txt", "file:////server/share/x.txt", "file:///home/me/x.txt", "file:///x.txt", "file://C:/x.txt", "file:C:/x.txt", "file:///C:x.txt", "file:///1:/x.txt"] {
             assert_eq!(open_target(uri), Err(Refusal::NotLocal), "{uri}");
         }
-        for uri in ["file:///C:/a%zz", "file:///C:/a%FF", "file:///C:/a/b:c.txt", "file:///C:/a/b%3Ac.txt", "file:///C:/a/b%00c", "file:///C:/a/b|c", "file:///C:/a/%5Cb"] {
+        for uri in [
+            "file:///C:/a%zz", "file:///C:/a%FF", "file:///C:/a/b:c.txt", "file:///C:/a/b%3Ac.txt", "file:///C:/a/b%00c", "file:///C:/a/b|c", "file:///C:/a/%5Cb",
+            "file:///C:/x/a.exe/.", "file:///C:/Users/me/evil.exe/x/..", "file:///C:/x/a.exe/%2E%2E/", "file:///C:/x/../a.txt", "file:///C:/x/a.exe/..%20",
+        ] {
             assert_eq!(open_target(uri), Err(Refusal::Malformed), "{uri}");
         }
     }
@@ -380,6 +400,7 @@ mod tests {
             "file:///C:/Windows/System32/calc.exe", "file:///C:/x/run.BAT", "file:///C:/x/a.cmd", "file:///C:/x/a.ps1", "file:///C:/x/a.vbs", "file:///C:/x/a.js",
             "file:///C:/x/a.msi", "file:///C:/x/a.lnk", "file:///C:/x/a.url", "file:///C:/x/a.hta", "file:///C:/x/a.reg", "file:///C:/x/a.jar", "file:///C:/x/a.docm",
             "file:///C:/x/a.exe.", "file:///C:/x/a.exe%20", "file:///C:/x/a.exe%20.", "file:///C:/x/a.Exe", "file:///C:/x/a.txt.exe", "file:///C:/x/a.scr", "file:///C:/x/a.settingcontent-ms",
+            "file:///C:/x/a.py", "file:///C:/x/a.PYW", "file:///C:/x/a.sh", "file:///C:/x/a.wsc", "file:///C:/x/a.sct", "file:///C:/x/a.xll", "file:///C:/x/a.rdp",
         ] {
             assert_eq!(open_target(uri), Err(Refusal::Executable), "{uri}");
         }

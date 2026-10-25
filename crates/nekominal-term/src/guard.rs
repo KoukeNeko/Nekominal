@@ -19,6 +19,9 @@ pub const MAX_OSC_PAYLOAD: usize = 4 * 1024 * 1024;
 /// Every other OSC (a title, a link, a folder, a notification) is short. The cap matters beyond the string itself: a title
 /// can be pushed onto a stack 4096 deep (`CSI 22 t`), so a 4 MiB title would cost 16 GiB.
 pub const MAX_SHORT_OSC: usize = 8 * 1024;
+/// An OSC 8 link is stored on every cell it covers, outside what the scrollback budget counts, so it gets the longest
+/// link that may be opened (longer ones are refused anyway) and room for its parameters.
+pub const MAX_LINK_OSC: usize = crate::links::MAX_LINK_BYTES + 256;
 
 const ESC: u8 = 0x1b;
 const CAN: u8 = 0x18;
@@ -40,7 +43,7 @@ pub struct StringGuard {
     state: State,
     payload: usize,
     limit: usize,
-    /// The first bytes of the OSC string, which say whether it is a clipboard write (`52;`) and may be long.
+    /// The first bytes of the OSC string, which say whether it is a clipboard write (`52;`) and may be long, or a link (`8;`).
     head: [u8; 3],
     head_len: usize,
     /// Payload bytes dropped so far (for diagnostics).
@@ -104,7 +107,14 @@ impl StringGuard {
                     self.head[self.head_len..self.head_len + take].copy_from_slice(&rest[..take]);
                     self.head_len += take;
                     let short = self.head_len == self.head.len() && self.head != *b"52;";
-                    let limit = if short { self.limit.min(MAX_SHORT_OSC) } else { self.limit };
+                    let link = self.head_len >= 2 && self.head[..2] == *b"8;";
+                    let limit = if link {
+                        self.limit.min(MAX_LINK_OSC)
+                    } else if short {
+                        self.limit.min(MAX_SHORT_OSC)
+                    } else {
+                        self.limit
+                    };
                     let room = limit.saturating_sub(self.payload);
                     if segment > room {
                         // Cut here: keep `room` bytes, end the string with CAN, drop the remainder.
@@ -212,6 +222,22 @@ mod tests {
         assert_eq!(split.len(), 2 + MAX_SHORT_OSC + 1);
         // A clipboard write keeps the large cap.
         assert!(matches!(guard.filter(&long("52;c;")), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn a_hyperlink_is_cut_at_the_link_cap_which_is_below_the_short_cap() {
+        let mut guard = StringGuard::default();
+        let mut data = b"\x1b]8;;https://a.b/".to_vec();
+        data.extend(std::iter::repeat_n(b'x', MAX_SHORT_OSC));
+        data.push(0x07);
+        let out = guard.filter(&data).into_owned();
+        assert_eq!(out.len(), 2 + MAX_LINK_OSC + 1, "ESC ] then the link cap, then CAN");
+        assert!(MAX_LINK_OSC < MAX_SHORT_OSC);
+        // A link that may be opened is untouched.
+        let mut ok = b"\x1b]8;id=x;https://a.b/".to_vec();
+        ok.extend(std::iter::repeat_n(b'x', crate::links::MAX_LINK_BYTES - 12));
+        ok.extend_from_slice(b"\x1b\\");
+        assert!(matches!(guard.filter(&ok), Cow::Borrowed(_)));
     }
 
     #[test]

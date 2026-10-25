@@ -231,6 +231,19 @@ fn variation_selector_16_makes_a_text_emoji_wide() {
 }
 
 #[test]
+fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
+    let mut core = core(20, 3);
+    let flood = format!("e{}x", "\u{0301}".repeat(100_000));
+    let started = std::time::Instant::now();
+    feed(&mut core, &flood);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+    let s = snap(&mut core);
+    assert_eq!(s.cell(0, 0).ch, 'e', "the cell keeps its base character");
+    assert!(s.cell(0, 0).zerowidth.as_ref().is_some_and(|marks| (1..64).contains(&marks.len())));
+    assert_eq!(s.cell(0, 1).ch, 'x', "the text after the marks goes on in the next cell");
+}
+
+#[test]
 fn ambiguous_width_is_always_narrow_and_combining_marks_attach() {
     let mut core = core(20, 3);
     feed(&mut core, "\u{2500}\u{00b0}e\u{0301}x");
@@ -1011,15 +1024,22 @@ fn an_osc8_link_that_wraps_is_one_link_on_every_row_and_one_id_joins_separate_ru
 
 #[test]
 fn only_a_link_that_may_be_opened_is_a_link() {
-    let mut core = core(60, 3);
-    feed(&mut core, "\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///C:/Windows/System32/calc.exe\x07program\x1b]8;;\x07 \x1b]8;;file:///C:/Users/me/a.txt\x07file\x1b]8;;\x07");
+    let mut core = core(60, 4);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml");
+    let uri = format!("file:///{}", path.replace('\\', "/").replace(' ', "%20"));
+    feed(&mut core, &format!("\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///C:/Windows/System32/calc.exe\x07program\x1b]8;;\x07 \x1b]8;;{uri}\x07file\x1b]8;;\x07"));
     assert_eq!(core.link_at(0, 2), None, "a script address is text");
     assert_eq!(core.link_at(0, 10), None, "so is a program");
-    assert_eq!(core.link_at(0, 18).map(|l| l.uri), Some("file:///C:/Users/me/a.txt".to_owned()));
+    let link = core.link_at(0, 18).expect("a file that exists");
+    assert_eq!((link.uri.as_str(), link.target.as_str()), (uri.as_str(), path), "what is opened is the checked path");
     feed(&mut core, "\r\njavascript:alert(1) calc.exe file:///C:/Windows/System32/calc.exe http://");
     for column in [0, 10, 25, 40, 59] {
         assert_eq!(core.link_at(1, column), None, "column {column}");
     }
+    // ShellExecute runs setup.exe for a name with no extension that does not exist.
+    feed(&mut core, "\r\n\x1b]8;;file:///C:/nekominal-no-such-dir/setup\x07setup\x1b]8;;\x07 file:///C:/nekominal-no-such-dir/setup");
+    assert_eq!(core.link_at(2, 1), None, "a file that does not exist is text");
+    assert_eq!(core.link_at(2, 20), None, "in the text too");
 }
 
 #[test]
@@ -1587,6 +1607,13 @@ fn decstr_soft_reset_clears_modes_and_attributes_but_keeps_screen_and_cursor() {
     feed(&mut core, "\x1b[5;1H\r\nlast");
     assert_eq!(snap(&mut core).row_text(0), "", "row 0 scrolled away with the full-screen region");
     assert_eq!(core.history_size(), 1);
+}
+
+#[test]
+fn decstr_inside_a_synchronized_update_keeps_the_cursor_the_update_moved() {
+    let mut core = core(20, 12);
+    feed(&mut core, "\x1b[?2026h\x1b[10;10H\x1b[!p\x1b[?2026l");
+    assert_eq!(core.cursor_cell(), (9, 9));
 }
 
 #[test]
