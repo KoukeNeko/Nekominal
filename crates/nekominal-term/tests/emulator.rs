@@ -10,8 +10,8 @@ use nekominal_term::{
     },
     agent_status::AgentState,
     osc::{Notification, PromptMark},
-    CellColor, CellSide, CoreConfig, CoreEvent, Damage, MouseExtensions, Palette, SelectionKind, Snapshot, TerminalCore,
-    Unsupported,
+    CellColor, CellSide, CommandOutput, CoreConfig, CoreEvent, Damage, MouseExtensions, Palette, SelectionKind, Snapshot,
+    TerminalCore, Unsupported, sticky_prompt_line,
 };
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
@@ -766,6 +766,55 @@ fn the_command_line_is_read_from_the_prompt_marks_when_its_output_starts() {
     assert_eq!(core.last_command_line(), None);
     feed(&mut core, "\x1b]133;C\x07");
     assert_eq!(core.last_command_line(), None);
+}
+
+#[test]
+fn the_sticky_prompt_is_the_one_of_the_command_the_top_of_the_view_is_in_while_that_prompt_is_above_it() {
+    let output = |first, last| CommandOutput { first, last, exit: Some(0), running: false };
+    // Prompts at -20 and -8 with outputs -18..=-15 and -6..=3, and between them a command that wrote nothing at -13.
+    let outputs = [output(-18, -15), output(-6, 3)];
+    let prompts = [-20, -13, -8];
+    let sticky = |top| sticky_prompt_line(top, &outputs, &prompts);
+    assert_eq!(sticky(-20), None, "the prompt itself is the top row: it is in sight");
+    assert_eq!(sticky(-19), Some(-20), "the command line between the prompt and its output");
+    assert_eq!(sticky(-17), Some(-20));
+    assert_eq!(sticky(-15), Some(-20), "the last line of the output");
+    assert_eq!(sticky(-14), None, "below that output");
+    assert_eq!(sticky(-13), None, "the prompt of a command that wrote nothing");
+    assert_eq!(sticky(-8), None, "the next command's own prompt");
+    assert_eq!(sticky(-7), Some(-8));
+    assert_eq!(sticky(-3), Some(-8));
+    assert_eq!(sticky(5), None, "past every output");
+    assert_eq!(sticky(-25), None, "above every prompt");
+    assert_eq!(sticky_prompt_line(-3, &outputs, &[]), None, "a shell without prompt marks pins nothing");
+    assert_eq!(sticky_prompt_line(-3, &[], &prompts), None);
+}
+
+#[test]
+fn the_snapshot_pins_the_prompt_line_while_scrolled_into_its_output_and_never_on_the_alternate_screen() {
+    let mut core = core(20, 4);
+    let mut lines = String::new();
+    for i in 0..10 {
+        lines.push_str(&format!("out {i}\r\n"));
+    }
+    feed(&mut core, &command("ls", &lines, 0));
+    feed(&mut core, "\x1b]133;A\x07PS> \x1b]133;B\x07");
+    let header = |core: &mut TerminalCore| snap(core).sticky_header.iter().map(|cell| cell.ch).collect::<String>().trim_end().to_owned();
+    assert_eq!(header(&mut core), "", "at the bottom the prompt in use is in sight");
+    core.scroll_display(Scroll::Delta(5));
+    assert_eq!(header(&mut core), "PS> ls");
+    assert_eq!(snap(&mut core).sticky_header.len(), 20, "a whole row");
+    core.set_sticky_header(false);
+    assert_eq!(header(&mut core), "", "the setting turns it off");
+    core.set_sticky_header(true);
+    // A click on the header brings its prompt to the top row, where it is in sight and no longer pinned.
+    assert!(core.scroll_to_sticky_prompt());
+    assert_eq!(snap(&mut core).cells.iter().take(6).map(|cell| cell.ch).collect::<String>(), "PS> ls");
+    assert_eq!(header(&mut core), "");
+    assert!(!core.scroll_to_sticky_prompt(), "nothing pinned, nothing to scroll to");
+    core.scroll_display(Scroll::Delta(-2));
+    feed(&mut core, "\x1b[?1049h");
+    assert_eq!(header(&mut core), "", "the alternate screen has no marks and no scrollback");
 }
 
 #[test]

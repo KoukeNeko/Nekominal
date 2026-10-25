@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use nekominal_render as r;
 use nekominal_term::{
-    CellColor, Snapshot,
+    CellColor, SnapCell, Snapshot,
     alacritty_terminal::{term::cell::Flags, vte::ansi::CursorShape},
 };
 
@@ -75,24 +75,31 @@ fn flags(f: Flags) -> r::CellFlags {
     out.with_underline(underline)
 }
 
+fn render_cell(cell: &SnapCell) -> r::Cell {
+    let leading_spacer = cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
+    let zerowidth = cell.zerowidth.as_deref().filter(|z| !z.is_empty());
+    let underline_color = cell.underline_color.map(color);
+    let extra = (zerowidth.is_some() || underline_color.is_some()).then(|| {
+        Arc::new(r::CellExtra { zerowidth: zerowidth.map(<[char]>::to_vec).unwrap_or_default(), underline_color })
+    });
+    r::Cell { ch: if leading_spacer { ' ' } else { cell.ch }, fg: color(cell.fg_raw), bg: color(cell.bg_raw), flags: flags(cell.flags), extra }
+}
+
 /// Fills `cells` (reused between frames) with the renderer's view of the snapshot.
 pub fn fill_cells(snapshot: &Snapshot, cells: &mut Vec<r::Cell>) {
     cells.clear();
-    cells.reserve(snapshot.cells.len());
-    for cell in &snapshot.cells {
-        let leading_spacer = cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
-        let zerowidth = cell.zerowidth.as_deref().filter(|z| !z.is_empty());
-        let underline_color = cell.underline_color.map(color);
-        let extra = (zerowidth.is_some() || underline_color.is_some()).then(|| {
-            Arc::new(r::CellExtra { zerowidth: zerowidth.map(<[char]>::to_vec).unwrap_or_default(), underline_color })
-        });
-        cells.push(r::Cell {
-            ch: if leading_spacer { ' ' } else { cell.ch },
-            fg: color(cell.fg_raw),
-            bg: color(cell.bg_raw),
-            flags: flags(cell.flags),
-            extra,
-        });
+    cells.extend(snapshot.cells.iter().map(render_cell));
+}
+
+/// Draws the pinned prompt line (`Snapshot::sticky_header`) over the top row of `cells`, which the caller copied so the
+/// screen under it is left as it is. Its default background takes `tint`, so it reads as a header and not as a line of
+/// the output under it.
+pub fn pin_header(cells: &mut [r::Cell], header: &[SnapCell], tint: r::Rgb) {
+    for (cell, from) in cells.iter_mut().zip(header) {
+        *cell = render_cell(from);
+        if matches!(cell.bg, r::Color::Default) {
+            cell.bg = r::Color::Rgb(tint.0, tint.1, tint.2);
+        }
     }
 }
 
@@ -272,6 +279,27 @@ mod tests {
         assert_eq!(spans(&mut core), [], "scrolled out of view");
         core.scroll_display(nekominal_term::alacritty_terminal::grid::Scroll::Top);
         assert_eq!(spans(&mut core), [], "the lines are not at the top of the buffer either");
+    }
+
+    #[test]
+    fn the_pinned_header_replaces_the_top_row_of_a_copy_and_nothing_else() {
+        let mut core = TerminalCore::new(6, 3, CoreConfig::default());
+        core.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07a\r\nb\r\nc\r\nd\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        core.scroll_display(nekominal_term::alacritty_terminal::grid::Scroll::Delta(1));
+        let mut snapshot = Snapshot::default();
+        core.snapshot(&mut snapshot);
+        let mut cells = Vec::new();
+        fill_cells(&snapshot, &mut cells);
+        let text = |cells: &[r::Cell], row: usize| cells[row * 6..row * 6 + 6].iter().map(|cell| cell.ch).collect::<String>();
+        assert_eq!((text(&cells, 0), text(&cells, 1)), ("b     ".to_owned(), "c     ".to_owned()), "scrolled into the output");
+
+        let tint = r::Rgb(1, 2, 3);
+        let mut copy = cells.clone();
+        pin_header(&mut copy, &snapshot.sticky_header, tint);
+        assert_eq!(text(&copy, 0), "$ ls  ", "the prompt line is drawn over the top row");
+        assert!(copy[..6].iter().all(|cell| cell.bg == r::Color::Rgb(1, 2, 3)), "on the tint");
+        assert_eq!(copy[6..], cells[6..], "the rows under it are left as they are");
+        assert_eq!(text(&cells, 0), "b     ", "and so is the original");
     }
 
     #[test]

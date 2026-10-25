@@ -326,6 +326,7 @@ texts! {
     ProfileValue "profile.value" "值" "Value";
     ProfileBrowse "profile.browse" "瀏覽…" "Browse…";
     SettingsCopyOnSelect "settings.copyOnSelect" "選取時複製" "Copy on select";
+    SettingsStickyHeader "settings.stickyHeader" "捲動時將指令列固定在頂端" "Pin the command line while scrolling";
     SettingsRightClick "settings.rightClick" "右鍵" "Right click";
     RightClickSmart "rightClick.smart" "複製或貼上" "Copy or paste";
     RightClickMenu "rightClick.menu" "顯示功能表" "Show menu";

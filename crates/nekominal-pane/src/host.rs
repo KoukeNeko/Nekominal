@@ -502,6 +502,11 @@ impl Pane {
         self.term.lock().set_scrollback_lines(lines);
     }
 
+    /// Whether the prompt line is pinned over a view scrolled into its output from now on (a settings change).
+    pub fn set_sticky_header(&self, on: bool) {
+        self.term.lock().set_sticky_header(on);
+    }
+
     /// The cursor a program that chose none gets from now on (a settings change reaches panes that already run).
     pub fn set_cursor_style(&self, style: CursorStyle) {
         self.term.lock().set_cursor_style(style);

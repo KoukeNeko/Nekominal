@@ -248,11 +248,15 @@ impl PaneRenderer {
         self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.failed_lines, &self.find_lines) } else { Vec::new() };
         let themed = view::themed(&self.theme, &self.snapshot);
         self.renderer.set_theme(&if self.focused { themed } else { view::dimmed(&themed) });
-        // The labels of hint mode are drawn over a copy of the cells: the screen under them is left as it is.
-        let cells = if self.hint_labels.is_empty() {
+        // The pinned prompt line and the labels of hint mode are drawn over a copy of the cells: the screen under them is
+        // left as it is.
+        let sticky = !self.snapshot.sticky_header.is_empty();
+        let cells = if self.hint_labels.is_empty() && !sticky {
             &self.cells
         } else {
             self.labelled.clone_from(&self.cells);
+            // The tint of the IME's composition: a background a step off the pane's own.
+            view::pin_header(&mut self.labelled, &self.snapshot.sticky_header, self.theme.preedit_bg);
             let (fg, bg) = (self.theme.search_current_fg, self.theme.search_current_bg);
             for (row, column, label) in &self.hint_labels {
                 for (i, ch) in label.chars().enumerate() {
@@ -274,6 +278,7 @@ impl PaneRenderer {
             preedit: self.preedit_at.as_ref(),
             scrollbar,
             marks: &self.marks,
+            sticky_header: sticky,
         };
         let started = Instant::now();
         let stats = self.renderer.update_pane(&mut self.state, &grid);

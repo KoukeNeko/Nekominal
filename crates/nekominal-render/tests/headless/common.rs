@@ -199,6 +199,7 @@ pub fn update(renderer: &mut Renderer, pane: &mut PaneState, scene: &Scene) -> U
             preedit: scene.preedit.as_ref(),
             scrollbar: None,
             marks: &[],
+            sticky_header: false,
         },
     )
 }

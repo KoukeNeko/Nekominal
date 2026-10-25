@@ -1191,6 +1191,7 @@ pub fn core_config(settings: &Settings) -> CoreConfig {
         cursor_style: cursor_style_for(&settings.cursor),
         scrollback_lines: settings.scrollback as usize,
         kitty_keyboard: settings.keyboard.kitty_protocol,
+        sticky_header: settings.sticky_header,
         ..CoreConfig::default()
     }
 }
@@ -1211,6 +1212,7 @@ pub struct Effects {
     /// The shape of the cursor a program that chose none gets, and how many lines of scrollback a pane keeps.
     pub cursor: bool,
     pub scrollback: bool,
+    pub sticky_header: bool,
     /// How the title of a tab is made.
     pub titles: bool,
 }
@@ -1225,6 +1227,7 @@ pub fn effects(before: &Settings, now: &Settings) -> Effects {
         osc52: before.osc52 != now.osc52,
         cursor: before.cursor != now.cursor,
         scrollback: before.scrollback != now.scrollback,
+        sticky_header: before.sticky_header != now.sticky_header,
         titles: before.tabs != now.tabs,
     }
 }
@@ -2654,6 +2657,7 @@ mod tests {
         assert_eq!(after(|s| s.osc52 = Osc52Policy::Off), Effects { osc52: true, ..Effects::default() });
         assert_eq!(after(|s| s.cursor.style = CursorStyle::Bar), Effects { cursor: true, ..Effects::default() });
         assert_eq!(after(|s| s.scrollback = 500), Effects { scrollback: true, ..Effects::default() });
+        assert_eq!(after(|s| s.sticky_header = false), Effects { sticky_header: true, ..Effects::default() });
         // The opacity has its own way (the next frame applies it), and the rest is read where it is used.
         assert_eq!(after(|s| s.appearance.opacity = 0.5), Effects::default());
         assert_eq!(after(|s| s.confirm_close = false), Effects::default());

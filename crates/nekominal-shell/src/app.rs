@@ -4265,6 +4265,9 @@ impl App {
             if effects.scrollback {
                 entry.pane.set_scrollback_lines(self.settings.scrollback as usize);
             }
+            if effects.sticky_header {
+                entry.pane.set_sticky_header(self.settings.sticky_header);
+            }
         }
         if self.settings.profiles != before.profiles {
             self.profiles = profiles::merge(&self.found, &self.settings.profiles);

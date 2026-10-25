@@ -782,6 +782,10 @@ fn build_overlay(m: &crate::fonts::CellMetrics, theme: &Theme, view: &GridView<'
             }
         }
     }
+    if view.sticky_header {
+        let t = (m.underline_thickness as f32).max(1.0);
+        out.push(RectInstance { rect: [0.0, ch - t, view.cols as f32 * cw, t], color: rgba(theme.scrollbar_thumb, 0x60) });
+    }
     if let Some(sb) = view.scrollbar {
         let track_h = view.rows as f32 * ch;
         let right = view.cols as f32 * cw;

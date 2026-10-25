@@ -510,6 +510,8 @@ pub struct Settings {
     pub profiles: Vec<CustomProfile>,
     pub snippets: Vec<Snippet>,
     pub copy_on_select: bool,
+    /// While the view is scrolled up into a command's output, the line its command was typed on stays at the top.
+    pub sticky_header: bool,
     pub right_click: RightClick,
     pub paste: PasteSettings,
     pub osc52: Osc52Policy,
@@ -568,6 +570,7 @@ impl Default for Settings {
             profiles: Vec::new(),
             snippets: Vec::new(),
             copy_on_select: false,
+            sticky_header: true,
             right_click: RightClick::Smart,
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
             osc52: Osc52Policy::Write,
@@ -1141,6 +1144,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         profiles: read_profiles(&root, &mut problems),
         snippets: read_snippets(&root, &mut problems),
         copy_on_select: boolean(&root, "copyOnSelect", d.copy_on_select, "", &mut problems),
+        sticky_header: boolean(&root, "stickyHeader", d.sticky_header, "", &mut problems),
         right_click: one_of(
             &root,
             "rightClick",
@@ -1615,6 +1619,14 @@ mod tests {
         assert!(Settings::default().explorer_menu);
         let written = round_trips(Settings { explorer_menu: false, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "explorerMenu": false }));
+    }
+
+    #[test]
+    fn the_command_line_stays_pinned_while_scrolled_unless_turned_off() {
+        assert!(Settings::default().sticky_header);
+        assert!(!parsed_ok(r#""stickyHeader": false"#).sticky_header);
+        let written = round_trips(Settings { sticky_header: false, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "stickyHeader": false }));
     }
 
     #[test]

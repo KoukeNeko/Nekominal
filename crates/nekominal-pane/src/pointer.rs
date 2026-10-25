@@ -11,7 +11,7 @@
 //! * a drag held above or below the grid scrolls the view one step per [`Pointer::drag_scroll`].
 
 use nekominal_input::{
-    CellPoint, InputModes, Mods, MouseAssembler, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
+    CellPoint, InputModes, Mods, MouseAssembler, MouseButton, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
     SelectionKind as Gesture, Side, cell_at,
 };
 use nekominal_term::{CellSide, SelectionKind, TerminalCore, alacritty_terminal::grid::Scroll};
@@ -61,6 +61,8 @@ pub struct Pointer {
     /// Where the drag is held: the cell it is over (on the nearest row of the grid) and how many rows beyond the
     /// grid the pointer is, negative above and positive below; zero while it is inside.
     drag: Option<(CellPoint, i32)>,
+    /// The left button went down on the pinned prompt line: the view went to its prompt and the release is swallowed.
+    on_header: bool,
 }
 
 impl Pointer {
@@ -73,6 +75,19 @@ impl Pointer {
         modes: &InputModes,
     ) -> PointerEffects {
         let mut effects = PointerEffects::default();
+        // A plain left click on the pinned prompt line goes to that prompt; neither the press nor its release reaches the
+        // assembler, so it neither selects nor reports. The pinned line hides the row under it, so nothing is lost there.
+        match event.kind {
+            PointerKind::Press(MouseButton::Left)
+                if event.mods == Mods::NONE && event.y >= 0.0 && event.y < grid.cell_height && core.scroll_to_sticky_prompt() =>
+            {
+                self.on_header = true;
+                return effects;
+            }
+            PointerKind::Release(MouseButton::Left) if std::mem::take(&mut self.on_header) => return effects,
+            PointerKind::Cancel => self.on_header = false,
+            _ => {}
+        }
         // Only a press with Ctrl can be the start of a click on a link: the assembler asks nothing else.
         let event = match event.kind {
             PointerKind::Press(_) if event.mods.contains(Mods::CTRL) => {
@@ -353,6 +368,28 @@ mod tests {
         assert!(!rig.pointer.drag_scroll(&mut rig.core));
         let effects = rig.release(left(2, 1));
         assert!(effects.selected);
+    }
+
+    #[test]
+    fn a_click_on_the_pinned_prompt_line_scrolls_to_that_prompt_and_selects_nothing() {
+        let mut text = String::from("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+        for i in 0..10 {
+            text.push_str(&format!("file{i}\r\n"));
+        }
+        text.push_str("\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        let mut rig = Rig::new(&text);
+        // Twelve lines on five rows: the prompt of `ls` is seven lines up, so three back it is above the view.
+        rig.core.scroll_display(Scroll::Delta(3));
+        let effects = rig.click(left(4, 0));
+        assert_eq!(effects, PointerEffects::default());
+        assert_eq!(rig.core.display_offset(), 7, "the prompt is the top row");
+        assert_eq!(rig.text(), None, "the click selected nothing");
+        // Now the prompt is in sight: the top row is a row like the others again.
+        rig.clock += 2000;
+        rig.press(left(0, 0));
+        rig.drag(right(1, 0));
+        rig.release(right(1, 0));
+        assert_eq!(rig.text().as_deref(), Some("$ "));
     }
 
     #[test]

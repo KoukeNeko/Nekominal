@@ -401,6 +401,9 @@ pub struct GridView<'a> {
     pub scrollbar: Option<Scrollbar>,
     /// Marks on the track of the scrollbar; drawn only with it.
     pub marks: &'a [ScrollMark],
+    /// The top row is a header pinned over the grid (sticky scroll): a thin line along its bottom edge parts it from
+    /// the rows under it.
+    pub sticky_header: bool,
 }
 
 impl<'a> GridView<'a> {
@@ -416,6 +419,7 @@ impl<'a> GridView<'a> {
             preedit: None,
             scrollbar: None,
             marks: &[],
+            sticky_header: false,
         }
     }
 }
