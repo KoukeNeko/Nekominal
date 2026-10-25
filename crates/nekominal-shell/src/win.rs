@@ -156,6 +156,20 @@ fn recover_gpu(hwnd: HWND, forced: bool) {
     }
 }
 
+/// A toast that `hwnd` showed for the tab `uid` was clicked: the window that has the tab now (it may have moved to
+/// another) selects it and comes forward; when no window has it any more, the one that showed the toast does.
+fn show_toast_tab(hwnd: HWND, uid: u64) {
+    let windows: Vec<HWND> = APPS.with(|apps| apps.borrow().keys().map(|key| HWND(*key as *mut _)).collect());
+    let target = windows.into_iter().find(|&window| with_app(window, |app| app.show_tab(uid)) == Some(true)).unwrap_or(hwnd);
+    // SAFETY: windows of this thread. The click of a toast lets the app take the foreground.
+    unsafe {
+        if IsIconic(target).as_bool() {
+            let _ = ShowWindow(target, SW_RESTORE);
+        }
+        let _ = SetForegroundWindow(target);
+    }
+}
+
 fn reap_closed_windows() {
     // Drop UI and PTY resources outside window callbacks, while cleanup threads can still start.
     let retired = RETIRED.with(|apps| std::mem::take(&mut *apps.borrow_mut()));
@@ -405,6 +419,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }
         WM_ERASEBKGND => LRESULT(1),
+        crate::toast::WM_TOAST => {
+            show_toast_tab(hwnd, wparam.0 as u64);
+            LRESULT(0)
+        }
         WM_DESTROY_WINDOW => {
             // SAFETY: a window of this thread.
             unsafe { let _ = DestroyWindow(hwnd); }

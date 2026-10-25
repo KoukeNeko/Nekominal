@@ -140,7 +140,7 @@ fn lpwstr_value(text: &str) -> Result<windows::Win32::System::Com::StructuredSto
 
 /// Writes the string value `name` (the default value when none) of the key at `path` under the current user, making the
 /// key when it is not there.
-fn write_string(path: &str, name: Option<&str>, value: &str) -> Result<(), String> {
+pub(crate) fn write_string(path: &str, name: Option<&str>, value: &str) -> Result<(), String> {
     let mut key = HKEY::default();
     let units: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
     let bytes: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
