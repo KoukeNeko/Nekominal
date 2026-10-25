@@ -853,7 +853,13 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
         };
         let cwd = text(map, "cwd", "", &path, problems);
         // An empty id could never be picked (the empty default profile means "the first one").
-        let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| format!("custom-{name}"));
+        // Profiles of one name get ids of their own (`custom-Node`, `custom-Node-2`), or merge would keep only the first.
+        let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| {
+            (1..)
+                .map(|n| if n == 1 { format!("custom-{name}") } else { format!("custom-{name}-{n}") })
+                .find(|id| !profiles.iter().any(|p: &CustomProfile| p.id == *id))
+                .unwrap_or_default()
+        });
         let env = match map.get("env") {
             Some(Value::Object(vars)) => vars
                 .iter()
@@ -1639,6 +1645,13 @@ mod tests {
         let result = parsed(r#"{ "profiles": [ { "id": "", "name": "Node", "program": "node.exe" } ] }"#);
         assert!(result.problems.is_empty(), "{:?}", result.problems);
         assert_eq!(result.settings.profiles[0].id, "custom-Node");
+    }
+
+    #[test]
+    fn profiles_of_one_name_without_ids_get_ids_of_their_own() {
+        let result = parsed(r#"{ "profiles": [ { "name": "Node", "program": "a.exe" }, { "name": "Node", "program": "b.exe" }, { "name": "Node", "program": "c.exe" } ] }"#);
+        let ids: Vec<&str> = result.settings.profiles.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["custom-Node", "custom-Node-2", "custom-Node-3"]);
     }
 
     #[test]
