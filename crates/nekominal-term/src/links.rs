@@ -205,6 +205,11 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     if names.iter().any(|name| name.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c))) {
         return Err(Refusal::Malformed);
     }
+    // Windows collapses `.` and `..` (and names of only dots and spaces), so `a.exe/.` or `a.exe/x/..` runs a.exe:
+    // the last name checked below would not be the file opened.
+    if names.iter().any(|name| !name.is_empty() && name.trim_end_matches(['.', ' ']).is_empty()) {
+        return Err(Refusal::Malformed);
+    }
     // Windows ignores trailing dots and spaces when it opens a file, so `a.exe.` runs a.exe.
     let last = names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default();
     let last = last.trim_end_matches(['.', ' ']);
@@ -369,7 +374,10 @@ mod tests {
         for uri in ["file://server/share/x.txt", "file:////server/share/x.txt", "file:///home/me/x.txt", "file:///x.txt", "file://C:/x.txt", "file:C:/x.txt", "file:///C:x.txt", "file:///1:/x.txt"] {
             assert_eq!(open_target(uri), Err(Refusal::NotLocal), "{uri}");
         }
-        for uri in ["file:///C:/a%zz", "file:///C:/a%FF", "file:///C:/a/b:c.txt", "file:///C:/a/b%3Ac.txt", "file:///C:/a/b%00c", "file:///C:/a/b|c", "file:///C:/a/%5Cb"] {
+        for uri in [
+            "file:///C:/a%zz", "file:///C:/a%FF", "file:///C:/a/b:c.txt", "file:///C:/a/b%3Ac.txt", "file:///C:/a/b%00c", "file:///C:/a/b|c", "file:///C:/a/%5Cb",
+            "file:///C:/x/a.exe/.", "file:///C:/Users/me/evil.exe/x/..", "file:///C:/x/a.exe/%2E%2E/", "file:///C:/x/../a.txt", "file:///C:/x/a.exe/..%20",
+        ] {
             assert_eq!(open_target(uri), Err(Refusal::Malformed), "{uri}");
         }
     }
