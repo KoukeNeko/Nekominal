@@ -5,6 +5,7 @@
 mod access;
 mod agent;
 mod app;
+mod buffers;
 mod cli;
 mod clipboard;
 mod design;
