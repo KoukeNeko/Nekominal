@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, clipboard, design, find, icons, motion, textfield, welcome,
+    access, agent, clipboard, design, find, icons, motion, textfield, update, welcome,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -220,6 +220,8 @@ pub struct App {
     marks_epoch: Instant,
     /// Where the window was last, on the screen: a move takes the pop-up along by the difference.
     origin: Option<(i32, i32)>,
+    /// What the last look for a newer version found, and whether the About page has not shown it yet: a thread fills it.
+    update: Arc<std::sync::Mutex<(update::Check, bool)>>,
     /// Claude Code as the Agent page last found it.
     claude: agent::Claude,
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
@@ -471,6 +473,7 @@ impl App {
             animating: false,
             marks_epoch: Instant::now(),
             origin: None,
+            update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
@@ -948,6 +951,11 @@ impl App {
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
     pub fn on_wake(&mut self) {
+        // The look for a newer version has an answer for the About page.
+        let answered = self.update.lock().map(|mut state| std::mem::take(&mut state.1)).unwrap_or(false);
+        if answered {
+            self.page_redraw();
+        }
         // The find bar searches the focused pane: only its output can change the matches.
         let focused_woke = self.focused().is_some_and(|entry| entry.wake.pending.load(Ordering::Acquire));
         for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
@@ -1526,15 +1534,37 @@ impl App {
         }
     }
 
+    fn update_check(&self) -> update::Check {
+        self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed)
+    }
+
+    /// Looks for a newer version on a thread of its own; the answer wakes this window, which draws the About page again.
+    fn check_for_update(&mut self) {
+        if let Ok(mut state) = self.update.lock() {
+            if state.0 == update::Check::Checking {
+                return;
+            }
+            state.0 = update::Check::Checking;
+        }
+        self.page_redraw();
+        let (shared, hwnd) = (Arc::clone(&self.update), self.hwnd.0 as isize);
+        std::thread::spawn(move || {
+            let found = update::check();
+            if let Ok(mut state) = shared.lock() {
+                *state = (found, true);
+            }
+            // SAFETY: posting to a window that may be gone, which PostMessage reports and nothing else.
+            unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)); }
+        });
+    }
+
     /// Scoop does not replace a program that runs, and the update would be typed in this very terminal: a PowerShell window
     /// of its own waits for this process and its OpenConsole to end, runs the update and starts the app again, while every
     /// window here closes and saves the session.
     fn update_and_restart(&mut self) {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x10;
-        // The program is ...\scoop\apps\nekominal\<version or current>\Nekominal.exe.
-        let app_dir = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.to_owned()));
-        let Some(app_dir) = app_dir.filter(|dir| dir.parent().and_then(|apps| apps.file_name()).is_some_and(|name| name.eq_ignore_ascii_case("apps"))) else {
+        let Some(app_dir) = update::scoop_dir() else {
             util::log("update: this copy was not installed with Scoop, so there is nothing to update");
             return;
         };
@@ -1829,6 +1859,7 @@ impl App {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
                     settings_page::Entry::Claude => ("Claude Code".to_owned(), settings_page::claude_note(&self.claude, &self.settings).get(lang).to_owned()),
+                    settings_page::Entry::About => (format!("Nekominal {}", update::CURRENT), settings_page::update_note(&self.update_check(), lang)),
                 })
                 .collect(),
             focused: page.focus,
@@ -1902,6 +1933,11 @@ impl App {
 
     /// Draws a frame of the window of the settings.
     pub fn settings_paint(&mut self) {
+        // The About page looks for a newer version the first time it is shown.
+        let about = self.page.as_ref().is_some_and(|page| page.query.trim().is_empty() && Section::ALL.get(page.section) == Some(&Section::About));
+        if about && self.update_check() == update::Check::Idle {
+            self.check_for_update();
+        }
         let Some(win) = self.settings_win.as_mut() else { return };
         let Some(view) = win.surface.acquire() else { return };
         let (size, scale) = (win.surface.size(), win.scale);
@@ -2854,7 +2890,8 @@ impl App {
         let area = self.page_area();
         let page = self.page.as_ref()?;
         let ui = &mut self.ui;
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, programs: &self.programs, claude: &self.claude, area };
+        let update = self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed);
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some() };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 
@@ -3210,6 +3247,8 @@ impl App {
                 }
             }
             Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
+            Part::CheckUpdate => self.check_for_update(),
+            Part::Update => self.update_and_restart(),
         }
         self.page_redraw();
         capture
@@ -3254,11 +3293,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Claude => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Claude => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About => None,
         });
         match vk_code {
             VK_ESCAPE => {

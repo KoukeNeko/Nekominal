@@ -320,6 +320,13 @@ texts! {
 
     SettingsFile "settings.file" "設定 JSON" "Settings file";
     SettingsVersion "settings.version" "版本" "Version";
+    SettingsAbout "settings.about" "關於" "About";
+    UpdateCheck "update.check" "檢查更新" "Check for updates";
+    UpdateChecking "update.checking" "正在檢查更新" "Checking for updates";
+    UpdateLatest "update.latest" "已是最新版本" "Up to date";
+    UpdateNewer "update.newer" "有新版本 {0}" "Version {0} is available";
+    UpdateFailed "update.failed" "無法檢查更新，請確認網路連線" "Could not check for updates; check the connection";
+    UpdateNotScoop "update.notScoop" "這份不是用 Scoop 安裝的，請手動下載新版本" "This copy was not installed with Scoop; download the new version yourself";
     SettingsConpty "settings.conpty" "ConPTY" "ConPTY";
     ConptyBundled "conpty.bundled" "隨附 {0}" "Bundled {0}";
     ConptySystem "conpty.system" "系統內建" "Built in";

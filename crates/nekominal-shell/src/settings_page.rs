@@ -51,6 +51,9 @@ const RADIO_ROW: f32 = 36.0;
 const RESET_ROOM: f32 = 32.0;
 /// The row of an agent on the Agent page: its logo, its name and version, and a line that says how it is connected.
 const CLAUDE_ROW: f32 = 68.0;
+/// The row of the app on the About page: its logo, its name and version, what the look for a newer one found, and the
+/// buttons under them.
+const ABOUT_ROW: f32 = 112.0;
 /// How much taller a row is when its control goes under its label.
 const STACK: f32 = 48.0;
 
@@ -99,6 +102,9 @@ pub enum Part {
     Binding(Command),
     /// Puts the shortcuts of a command back to the default.
     ResetKey(Command),
+    /// Looks again for a newer version, and updates to it and starts the app again.
+    CheckUpdate,
+    Update,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -164,6 +170,8 @@ pub enum Entry {
     Key(Command),
     /// Claude Code: where it is and whether its status line goes to the status bar.
     Claude,
+    /// Nekominal itself: its version, whether a newer one is out, and the buttons that look and update.
+    About,
 }
 
 impl Entry {
@@ -172,7 +180,19 @@ impl Entry {
             Entry::Setting(row) => row.section,
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
+            Entry::About => Section::About,
         }
+    }
+}
+
+/// What the About page says of the look for a newer version.
+pub fn update_note(check: &crate::update::Check, lang: Lang) -> String {
+    use crate::update::Check;
+    match check {
+        Check::Idle | Check::Checking => Text::UpdateChecking.get(lang).to_owned(),
+        Check::Latest => Text::UpdateLatest.get(lang).to_owned(),
+        Check::Newer(version) => Text::UpdateNewer.format(lang, &[version]),
+        Check::Failed => Text::UpdateFailed.get(lang).to_owned(),
     }
 }
 
@@ -185,6 +205,7 @@ fn section_glyph(section: Section) -> char {
         Section::Agents => '\u{E99A}',
         Section::Keys => '\u{E765}',
         Section::Advanced => '\u{E713}',
+        Section::About => '\u{E946}',
     }
 }
 
@@ -209,6 +230,9 @@ pub struct View<'a> {
     pub claude: &'a crate::agent::Claude,
     /// The area of the page in the coordinates of the window, in DIP.
     pub area: Rect,
+    /// What the last look for a newer version found, and whether Scoop installed this copy (so that it can update it).
+    pub update: crate::update::Check,
+    pub scoop: bool,
 }
 
 impl Frame {
@@ -266,7 +290,8 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap) -> Vec<Entry> {
     } else {
         // The Agent page starts with the agents it knows, before the rows of the table.
         let agents = (section == Section::Agents).then_some(Entry::Claude);
-        agents.into_iter().chain(settings_ui::in_section(section).map(Entry::Setting)).collect()
+        let about = (section == Section::About).then_some(Entry::About);
+        agents.into_iter().chain(about).chain(settings_ui::in_section(section).map(Entry::Setting)).collect()
     }
 }
 
@@ -465,6 +490,39 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 item(&mut items, Rect::new(text_x, rect.y + rect.h - 30.0, room, 22.0), None, label(note.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
                 y += CLAUDE_ROW;
             }
+            Entry::About => {
+                use crate::update::Check;
+                let rect = Rect::new(x0, y, content_width, ABOUT_ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                let mark = Rect::new(rect.x + MARGIN, rect.y + 16.0, 36.0, 36.0);
+                item(&mut items, mark, None, Visual::Program { path: std::env::current_exe().ok(), mark: Mark::Badge { label: "N", color: (122, 162, 247) } }, true);
+                let text_x = mark.x + 36.0 + 2.0 * MARK_GAP;
+                let room = (rect.x + rect.w - MARGIN - text_x).max(0.0);
+                let title = format!("Nekominal  {}", crate::update::CURRENT);
+                item(&mut items, Rect::new(text_x, rect.y + 12.0, room, 24.0), None, label(title, 15.0, Tone::Text, true, Align::Left), true);
+                let newer = matches!(view.update, Check::Newer(_));
+                let tone = if newer { Tone::Text } else { Tone::Quiet };
+                item(&mut items, Rect::new(text_x, rect.y + 36.0, room, 20.0), None, label(update_note(&view.update, lang), 12.0, tone, false, Align::Left), true);
+                // The buttons: update when a newer version is out and Scoop can put it in, and look again.
+                let mut at = text_x;
+                let buttons_y = rect.y + 66.0;
+                if newer && view.scoop {
+                    let text = Text::AppUpdate.get(lang);
+                    let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
+                    item(&mut items, button, Some(Part::Update), Visual::Plate(Fill::Button { selected: true, hover: hover == Some(Part::Update) }), true);
+                    item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                    at = button.x + button.w + GAP;
+                }
+                let text = Text::UpdateCheck.get(lang);
+                let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
+                item(&mut items, button, Some(Part::CheckUpdate), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::CheckUpdate) }), true);
+                item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                if newer && !view.scoop {
+                    let x = button.x + button.w + 12.0;
+                    item(&mut items, Rect::new(x, buttons_y, (rect.x + rect.w - MARGIN - x).max(0.0), CONTROL), None, label(Text::UpdateNotScoop.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
+                }
+                y += ABOUT_ROW;
+            }
             Entry::Setting(row) => {
                 let id = row.id;
                 // A control that does not fit beside the label goes on a line of its own under it.
@@ -625,7 +683,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -639,9 +697,9 @@ mod tests {
         for (i, section) in Section::ALL.iter().enumerate() {
             let page = Page { section: i, ..Page::default() };
             let shown = frame(&page, &settings).entries.len();
-            // The Agent page starts with the row of Claude Code.
-            let agents = usize::from(*section == Section::Agents);
-            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + agents };
+            // The Agent page starts with the row of Claude Code, and the About page is the row of the app.
+            let own = usize::from(matches!(section, Section::Agents | Section::About));
+            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own };
             assert_eq!(shown, expected, "{section:?}");
         }
     }
@@ -699,7 +757,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for (width, height) in [crate::settings_window::MIN_SIZE, (900.0, 650.0), (1400.0, 900.0)] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, width, height) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -725,6 +783,29 @@ mod tests {
     }
 
     #[test]
+    fn the_about_page_offers_the_update_only_when_a_newer_version_is_out_and_scoop_can_install_it() {
+        use crate::update::Check;
+        let settings = Settings::default();
+        let keymap = keymap();
+        let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
+        let parts = |update: Check, scoop: bool| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
+            let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            let texts: Vec<String> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect();
+            (frame.items.iter().filter_map(|item| item.part).filter(|p| matches!(p, Part::Update | Part::CheckUpdate)).collect::<Vec<_>>(), texts)
+        };
+        let (latest, texts) = parts(Check::Latest, true);
+        assert_eq!(latest, [Part::CheckUpdate]);
+        assert!(texts.iter().any(|t| t.starts_with("Nekominal  ") && t.ends_with(crate::update::CURRENT)), "the version is on the page");
+        let (newer, texts) = parts(Check::Newer("9.9.9".into()), true);
+        assert_eq!(newer, [Part::Update, Part::CheckUpdate]);
+        assert!(texts.iter().any(|t| t.contains("9.9.9")));
+        let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), false);
+        assert_eq!(elsewhere, [Part::CheckUpdate], "a copy Scoop did not install is not updated by it");
+        assert!(texts.iter().any(|t| t == Text::UpdateNotScoop.get(Lang::EnUs)));
+    }
+
+    #[test]
     fn the_rows_of_the_sidebar_are_greyed_and_cannot_be_pressed_with_the_tabs_on_top() {
         let mut settings = Settings::default();
         let page = Page { section: 0, ..Page::default() };
@@ -746,7 +827,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, programs: &[None, None, None], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, programs: &[None, None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         // The profiles come first on their page: the Agent page has a mark of its own.
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
@@ -815,7 +896,7 @@ mod tests {
         for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

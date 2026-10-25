@@ -26,12 +26,14 @@ pub enum Section {
     Agents,
     Keys,
     Advanced,
+    /// The version of the app and whether a newer one is out: no settings, only what the page shows.
+    About,
 }
 
 impl Section {
     /// In the order of the section strip.
-    pub const ALL: [Section; 6] =
-        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Keys, Section::Advanced];
+    pub const ALL: [Section; 7] =
+        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Keys, Section::Advanced, Section::About];
 
     pub fn text(self) -> Text {
         match self {
@@ -41,6 +43,7 @@ impl Section {
             Section::Agents => Text::SettingsAgents,
             Section::Keys => Text::SettingsKeys,
             Section::Advanced => Text::SettingsAdvanced,
+            Section::About => Text::SettingsAbout,
         }
     }
 }
@@ -593,6 +596,7 @@ mod tests {
         assert_eq!(ids(Section::Profiles), ["defaultProfile"]);
         assert_eq!(ids(Section::Keys), Vec::<&str>::new(), "the shortcuts page lists commands, not settings");
         assert_eq!(ids(Section::Advanced), ["language"]);
+        assert_eq!(ids(Section::About), Vec::<&str>::new(), "the About page shows the version, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
         assert_eq!(ids(Section::Appearance)[..6], ["tabs.layout", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
