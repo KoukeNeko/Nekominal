@@ -1,0 +1,3 @@
+// The icon of the app: the first icon of the program, which Explorer, the taskbar, Alt+Tab and the Scoop shortcut show,
+// and resource 1, which the windows load for their title bar. scripts\make-icon.ps1 makes the file.
+1 ICON "../../assets/nekominal.ico"

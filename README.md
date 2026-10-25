@@ -1,7 +1,9 @@
+<p align="center"><img src="assets/nekominal.svg" width="112" alt="Nekominal"></p>
+
 # Nekominal
 
 A terminal for Windows, written in Rust with no web technology. It is made for coding agents: Claude Code, including its
-full-screen mode, runs in it.
+full-screen mode, runs in it, and the window shows which tabs are working and which wait for you.
 
 The window is a plain Win32 window. Direct3D 11 draws the terminal and the interface, DirectComposition puts the result over a
 blurred backdrop, and ConPTY runs the shells.
@@ -13,21 +15,34 @@ scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket
 scoop install koukeneko/nekominal
 ```
 
-Update with `scoop update nekominal`. A release is also a zip file: unpack it anywhere and run `Nekominal.exe`. The zip holds
-the ConPTY pair (`conpty.dll`, `OpenConsole.exe`) the sessions run on; keep the three files together.
+To update, use **Update and restart** in the command palette or on the About page of the settings: Scoop cannot replace a
+program that is running, so Nekominal closes its windows, updates, and starts again. From another terminal,
+`scoop update nekominal` does the same while Nekominal is closed.
+
+A release is also a zip file: unpack it anywhere and run `Nekominal.exe`. The zip holds the ConPTY pair (`conpty.dll`,
+`OpenConsole.exe`) the sessions run on; keep the three files together.
 
 ## Features
 
-- Tabs and split panes. The tab chips slide to their places, and a dragged chip makes room as it passes. Drag a tab out of the title bar and it becomes a window that follows the pointer; over the tab strip of another window it joins that window, still held.
-- The button beside + lists the shells a new tab can start; the position plate ("2 / 5") lists all the tabs.
-- A status mark on each tab that asks for you: a bell, a notification, a finished or failed command, an agent that waits.
-- Menu, command palette, find bar, tab list, and the settings, which are a window of their own, all over the blurred backdrop. Mica, Mica Alt, acrylic or none;
-  ten color schemes; the opacity of the background. The settings window has a tab for each section, a control for every
-  setting, a search line, and the shortcuts tab rebinds a command by pressing the new chord.
-- Optional: the tabs, the panes, their folders and the place of the window come back at the next start (estoreSession).
+- **Tabs on top or in a sidebar.** The first start asks which; the settings change it later. On top, the tabs are words in a
+  40-DIP title bar with a line under the selected one. In the sidebar, a tab is a row (its program, its state, its folder
+  and branch) or an icon with a ring of the colour of its state. The sidebar keeps your order, or groups the tabs by state;
+  Ctrl+Shift+B hides and shows it.
+- **What the agents are doing.** A tab at work has a spinner, a tab that waits for you pulses, and the title bar counts the tabs
+  that wait ("2 waiting"; a click goes to the next). For Claude Code the title bar also shows the model, the context used and
+  the cost.
+- Split panes. The tabs slide to their places; drag a tab out of the window and it becomes a window of its own, or drop it on
+  another window. The middle button closes a tab.
+- Menu, command palette, find bar and tab list, all over the blurred backdrop, and following the window when it moves. Mica,
+  Mica Alt, acrylic or none; ten color schemes; the opacity of the background.
+- The settings are a window of their own: a column of sections with a search line, a control for every setting, and a
+  shortcuts page that rebinds a command by pressing the new chord. The About page shows the version, looks for a newer one,
+  and lists the contributors.
+- A blinking cursor at a pace you choose, or a steady one.
+- Optional: the tabs, the panes, their folders and the place of the window come back at the next start (`restoreSession`).
 - Copy and paste with confirmations for large or multi-line text, OSC 52, links, IME composition drawn in place (Zhuyin tested).
 - The kitty keyboard protocol, key releases included, for the programs that ask for it.
-- Screen readers see the tabs, the text of the terminal, and the open menu, through UI Automation.
+- Screen readers see the tabs, the text of the terminal, the settings and the open menu, through UI Automation.
 - Traditional Chinese and English.
 
 ## Shortcuts
@@ -36,6 +51,8 @@ the ConPTY pair (`conpty.dll`, `OpenConsole.exe`) the sessions run on; keep the 
 | --- | --- |
 | New tab | Ctrl+Shift+T |
 | Choose a profile for a new tab | Ctrl+Shift+N |
+| Next tab that waits for you | Ctrl+Shift+U |
+| Hide or show the sidebar | Ctrl+Shift+B |
 | Split right, split down | Alt+Shift+D, Alt+Shift+S |
 | Move between panes | Alt+Arrow |
 | Zoom the pane | Ctrl+Shift+Z |
@@ -44,8 +61,8 @@ the ConPTY pair (`conpty.dll`, `OpenConsole.exe`) the sessions run on; keep the 
 | Settings | Ctrl+Shift+O |
 | Full screen | F11 |
 
-The settings page lists every shortcut with its binding. `settings.json` in `%APPDATA%\Nekominal` holds what the page changes
-and can be edited by hand; the page has a button that opens it.
+The settings list every shortcut with its binding. `settings.json` in `%APPDATA%\Nekominal` holds what the settings change and
+can be edited by hand; the settings have a button that opens it.
 
 ## Build
 
@@ -56,6 +73,9 @@ scripts\fetch-conpty.ps1                 # the ConPTY pair, checked against a pi
 cargo build --release -p nekominal-shell # target\release\nekominal-next.exe
 scripts\package.ps1                      # dist\Nekominal-<version>-windows-x64.zip
 ```
+
+The icon is drawn in `assets\nekominal.svg` (and `nekominal-small.svg`, with a thicker line, for 32 px and less).
+`scripts\make-icon.ps1` renders them with Chrome or Edge into `assets\nekominal.ico`, which the build puts into the program.
 
 Tests:
 
@@ -78,16 +98,19 @@ machine alone while they run.
 | `nekominal-render` | the Direct3D 11 grid renderer |
 | `nekominal-ui` | the drawn interface: rounded rectangles, text, icons |
 | `nekominal-pane` | a pane: a session, an emulator, and a renderer |
-| `nekominal-shell` | the application: window, tabs, pop-ups, settings page |
+| `nekominal-shell` | the application: window, tabs, sidebar, pop-ups, settings, updates |
 
 ## Releases
 
-The version is `version` under `[workspace.package]` in `Cargo.toml`. Change it, commit, and push a tag with the same number:
+The version is `version` under `[workspace.package]` in `Cargo.toml`. Change it, commit, and push an annotated tag with the
+same number:
 
 ```powershell
-git tag v0.2.0
+git tag -a v0.2.0 -m v0.2.0
 git push origin v0.2.0
 ```
 
-The release workflow builds and tests the archive, attaches it to a release here and to a release of the bucket, and writes
-`bucket\nekominal.json` in `KoukeNeko/scoop-bucket`. The repository secret `SCOOP_BUCKET_TOKEN` has to be able to write to the bucket.
+The release workflow writes the contributors of this repository into the build (`crates\nekominal-shell\contributors.json`),
+builds and tests the archive, attaches it to a release here and to a release of the bucket, and writes
+`bucket\nekominal.json` in `KoukeNeko/scoop-bucket`. The repository secret `SCOOP_BUCKET_TOKEN` has to be able to write to the
+bucket.

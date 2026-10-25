@@ -59,6 +59,15 @@ thread_local! {
     static RETIRED: RefCell<Vec<Rc<RefCell<App>>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The icon of the app, resource 1 of the program (`nekominal.rc`); none when the build has no resources.
+pub fn app_icon() -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    // SAFETY: loads a shared icon of this module by its number (MAKEINTRESOURCE(1)).
+    unsafe {
+        let module = GetModuleHandleW(None).ok();
+        windows::Win32::UI::WindowsAndMessaging::LoadIconW(module.map(Into::into), windows::core::PCWSTR(1 as *const u16)).unwrap_or_default()
+    }
+}
+
 /// Asks every window of the shell to close, each with the check of its busy shells, as its close button does.
 pub fn close_all_windows() {
     let windows: Vec<isize> = APPS.with(|apps| apps.borrow().keys().copied().collect());
@@ -992,6 +1001,7 @@ pub fn run() -> Result<(), String> {
             hInstance: module.into(),
             lpszClassName: w!("NekominalShell"),
             hCursor: LoadCursorW(None, IDC_ARROW).map_err(|e| e.to_string())?,
+            hIcon: app_icon(),
             ..Default::default()
         };
         RegisterClassW(&class);

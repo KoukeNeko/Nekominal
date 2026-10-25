@@ -47,5 +47,9 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+# Compiles nekominal.rc (the icon of the app) into the program.
+embed-resource = "=3.0.12"
+
 [dev-dependencies]
 nekominal-render = { workspace = true, features = ["offscreen"] }

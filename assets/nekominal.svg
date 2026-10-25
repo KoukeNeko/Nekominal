@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- The icon of Nekominal: one line, the outline of a cat's head, on a dark square. scripts\make-icon.ps1 renders it. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#16171f"/>
+  <path d="M60 116 L68 58 L104 86 Q128 80 152 86 L188 58 L196 116 Q204 136 196 156 Q182 196 128 198 Q74 196 60 156 Q52 136 60 116 Z"
+        fill="none" stroke="#7aa2f7" stroke-width="18" stroke-linejoin="round"/>
+</svg>

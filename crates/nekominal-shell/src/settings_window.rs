@@ -89,6 +89,7 @@ pub fn open(owner: HWND, gpu: &Gpu, backdrop: Backdrop, dark: bool, title: &str)
             hInstance: module.into(),
             lpszClassName: w!("NekominalSettings"),
             hCursor: LoadCursorW(None, IDC_ARROW).map_err(|e| e.to_string())?,
+            hIcon: crate::win::app_icon(),
             ..Default::default()
         };
         // Registered once; a second registration fails and the first stays.
