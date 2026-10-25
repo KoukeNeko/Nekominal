@@ -68,7 +68,9 @@ allow. Large and multi-line pastes ask first.
 - **Select or copy a command's output** from the palette; press again for the command before it. Failed commands get a red
   mark on the scrollbar, and Ctrl+Alt+Up / Down jumps between prompts.
 - **Hints (Ctrl+Shift+E).** Every URL, file path (with its `:line:col`) and git hash on the screen gets a one-letter label.
-  Type it to copy, Shift+letter to open.
+  Type it to copy, Shift+letter to open: a path with a line opens at that line in VS Code (else Cursor, Windsurf or Zed,
+  or the command of the `editor` setting). Ctrl+click does the same on a printed `src\main.rs:12:5`.
+- **Search all tabs (Ctrl+Shift+G)** lists every match in every pane with the title of its tab; Enter goes there.
 - **Keyboard selection (Ctrl+Shift+M)**, block selection with Alt+drag, copy with formatting (HTML), export of a whole pane
   to a file, find with case and regular expressions.
 - **Suggestions (Ctrl+Shift+H)** from your snippets and from PowerShell's history.
@@ -164,7 +166,7 @@ allow. Large and multi-line pastes ask first.
 | Zoom the pane · close it | Ctrl+Shift+Z · Ctrl+Shift+W |
 | Hints · keyboard selection · suggestions | Ctrl+Shift+E · Ctrl+Shift+M · Ctrl+Shift+H |
 | Previous / next prompt | Ctrl+Alt+Up / Down |
-| Find · command palette · settings | Ctrl+Shift+F · Ctrl+Shift+P · Ctrl+, |
+| Find · search all tabs · command palette · settings | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+, |
 | Font size | Ctrl+= · Ctrl+- · Ctrl+0 |
 | Sidebar · full screen · drop-down window | Ctrl+Shift+B · F11 · Win+` |
 

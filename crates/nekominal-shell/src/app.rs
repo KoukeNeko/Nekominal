@@ -246,6 +246,8 @@ pub struct App {
     renaming: Option<u64>,
     /// The open palette lists these suggestions (what each says, what it types), not the commands.
     suggestions: Option<Vec<(String, String)>>,
+    /// The open palette is Search all tabs and lists these matches.
+    search_hits: Option<Vec<crate::search_tabs::Hit>>,
     /// How the find bar searches (the case, a regular expression); kept from one opening of the bar to the next.
     find_options: find::Options,
     /// Selecting with the keyboard in the focused pane: the caret and where the selection started.
@@ -443,6 +445,7 @@ fn wired(command: Command) -> bool {
             | Command::EditCopyOutput
             | Command::EditHints
             | Command::EditSuggestions
+            | Command::EditSearchTabs
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -574,6 +577,7 @@ impl App {
             origin: None,
             renaming: None,
             suggestions: None,
+            search_hits: None,
             find_options: find::Options::default(),
             mark: None,
             on_top: false,
@@ -1997,6 +2001,7 @@ impl App {
             Command::EditExport => self.export_text(),
             Command::EditMarkMode => self.toggle_mark_mode(),
             Command::EditSuggestions => self.open_suggestions(),
+            Command::EditSearchTabs => self.open_search_tabs(),
             Command::ViewAlwaysOnTop => self.toggle_on_top(),
             Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
             // The drop-down window is the process's, not this window's: the window code shows or makes it.
@@ -4472,6 +4477,8 @@ impl App {
             self.rename_rows(&query)
         } else if self.suggestions.is_some() {
             self.suggestion_rows(&query)
+        } else if self.search_hits.is_some() {
+            self.search_tab_rows(&query)
         } else {
             self.palette_rows(&query)
         };
@@ -4565,6 +4572,41 @@ impl App {
                 program: None,
             })
             .collect()
+    }
+
+    /// The palette as the line of Search all tabs, empty until something is typed.
+    fn open_search_tabs(&mut self) {
+        let anchor = self.screen_point((self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale, (layout::TITLE_HEIGHT + 16.0) * self.scale);
+        self.open_popup(Vec::new(), popup::Kind::Palette, anchor);
+        if self.popup.is_some() {
+            self.search_hits = Some(Vec::new());
+            self.query_changed();
+        }
+    }
+
+    /// Searches every pane for `query` and keeps the matches for the rows it returns; the count and the options go to the
+    /// right of the line, as in the find bar.
+    fn search_tab_rows(&mut self, query: &str) -> Vec<popup::Row> {
+        let (hits, rows) = crate::search_tabs::search(&self.tabs, self.selected, query, self.find_options, |i| self.tab_label(i));
+        let count = if query.is_empty() { String::new() } else { hits.len().to_string() };
+        if let Some(popup) = self.popup.as_mut() {
+            popup.status = find::status_with(self.find_options, &count);
+        }
+        self.search_hits = Some(hits);
+        rows
+    }
+
+    /// Selects the tab and the pane of a match of Search all tabs, scrolls to it and selects it.
+    fn show_search_hit(&mut self, hit: crate::search_tabs::Hit) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.uid == hit.tab) else { return };
+        self.select(index);
+        self.tabs[index].focus(hit.pane);
+        self.relayout();
+        self.sync_focus();
+        if let Some(entry) = self.tabs[index].entry(hit.pane) {
+            crate::search_tabs::reveal(&mut entry.pane.term.lock(), hit.found);
+        }
+        self.redraw();
     }
 
     /// The rows under the line of a rename: name the tab after the line, or give it back its automatic title.
@@ -4989,6 +5031,7 @@ impl App {
         self.confirmation = None;
         self.renaming = None;
         self.suggestions = None;
+        self.search_hits = None;
         self.text = Utf16Assembler::default();
         self.find = None;
         self.popup_closed = Some(Instant::now());
@@ -5077,6 +5120,13 @@ impl App {
             self.paste_into_field();
             return;
         }
+        // Search all tabs takes the options of the find bar, with its keys.
+        if self.search_hits.is_some() && held().alt && !repeat && (vk_code == 0x43 || vk_code == 0x52) {
+            let option = if vk_code == 0x43 { &mut self.find_options.match_case } else { &mut self.find_options.regex };
+            *option = !*option;
+            self.query_changed();
+            return;
+        }
         let Some(popup) = self.popup.as_mut() else { return };
         if popup.kind == popup::Kind::Confirm {
             if repeat {
@@ -5151,6 +5201,7 @@ impl App {
         // What the line of a rename held, and the tab it was for, and what the suggestions were, before the pop-up goes.
         let renamed = self.renaming.zip(self.popup.as_ref().and_then(|p| p.query.clone()));
         let suggestions = self.suggestions.take();
+        let search_hits = self.search_hits.take();
         self.close_popup();
         // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
         self.popup_closed = None;
@@ -5195,6 +5246,11 @@ impl App {
             Some(popup::Action::Suggestion(index)) => {
                 if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
                     self.type_text(input);
+                }
+            }
+            Some(popup::Action::SearchHit(index)) => {
+                if let Some(hit) = search_hits.as_ref().and_then(|hits| hits.get(index)) {
+                    self.show_search_hit(*hit);
                 }
             }
             Some(popup::Action::TabColor(color)) => {

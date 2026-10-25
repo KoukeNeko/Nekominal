@@ -22,6 +22,7 @@ mod motion;
 mod open;
 mod pick;
 mod popup;
+mod search_tabs;
 mod settings_page;
 mod settings_window;
 mod status;

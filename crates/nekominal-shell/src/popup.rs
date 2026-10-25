@@ -71,6 +71,8 @@ pub enum Action {
     /// Type the snippet at this index of the settings; type the suggestion at this index of the list on show.
     Snippet(usize),
     Suggestion(usize),
+    /// Show the match at this index of the list of Search all tabs.
+    SearchHit(usize),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
