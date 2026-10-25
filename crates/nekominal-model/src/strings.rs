@@ -135,6 +135,7 @@ texts! {
     // "設定檔" already names a profile, so the settings file is spelled out by its format.
     AppOpenSettingsFile "app.openSettingsFile" "開啟設定 JSON" "Open settings file";
     AppReloadSettings "app.reloadSettings" "重新載入設定" "Reload settings";
+    AppImportSchemes "app.importSchemes" "從 Windows Terminal 匯入色彩配置" "Import color schemes from Windows Terminal";
     AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
     AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
     AppearanceOpacityDown "appearance.opacity.down" "降低背景不透明度" "Decrease background opacity";
@@ -244,6 +245,7 @@ texts! {
     ProblemFontFamily "problem.fontFamily" "需要字型名稱的陣列或以逗號分隔的文字" "Needs an array of font names or a comma separated text";
     ProblemOneOf "problem.oneOf" "需要 {0} 其中之一" "Needs one of {0}";
     ProblemRequired "problem.required" "必填" "Required";
+    ProblemColor "problem.color" "需要 #RRGGBB 格式的顏色" "Needs a color such as #RRGGBB";
     ProblemUnknownTheme "problem.unknownTheme" "找不到「{0}」" "No color scheme \"{0}\"";
     ProblemUnknownCommand "problem.unknownCommand" "找不到命令" "No such command";
     ProblemBadShortcut "problem.badShortcut" "「{0}」不是有效的快速鍵" "\"{0}\" is not a valid shortcut";

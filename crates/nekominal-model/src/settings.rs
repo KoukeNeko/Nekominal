@@ -484,6 +484,8 @@ impl Default for StatusBar {
 pub struct Settings {
     pub language: Language,
     pub theme: String,
+    /// Colour schemes of the user's own, in the JSON of Windows Terminal's; listed after the built-in ones.
+    pub schemes: Vec<themes::Scheme>,
     pub font: Font,
     pub cursor: Cursor,
     pub appearance: Appearance,
@@ -533,6 +535,7 @@ impl Default for Settings {
         Self {
             language: Language::Auto,
             theme: themes::DEFAULT_THEME.to_owned(),
+            schemes: Vec::new(),
             font: Font {
                 family: ["Cascadia Mono", "Consolas", "Microsoft JhengHei UI", "Segoe UI Emoji"]
                     .map(String::from)
@@ -627,6 +630,8 @@ pub enum Expected {
     /// One of these names.
     OneOf(Vec<String>),
     Required,
+    /// A colour such as #1a1b26.
+    Color,
     /// A colour scheme that exists; this is the name that was not found.
     KnownTheme(String),
     KnownCommand,
@@ -658,6 +663,7 @@ impl Expected {
                 Text::ProblemOneOf.format(lang, &[&names.join(separator)])
             }
             Expected::Required => Text::ProblemRequired.get(lang).to_owned(),
+            Expected::Color => Text::ProblemColor.get(lang).to_owned(),
             Expected::KnownTheme(name) => Text::ProblemUnknownTheme.format(lang, &[name]),
             Expected::KnownCommand => Text::ProblemUnknownCommand.get(lang).to_owned(),
             Expected::Clash(owner) => Text::KeyConflict.format(lang, &[&owner.label(lang)]),
@@ -913,6 +919,77 @@ fn read_snippets(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Sn
     snippets
 }
 
+/// The `schemes` of a document. One with a missing or bad colour is reported and left out; one with the name of an
+/// earlier one replaces it, as a scheme copied in twice is one the user changed.
+fn read_schemes(source: &Map<String, Value>, problems: &mut Problems) -> Vec<themes::Scheme> {
+    let Some(value) = source.get("schemes") else { return Vec::new() };
+    let Value::Array(entries) = value else {
+        problems.fail("", "schemes", Expected::Array);
+        return Vec::new();
+    };
+    let mut schemes: Vec<themes::Scheme> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let path = format!("schemes[{index}]");
+        let Value::Object(map) = entry else {
+            problems.fail("", &path, Expected::Object);
+            continue;
+        };
+        match themes::Scheme::from_json(map) {
+            Ok(scheme) => match schemes.iter_mut().find(|s| s.name == scheme.name) {
+                Some(earlier) => *earlier = scheme,
+                None => schemes.push(scheme),
+            },
+            Err((key, expected)) => problems.fail(&path, &key, expected),
+        }
+    }
+    schemes
+}
+
+/// Removes the commas before a `}` or a `]`, outside of strings: Windows Terminal writes its file with them.
+fn strip_trailing_commas(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_string {
+            if ch == '\\' {
+                out.extend(chars.get(i..i + 2).unwrap_or(&chars[i..]));
+                i += 2;
+                continue;
+            }
+            in_string = ch != '"';
+        } else if ch == '"' {
+            in_string = true;
+        } else if ch == ',' && matches!(chars[i + 1..].iter().find(|c| !c.is_whitespace()), Some('}' | ']')) {
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Adds to `settings` the `schemes` of a Windows Terminal `settings.json` (comments and trailing commas allowed) that
+/// it has no scheme of by name, built-in or its own. A scheme that cannot be read is left out. The names added, or
+/// what the parser said of a file that is not JSON.
+pub fn import_schemes(settings: &mut Settings, windows_terminal: &str) -> Result<Vec<String>, String> {
+    let text = strip_trailing_commas(&strip_json_comments(windows_terminal.trim_start_matches('\u{feff}')));
+    let document: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    // Only the log reads the error, so it is not translated.
+    let Value::Object(root) = document else { return Err("not a JSON object".to_owned()) };
+    let mut added = Vec::new();
+    for scheme in read_schemes(&root, &mut Problems::default()) {
+        if !themes::is_known(&settings.schemes, &scheme.name) {
+            added.push(scheme.name.to_string());
+            settings.schemes.push(scheme);
+        }
+    }
+    Ok(added)
+}
+
 fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTreeMap<String, Vec<String>> {
     let Some(value) = source.get("keybindings") else { return BTreeMap::new() };
     let Value::Object(map) = value else {
@@ -969,7 +1046,8 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let tab_title = section(&tabs, "title", "tabs", &mut problems);
 
     let theme_name = text(&root, "theme", &d.theme, "", &mut problems);
-    let theme = if themes::is_known(&theme_name) {
+    let schemes = read_schemes(&root, &mut problems);
+    let theme = if themes::is_known(&schemes, &theme_name) {
         theme_name
     } else {
         problems.fail("", "theme", Expected::KnownTheme(theme_name));
@@ -986,6 +1064,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
             &mut problems,
         ),
         theme,
+        schemes,
         font: Font {
             family: font_families(&font, &d.font.family, &mut problems),
             size: number(&font, "size", d.font.size, FONT_SIZE_RANGE, "font", &mut problems),
@@ -1412,6 +1491,91 @@ mod tests {
         assert_eq!(result.settings.snippets[0].input, "git status\r");
         let written = round_trips(Settings { snippets: result.settings.snippets.clone(), ..Settings::default() });
         assert!(written.contains("git status\\r"), "{written}");
+    }
+
+    /// A scheme as Windows Terminal writes one, with the name and the background given.
+    fn wt_scheme(name: &str, background: &str) -> String {
+        format!(
+            r##"{{ "name": "{name}", "background": "{background}", "foreground": "#c0caf5", "cursorColor": "#ffffff", "selectionBackground": "#33467c",
+                "black": "#15161e", "red": "#f7768e", "green": "#9ece6a", "yellow": "#e0af68", "blue": "#7aa2f7", "purple": "#bb9af7",
+                "cyan": "#7dcfff", "white": "#a9b1d6", "brightBlack": "#414868", "brightRed": "#f7768e", "brightGreen": "#9ece6a",
+                "brightYellow": "#e0af68", "brightBlue": "#7aa2f7", "brightPurple": "#bb9af7", "brightCyan": "#7dcfff", "brightWhite": "#c0caf5" }}"##
+        )
+    }
+
+    #[test]
+    fn schemes_in_the_json_of_windows_terminal_are_read_and_chosen_by_name() {
+        let s = parsed_ok(&format!(r#""theme": "Mine", "schemes": [{}]"#, wt_scheme("Mine", "#123")));
+        assert_eq!(s.theme, "Mine", "a scheme of the file is a theme the file can choose");
+        let mine = themes::find(&s.schemes, "Mine");
+        assert_eq!(mine.background, themes::Color::rgb(0x112233), "#RGB is read as #RRGGBB");
+        assert_eq!((mine.cursor, mine.ansi[5], mine.ansi[15]), (themes::Color::rgb(0xffffff), themes::Color::rgb(0xbb9af7), themes::Color::rgb(0xc0caf5)));
+        // `magenta` stands for `purple`, and the cursor and the selection may be left out.
+        let loose = wt_scheme("Loose", "#000000").replace(r#""purple""#, r#""magenta""#).replace(r##""cursorColor": "#ffffff", "selectionBackground": "#33467c","##, "");
+        let s = parsed_ok(&format!(r#""schemes": [{loose}]"#));
+        assert_eq!((s.schemes[0].ansi[5], s.schemes[0].cursor), (themes::Color::rgb(0xbb9af7), themes::Color::rgb(0xc0caf5)));
+    }
+
+    #[test]
+    fn a_scheme_with_a_missing_or_bad_colour_is_reported_and_left_out() {
+        let bad = wt_scheme("Bad", "blue");
+        let missing = wt_scheme("Missing", "#000000").replace(r##""brightWhite": "#c0caf5""##, r#""extra": 1"#);
+        let nameless = wt_scheme("", "#000000");
+        let result = parsed(&format!(r#"{{ "theme": "Bad", "schemes": [{bad}, {missing}, {nameless}, 3, {}] }}"#, wt_scheme("Good", "#000000")));
+        let names: Vec<&str> = result.settings.schemes.iter().map(|s| &*s.name).collect();
+        assert_eq!(names, ["Good"]);
+        assert_eq!(result.settings.theme, Settings::default().theme, "a theme naming a scheme left out falls back");
+        let problems: Vec<(&str, &Expected)> = result.problems.iter().map(|p| (p.key.as_str(), &p.expected)).collect();
+        assert_eq!(
+            problems,
+            [
+                ("schemes[0].background", &Expected::Color),
+                ("schemes[1].brightWhite", &Expected::Required),
+                ("schemes[2].name", &Expected::Required),
+                ("schemes[3]", &Expected::Object),
+                ("theme", &Expected::KnownTheme("Bad".into())),
+            ]
+        );
+        assert_eq!(result.problems[0].text(Lang::EnUs), "schemes[0].background: Needs a color such as #RRGGBB");
+    }
+
+    #[test]
+    fn a_scheme_with_a_built_in_name_replaces_the_built_in_one() {
+        let s = parsed_ok(&format!(r#""theme": "Nord", "schemes": [{}]"#, wt_scheme("Nord", "#010203")));
+        assert_eq!(themes::find(&s.schemes, &s.theme).background, themes::Color::rgb(0x010203));
+        assert_eq!(themes::theme_names(&s.schemes).filter(|name| *name == "Nord").count(), 1);
+    }
+
+    #[test]
+    fn schemes_are_written_back_with_the_keys_of_windows_terminal_and_read_back() {
+        let s = parsed_ok(&format!(r#""schemes": [{}, {}]"#, wt_scheme("One", "#101010"), wt_scheme("Two", "#202020")));
+        let written = round_trips(s);
+        let value: Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(value["schemes"][1]["name"], "Two");
+        assert_eq!(value["schemes"][0]["background"], "#101010");
+        assert_eq!(value["schemes"][0]["brightPurple"], "#bb9af7");
+        assert_eq!(value["schemes"][0]["selectionBackground"], "#33467c");
+        assert!(!serialize(&Settings::default()).contains("schemes"), "no schemes of one's own, nothing written");
+    }
+
+    #[test]
+    fn importing_from_windows_terminal_adds_the_schemes_not_there_by_name_and_reads_its_comments_and_trailing_commas() {
+        let mut settings = parsed_ok(&format!(r#""schemes": [{}]"#, wt_scheme("Mine", "#101010")));
+        let windows_terminal = format!(
+            "\u{feff}{{\n  // Windows Terminal's own file\n  \"profiles\": {{ \"list\": [], }},\n  \"schemes\": [ {}, {}, {}, {}, /* a bad one */ {}, ],\n}}",
+            wt_scheme("Mine", "#ffffff"),
+            wt_scheme("Campbell", "#ffffff"),
+            wt_scheme("New \\\"q\\\", ]", "#303030"),
+            wt_scheme("Other", "#404040"),
+            wt_scheme("Broken", "nope"),
+        );
+        let added = import_schemes(&mut settings, &windows_terminal).expect("the file is read");
+        assert_eq!(added, ["New \"q\", ]", "Other"], "what is there by name, built-in or one's own, is kept");
+        assert_eq!(themes::find(&settings.schemes, "Mine").background, themes::Color::rgb(0x101010));
+        assert_eq!(import_schemes(&mut settings, &windows_terminal), Ok(Vec::new()), "a second import adds nothing");
+        assert_eq!(settings.schemes.len(), 3);
+        assert!(import_schemes(&mut settings, "{ not json").is_err());
+        assert_eq!(import_schemes(&mut settings, "{}"), Ok(Vec::new()), "a file without schemes adds none");
     }
 
     #[test]

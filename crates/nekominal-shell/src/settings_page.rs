@@ -391,7 +391,7 @@ pub fn stepped(row: &Descriptor, settings: &Settings, profiles: &[Profile], forw
             Value::Number((moved * 100.0).round() / 100.0)
         }
         (Control::Themes, Value::Text(name)) => {
-            let names: Vec<&str> = themes::theme_names().collect();
+            let names: Vec<&str> = themes::theme_names(&settings.schemes).collect();
             let at = names.iter().position(|n| *n == name).unwrap_or(0);
             Value::Text(names[cycle(names.len(), at)].to_owned())
         }
@@ -511,7 +511,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
         item(&mut items, Rect::new(x0 + INNER, y, (content_width - 2.0 * INNER).max(0.0), ROW), None, label(Text::SettingsEmpty.get(lang), 13.0, Tone::Quiet, false, Align::Left), true);
         y += ROW;
     }
-    let theme_names: Vec<&str> = themes::theme_names().collect();
+    let theme_names: Vec<&str> = themes::theme_names(&view.settings.schemes).collect();
     let mut last_section = None;
     for (n, entry) in entries.iter().enumerate() {
         let focus = page.focus == Some(n);

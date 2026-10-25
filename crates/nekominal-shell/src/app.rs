@@ -408,6 +408,7 @@ fn wired(command: Command) -> bool {
             | Command::AppSettings
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
+            | Command::AppImportSchemes
             | Command::TabProfiles
             | Command::AppNewWindow
             | Command::EditFind
@@ -517,7 +518,7 @@ impl App {
     pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
         let (settings, settings_readable) = load_settings();
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
-        let scheme = themes::scheme(&settings.theme);
+        let scheme = themes::find(&settings.schemes, &settings.theme);
         let glass = Glass::from_scheme(scheme);
         let opacity = glass::terminal_opacity(settings.appearance.backdrop, settings.appearance.opacity, glass::Material::NORMAL);
         let theme = glass::render_theme(scheme, opacity);
@@ -812,7 +813,7 @@ impl App {
     /// The theme of a pane: the window's, or the scheme its profile names with the window's opacity.
     fn pane_theme(&self, scheme: Option<&str>) -> r::Theme {
         match scheme {
-            Some(name) => glass::render_theme(themes::scheme(name), self.theme.background_opacity),
+            Some(name) => glass::render_theme(themes::find(&self.settings.schemes, name), self.theme.background_opacity),
             None => self.theme.clone(),
         }
     }
@@ -2041,6 +2042,7 @@ impl App {
             Command::AppSettings => self.open_settings_page(None),
             Command::AppOpenSettingsFile => self.open_settings_file(),
             Command::AppReloadSettings => self.reload_settings(),
+            Command::AppImportSchemes => self.import_schemes(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
                 if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
@@ -2381,7 +2383,8 @@ impl App {
         self.ui.fill(Rect::new(0.0, settings_window::TITLE - 1.0, window_width, 1.0), col(g.divider()));
         let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
         let background = Color([g.background.r, g.background.g, g.background.b, 255]);
-        let schemes: Vec<&str> = themes::theme_names().collect();
+        // Owned, as painting a tile borrows the whole app.
+        let schemes: Vec<themes::Scheme> = themes::theme_names(&self.settings.schemes).map(|name| themes::find(&self.settings.schemes, name).clone()).collect();
         let tone_color = |tone: settings_page::Tone| match tone {
             settings_page::Tone::Text => col(g.text()),
             settings_page::Tone::Quiet => col(g.text_secondary()),
@@ -2450,11 +2453,11 @@ impl App {
                     self.ui.rrect(rect, 6.0, Color::TRANSPARENT, Some(border));
                 }
                 settings_page::Visual::Tile { scheme, selected, hover } => {
-                    let Some(scheme) = schemes.get(*scheme).map(|name| themes::scheme(name)) else { continue };
+                    let Some(scheme) = schemes.get(*scheme) else { continue };
                     let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text()), 1.0) } else { (col(g.divider()), 1.0) };
                     self.ui.rrect(rect, CORNER_RADIUS, col(scheme.background), Some(border));
                     self.ui.push_clip(rect);
-                    self.ui.text(rect.x + 10.0, rect.y + 8.0, scheme.name, 12.0, col(scheme.foreground), false);
+                    self.ui.text(rect.x + 10.0, rect.y + 8.0, &scheme.name, 12.0, col(scheme.foreground), false);
                     for (i, color) in scheme.ansi[1..7].iter().enumerate() {
                         self.ui.rrect(Rect::new(rect.x + 10.0 + i as f32 * 20.0, rect.y + rect.h - 26.0, 16.0, 16.0), CORNER_RADIUS, col(*color), None);
                     }
@@ -3245,7 +3248,7 @@ impl App {
     /// The command palette: what matches `query` of the commands the shell can run and the open tabs.
     fn palette_rows(&self, query: &str) -> Vec<popup::Row> {
         let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
-        let mut items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs);
+        let mut items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs, &self.settings.schemes);
         items.extend(palette::snippet_items(self.language(), &self.settings.snippets));
         palette::search(items, query)
             .into_iter()
@@ -3254,7 +3257,7 @@ impl App {
                     PaletteAction::Run(command) if wired(command) => popup::Action::Command(command),
                     PaletteAction::GotoTab(index) => popup::Action::Tab(index as usize),
                     PaletteAction::NewTab(id) => popup::Action::NewTab(self.profiles.iter().position(|p| p.id == id)?),
-                    PaletteAction::SetColorScheme(name) => popup::Action::ColorScheme(themes::theme_names().find(|n| *n == name)?),
+                    PaletteAction::SetColorScheme(name) => popup::Action::ColorScheme(themes::theme_names(&self.settings.schemes).position(|n| *n == name)?),
                     PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
                     PaletteAction::Snippet(index) => popup::Action::Snippet(index),
                     PaletteAction::Run(_) => return None,
@@ -3289,12 +3292,12 @@ impl App {
     /// Puts the color scheme, the backdrop and the opacity of the settings in effect in the window and its panes.
     fn apply_look(&mut self) {
         let (backdrop, opacity) = (self.settings.appearance.backdrop, self.settings.appearance.opacity);
-        let scheme = themes::scheme(&self.settings.theme);
+        let scheme = themes::find(&self.settings.schemes, &self.settings.theme);
         self.glass = Glass::from_scheme(scheme);
         let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::NORMAL);
         self.theme = glass::render_theme(scheme, shown);
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
-            let theme = entry.scheme.as_deref().map_or_else(|| self.theme.clone(), |name| glass::render_theme(themes::scheme(name), shown));
+            let theme = entry.scheme.as_deref().map_or_else(|| self.theme.clone(), |name| glass::render_theme(themes::find(&self.settings.schemes, name), shown));
             entry.view.set_theme(theme);
         }
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
@@ -3701,7 +3704,8 @@ impl App {
                 }
             }
             Part::Tile(i) => {
-                if let (Some(row), Some(name)) = (settings_ui::find("theme"), themes::theme_names().nth(i)) {
+                let name = themes::theme_names(&self.settings.schemes).nth(i).map(str::to_owned);
+                if let (Some(row), Some(name)) = (settings_ui::find("theme"), name) {
                     self.set_setting(row, Value::Text(name.to_owned()));
                 }
             }
@@ -3949,8 +3953,8 @@ impl App {
                 }
             }
             Part::ProfileScheme(index) => {
-                let name = index.and_then(|i| themes::theme_names().nth(i));
-                self.edit_profile(|settings, profile| profile_edit::set_scheme(settings, profile, name));
+                let name = index.and_then(|i| themes::theme_names(&self.settings.schemes).nth(i)).map(str::to_owned);
+                self.edit_profile(|settings, profile| profile_edit::set_scheme(settings, profile, name.as_deref()));
             }
             Part::ProfileFont(larger) => {
                 let window = self.settings.font.size;
@@ -4099,6 +4103,23 @@ impl App {
         self.redraw();
     }
 
+    /// Adds the colour schemes of the settings of each Windows Terminal installed (the Store one, its Preview, and one
+    /// installed without the Store) that are not here by name, and keeps them in the file.
+    fn import_schemes(&mut self) {
+        let before = self.settings.clone();
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
+        let packages = ["Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe"];
+        let files = packages.map(|package| local.join("Packages").join(package).join("LocalState")).into_iter().chain([local.join("Microsoft").join("Windows Terminal")]);
+        for path in files.map(|folder| folder.join("settings.json")) {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            match settings::import_schemes(&mut self.settings, &text) {
+                Ok(added) => util::log(&format!("import schemes: {} from {}: {}", added.len(), path.display(), added.join(", "))),
+                Err(e) => util::log(&format!("import schemes: {}: {e}", path.display())),
+            }
+        }
+        self.apply_settings(&before);
+    }
+
     /// Puts what differs from `before` in effect and keeps the settings in the file.
     fn apply_settings(&mut self, before: &Settings) {
         if self.settings == *before {
@@ -4111,7 +4132,7 @@ impl App {
 
     /// Puts what differs from `before` in effect.
     fn apply_changes(&mut self, before: &Settings) {
-        if self.settings.theme != before.theme || self.settings.appearance != before.appearance {
+        if self.settings.theme != before.theme || self.settings.schemes != before.schemes || self.settings.appearance != before.appearance {
             self.apply_look();
         }
         if self.settings.tabs != before.tabs {
@@ -5156,10 +5177,13 @@ impl App {
             }
             // SAFETY: posting to a window of this thread.
             Some(popup::Action::Window(command)) => unsafe { let _ = PostMessageW(Some(self.window_menu_for), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); },
-            Some(popup::Action::ColorScheme(name)) => {
-                let before = self.settings.clone();
-                self.settings.theme = name.to_owned();
-                self.apply_settings(&before);
+            Some(popup::Action::ColorScheme(index)) => {
+                let name = themes::theme_names(&self.settings.schemes).nth(index).map(str::to_owned);
+                if let Some(name) = name {
+                    let before = self.settings.clone();
+                    self.settings.theme = name;
+                    self.apply_settings(&before);
+                }
             }
             None => {}
         }

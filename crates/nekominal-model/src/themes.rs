@@ -1,4 +1,11 @@
-//! Terminal color schemes.
+//! Terminal color schemes: the built-in ones, and those of `settings.json` (`schemes`), which come after them.
+
+use std::borrow::Cow;
+
+use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde_json::{Map, Value};
+
+use crate::settings::Expected;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color {
@@ -19,13 +26,14 @@ impl Color {
         Self { r: (value >> 24) as u8, g: (value >> 16) as u8, b: (value >> 8) as u8, a: value as u8 }
     }
 
-    /// Parses `#rrggbb` or `#rrggbbaa`.
+    /// Parses `#rgb`, `#rrggbb` or `#rrggbbaa`.
     pub fn parse_hex(text: &str) -> Option<Self> {
         let digits = text.strip_prefix('#')?;
         if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
             return None;
         }
         match digits.len() {
+            3 => u32::from_str_radix(&digits.chars().flat_map(|c| [c, c]).collect::<String>(), 16).ok().map(Self::rgb),
             6 => u32::from_str_radix(digits, 16).ok().map(Self::rgb),
             8 => u32::from_str_radix(digits, 16).ok().map(Self::rgba),
             _ => None,
@@ -46,11 +54,18 @@ impl Color {
     pub fn is_light(self) -> bool {
         self.luminance() > 0.5
     }
+
+    /// `#rrggbb`, or `#rrggbbaa` when it is not opaque: the reverse of [`Color::parse_hex`].
+    pub fn to_hex(self) -> String {
+        let rgb = format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b);
+        if self.a == 255 { rgb } else { format!("{rgb}{:02x}", self.a) }
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Scheme {
-    pub name: &'static str,
+    /// Borrowed for the built-in schemes, owned for those of `settings.json`.
+    pub name: Cow<'static, str>,
     pub background: Color,
     pub foreground: Color,
     pub cursor: Color,
@@ -73,7 +88,7 @@ pub const DEFAULT_THEME: &str = "Tokyo Night";
 
 pub static SCHEMES: [Scheme; 10] = [
     Scheme {
-        name: "Tokyo Night",
+        name: Cow::Borrowed("Tokyo Night"),
         background: Color::rgb(0x1a1b26),
         foreground: Color::rgb(0xc0caf5),
         cursor: Color::rgb(0xc0caf5),
@@ -84,7 +99,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Campbell",
+        name: Cow::Borrowed("Campbell"),
         background: Color::rgb(0x0c0c0c),
         foreground: Color::rgb(0xcccccc),
         cursor: Color::rgb(0xcccccc),
@@ -95,7 +110,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "One Half Dark",
+        name: Cow::Borrowed("One Half Dark"),
         background: Color::rgb(0x282c34),
         foreground: Color::rgb(0xdcdfe4),
         cursor: Color::rgb(0xdcdfe4),
@@ -106,7 +121,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Catppuccin Mocha",
+        name: Cow::Borrowed("Catppuccin Mocha"),
         background: Color::rgb(0x1e1e2e),
         foreground: Color::rgb(0xcdd6f4),
         cursor: Color::rgb(0xf5e0dc),
@@ -117,7 +132,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Dracula",
+        name: Cow::Borrowed("Dracula"),
         background: Color::rgb(0x282a36),
         foreground: Color::rgb(0xf8f8f2),
         cursor: Color::rgb(0xf8f8f2),
@@ -128,7 +143,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Nord",
+        name: Cow::Borrowed("Nord"),
         background: Color::rgb(0x2e3440),
         foreground: Color::rgb(0xd8dee9),
         cursor: Color::rgb(0xd8dee9),
@@ -139,7 +154,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Gruvbox Dark",
+        name: Cow::Borrowed("Gruvbox Dark"),
         background: Color::rgb(0x282828),
         foreground: Color::rgb(0xebdbb2),
         cursor: Color::rgb(0xebdbb2),
@@ -150,7 +165,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Solarized Dark",
+        name: Cow::Borrowed("Solarized Dark"),
         background: Color::rgb(0x002b36),
         foreground: Color::rgb(0x839496),
         cursor: Color::rgb(0x839496),
@@ -161,7 +176,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "One Half Light",
+        name: Cow::Borrowed("One Half Light"),
         background: Color::rgb(0xfafafa),
         foreground: Color::rgb(0x383a42),
         cursor: Color::rgb(0x383a42),
@@ -172,7 +187,7 @@ pub static SCHEMES: [Scheme; 10] = [
         ]),
     },
     Scheme {
-        name: "Solarized Light",
+        name: Cow::Borrowed("Solarized Light"),
         background: Color::rgb(0xfdf6e3),
         foreground: Color::rgb(0x657b83),
         cursor: Color::rgb(0x657b83),
@@ -184,20 +199,82 @@ pub static SCHEMES: [Scheme; 10] = [
     },
 ];
 
-pub fn theme_names() -> impl Iterator<Item = &'static str> {
-    SCHEMES.iter().map(|scheme| scheme.name)
+/// The names of the built-in schemes, then those of `custom` (the `schemes` of the settings). One of `custom` with a
+/// built-in name takes the place of that one rather than coming twice.
+pub fn theme_names(custom: &[Scheme]) -> impl Iterator<Item = &str> {
+    let builtin = |name: &str| SCHEMES.iter().any(|scheme| scheme.name == name);
+    SCHEMES.iter().map(|scheme| &*scheme.name).chain(custom.iter().map(|scheme| &*scheme.name).filter(move |name| !builtin(name)))
 }
 
-/// The scheme called `name`, or the default one when the name is unknown.
+/// The scheme called `name` among `custom` and then the built-in ones, or the default one when the name is unknown.
+pub fn find<'a>(custom: &'a [Scheme], name: &str) -> &'a Scheme {
+    let named = |name: &str| custom.iter().chain(&SCHEMES).find(|scheme| scheme.name == name);
+    named(name).or_else(|| named(DEFAULT_THEME)).expect("default theme exists")
+}
+
+/// The built-in scheme called `name`, or the default one when the name is unknown.
 pub fn scheme(name: &str) -> &'static Scheme {
-    SCHEMES
-        .iter()
-        .find(|scheme| scheme.name == name)
-        .unwrap_or_else(|| SCHEMES.iter().find(|s| s.name == DEFAULT_THEME).expect("default theme exists"))
+    find(&[], name)
 }
 
-pub fn is_known(name: &str) -> bool {
-    SCHEMES.iter().any(|scheme| scheme.name == name)
+pub fn is_known(custom: &[Scheme], name: &str) -> bool {
+    custom.iter().chain(&SCHEMES).any(|scheme| scheme.name == name)
+}
+
+/// The keys Windows Terminal gives the 16 colours of a scheme, in the order of [`Scheme::ansi`].
+const ANSI_KEYS: [&str; 16] = [
+    "black", "red", "green", "yellow", "blue", "purple", "cyan", "white", "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue",
+    "brightPurple", "brightCyan", "brightWhite",
+];
+
+impl Scheme {
+    /// A scheme written as Windows Terminal writes one (`name`, `background`, `foreground`, `cursorColor`,
+    /// `selectionBackground`, `black` … `brightWhite`), so that one copied from its settings works as is. `magenta`
+    /// stands for `purple`, as some scheme sites write it. The error is the key that is missing or not a colour.
+    pub fn from_json(map: &Map<String, Value>) -> Result<Scheme, (String, Expected)> {
+        let name = match map.get("name") {
+            Some(Value::String(name)) if !name.trim().is_empty() => name.trim().to_owned(),
+            Some(Value::String(_)) | None => return Err(("name".to_owned(), Expected::Required)),
+            Some(_) => return Err(("name".to_owned(), Expected::Text)),
+        };
+        let color = |key: &str| match map.get(key) {
+            None => Ok(None),
+            Some(value) => value.as_str().and_then(Color::parse_hex).map(Some).ok_or_else(|| (key.to_owned(), Expected::Color)),
+        };
+        let required = |key: &str| color(key)?.ok_or_else(|| (key.to_owned(), Expected::Required));
+        let background = required("background")?;
+        let foreground = required("foreground")?;
+        let mut ansi = [Color::rgb(0); 16];
+        for (slot, key) in ansi.iter_mut().zip(ANSI_KEYS) {
+            let alias = key.replace("purple", "magenta").replace("Purple", "Magenta");
+            *slot = required(if map.contains_key(key) || !map.contains_key(&alias) { key } else { &alias })?;
+        }
+        Ok(Scheme {
+            name: Cow::Owned(name),
+            background,
+            foreground,
+            cursor: color("cursorColor")?.unwrap_or(foreground),
+            // A quarter of the text colour over the background reads on a light scheme as on a dark one.
+            selection: color("selectionBackground")?.unwrap_or(Color { a: 0x40, ..foreground }),
+            ansi,
+        })
+    }
+}
+
+/// Written back with the keys [`Scheme::from_json`] reads.
+impl Serialize for Scheme {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(5 + ANSI_KEYS.len()))?;
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("background", &self.background.to_hex())?;
+        map.serialize_entry("foreground", &self.foreground.to_hex())?;
+        map.serialize_entry("cursorColor", &self.cursor.to_hex())?;
+        map.serialize_entry("selectionBackground", &self.selection.to_hex())?;
+        for (key, color) in ANSI_KEYS.iter().zip(self.ansi) {
+            map.serialize_entry(key, &color.to_hex())?;
+        }
+        map.end()
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +283,7 @@ mod tests {
 
     #[test]
     fn theme_names_are_unique_and_include_the_default() {
-        let names: Vec<_> = theme_names().collect();
+        let names: Vec<_> = theme_names(&[]).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
         sorted.dedup();
@@ -218,13 +295,34 @@ mod tests {
     fn unknown_names_fall_back_to_the_default() {
         assert_eq!(scheme("nope").name, DEFAULT_THEME);
         assert_eq!(scheme("Nord").name, "Nord");
-        assert!(is_known("Dracula"));
-        assert!(!is_known("nope"));
+        assert!(is_known(&[], "Dracula"));
+        assert!(!is_known(&[], "nope"));
+    }
+
+    fn custom(name: &str, background: u32) -> Scheme {
+        Scheme { name: Cow::Owned(name.to_owned()), background: Color::rgb(background), ..scheme("Nord").clone() }
+    }
+
+    #[test]
+    fn custom_schemes_come_after_the_built_in_ones_and_replace_one_of_their_name() {
+        let mine = [custom("Mine", 0x101010), custom("Nord", 0x202020)];
+        let names: Vec<_> = theme_names(&mine).collect();
+        assert_eq!(names.len(), SCHEMES.len() + 1, "the Nord of the settings is not listed twice");
+        assert_eq!(names.last(), Some(&"Mine"));
+        assert_eq!(find(&mine, "Mine").background, Color::rgb(0x101010));
+        assert_eq!(find(&mine, "Nord").background, Color::rgb(0x202020));
+        assert_eq!(find(&mine, "Dracula").name, "Dracula");
+        assert_eq!(find(&mine, "nope").name, DEFAULT_THEME, "an unknown name still falls back to the default");
+        assert!(is_known(&mine, "Mine"));
+        assert!(!is_known(&[], "Mine"));
     }
 
     #[test]
     fn parses_hex_colors() {
         assert_eq!(Color::parse_hex("#1a1b26"), Some(Color::rgb(0x1a1b26)));
+        assert_eq!(Color::parse_hex("#f0a"), Some(Color::rgb(0xff00aa)));
+        assert_eq!(Color::rgba(0xffffff40).to_hex(), "#ffffff40");
+        assert_eq!(Color::rgb(0x1a1b26).to_hex(), "#1a1b26");
         assert_eq!(Color::parse_hex("#ffffff40"), Some(Color::rgba(0xffffff40)));
         assert_eq!(Color::parse_hex("1a1b26"), None);
         assert_eq!(Color::parse_hex("#12345"), None);

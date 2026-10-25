@@ -49,6 +49,7 @@ pub fn items(
     keymap: &Keymap,
     profiles: &[Profile],
     tabs: &[PaletteTab],
+    schemes: &[themes::Scheme],
 ) -> Vec<PaletteItem> {
     let commands = Command::ALL
         .iter()
@@ -74,7 +75,7 @@ pub fn items(
         shortcut: String::new(),
         action: PaletteAction::NewTab(profile.id.clone()),
     });
-    let schemes = themes::theme_names().map(|name| PaletteItem {
+    let schemes = themes::theme_names(schemes).map(|name| PaletteItem {
         id: format!("theme.{name}"),
         label: Text::PaletteColorScheme.format(lang, &[&name]),
         shortcut: String::new(),
@@ -160,6 +161,7 @@ mod tests {
             &build_keymap(default_bindings(), &BTreeMap::new()).keymap,
             &profiles(),
             &[],
+            &[],
         )
     }
 
@@ -192,7 +194,7 @@ mod tests {
         let overrides: BTreeMap<String, Vec<String>> =
             [("tab.new".to_owned(), vec!["Ctrl+T".to_owned()])].into();
         let keymap = build_keymap(default_bindings(), &overrides).keymap;
-        let entries = items(Lang::EnUs, &keymap, &[], &[]);
+        let entries = items(Lang::EnUs, &keymap, &[], &[], &[]);
         assert!(entries.iter().all(|e| e.id != "edit.smartCopy"
             && e.id != "tab.profiles"
             && !e.id.starts_with("tab.goto")));
@@ -234,7 +236,7 @@ mod tests {
             program: "cmd.exe".into(),
             args: vec![],
         };
-        let entries = items(Lang::EnUs, &Keymap::default(), &merge(&[weird], &[]), &[]);
+        let entries = items(Lang::EnUs, &Keymap::default(), &merge(&[weird], &[]), &[], &[]);
         assert!(entries.iter().any(|e| e.label == "New tab: {0} {1}"));
     }
 
@@ -253,7 +255,7 @@ mod tests {
     fn every_open_tab_gets_a_go_to_entry_between_the_commands_and_the_profiles() {
         let keymap = build_keymap(default_bindings(), &BTreeMap::new()).keymap;
         let tabs = open_tabs(&["build", "logs", "claude"]);
-        let entries = items(Lang::ZhTw, &keymap, &profiles(), &tabs);
+        let entries = items(Lang::ZhTw, &keymap, &profiles(), &tabs, &[]);
         let commands = Command::ALL.iter().filter(|c| c.in_palette()).count();
         assert_eq!(entries[commands].id, "tabs.10");
         assert_eq!(entries[commands].label, "切換到分頁：build");
@@ -262,7 +264,7 @@ mod tests {
         assert_eq!(entries[commands + 2].shortcut, "Ctrl+Shift+3");
         assert_eq!(entries[commands + 3].id, "profile.pwsh");
         assert_eq!(entries.len(), commands + 3 + 2 + themes::SCHEMES.len() + settings_ui::TABLE.len());
-        let english = items(Lang::EnUs, &keymap, &[], &tabs);
+        let english = items(Lang::EnUs, &keymap, &[], &tabs, &[]);
         assert_eq!(english[commands + 1].label, "Go to tab: logs");
     }
 
@@ -272,7 +274,7 @@ mod tests {
         let titles: Vec<String> = (1..=12).map(|n| format!("t{n}")).collect();
         let tabs = open_tabs(&titles.iter().map(String::as_str).collect::<Vec<_>>());
         let commands = Command::ALL.iter().filter(|c| c.in_palette()).count();
-        let entries = items(Lang::EnUs, &keymap, &[], &tabs);
+        let entries = items(Lang::EnUs, &keymap, &[], &tabs, &[]);
         let shortcuts: Vec<&str> = entries[commands..commands + 12]
             .iter()
             .map(|e| e.shortcut.as_str())
@@ -298,7 +300,7 @@ mod tests {
     fn a_tab_titled_with_braces_is_shown_literally_and_titles_can_be_searched() {
         let keymap = Keymap::default();
         let tabs = open_tabs(&["{0} {1}", "build"]);
-        let entries = items(Lang::EnUs, &keymap, &[], &tabs);
+        let entries = items(Lang::EnUs, &keymap, &[], &tabs, &[]);
         assert!(entries.iter().any(|e| e.label == "Go to tab: {0} {1}"));
         let found = search(entries, "to tab: bui");
         assert_eq!(found.len(), 1);
