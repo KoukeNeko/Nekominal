@@ -135,16 +135,6 @@ fn open_link(uri: &str) {
     }
 }
 
-/// Whether Windows shows animations (Settings › Accessibility › Visual effects): with them off, the marks of the tabs stand
-/// still.
-fn animations_on() -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
-    let mut on = windows::core::BOOL(1);
-    // SAFETY: the query writes one BOOL into the variable it is given.
-    let asked = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(std::ptr::from_mut(&mut on).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
-    asked.is_err() || on.as_bool()
-}
-
 /// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese).
 fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32) -> Vec<String> {
     let mut lines = Vec::new();
@@ -240,9 +230,8 @@ pub struct App {
     groups: Vec<Vec<usize>>,
     /// The first start: the window shows the choice of the layout of the tabs over everything until it is made.
     welcome: Option<welcome::Welcome>,
-    /// The marks of the states move (Windows shows animations), the frame being drawn has one that moves, and the time
-    /// they count from.
-    motion: bool,
+    /// The frame being drawn has a mark that moves, and the time the marks count from. They move whatever Windows' "Animation
+    /// effects" says, which Remote Desktop turns off: a still spinner reads as a tab that stopped.
     animating: bool,
     marks_epoch: Instant,
     /// Where the window was last, on the screen: a move takes the pop-up along by the difference.
@@ -589,7 +578,6 @@ impl App {
             right_width: 0.0,
             groups: Vec::new(),
             welcome: None,
-            motion: true,
             animating: false,
             marks_epoch: Instant::now(),
             origin: None,
@@ -2410,7 +2398,6 @@ impl App {
         }
 
         self.ui.begin_frame(size, self.scale);
-        self.motion = animations_on();
         self.animating = false;
         let sliding = self.advance_chips();
         let relaid = self.paint_chrome();
@@ -2579,7 +2566,7 @@ impl App {
         let seconds = self.marks_epoch.elapsed().as_secs_f32();
         let with_alpha = |share: f32| Color([color.0[0], color.0[1], color.0[2], (f32::from(color.0[3]) * share).round() as u8]);
         match state {
-            logic::TabState::Working if self.motion => {
+            logic::TabState::Working => {
                 self.animating = true;
                 let (cx, radius, dot) = (x + ICON_SIZE / 2.0, ICON_SIZE / 2.0 - 1.0, 2.2);
                 for n in 0..motion::SPINNER_DOTS {
@@ -2588,7 +2575,7 @@ impl App {
                     self.ui.rrect(at, dot / 2.0, with_alpha(motion::spinner_dot(n, seconds)), None);
                 }
             }
-            logic::TabState::Blocked if self.motion => {
+            logic::TabState::Blocked => {
                 self.animating = true;
                 let line = self.ui.line_height(ICON_SIZE);
                 self.ui.icon(x, y - line / 2.0 + ICON_NUDGE, glyph, ICON_SIZE, with_alpha(motion::pulse(seconds)));
@@ -2904,7 +2891,7 @@ impl App {
                     let ring = Rect::new(row.x - 2.0, row.y - 2.0, row.w + 4.0, row.h + 4.0);
                     let color = col(status::color(g, state));
                     // A tab that waits for the user breathes, and one at work has its spinner in the corner of its ring.
-                    let alpha = if state == logic::TabState::Blocked && self.motion {
+                    let alpha = if state == logic::TabState::Blocked {
                         self.animating = true;
                         motion::pulse(self.marks_epoch.elapsed().as_secs_f32())
                     } else {
@@ -2912,7 +2899,7 @@ impl App {
                     };
                     let faded = Color([color.0[0], color.0[1], color.0[2], (f32::from(color.0[3]) * alpha).round() as u8]);
                     self.ui.rrect(ring, 10.0, Color::TRANSPARENT, Some((faded, 1.5)));
-                    if state == logic::TabState::Working && self.motion {
+                    if state == logic::TabState::Working {
                         let badge = Rect::new(ring.x + ring.w - 8.0, ring.y - 2.0, ICON_SIZE + 2.0, ICON_SIZE + 2.0);
                         self.ui.rrect(badge, badge.w / 2.0, Color([g.background.r, g.background.g, g.background.b, 255]), None);
                         self.state_dot(badge.x + 1.0, badge.y + badge.h / 2.0, state);
