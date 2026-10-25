@@ -82,6 +82,8 @@ pub enum Command {
     AppSettings,
     AppOpenSettingsFile,
     AppReloadSettings,
+    /// Adds the colour schemes of Windows Terminal's settings that Nekominal has none of by name.
+    AppImportSchemes,
     AppearanceBackdropNext,
     AppearanceOpacityUp,
     AppearanceOpacityDown,
@@ -163,6 +165,7 @@ impl Command {
         Command::AppSettings,
         Command::AppOpenSettingsFile,
         Command::AppReloadSettings,
+        Command::AppImportSchemes,
         Command::AppearanceBackdropNext,
         Command::AppearanceOpacityUp,
         Command::AppearanceOpacityDown,
@@ -245,6 +248,7 @@ impl Command {
             Command::AppSettings => "app.settings",
             Command::AppOpenSettingsFile => "app.openSettingsFile",
             Command::AppReloadSettings => "app.reloadSettings",
+            Command::AppImportSchemes => "app.importSchemes",
             Command::AppearanceBackdropNext => "appearance.backdrop.next",
             Command::AppearanceOpacityUp => "appearance.opacity.up",
             Command::AppearanceOpacityDown => "appearance.opacity.down",
@@ -326,6 +330,7 @@ impl Command {
             Command::AppSettings => Text::AppSettings,
             Command::AppOpenSettingsFile => Text::AppOpenSettingsFile,
             Command::AppReloadSettings => Text::AppReloadSettings,
+            Command::AppImportSchemes => Text::AppImportSchemes,
             Command::AppearanceBackdropNext => Text::AppearanceBackdropNext,
             Command::AppearanceOpacityUp => Text::AppearanceOpacityUp,
             Command::AppearanceOpacityDown => Text::AppearanceOpacityDown,
@@ -408,6 +413,7 @@ impl Command {
             | Command::EditClear
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
+            | Command::AppImportSchemes
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown => &[],
@@ -590,9 +596,10 @@ mod tests {
             Command::ViewFocusMode => 56,
             Command::ViewQuake => 57,
             Command::EditSuggestions => 58,
+            Command::AppImportSchemes => 59,
         }
     }
-    const VARIANTS: usize = 59;
+    const VARIANTS: usize = 60;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

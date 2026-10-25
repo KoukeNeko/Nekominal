@@ -945,6 +945,51 @@ fn read_schemes(source: &Map<String, Value>, problems: &mut Problems) -> Vec<the
     schemes
 }
 
+/// Removes the commas before a `}` or a `]`, outside of strings: Windows Terminal writes its file with them.
+fn strip_trailing_commas(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_string {
+            if ch == '\\' {
+                out.extend(chars.get(i..i + 2).unwrap_or(&chars[i..]));
+                i += 2;
+                continue;
+            }
+            in_string = ch != '"';
+        } else if ch == '"' {
+            in_string = true;
+        } else if ch == ',' && matches!(chars[i + 1..].iter().find(|c| !c.is_whitespace()), Some('}' | ']')) {
+            i += 1;
+            continue;
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Adds to `settings` the `schemes` of a Windows Terminal `settings.json` (comments and trailing commas allowed) that
+/// it has no scheme of by name, built-in or its own. A scheme that cannot be read is left out. The names added, or
+/// what the parser said of a file that is not JSON.
+pub fn import_schemes(settings: &mut Settings, windows_terminal: &str) -> Result<Vec<String>, String> {
+    let text = strip_trailing_commas(&strip_json_comments(windows_terminal.trim_start_matches('\u{feff}')));
+    let document: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    // Only the log reads the error, so it is not translated.
+    let Value::Object(root) = document else { return Err("not a JSON object".to_owned()) };
+    let mut added = Vec::new();
+    for scheme in read_schemes(&root, &mut Problems::default()) {
+        if !themes::is_known(&settings.schemes, &scheme.name) {
+            added.push(scheme.name.to_string());
+            settings.schemes.push(scheme);
+        }
+    }
+    Ok(added)
+}
+
 fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTreeMap<String, Vec<String>> {
     let Some(value) = source.get("keybindings") else { return BTreeMap::new() };
     let Value::Object(map) = value else {
@@ -1511,6 +1556,26 @@ mod tests {
         assert_eq!(value["schemes"][0]["brightPurple"], "#bb9af7");
         assert_eq!(value["schemes"][0]["selectionBackground"], "#33467c");
         assert!(!serialize(&Settings::default()).contains("schemes"), "no schemes of one's own, nothing written");
+    }
+
+    #[test]
+    fn importing_from_windows_terminal_adds_the_schemes_not_there_by_name_and_reads_its_comments_and_trailing_commas() {
+        let mut settings = parsed_ok(&format!(r#""schemes": [{}]"#, wt_scheme("Mine", "#101010")));
+        let windows_terminal = format!(
+            "\u{feff}{{\n  // Windows Terminal's own file\n  \"profiles\": {{ \"list\": [], }},\n  \"schemes\": [ {}, {}, {}, {}, /* a bad one */ {}, ],\n}}",
+            wt_scheme("Mine", "#ffffff"),
+            wt_scheme("Campbell", "#ffffff"),
+            wt_scheme("New \\\"q\\\", ]", "#303030"),
+            wt_scheme("Other", "#404040"),
+            wt_scheme("Broken", "nope"),
+        );
+        let added = import_schemes(&mut settings, &windows_terminal).expect("the file is read");
+        assert_eq!(added, ["New \"q\", ]", "Other"], "what is there by name, built-in or one's own, is kept");
+        assert_eq!(themes::find(&settings.schemes, "Mine").background, themes::Color::rgb(0x101010));
+        assert_eq!(import_schemes(&mut settings, &windows_terminal), Ok(Vec::new()), "a second import adds nothing");
+        assert_eq!(settings.schemes.len(), 3);
+        assert!(import_schemes(&mut settings, "{ not json").is_err());
+        assert_eq!(import_schemes(&mut settings, "{}"), Ok(Vec::new()), "a file without schemes adds none");
     }
 
     #[test]

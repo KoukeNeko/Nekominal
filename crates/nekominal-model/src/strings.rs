@@ -132,6 +132,7 @@ texts! {
     // "設定檔" already names a profile, so the settings file is spelled out by its format.
     AppOpenSettingsFile "app.openSettingsFile" "開啟設定 JSON" "Open settings file";
     AppReloadSettings "app.reloadSettings" "重新載入設定" "Reload settings";
+    AppImportSchemes "app.importSchemes" "從 Windows Terminal 匯入色彩配置" "Import color schemes from Windows Terminal";
     AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
     AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
     AppearanceOpacityDown "appearance.opacity.down" "降低背景不透明度" "Decrease background opacity";

@@ -397,6 +397,7 @@ fn wired(command: Command) -> bool {
             | Command::AppSettings
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
+            | Command::AppImportSchemes
             | Command::TabProfiles
             | Command::AppNewWindow
             | Command::EditFind
@@ -2024,6 +2025,7 @@ impl App {
             Command::AppSettings => self.open_settings_page(None),
             Command::AppOpenSettingsFile => self.open_settings_file(),
             Command::AppReloadSettings => self.reload_settings(),
+            Command::AppImportSchemes => self.import_schemes(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
                 if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
@@ -4068,6 +4070,23 @@ impl App {
         self.keymap = keymap::build_keymap(commands::default_bindings(), &self.settings.keybindings).keymap;
         self.apply_changes(&before);
         self.redraw();
+    }
+
+    /// Adds the colour schemes of the settings of each Windows Terminal installed (the Store one, its Preview, and one
+    /// installed without the Store) that are not here by name, and keeps them in the file.
+    fn import_schemes(&mut self) {
+        let before = self.settings.clone();
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
+        let packages = ["Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe"];
+        let files = packages.map(|package| local.join("Packages").join(package).join("LocalState")).into_iter().chain([local.join("Microsoft").join("Windows Terminal")]);
+        for path in files.map(|folder| folder.join("settings.json")) {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            match settings::import_schemes(&mut self.settings, &text) {
+                Ok(added) => util::log(&format!("import schemes: {} from {}: {}", added.len(), path.display(), added.join(", "))),
+                Err(e) => util::log(&format!("import schemes: {}: {e}", path.display())),
+            }
+        }
+        self.apply_settings(&before);
     }
 
     /// Puts what differs from `before` in effect and keeps the settings in the file.
