@@ -244,6 +244,21 @@ fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
 }
 
 #[test]
+fn a_flood_of_spacing_marks_or_skin_tones_is_capped_too() {
+    // These have a width, so the cap on zero-width characters alone let them join forever.
+    for (base, mark) in [('\u{0915}', '\u{0903}'), ('\u{1f44d}', '\u{1f3fb}')] {
+        let mut core = core(200, 70);
+        let flood = format!("{base}{}", mark.to_string().repeat(100_000));
+        let started = std::time::Instant::now();
+        feed(&mut core, &flood);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+        let s = snap(&mut core);
+        assert_eq!(s.cell(0, 0).ch, base);
+        assert!(s.cell(0, 0).zerowidth.as_ref().is_some_and(|marks| (1..64).contains(&marks.len())));
+    }
+}
+
+#[test]
 fn ambiguous_width_is_always_narrow_and_combining_marks_attach() {
     let mut core = core(20, 3);
     feed(&mut core, "\u{2500}\u{00b0}e\u{0301}x");
@@ -900,6 +915,16 @@ fn a_selection_gives_its_runs_of_style_and_select_between_takes_grid_points() {
     // Backwards is the same selection.
     core.select_between((1, 3), (0, 0));
     assert_eq!(core.selection_text().as_deref(), Some("ok error\nnext"));
+}
+
+#[test]
+fn a_selection_s_runs_keep_combining_marks_and_whole_clusters() {
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    let mut core = core(20, 3);
+    feed(&mut core, &format!("e\u{0301}{family}\x1b[1me\u{0301}"));
+    core.select_between((0, 0), (0, 3));
+    let text: Vec<String> = core.selection_runs().expect("a selection")[0].iter().map(|r| r.text.clone()).collect();
+    assert_eq!(text, [format!("e\u{0301}{family}"), "e\u{0301}".to_owned()], "a new run starts with a mark too");
 }
 
 #[test]
@@ -1614,6 +1639,19 @@ fn decstr_inside_a_synchronized_update_keeps_the_cursor_the_update_moved() {
     let mut core = core(20, 12);
     feed(&mut core, "\x1b[?2026h\x1b[10;10H\x1b[!p\x1b[?2026l");
     assert_eq!(core.cursor_cell(), (9, 9));
+}
+
+#[test]
+fn the_bytes_a_synchronized_update_held_are_joined_into_clusters_when_applied() {
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    let mut core = core(20, 3);
+    feed(&mut core, &format!("\x1b[?2026h{family}\x1b[!p\x1b[?2026l"));
+    assert_eq!(core.cursor_cell(), (0, 2), "DECSTR applies the update: the family is two columns, not six");
+    let mut timed = self::core(20, 3);
+    feed(&mut timed, &format!("\x1b[?2026h{family}"));
+    let deadline = timed.sync_deadline().expect("a deadline is armed by BSU");
+    assert!(timed.flush_expired_sync(deadline + Duration::from_millis(1)));
+    assert_eq!(timed.cursor_cell(), (0, 2), "the timeout applies the update the same way");
 }
 
 #[test]

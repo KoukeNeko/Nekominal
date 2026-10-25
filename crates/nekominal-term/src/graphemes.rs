@@ -84,12 +84,14 @@ const MAX_CLUSTER_BYTES: usize = 64;
 
 impl<T: EventListener> Handler for Clusters<'_, T> {
     fn input(&mut self, c: char) {
-        if !self.cluster.is_empty() {
-            // Past the cap a zero-width character is dropped: neither joined nor handed to `Term`, which would
-            // stack it on the same cell.
-            if self.cluster.len() > MAX_CLUSTER_BYTES && !c.width().is_some_and(|w| w > 0) {
+        if self.cluster.len() > MAX_CLUSTER_BYTES {
+            // Past the cap nothing joins. A zero-width character is dropped: neither joined nor handed to `Term`,
+            // which would stack it on the same cell. Any other (a spacing mark, a skin tone) starts a new cell.
+            if !c.width().is_some_and(|w| w > 0) {
                 return;
             }
+            self.cluster.clear();
+        } else if !self.cluster.is_empty() {
             let mut joined = std::mem::take(self.cluster);
             joined.push(c);
             if joined.graphemes(true).nth(1).is_none() && self.join(c, &joined) {

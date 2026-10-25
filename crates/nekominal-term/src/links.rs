@@ -53,7 +53,8 @@ const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "wsh", "ws", "hta", "msi", "msp", "mst", "msc", "cpl", "dll", "sys", "lnk", "url", "reg", "inf", "scf", "jar",
     "application", "gadget", "appref-ms", "settingcontent-ms", "library-ms", "search-ms", "chm", "hlp", "iqy", "slk",
     "docm", "dotm", "xlsm", "xltm", "xlam", "pptm", "potm", "ppam", "ppsm", "sldm", "py", "pyw", "sh", "wsc", "sct",
-    "xll", "rdp",
+    "xll", "rdp", "pyz", "pyzw", "pyc", "pyo", "theme", "themepack", "deskthemepack", "searchconnector-ms", "diagcab",
+    "appinstaller", "msix", "msixbundle", "appx", "appxbundle",
 ];
 
 /// Characters that show nothing or reorder what is shown around them: a link that has one is not what it looks like.
@@ -212,24 +213,39 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     if names.iter().any(|name| !name.is_empty() && name.trim_end_matches(['.', ' ']).is_empty()) {
         return Err(Refusal::Malformed);
     }
-    // Windows ignores trailing dots and spaces when it opens a file, so `a.exe.` runs a.exe.
-    let last = names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default();
-    let last = last.trim_end_matches(['.', ' ']);
-    if let Some((_, extension)) = last.rsplit_once('.')
-        && EXECUTABLE_EXTENSIONS.iter().any(|runs| extension.eq_ignore_ascii_case(runs))
-    {
+    if runs_code(names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default()) {
         return Err(Refusal::Executable);
     }
     let path: Vec<&str> = std::iter::once(drive).chain(names.iter().copied()).collect();
     Ok(if names.iter().all(|name| name.is_empty()) { format!("{drive}\\") } else { path.join("\\") })
 }
 
+/// Whether a file name has a type that runs code. Windows ignores trailing dots and spaces when it opens a file, so
+/// `a.exe.` runs a.exe.
+fn runs_code(name: &str) -> bool {
+    name.trim_end_matches(['.', ' '])
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| EXECUTABLE_EXTENSIONS.iter().any(|runs| extension.eq_ignore_ascii_case(runs)))
+}
+
 /// What to hand to the shell for a link, or `None` when it may not be opened: [`open_target`]'s target, and for a file
 /// only one that exists as named, because `ShellExecute` tries `.exe`, `.bat` and the other program extensions on a
-/// name that does not (`file:///C:/x/setup` runs setup.exe).
+/// name that does not (`file:///C:/x/setup` runs setup.exe). A file is opened by its full path, checked again: the
+/// name as written may be a short name (`RUN~1.APP` for run.appref-ms) or a link to a program.
 pub fn openable(uri: &str) -> Option<String> {
     let open = open_target(uri).ok()?;
-    (open.kind != LinkKind::File || std::path::Path::new(&open.target).exists()).then_some(open.target)
+    if open.kind != LinkKind::File {
+        return Some(open.target);
+    }
+    let full = std::fs::canonicalize(&open.target).ok()?;
+    if full.file_name().is_some_and(|name| runs_code(&name.to_string_lossy())) {
+        return None;
+    }
+    let full = full.into_os_string().into_string().ok()?;
+    Some(match full.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => full.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(full),
+    })
 }
 
 /// `decodeURIComponent` of a path: an invalid escape, or a result that is not UTF-8, is an error.
@@ -401,6 +417,8 @@ mod tests {
             "file:///C:/x/a.msi", "file:///C:/x/a.lnk", "file:///C:/x/a.url", "file:///C:/x/a.hta", "file:///C:/x/a.reg", "file:///C:/x/a.jar", "file:///C:/x/a.docm",
             "file:///C:/x/a.exe.", "file:///C:/x/a.exe%20", "file:///C:/x/a.exe%20.", "file:///C:/x/a.Exe", "file:///C:/x/a.txt.exe", "file:///C:/x/a.scr", "file:///C:/x/a.settingcontent-ms",
             "file:///C:/x/a.py", "file:///C:/x/a.PYW", "file:///C:/x/a.sh", "file:///C:/x/a.wsc", "file:///C:/x/a.sct", "file:///C:/x/a.xll", "file:///C:/x/a.rdp",
+            "file:///C:/x/a.pyz", "file:///C:/x/a.pyc", "file:///C:/x/a.themepack", "file:///C:/x/a.searchConnector-ms", "file:///C:/x/a.diagcab",
+            "file:///C:/x/a.appinstaller", "file:///C:/x/a.msixbundle", "file:///C:/x/a.appx",
         ] {
             assert_eq!(open_target(uri), Err(Refusal::Executable), "{uri}");
         }
@@ -408,5 +426,29 @@ mod tests {
         assert!(open_target("file:///C:/x/exe").is_ok());
         assert!(open_target("file:///C:/x/folder.d/").is_ok());
         assert!(open_target("file:///C:/x/a.pdf").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_that_runs_code_is_refused_by_its_short_name_too() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let dir = std::env::temp_dir().join(format!("nekominal-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = |path: &std::path::Path| format!("file:///{}", path.display().to_string().replace('\\', "/").replace(' ', "%20"));
+        let (runs, text) = (dir.join("a.appref-ms"), dir.join("a.txt"));
+        std::fs::write(&runs, "").unwrap();
+        std::fs::write(&text, "").unwrap();
+        assert_eq!(openable(&uri(&runs)), None);
+        assert_eq!(openable(&uri(&text)).as_deref(), Some(std::fs::canonicalize(&text).unwrap().to_str().unwrap().trim_start_matches(r"\\?\")));
+        let wide: Vec<u16> = runs.as_os_str().encode_wide().chain([0]).collect();
+        let mut short = vec![0u16; 1024];
+        let len = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), 1024) } as usize;
+        let short = std::path::PathBuf::from(std::ffi::OsString::from_wide(&short[..len]));
+        // Skipped where the volume makes no short names: the short path is then the long one.
+        if short.file_name() != runs.file_name() {
+            assert!(open_target(&uri(&short)).is_ok(), "{short:?} is not refused by its name alone");
+            assert_eq!(openable(&uri(&short)), None, "{short:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

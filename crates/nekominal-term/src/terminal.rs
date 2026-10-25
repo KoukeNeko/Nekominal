@@ -656,6 +656,16 @@ impl TerminalCore {
         }
     }
 
+    /// Applies the bytes a synchronized update buffered, as `advance_emulator` applies the rest.
+    fn stop_sync(&mut self) {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.processor.stop_sync(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster })
+        }));
+        if let Err(payload) = outcome {
+            self.recover_from_panic(payload);
+        }
+    }
+
     // --- scrollback and line identity ----------------------------------------------------------
 
     /// Trims the scrollback to `history_cap`, counting what it drops so `LineId`s stay valid. alacritty
@@ -773,7 +783,7 @@ impl TerminalCore {
         // Inside a synchronized update the emulator has not applied the bytes before DECSTR yet, so its cursor is
         // stale: apply them first, or the cursor is put back where the update found it.
         if self.is_sync_pending() {
-            self.processor.stop_sync(&mut self.term);
+            self.stop_sync();
         }
         let (line, column) = self.cursor_cell();
         self.advance_emulator(SOFT_RESET);
@@ -797,7 +807,7 @@ impl TerminalCore {
     pub fn flush_expired_sync(&mut self, now: Instant) -> bool {
         match self.sync_deadline() {
             Some(deadline) if deadline <= now => {
-                self.processor.stop_sync(&mut self.term);
+                self.stop_sync();
                 self.pump();
                 self.enforce_scrollback();
                 self.dirty = true;
@@ -1323,6 +1333,10 @@ impl TerminalCore {
                 match runs.last_mut() {
                     Some(run) if (run.fg, run.bg, run.bold, run.italic, run.underline) == style => run.text.push(cell.c),
                     _ => runs.push(StyledRun { text: cell.c.to_string(), fg: style.0, bg: style.1, bold: style.2, italic: style.3, underline: style.4 }),
+                }
+                // Combining marks and the rest of a cluster (a ZWJ family) follow the base character.
+                if let (Some(run), Some(rest)) = (runs.last_mut(), cell.zerowidth()) {
+                    run.text.extend(rest);
                 }
             }
             // The blanks after the text of a line are no part of what was copied.
