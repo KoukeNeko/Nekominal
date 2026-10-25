@@ -30,6 +30,7 @@ mod update;
 mod welcome;
 mod widgets;
 mod win;
+mod worktree;
 
 /// What the modules call to write to the log: the file named by NEKOMINAL_LOG, when there is one.
 mod util {
