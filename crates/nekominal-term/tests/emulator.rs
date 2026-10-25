@@ -731,6 +731,8 @@ fn the_output_of_each_command_is_selected_and_copied_by_its_marks_newest_first()
     assert_eq!((outputs[0].first, outputs[0].last, outputs[0].exit), (1, 2, Some(0)));
     assert_eq!((outputs[1].first, outputs[1].last, outputs[1].exit), (4, 4, Some(1)));
     assert_eq!(core.last_command_output().as_deref(), Some("not found"));
+    feed(&mut core, &command("exit 2", "", 2));
+    assert_eq!(core.failed_command_lines(), [4, 7], "a failure that printed nothing is marked too");
     // Each press goes one command further back, and the oldest stays.
     assert!(core.select_command_output());
     assert_eq!(core.selection_text().as_deref(), Some("not found"));

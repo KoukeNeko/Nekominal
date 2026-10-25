@@ -829,6 +829,16 @@ impl TerminalCore {
             .collect()
     }
 
+    /// Where each command that failed (a non-zero exit code) started its output, whether it wrote anything or not:
+    /// the marks of the scrollbar.
+    pub fn failed_command_lines(&self) -> Vec<i32> {
+        self.outputs
+            .iter()
+            .filter(|output| output.exit.is_some_and(|code| code != 0))
+            .filter_map(|output| self.line_of(output.start))
+            .collect()
+    }
+
     /// Selects what the last command wrote, or, when that is what is selected, what the command before it wrote; the view
     /// scrolls to its first line when that is out of sight. False when no command the shell marked wrote anything.
     pub fn select_command_output(&mut self) -> bool {

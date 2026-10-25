@@ -227,7 +227,7 @@ impl PaneRenderer {
             if core.take_dirty() {
                 core.snapshot(&mut self.snapshot);
                 self.prompt_lines = core.prompt_lines();
-                self.failed_lines = core.command_outputs().iter().filter(|output| output.exit.is_some_and(|code| code != 0)).map(|output| output.first).collect();
+                self.failed_lines = core.failed_command_lines();
                 true
             } else {
                 false
