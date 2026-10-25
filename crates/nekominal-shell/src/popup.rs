@@ -71,6 +71,10 @@ pub enum Action {
     /// Type the snippet at this index of the settings; type the suggestion at this index of the list on show.
     Snippet(usize),
     Suggestion(usize),
+    /// Take what the line of the palette holds for what it was opened for (`app::workspace::Entry`).
+    Entered,
+    /// Do this to the saved layout at this index of the names of the layouts.
+    Layout(nekominal_model::palette::LayoutAction, usize),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).

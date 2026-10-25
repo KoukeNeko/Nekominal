@@ -61,6 +61,8 @@ use crate::{
     util,
 };
 
+mod workspace;
+
 /// Posted by a reader thread when a pane has output to draw.
 pub const WM_WAKE: u32 = WM_APP + 1;
 /// The device was lost: posted by a window whose frame did not show, and handled outside every borrow of the windows.
@@ -244,6 +246,8 @@ pub struct App {
     origin: Option<(i32, i32)>,
     /// The line of the open palette is the new name of the tab with this uid, not a search of the commands.
     renaming: Option<u64>,
+    /// The line of the open palette is a branch or a layout name (`workspace`), not a search of the commands.
+    entry: Option<workspace::Entry>,
     /// The open palette lists these suggestions (what each says, what it types), not the commands.
     suggestions: Option<Vec<(String, String)>>,
     /// How the find bar searches (the case, a regular expression); kept from one opening of the bar to the next.
@@ -410,6 +414,8 @@ fn wired(command: Command) -> bool {
             | Command::AppReloadSettings
             | Command::AppImportSchemes
             | Command::AppImportItermColors
+            | Command::TabNewWorktree
+            | Command::AppSaveLayout
             | Command::TabProfiles
             | Command::AppNewWindow
             | Command::EditFind
@@ -573,6 +579,7 @@ impl App {
             marks_epoch: Instant::now(),
             origin: None,
             renaming: None,
+            entry: None,
             suggestions: None,
             find_options: find::Options::default(),
             mark: None,
@@ -643,6 +650,11 @@ impl App {
                 return Err(HANDED_OFF.to_owned());
             }
         }
+        // A window made to open a saved layout (from the palette of another) opens it instead of a tab.
+        if first_tab && let Some(layout) = workspace::take_pending() && app.open_session(&layout) > 0 {
+            app.placement = layout.window;
+            return Ok(app);
+        }
         // Only the window the process starts with picks up the saved session; a window opened later starts empty.
         let first_window = first_window && app.settings.restore_session;
         if first_tab && !(first_window && app.restore_session()) {
@@ -697,6 +709,7 @@ impl App {
                     let profile = self.target_profile(target);
                     self.split_with(if *vertical { Axis::Row } else { Axis::Column }, &profile, target.directory.as_deref());
                 }
+                crate::cli::Action::Layout(name) => self.open_layout_named(name),
             }
         }
         self.relayout();
@@ -2043,6 +2056,8 @@ impl App {
             Command::AppReloadSettings => self.reload_settings(),
             Command::AppImportSchemes => self.import_schemes(),
             Command::AppImportItermColors => self.import_itermcolors(),
+            Command::TabNewWorktree => self.open_worktree_entry(),
+            Command::AppSaveLayout => self.open_layout_entry(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
                 if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
@@ -3263,6 +3278,8 @@ impl App {
         let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
         let mut items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs, &self.settings.schemes);
         items.extend(palette::snippet_items(self.language(), &self.settings.snippets));
+        let layouts = workspace::layout_names();
+        items.extend(palette::layout_items(self.language(), &layouts.iter().map(String::as_str).collect::<Vec<_>>()));
         palette::search(items, query)
             .into_iter()
             .filter_map(|item| {
@@ -3273,6 +3290,7 @@ impl App {
                     PaletteAction::SetColorScheme(name) => popup::Action::ColorScheme(themes::theme_names(&self.settings.schemes).position(|n| *n == name)?),
                     PaletteAction::OpenSetting(id) => popup::Action::ShowSetting(settings_ui::find(&id)?.id),
                     PaletteAction::Snippet(index) => popup::Action::Snippet(index),
+                    PaletteAction::Layout(action, name) => popup::Action::Layout(action, layouts.iter().position(|n| *n == name)?),
                     PaletteAction::Run(_) => return None,
                 };
                 Some(popup::Row { label: item.label, hint: item.shortcut, action: Some(action), current: false, mark: None, program: None })
@@ -4470,6 +4488,8 @@ impl App {
         }
         let rows = if self.renaming.is_some() {
             self.rename_rows(&query)
+        } else if self.entry.is_some() {
+            self.entry_rows(&query)
         } else if self.suggestions.is_some() {
             self.suggestion_rows(&query)
         } else {
@@ -4477,7 +4497,7 @@ impl App {
         };
         let Some(popup) = self.popup.as_mut() else { return };
         popup.set_rows(rows);
-        if self.renaming.is_some() {
+        if self.renaming.is_some() || self.entry.is_some() {
             popup.hover = Some(0);
         }
         // SAFETY: invalidating our own window.
@@ -4988,6 +5008,7 @@ impl App {
         self.popup_from = None;
         self.confirmation = None;
         self.renaming = None;
+        self.entry = None;
         self.suggestions = None;
         self.text = Utf16Assembler::default();
         self.find = None;
@@ -5150,6 +5171,7 @@ impl App {
         let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
         // What the line of a rename held, and the tab it was for, and what the suggestions were, before the pop-up goes.
         let renamed = self.renaming.zip(self.popup.as_ref().and_then(|p| p.query.clone()));
+        let entered = self.entry.take().zip(self.popup.as_ref().and_then(|p| p.query.clone()));
         let suggestions = self.suggestions.take();
         self.close_popup();
         // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
@@ -5192,6 +5214,12 @@ impl App {
                     self.type_text(&input);
                 }
             }
+            Some(popup::Action::Entered) => {
+                if let Some((entry, text)) = entered {
+                    self.entered(entry, &text);
+                }
+            }
+            Some(popup::Action::Layout(action, index)) => self.layout_action(action, index),
             Some(popup::Action::Suggestion(index)) => {
                 if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
                     self.type_text(input);
@@ -5226,28 +5254,7 @@ impl App {
             return;
         }
         let Some(path) = store::session_path() else { return };
-        let tabs = self
-            .tabs
-            .iter()
-            .map(|tab| TabRecord {
-                layout: tab.tree.clone(),
-                panes: tab.panes.iter().map(|entry| (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone() })).collect(),
-                active: tab.focused,
-                zoomed: tab.zoomed.then_some(tab.focused),
-                name: tab.name.clone(),
-                color: tab.color,
-            })
-            .collect();
-        let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-        // SAFETY: a window of this thread and a structure that lives through the call.
-        let window = unsafe { GetWindowPlacement(self.hwnd, &mut placement) }.ok().map(|()| {
-            let rect = placement.rcNormalPosition;
-            Placement {
-                rect: PixelRect { x: rect.left, y: rect.top, width: (rect.right - rect.left).max(0) as u32, height: (rect.bottom - rect.top).max(0) as u32 },
-                maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
-            }
-        });
-        let session = Session { window, tabs, active_tab: self.selected };
+        let session = Session { window: self.window_placement(), tabs: self.tab_records(), active_tab: self.selected };
         if let Err(e) = store::save(&path, &session.to_json()) {
             util::log(&format!("session: {e}"));
         }
@@ -5261,26 +5268,10 @@ impl App {
         for problem in &parsed.problems {
             util::log(&format!("session: {problem}"));
         }
-        let area = self.pane_area();
-        let size = (area.w.max(1) as u32, area.h.max(1) as u32);
-        for record in &parsed.session.tabs {
-            let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
-                let pane = record.panes.get(&id);
-                let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
-                self.make_entry_with(id, size, profile, pane.and_then(|pane| pane.cwd.as_deref()))
-            });
-            if let Some(mut tab) = restored {
-                (tab.name, tab.color) = (record.name.clone(), record.color.filter(|c| *c < logic::TAB_COLORS.len()));
-                self.tabs.push(tab);
-            }
-        }
-        if self.tabs.is_empty() {
+        if self.open_session(&parsed.session) == 0 {
             return false;
         }
-        self.selected = parsed.session.active_tab.min(self.tabs.len() - 1);
         self.placement = parsed.session.window;
-        self.relayout();
-        self.sync_focus();
         true
     }
 

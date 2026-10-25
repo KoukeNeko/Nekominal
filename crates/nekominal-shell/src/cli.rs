@@ -15,6 +15,8 @@ pub enum Action {
     NewTab(Target),
     /// A pane beside the focused one (`vertical`, `-V`) or below it (`-H`).
     Split { vertical: bool, target: Target },
+    /// The tabs of the saved layout of this name (`--layout <name>`, Nekominal's own, not `wt`'s).
+    Layout(String),
 }
 
 static LAUNCH: std::sync::OnceLock<Vec<Action>> = std::sync::OnceLock::new();
@@ -48,8 +50,10 @@ pub fn parse(args: &[String]) -> Vec<Action> {
         };
         let mut target = Target::default();
         let mut vertical = split.unwrap_or(true);
+        let mut layout = None;
         while let Some(word) = words.next() {
             match word {
+                "--layout" => layout = words.next().map(str::to_owned),
                 "-d" | "--startingDirectory" => target.directory = words.next().map(folder),
                 "-p" | "--profile" => target.profile = words.next().map(str::to_owned),
                 "-H" | "--horizontal" if split.is_some() => vertical = false,
@@ -63,7 +67,10 @@ pub fn parse(args: &[String]) -> Vec<Action> {
                 }
             }
         }
+        let layout_only = layout.is_some() && target == Target::default();
+        actions.extend(layout.map(Action::Layout));
         match split {
+            _ if layout_only => {}
             Some(_) if n > 0 => actions.push(Action::Split { vertical, target }),
             // No argument at all is a plain start; anything else, the first part and a part with no subcommand, a tab.
             _ if part.is_empty() => {}
@@ -115,6 +122,15 @@ mod tests {
         }
         let here = std::env::current_dir().unwrap();
         assert_eq!(folder("."), here.display().to_string(), "a relative folder is made whole where it was given");
+    }
+
+    #[test]
+    fn a_saved_layout_is_opened_by_its_name_and_more_tabs_can_follow() {
+        assert_eq!(parse(&args("--layout agents")), [Action::Layout("agents".into())]);
+        let parsed = parse(&["--layout".to_owned(), "two words".to_owned(), ";".to_owned(), "nt".to_owned()]);
+        assert_eq!(parsed, [Action::Layout("two words".into()), Action::NewTab(Target::default())]);
+        // Without a name it is a plain tab.
+        assert_eq!(parse(&args("--layout")), [Action::NewTab(Target::default())]);
     }
 
     #[test]
