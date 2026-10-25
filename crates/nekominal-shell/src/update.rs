@@ -131,8 +131,10 @@ mod tests {
     #[test]
     fn the_update_script_refreshes_the_buckets_before_the_app_and_quotes_its_paths() {
         let script = update_script(4242, Path::new(r"C:\Users\o'neil\scoop\apps\nekominal"));
-        let bucket = script.find("scoop update\n").expect("the buckets are brought up to date");
-        let app = script.find("scoop update nekominal").expect("the app is updated");
+        // By line, so that the line ends of a checkout (CRLF on Windows) do not matter.
+        let lines: Vec<&str> = script.lines().map(str::trim).collect();
+        let bucket = lines.iter().position(|line| *line == "scoop update").expect("the buckets are brought up to date");
+        let app = lines.iter().position(|line| *line == "scoop update nekominal").expect("the app is updated");
         assert!(bucket < app, "the buckets first: without them the new version is unknown");
         assert!(script.contains("Wait-Process -Id 4242"));
         assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current\Nekominal.exe'"), "a quote in a path is doubled");
