@@ -231,6 +231,19 @@ fn variation_selector_16_makes_a_text_emoji_wide() {
 }
 
 #[test]
+fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
+    let mut core = core(20, 3);
+    let flood = format!("e{}x", "\u{0301}".repeat(100_000));
+    let started = std::time::Instant::now();
+    feed(&mut core, &flood);
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "took {:?}", started.elapsed());
+    let s = snap(&mut core);
+    assert_eq!(s.cell(0, 0).ch, 'e', "the cell keeps its base character");
+    assert!(s.cell(0, 0).zerowidth.as_ref().is_some_and(|marks| (1..64).contains(&marks.len())));
+    assert_eq!(s.cell(0, 1).ch, 'x', "the text after the marks goes on in the next cell");
+}
+
+#[test]
 fn ambiguous_width_is_always_narrow_and_combining_marks_attach() {
     let mut core = core(20, 3);
     feed(&mut core, "\u{2500}\u{00b0}e\u{0301}x");

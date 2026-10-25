@@ -78,9 +78,18 @@ macro_rules! forward {
     };
 }
 
+/// The most bytes a cluster grows to; the longest real ones (a ZWJ family with skin tones) are about half this.
+/// Joining scans the whole cluster, so without a cap a base and N combining marks cost N² under the terminal lock.
+const MAX_CLUSTER_BYTES: usize = 64;
+
 impl<T: EventListener> Handler for Clusters<'_, T> {
     fn input(&mut self, c: char) {
         if !self.cluster.is_empty() {
+            // Past the cap a zero-width character is dropped: neither joined nor handed to `Term`, which would
+            // stack it on the same cell.
+            if self.cluster.len() > MAX_CLUSTER_BYTES && !c.width().is_some_and(|w| w > 0) {
+                return;
+            }
             let mut joined = std::mem::take(self.cluster);
             joined.push(c);
             if joined.graphemes(true).nth(1).is_none() && self.join(c, &joined) {
