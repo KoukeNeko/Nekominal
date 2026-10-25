@@ -380,29 +380,39 @@ impl Pty {
     /// Every process currently in the job: the child and all its descendants.
     pub(crate) fn job_process_ids(&self) -> Vec<u32> {
         // The list header is two u32 counts followed by pointer-sized ids; u64 words keep the
-        // buffer aligned for it.
-        let mut buffer = vec![0u64; 2 + 64];
-        let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
-        // SAFETY: the buffer is larger than the length passed, and the job handle is valid for
-        // the lifetime of `self`. The ids read back lie inside the buffer because the API
-        // reports at most the number that fit.
-        unsafe {
-            let ok = QueryInformationJobObject(
-                self.job.0,
-                JobObjectBasicProcessIdList,
-                list as *mut c_void,
-                (buffer.len() * size_of::<u64>()) as u32,
-                null_mut(),
-            );
-            if ok == 0 {
-                return Vec::new();
+        // buffer aligned for it. A job of more processes than fit (`make -j80`) says how many it
+        // has: the list is asked for again with room for them, and for a few started meanwhile.
+        let mut room = 64usize;
+        for _ in 0..3 {
+            let mut buffer = vec![0u64; 2 + room];
+            let list = buffer.as_mut_ptr() as *mut JOBOBJECT_BASIC_PROCESS_ID_LIST;
+            // SAFETY: the buffer is larger than the length passed, and the job handle is valid for
+            // the lifetime of `self`. The ids read back lie inside the buffer because the API
+            // reports at most the number that fit.
+            unsafe {
+                let ok = QueryInformationJobObject(
+                    self.job.0,
+                    JobObjectBasicProcessIdList,
+                    list as *mut c_void,
+                    (buffer.len() * size_of::<u64>()) as u32,
+                    null_mut(),
+                );
+                let assigned = (*list).NumberOfAssignedProcesses as usize;
+                if ok == 0 && assigned > room {
+                    room = assigned + 16;
+                    continue;
+                }
+                if ok == 0 {
+                    return Vec::new();
+                }
+                let count = (*list).NumberOfProcessIdsInList as usize;
+                return std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
+                    .iter()
+                    .map(|&pid| pid as u32)
+                    .collect();
             }
-            let count = (*list).NumberOfProcessIdsInList as usize;
-            std::slice::from_raw_parts((*list).ProcessIdList.as_ptr(), count)
-                .iter()
-                .map(|&pid| pid as u32)
-                .collect()
         }
+        Vec::new()
     }
 
     /// The program the user is running now: the process of the job that started last, not counting the helpers of the

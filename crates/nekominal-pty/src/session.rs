@@ -635,6 +635,22 @@ mod tests {
         assert_eq!(code, 1);
     }
 
+    #[test]
+    fn a_job_of_more_processes_than_the_first_list_holds_lists_them_all() {
+        // 70 pings at once, as a parallel build starts its compilers: more than the 64 the first query has room for.
+        let sessions = Sessions::default();
+        let (id, session, rx) = start(&sessions, &cmd_config(&["/d", "/c", "for /L %i in (1,1,70) do @start /b ping -n 20 127.0.0.1 >nul"]));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut most = 0;
+        while most <= 64 && Instant::now() < deadline {
+            most = most.max(session.pty.job_process_ids().len());
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        sessions.close(id);
+        let _ = drive(&session, &rx, Duration::from_secs(10));
+        assert!(most > 64, "at most {most} processes were listed");
+    }
+
     /// Startup handshake, kept manual like the emulator's `conpty_startup`: rerun it whenever the
     /// bundled ConPTY changes (`cargo test -p nekominal-pty -- --ignored --nocapture`).
     #[test]
