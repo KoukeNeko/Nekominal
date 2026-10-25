@@ -117,10 +117,17 @@ jobs:
           GH_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
         run: |
           tag="nekominal-v$VERSION"
+          zip="Nekominal-$VERSION-windows-x64.zip"
           if gh release view "$tag" -R "$BUCKET" >/dev/null 2>&1; then
-            # A run again rebuilds an archive with other bytes (the zip keeps the time of its files). What is published
-            # stays, and the manifest takes its hash, so an install never meets a hash that does not match.
-            gh release download "$tag" -R "$BUCKET" -p '*.sha256' -D dist --clobber
+            assets=$(gh release view "$tag" -R "$BUCKET" --json assets --jq '.assets[].name')
+            if printf '%s\n' "$assets" | grep -qxF "$zip" && printf '%s\n' "$assets" | grep -qxF "$zip.sha256"; then
+              # A run again rebuilds an archive with other bytes (the zip keeps the time of its files). What is published
+              # stays, and the manifest takes its hash, so an install never meets a hash that does not match.
+              gh release download "$tag" -R "$BUCKET" -p '*.sha256' -D dist --clobber
+            else
+              # An earlier run made the release but not all its files: no manifest names them yet, so this build's go up.
+              gh release upload "$tag" dist/* -R "$BUCKET" --clobber
+            fi
           else
             gh release create "$tag" dist/* -R "$BUCKET" --title "Nekominal $VERSION" \
               --notes "The Windows archive of Nekominal $VERSION for the Scoop manifest." --latest=false
