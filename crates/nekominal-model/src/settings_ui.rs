@@ -352,6 +352,7 @@ pub const TABLE: &[Descriptor] = &[
     // Terminal
     count!("scrollback", Terminal, SettingsScrollback, SCROLLBACK, scrollback),
     toggle!("copyOnSelect", Terminal, SettingsCopyOnSelect, copy_on_select),
+    toggle!("stickyHeader", Terminal, SettingsStickyHeader, sticky_header),
     Descriptor {
         id: "rightClick",
         section: Section::Terminal,
