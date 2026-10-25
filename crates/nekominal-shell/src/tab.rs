@@ -139,11 +139,6 @@ impl Tab {
         self.entry_mut(id)
     }
 
-    /// The title of the tab: what the focused pane's program set.
-    pub fn title(&self) -> &str {
-        self.focused_entry().map_or("", |p| p.title.as_str())
-    }
-
     /// The program the tab runs: what the focused pane runs.
     pub fn job(&self) -> Option<&str> {
         self.focused_entry().and_then(|p| p.job.as_deref())

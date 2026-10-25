@@ -4,7 +4,6 @@
 
 use nekominal_model::{commands::Command, settings::Backdrop};
 use nekominal_ui::{Rect, Ui, Color};
-use nekominal_input::Utf16Assembler;
 use windows::{
     Win32::{
         Foundation::{HWND, POINT},
@@ -379,6 +378,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
 
 #[cfg(test)]
 mod tests {
+    use nekominal_input::Utf16Assembler;
     use super::*;
 
     #[test]

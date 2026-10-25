@@ -2337,7 +2337,6 @@ impl App {
                 continue;
             }
             match &item.visual {
-                settings_page::Visual::None => {}
                 settings_page::Visual::Plate(fill) => match *fill {
                     settings_page::Fill::Strip => {
                         self.ui.fill(rect, col(g.tab_rest()));

@@ -12,6 +12,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    #[cfg(test)]
     pub fn at_end(text: &str) -> Cursor {
         Cursor { caret: length(text), anchor: None }
     }

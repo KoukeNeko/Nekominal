@@ -177,7 +177,6 @@ pub enum Fill {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Visual {
-    None,
     Plate(Fill),
     Label { text: String, size: f32, tone: Tone, bold: bool, align: Align },
     Glyph { ch: char, size: f32, tone: Tone },
