@@ -253,6 +253,8 @@ pub struct App {
     on_top: bool,
     focus_mode: bool,
     quake: bool,
+    /// Points the font of this window's panes is larger (or smaller) than the settings say: Ctrl+= and Ctrl+-, not saved.
+    zoom: f64,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -345,6 +347,11 @@ enum Confirmation {
     CloseWindow,
 }
 
+/// A font size with the zoom of the window on it, kept in the range the settings allow.
+fn zoomed(size: f64, zoom: f64) -> f32 {
+    (size + zoom).clamp(settings::FONT_SIZE_RANGE.0, settings::FONT_SIZE_RANGE.1) as f32
+}
+
 /// Why a window is not made: the tabs it was to open went to an elevated window. Not a failure.
 pub const HANDED_OFF: &str = "the tabs went to an elevated window";
 
@@ -400,6 +407,15 @@ fn wired(command: Command) -> bool {
             | Command::ViewAlwaysOnTop
             | Command::ViewFocusMode
             | Command::ViewQuake
+            | Command::TabGoto(_)
+            | Command::TabSelectLeft
+            | Command::TabSelectRight
+            | Command::TabMoveLeft
+            | Command::TabMoveRight
+            | Command::ViewZoomIn
+            | Command::ViewZoomOut
+            | Command::ViewZoomReset
+            | Command::PaneRestart
             | Command::EditSuggestions
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
@@ -537,6 +553,7 @@ impl App {
             on_top: false,
             focus_mode: false,
             quake: false,
+            zoom: 0.0,
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -778,9 +795,7 @@ impl App {
     fn make_entry_with(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
         let mut config = self.renderer_config();
-        if let Some(size) = profile.options.font_size {
-            config.font_size_pt = size as f32;
-        }
+        config.font_size_pt = zoomed(profile.options.font_size.unwrap_or(self.settings.font.size), self.zoom);
         let view = PaneRenderer::new_sharing(&self.gpu, config, self.pane_theme(profile.options.color_scheme.as_deref()), sibling)?;
         let (cols, rows) = view.grid_for(size_px);
         let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
@@ -1873,6 +1888,38 @@ impl App {
                 }
             }
             Command::AppUpdate => self.update_and_restart(),
+            Command::TabGoto(number) => {
+                if let Some(index) = Command::tab_goto_index(number, self.tabs.len()) {
+                    self.select(index);
+                }
+            }
+            Command::TabSelectLeft | Command::TabSelectRight => {
+                if let Some(index) = Command::tab_neighbour(self.selected, self.tabs.len(), command == Command::TabSelectRight) {
+                    self.select(index);
+                }
+            }
+            Command::TabMoveLeft | Command::TabMoveRight => {
+                if let Some(index) = Command::tab_neighbour(self.selected, self.tabs.len(), command == Command::TabMoveRight) {
+                    self.forget_tab_positions();
+                    self.tabs.swap(self.selected, index);
+                    self.selected = index;
+                    self.relayout();
+                }
+            }
+            Command::ViewZoomIn | Command::ViewZoomOut | Command::ViewZoomReset => {
+                self.zoom = match command {
+                    Command::ViewZoomIn => self.zoom + 1.0,
+                    Command::ViewZoomOut => self.zoom - 1.0,
+                    _ => 0.0,
+                };
+                for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+                    if let Err(e) = entry.view.set_font_size(zoomed(entry.font_size.unwrap_or(self.settings.font.size), self.zoom)) {
+                        util::log(&format!("zoom: {e}"));
+                    }
+                }
+                self.relayout();
+            }
+            Command::PaneRestart => self.restart_pane(),
             Command::PaneSwap(direction) => {
                 if self.tabs.get_mut(self.selected).is_some_and(|tab| tab.swap_focused(direction)) {
                     self.relayout();
@@ -4010,7 +4057,7 @@ impl App {
                     if self.settings.font.family != before.font.family {
                         entry.view.set_font_families(self.settings.font.family.clone())?;
                     }
-                    entry.view.set_font_size(entry.font_size.unwrap_or(self.settings.font.size) as f32)?;
+                    entry.view.set_font_size(zoomed(entry.font_size.unwrap_or(self.settings.font.size), self.zoom))?;
                     entry.view.set_line_height(self.settings.font.line_height as f32)
                 })();
                 if let Err(e) = result {
@@ -4062,6 +4109,23 @@ impl App {
         let anchor = self.button_anchor(self.layout.profiles);
         self.open_popup(rows, popup::Kind::List, anchor);
         self.popup_from = self.popup.as_ref().map(|_| Hit::Profiles);
+    }
+
+    /// Starts the focused pane again: the same profile in the folder it was in, in its place; the old session ends.
+    fn restart_pane(&mut self) {
+        let Some(entry) = self.focused() else { return };
+        let (id, size, cwd) = (entry.id, (entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32), entry.cwd.clone());
+        let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
+        match self.make_entry_with(id, size, &profile, cwd.as_deref()) {
+            Ok(fresh) => {
+                if let Some(slot) = self.tabs.get_mut(self.selected).and_then(|tab| tab.panes.iter_mut().find(|e| e.id == id)) {
+                    *slot = fresh;
+                }
+                self.relayout();
+                self.sync_focus();
+            }
+            Err(e) => util::log(&format!("restart pane: {e}")),
+        }
     }
 
     /// A profile set to run as administrator, opened from a window that is not elevated, gets an elevated window of its
