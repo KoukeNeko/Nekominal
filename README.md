@@ -19,7 +19,7 @@ To update, use **Update and restart** in the command palette or on the About pag
 program that is running, so Nekominal closes its windows, updates, and starts again. From another terminal,
 `scoop update nekominal` does the same while Nekominal is closed.
 
-A release is also a zip file: unpack it anywhere and run `Nekominal.exe`. The zip holds the ConPTY pair (`conpty.dll`,
+A release is also a zip file, one for x64 and one for ARM64 (Scoop picks the one of the machine): unpack it anywhere and run `Nekominal.exe`. The zip holds the ConPTY pair (`conpty.dll`,
 `OpenConsole.exe`) the sessions run on; keep the three files together.
 
 ## Features
@@ -72,6 +72,7 @@ Rust 1.95 or later, the Visual Studio Build Tools, Windows 11 (the backdrops nee
 scripts\fetch-conpty.ps1                 # the ConPTY pair, checked against a pinned hash and signature
 cargo build --release -p nekominal-shell # target\release\nekominal-next.exe
 scripts\package.ps1                      # dist\Nekominal-<version>-windows-x64.zip
+scripts\package.ps1 -Arch arm64          # dist\Nekominal-<version>-windows-arm64.zip (MSVC ARM64 build tools)
 ```
 
 The icon is drawn in `assets\nekominal.svg` (and `nekominal-small.svg`, with a thicker line, for 32 px and less).
