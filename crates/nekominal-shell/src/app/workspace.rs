@@ -192,20 +192,70 @@ impl App {
         }
     }
 
-    /// Opens the tabs of `session` after the ones the window has and selects its active one; how many opened.
+    /// Opens the tabs of `session` after the ones the window has and selects its active one; how many opened here.
+    ///
+    /// A tab whose focused pane ran as administrator comes back in an elevated window of its own, as it was opened; declined,
+    /// it comes back here without elevation (the elevated window gets one pane: its splits are not kept). Windows' prompt
+    /// holds up the thread until it is answered, so it is asked once this window shows, unless it has nothing else to show.
     pub(super) fn open_session(&mut self, session: &Session) -> usize {
+        let (elevated, here): (Vec<&TabRecord>, Vec<&TabRecord>) = session.tabs.iter().partition(|record| self.elevated_profile(record).is_some());
+        if here.is_empty() {
+            let declined: Vec<TabRecord> = elevated.into_iter().filter(|record| !self.hand_off(record)).cloned().collect();
+            return self.open_tabs(&declined, session.active_tab);
+        }
+        // The window asks for them once it shows (`elevates_later`); a window shown already asks now, after its own tabs.
+        self.elevate_later.extend(elevated.into_iter().cloned());
+        let opened = self.open_tabs(here, session.active_tab);
+        if self.shown() {
+            self.elevate_later();
+        }
+        opened
+    }
+
+    /// Whether tabs are waiting to be handed to elevated windows once the window shows.
+    pub(crate) fn elevates_later(&mut self) -> bool {
+        !self.elevate_later.is_empty()
+    }
+
+    /// Whether the window is on screen: a layout opened from the palette, not the session of a window being made.
+    fn shown(&self) -> bool {
+        // SAFETY: a plain query of a window of this thread.
+        unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd) }.as_bool()
+    }
+
+    /// The tabs `open_session` left for the window to show first: each gets its elevated window, or opens here when declined.
+    pub(crate) fn elevate_later(&mut self) {
+        let records = std::mem::take(&mut self.elevate_later);
+        let declined: Vec<TabRecord> = records.into_iter().filter(|record| !self.hand_off(record)).collect();
+        if !declined.is_empty() {
+            let selected = self.selected;
+            self.open_tabs(&declined, 0);
+            // The tab in view stays the one the session had in view.
+            self.selected = selected;
+            self.relayout();
+            self.sync_focus();
+            self.redraw();
+        }
+    }
+
+    /// The profile a tab's focused pane ran as administrator with, when this window is not elevated.
+    fn elevated_profile(&self, record: &TabRecord) -> Option<Profile> {
+        let pane = record.panes.get(&record.active)?;
+        self.profiles.iter().find(|p| p.id == pane.profile).filter(|p| p.options.elevate && !elevated()).cloned()
+    }
+
+    /// Opens the tab in an elevated window; false when that did not happen (declined, or there is no such profile).
+    fn hand_off(&self, record: &TabRecord) -> bool {
+        let Some(profile) = self.elevated_profile(record) else { return false };
+        self.opens_elevated(&profile, record.panes.get(&record.active).and_then(|pane| pane.cwd.as_deref()))
+    }
+
+    /// Opens `records` as tabs after the ones the window has and selects the one at `active`; how many opened.
+    fn open_tabs<'a>(&mut self, records: impl IntoIterator<Item = &'a TabRecord>, active: usize) -> usize {
         let area = self.pane_area();
         let size = (area.w.max(1) as u32, area.h.max(1) as u32);
         let before = self.tabs.len();
-        for record in &session.tabs {
-            // A tab whose focused pane ran as administrator comes back in an elevated window of its own, as it was opened;
-            // declined, it comes back here without elevation. The elevated window gets one pane: its splits are not kept.
-            let active = record.panes.get(&record.active);
-            if let Some(profile) = active.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).cloned() {
-                if self.opens_elevated(&profile, active.and_then(|pane| pane.cwd.as_deref())) {
-                    continue;
-                }
-            }
+        for record in records {
             let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
                 let pane = record.panes.get(&id);
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
@@ -221,7 +271,7 @@ impl App {
         }
         let added = self.tabs.len() - before;
         if added > 0 {
-            self.selected = before + session.active_tab.min(added - 1);
+            self.selected = before + active.min(added - 1);
             self.relayout();
             self.sync_focus();
         }

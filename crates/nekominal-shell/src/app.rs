@@ -271,6 +271,8 @@ pub struct App {
     eat_char: bool,
     /// The session file was written by a newer version: it is left as it is.
     newer_session: bool,
+    /// Tabs of the restored session that ran as administrator, handed to elevated windows once this one shows.
+    elevate_later: Vec<TabRecord>,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -604,6 +606,7 @@ impl App {
             hints: None,
             eat_char: false,
             newer_session: false,
+            elevate_later: Vec::new(),
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),

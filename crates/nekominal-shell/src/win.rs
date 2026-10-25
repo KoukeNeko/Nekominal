@@ -48,6 +48,9 @@ const JOB_TIMER: usize = 2;
 const MARK_TIMER: usize = 3;
 /// Turns the cursor off and on, at the pace of the settings, while it blinks.
 const BLINK_TIMER: usize = 4;
+/// Once, after the window first shows: the tabs of the restored session that ran as administrator ask Windows for their
+/// elevated windows. A timer comes after the first paint, where a posted message would come before it.
+const ELEVATE_TIMER: usize = 5;
 
 pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 /// Destroys the window from the message loop: the application asks for it from inside a handler, while it is borrowed, and
@@ -537,6 +540,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, |app| app.redraw());
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == ELEVATE_TIMER => {
+            // SAFETY: a timer of this window.
+            unsafe { let _ = KillTimer(Some(hwnd), ELEVATE_TIMER); }
+            with_app(hwnd, App::elevate_later);
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == JOB_TIMER => {
             with_app(hwnd, App::on_job_tick);
             LRESULT(0)
@@ -1002,6 +1011,9 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
         SetTimer(Some(hwnd), JOB_TIMER, 1000, None);
         let _ = ShowWindow(hwnd, if placement.is_some_and(|placement| placement.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOW });
         with_app(hwnd, |app| app.redraw());
+        if with_app(hwnd, App::elevates_later) == Some(true) {
+            SetTimer(Some(hwnd), ELEVATE_TIMER, 100, None);
+        }
 
         Ok(hwnd)
     }
