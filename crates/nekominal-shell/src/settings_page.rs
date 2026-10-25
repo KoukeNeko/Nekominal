@@ -95,6 +95,8 @@ pub struct Page {
     pub env_row: usize,
     /// Why what was typed in the field being edited (its id) was not taken: it stays open until it is fixed or given up.
     pub error: Option<(&'static str, Text)>,
+    /// The names of the saved layouts, read when the page opens and after each change to them, not at each frame.
+    pub layouts: Vec<String>,
 }
 
 /// Which shortcut of the command being recorded the chord pressed is for.
@@ -172,7 +174,16 @@ pub enum Part {
     SnippetName(usize),
     SnippetInput(usize),
     SnippetDelete(usize),
+    /// The saved layouts: saving this window's under a new name, and the name, opening here and deleting the one at this
+    /// place of `Page::layouts`.
+    LayoutSave,
+    LayoutName(usize),
+    LayoutOpen(usize),
+    LayoutDelete(usize),
 }
+
+/// The id the name of a saved layout is edited under; `Page::env_row` is its place, one past the last for a new one.
+pub const LAYOUT_NAME_ID: &str = "layout.name";
 
 /// The ids the fields of the snippets are edited under (`Page::editing`); `Page::env_row` is the snippet's place, one past
 /// the last for the one being added.
@@ -266,6 +277,8 @@ pub enum Entry {
     ProfileField(Field),
     /// At the end of the Terminal page: the snippets, a line each, and the button that adds one.
     Snippets,
+    /// Under the profiles: the saved layouts of windows, a line each, and the button that saves this window's.
+    Layouts,
 }
 
 impl Entry {
@@ -275,6 +288,7 @@ impl Entry {
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
             Entry::Snippets => Section::Terminal,
+            Entry::Layouts => Section::Profiles,
             Entry::About | Entry::Repo | Entry::Contributors => Section::About,
             Entry::NewProfile | Entry::ProfileHeader | Entry::ProfileField(_) => Section::Profiles,
         }
@@ -391,7 +405,7 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Sche
         // The Agent page starts with the agents it knows, before the rows of the table.
         let agents = (section == Section::Agents).then_some(Entry::Claude);
         let about = if section == Section::About { vec![Entry::About, Entry::Repo, Entry::Contributors] } else { Vec::new() };
-        let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile);
+        let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
         let snippets = (section == Section::Terminal).then_some(Entry::Snippets);
         agents.into_iter().chain(about).chain(settings_ui::in_section(section).map(Entry::Setting)).chain(new_profile).chain(snippets).collect()
     }
@@ -728,6 +742,35 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         let part = Part::SnippetDelete(i);
                         item(&mut items, delete, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
                         item(&mut items, delete, None, Visual::Glyph { ch: '\u{E711}', size: 10.0, tone: Tone::Quiet }, true);
+                    }
+                    line_y += CONTROL + GAP;
+                }
+                y = if line_y > y + ROW - ROW_GAP { line_y - GAP + GRID_BOTTOM } else { y + ROW };
+            }
+            Entry::Layouts => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                let right = rect.x + rect.w - INNER;
+                let text = Text::AppSaveLayout.get(lang);
+                let save = Rect::new(right - measure(text, 13.0, false) - 40.0, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
+                item(&mut items, Rect::new(rect.x + INNER, rect.y, (save.x - GAP - rect.x - INNER).max(0.0), rect.h), None, label(Text::SettingsLayouts.get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                icon_button(&mut items, save, Part::LayoutSave, '\u{E74E}', text, hover);
+                // A line a layout: its name (pressed, it is renamed), the buttons that open it here and delete it; then the
+                // one being saved.
+                let mut line_y = y + ROW - ROW_GAP;
+                let count = page.layouts.len();
+                let saving = page.editing.as_ref().is_some_and(|(id, _)| *id == LAYOUT_NAME_ID) && page.env_row == count;
+                let names = page.layouts.iter().map(String::as_str).chain(saving.then_some(""));
+                for (i, name) in names.enumerate() {
+                    let open = Rect::new(right - 2.0 * CONTROL - GAP, line_y, CONTROL, CONTROL);
+                    let name_rect = Rect::new(x0 + INNER, line_y, (open.x - GAP - x0 - INNER).max(0.0), CONTROL);
+                    let editing = page.editing.as_ref().filter(|(id, _)| page.env_row == i && *id == LAYOUT_NAME_ID).map(|(_, text)| text.clone());
+                    text_field(&mut items, name_rect, Part::LayoutName(i), editing, page.edit_cursor, name, Text::ProfileName.get(lang));
+                    if i < count {
+                        for (part, rect, glyph) in [(Part::LayoutOpen(i), open, '\u{E8A7}'), (Part::LayoutDelete(i), Rect::new(right - CONTROL, line_y, CONTROL, CONTROL), '\u{E74D}')] {
+                            item(&mut items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                            item(&mut items, rect, None, Visual::Glyph { ch: glyph, size: 11.0, tone: Tone::Quiet }, true);
+                        }
                     }
                     line_y += CONTROL + GAP;
                 }
@@ -1095,7 +1138,8 @@ mod tests {
             let own = match section {
                 Section::Agents => 1,
                 Section::About => 3,
-                Section::Profiles | Section::Terminal => 1,
+                Section::Terminal => 1,
+                Section::Profiles => 2,
                 _ => 0,
             };
             let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own };
@@ -1297,6 +1341,21 @@ mod tests {
     }
 
     #[test]
+    fn the_saved_layouts_are_listed_under_the_profiles_with_a_save_button_and_their_own_buttons() {
+        let profiles = Section::ALL.iter().position(|s| *s == Section::Profiles).unwrap();
+        let settings = Settings::default();
+        let page = Page { section: profiles, layouts: vec!["work".into(), "home".into()], ..Page::default() };
+        let parts: Vec<Part> = frame(&page, &settings).items.iter().filter_map(|item| item.part).collect();
+        assert!(parts.contains(&Part::LayoutSave));
+        for i in 0..2 {
+            assert!(parts.contains(&Part::LayoutName(i)) && parts.contains(&Part::LayoutOpen(i)) && parts.contains(&Part::LayoutDelete(i)));
+        }
+        let saving = Page { editing: Some((LAYOUT_NAME_ID, String::new())), env_row: 2, ..page };
+        let parts: Vec<Part> = frame(&saving, &settings).items.iter().filter_map(|item| item.part).collect();
+        assert!(parts.contains(&Part::LayoutName(2)) && !parts.contains(&Part::LayoutOpen(2)), "the name being given has nothing to open yet");
+    }
+
+    #[test]
     fn a_snippets_enter_is_written_as_backslash_r_in_its_field_and_back() {
         assert_eq!(snippet_shown("cargo build\r"), "cargo build\\r");
         assert_eq!(snippet_input("cargo build\\r"), "cargo build\r");
@@ -1356,7 +1415,7 @@ mod tests {
         };
         let parts = |frame: &Frame| frame.items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
         let list = build_for(&Page { section, ..Page::default() });
-        assert!(matches!(list.entries.last(), Some(Entry::NewProfile)));
+        assert!(matches!(list.entries[list.entries.len() - 2..], [Entry::NewProfile, Entry::Layouts]));
         assert!(parts(&list).contains(&Part::EditProfile(0)) && parts(&list).contains(&Part::EditProfile(1)) && parts(&list).contains(&Part::NewProfile));
         let edit = list.items.iter().find(|item| item.part == Some(Part::EditProfile(1))).unwrap();
         assert_eq!(list.part_at(0.0, edit.rect.x + 2.0, edit.rect.y + 2.0), Some(Part::EditProfile(1)), "the pencil wins over the row under it");

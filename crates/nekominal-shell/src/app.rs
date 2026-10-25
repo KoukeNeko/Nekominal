@@ -2333,6 +2333,7 @@ impl App {
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
                     settings_page::Entry::NewProfile => (Text::ProfileNew.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::Layouts => (Text::SettingsLayouts.get(lang).to_owned(), page.layouts.join(", ")),
                     settings_page::Entry::Snippets => (Text::SettingsSnippets.get(lang).to_owned(), self.settings.snippets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                     settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
                     settings_page::Entry::ProfileField(field) => (field.label().get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| if *field == profile_edit::Field::Elevate { (if p.options.elevate { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned() } else { profile_edit::text(p, *field) })),
@@ -3458,6 +3459,7 @@ impl App {
         if let Some(row) = row {
             page.section = Section::ALL.iter().position(|s| *s == row.section).unwrap_or(0);
         }
+        page.layouts = workspace::layout_names();
         self.page = Some(page);
         if !open {
             let title = Text::AppSettings.get(self.language());
@@ -3657,6 +3659,7 @@ impl App {
             profile_edit::ENV_VALUE_ID => Part::EnvValue(env_row),
             settings_page::SNIPPET_NAME_ID => Part::SnippetName(env_row),
             settings_page::SNIPPET_INPUT_ID => Part::SnippetInput(env_row),
+            settings_page::LAYOUT_NAME_ID => Part::LayoutName(env_row),
             _ => profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField),
         });
         let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
@@ -3683,6 +3686,19 @@ impl App {
     fn page_commit_edit(&mut self) {
         let Some((id, text)) = self.page.as_mut().and_then(|page| page.editing.take()) else { return };
         let env_row = self.page.as_ref().map_or(0, |page| page.env_row);
+        if id == settings_page::LAYOUT_NAME_ID {
+            // A name for this window's tabs, or a new name for a saved layout; the same checks as on the palette's line.
+            match self.page.as_ref().and_then(|page| page.layouts.get(env_row)).cloned() {
+                Some(old) if old != text.trim() => self.entered(workspace::Entry::RenameLayout(old), &text),
+                Some(_) => {}
+                None => self.entered(workspace::Entry::SaveLayout, &text),
+            }
+            if let Some(page) = self.page.as_mut() {
+                page.layouts = workspace::layout_names();
+            }
+            self.page_redraw();
+            return;
+        }
         if id == settings_page::SNIPPET_NAME_ID || id == settings_page::SNIPPET_INPUT_ID {
             self.commit_snippet(id, env_row, &text);
             self.page_redraw();
@@ -3762,6 +3778,7 @@ impl App {
             Some(Part::EnvValue(i)) => editing == Some(profile_edit::ENV_VALUE_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             Some(Part::SnippetName(i)) => editing == Some(settings_page::SNIPPET_NAME_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             Some(Part::SnippetInput(i)) => editing == Some(settings_page::SNIPPET_INPUT_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
+            Some(Part::LayoutName(i)) => editing == Some(settings_page::LAYOUT_NAME_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             _ => false,
         };
         if !same_field {
@@ -3853,6 +3870,7 @@ impl App {
             }
             Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) | Part::Browse(_) | Part::ProfileScheme(_) | Part::ProfileFont(_) | Part::ProfileFontReset | Part::EnvAdd | Part::EnvKey(_) | Part::EnvValue(_) | Part::EnvDelete(_) => self.press_profile_part(part),
             Part::SnippetAdd | Part::SnippetName(_) | Part::SnippetInput(_) | Part::SnippetDelete(_) => self.press_snippet_part(part),
+            Part::LayoutSave | Part::LayoutName(_) | Part::LayoutOpen(_) | Part::LayoutDelete(_) => self.press_layout_part(part),
         }
         self.page_redraw();
         capture
@@ -3897,15 +3915,16 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Snippets | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Snippets | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::NewProfile => Some(Part::NewProfile),
             settings_page::Entry::Snippets => Some(Part::SnippetAdd),
+            settings_page::Entry::Layouts => Some(Part::LayoutSave),
             settings_page::Entry::ProfileHeader => Some(Part::ProfileBack),
             settings_page::Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
             _ => None,
@@ -4096,6 +4115,25 @@ impl App {
                 self.edit_profile(|settings, profile| profile_edit::remove_env(settings, profile, i));
             }
             _ => {}
+        }
+        self.page_redraw();
+    }
+
+    /// What a press does on the saved layouts of the Profiles page: save this window's, rename, open here, delete.
+    fn press_layout_part(&mut self, part: Part) {
+        let count = self.page.as_ref().map_or(0, |page| page.layouts.len());
+        match part {
+            Part::LayoutSave => self.start_profile_edit(settings_page::LAYOUT_NAME_ID, Some(String::new()), count),
+            Part::LayoutName(i) => {
+                let name = self.page.as_ref().and_then(|page| page.layouts.get(i)).cloned();
+                self.start_profile_edit(settings_page::LAYOUT_NAME_ID, name, i);
+            }
+            Part::LayoutOpen(i) => self.layout_action(nekominal_model::palette::LayoutAction::Open, i),
+            Part::LayoutDelete(i) => self.layout_action(nekominal_model::palette::LayoutAction::Delete, i),
+            _ => {}
+        }
+        if let Some(page) = self.page.as_mut() {
+            page.layouts = workspace::layout_names();
         }
         self.page_redraw();
     }
