@@ -783,6 +783,12 @@ pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam:
             // A menu opened over the settings goes when they lose the activation, as one over the shell does.
             if !active {
                 with_app(hwnd, App::close_popup);
+            } else {
+                // The file may have been edited by hand while the settings were open: the page shows and saves what it holds now.
+                with_app(hwnd, |app| {
+                    app.reload_if_changed();
+                    app.page_redraw();
+                });
             }
             raise_access_events(hwnd, |app| app.settings_access_focus(active));
             // SAFETY: default handling.

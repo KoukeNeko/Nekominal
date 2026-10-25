@@ -81,8 +81,15 @@ function Prefix {{ $p = scoop prefix nekominal 2>$null 6>$null | Select-Object -
 function Installed {{ try {{ (Get-Content -LiteralPath (Join-Path (Prefix) 'manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json).version }} catch {{ '' }} }}
 $before = Installed
 Write-Host "Waiting for Nekominal $before to close..."
-Wait-Process -Id {pid} -ErrorAction SilentlyContinue
-Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like "$dir\*" }} | Wait-Process
+Wait-Process -Id {pid} -Timeout 120 -ErrorAction SilentlyContinue
+# Closing can be called off (a pane is busy and the user says no): then this update is called off too, rather than
+# running whenever Nekominal next closes.
+if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
+    Write-Host 'Nekominal is still open: the update is called off.'
+    Start-Sleep -Seconds 3
+    exit
+}}
+Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -and $_.Path.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase) }} | Wait-Process
 scoop update
 scoop update nekominal
 $after = Installed
@@ -137,7 +144,8 @@ mod tests {
         let bucket = lines.iter().position(|line| *line == "scoop update").expect("the buckets are brought up to date");
         let app = lines.iter().position(|line| *line == "scoop update nekominal").expect("the app is updated");
         assert!(bucket < app, "the buckets first: without them the new version is unknown");
-        assert!(script.contains("Wait-Process -Id 4242"));
+        assert!(script.contains("Wait-Process -Id 4242 -Timeout"), "a close that is called off calls the update off");
+        assert!(!script.contains("-like"), "a [ in the folder is no wildcard");
         assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current'"), "a quote in a path is doubled");
         assert!(script.contains("scoop prefix nekominal"), "the folder Scoop runs the app from, junction or not");
         // The base64 of UTF-16LE: "a" is 61 00.

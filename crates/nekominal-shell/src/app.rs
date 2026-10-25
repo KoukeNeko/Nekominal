@@ -1132,8 +1132,8 @@ impl App {
         if !active { self.close_popup(); }
         // Another window may have changed the settings while this one was in the background: take them before this one
         // changes and writes its own copy.
-        if active && settings_stamp() != self.settings_stamp {
-            self.reload_settings();
+        if active {
+            self.reload_if_changed();
         }
         self.active = active;
         self.update_window_title();
@@ -1142,6 +1142,14 @@ impl App {
         }
         self.sync_focus();
         self.redraw();
+    }
+
+    /// Takes the settings file again when it changed since this window last read or wrote it (another window, or an edit
+    /// by hand), before this window changes and writes its own copy over it.
+    pub fn reload_if_changed(&mut self) {
+        if settings_stamp() != self.settings_stamp {
+            self.reload_settings();
+        }
     }
 
     /// Chips, panes and the cells each shown pane has.
@@ -3257,7 +3265,7 @@ impl App {
     }
 
     /// Asks for a frame of the window of the settings.
-    fn page_redraw(&self) {
+    pub fn page_redraw(&self) {
         if let Some(win) = self.settings_win.as_ref() {
             // SAFETY: invalidating a window of this thread.
             unsafe { let _ = InvalidateRect(Some(win.hwnd), None, false); }
