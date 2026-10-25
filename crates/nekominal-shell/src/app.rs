@@ -2333,6 +2333,7 @@ impl App {
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
                     settings_page::Entry::NewProfile => (Text::ProfileNew.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::Snippets => (Text::SettingsSnippets.get(lang).to_owned(), self.settings.snippets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                     settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
                     settings_page::Entry::ProfileField(field) => (field.label().get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| if *field == profile_edit::Field::Elevate { (if p.options.elevate { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned() } else { profile_edit::text(p, *field) })),
                 })
@@ -3654,6 +3655,8 @@ impl App {
         let wanted = editing.map_or(Part::Search, |id| match id {
             profile_edit::ENV_KEY_ID => Part::EnvKey(env_row),
             profile_edit::ENV_VALUE_ID => Part::EnvValue(env_row),
+            settings_page::SNIPPET_NAME_ID => Part::SnippetName(env_row),
+            settings_page::SNIPPET_INPUT_ID => Part::SnippetInput(env_row),
             _ => profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField),
         });
         let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
@@ -3680,6 +3683,11 @@ impl App {
     fn page_commit_edit(&mut self) {
         let Some((id, text)) = self.page.as_mut().and_then(|page| page.editing.take()) else { return };
         let env_row = self.page.as_ref().map_or(0, |page| page.env_row);
+        if id == settings_page::SNIPPET_NAME_ID || id == settings_page::SNIPPET_INPUT_ID {
+            self.commit_snippet(id, env_row, &text);
+            self.page_redraw();
+            return;
+        }
         let profile_change = match (id, profile_edit::Field::from_id(id)) {
             (profile_edit::ENV_KEY_ID, _) => Some(self.edit_profile(|settings, profile| profile_edit::rename_env(settings, profile, env_row, &text))),
             (profile_edit::ENV_VALUE_ID, _) => Some(self.edit_profile(|settings, profile| Ok(profile_edit::set_env_value(settings, profile, env_row, &text)))),
@@ -3752,6 +3760,8 @@ impl App {
             Some(Part::ProfileField(field)) => editing == Some(field.id()),
             Some(Part::EnvKey(i)) => editing == Some(profile_edit::ENV_KEY_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             Some(Part::EnvValue(i)) => editing == Some(profile_edit::ENV_VALUE_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
+            Some(Part::SnippetName(i)) => editing == Some(settings_page::SNIPPET_NAME_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
+            Some(Part::SnippetInput(i)) => editing == Some(settings_page::SNIPPET_INPUT_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             _ => false,
         };
         if !same_field {
@@ -3842,6 +3852,7 @@ impl App {
                 }
             }
             Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) | Part::Browse(_) | Part::ProfileScheme(_) | Part::ProfileFont(_) | Part::ProfileFontReset | Part::EnvAdd | Part::EnvKey(_) | Part::EnvValue(_) | Part::EnvDelete(_) => self.press_profile_part(part),
+            Part::SnippetAdd | Part::SnippetName(_) | Part::SnippetInput(_) | Part::SnippetDelete(_) => self.press_snippet_part(part),
         }
         self.page_redraw();
         capture
@@ -3886,14 +3897,15 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Snippets | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Snippets | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::NewProfile => Some(Part::NewProfile),
+            settings_page::Entry::Snippets => Some(Part::SnippetAdd),
             settings_page::Entry::ProfileHeader => Some(Part::ProfileBack),
             settings_page::Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
             _ => None,
@@ -4003,7 +4015,7 @@ impl App {
         self.profiles.iter().find(|p| p.id == id)
     }
 
-    /// Starts editing a text field of the profile's editor (id), holding 	ext; nv_row is the variable it belongs to.
+    /// Starts editing a text field of the profile's editor (`id`), holding `text`; `env_row` is the variable it belongs to.
     fn start_profile_edit(&mut self, id: &'static str, text: Option<String>, env_row: usize) {
         if let (Some(text), Some(page)) = (text, self.page.as_mut())
             && page.editing.is_none()
@@ -4086,6 +4098,45 @@ impl App {
             _ => {}
         }
         self.page_redraw();
+    }
+
+    /// What a press does on the snippets of the Terminal page: add one, edit a field, delete one.
+    fn press_snippet_part(&mut self, part: Part) {
+        let snippet = |app: &Self, i: usize| app.settings.snippets.get(i).cloned();
+        match part {
+            // A new snippet is a line of its own until what it types is given: the file holds none without text.
+            Part::SnippetAdd => self.start_profile_edit(settings_page::SNIPPET_INPUT_ID, Some(String::new()), self.settings.snippets.len()),
+            Part::SnippetName(i) => self.start_profile_edit(settings_page::SNIPPET_NAME_ID, snippet(self, i).map(|s| s.name), i),
+            Part::SnippetInput(i) => self.start_profile_edit(settings_page::SNIPPET_INPUT_ID, snippet(self, i).map(|s| settings_page::snippet_shown(&s.input)), i),
+            Part::SnippetDelete(i) if i < self.settings.snippets.len() => {
+                let before = self.settings.clone();
+                self.settings.snippets.remove(i);
+                self.apply_settings(&before);
+            }
+            _ => {}
+        }
+        self.page_redraw();
+    }
+
+    /// What was typed in a field of the snippet at `row` becomes its name or its text. An empty text deletes it, and a
+    /// snippet being added is kept only once it types something.
+    fn commit_snippet(&mut self, id: &str, row: usize, text: &str) {
+        let before = self.settings.clone();
+        let input = settings_page::snippet_input(text);
+        match (id, self.settings.snippets.get_mut(row)) {
+            (settings_page::SNIPPET_NAME_ID, Some(snippet)) if !text.trim().is_empty() => snippet.name = text.trim().to_owned(),
+            (settings_page::SNIPPET_INPUT_ID, Some(_)) if input.is_empty() => {
+                self.settings.snippets.remove(row);
+            }
+            (settings_page::SNIPPET_INPUT_ID, Some(snippet)) => snippet.input = input,
+            (settings_page::SNIPPET_INPUT_ID, None) if !input.is_empty() => {
+                // Named as the file names one without a name: by what it types, up to its first line.
+                let name = input.lines().next().unwrap_or_default().chars().take(40).collect();
+                self.settings.snippets.push(nekominal_model::settings::Snippet { name, input });
+            }
+            _ => return,
+        }
+        self.apply_settings(&before);
     }
 
     /// Changes the shortcuts the user bound, puts the new key map in effect and keeps the settings.

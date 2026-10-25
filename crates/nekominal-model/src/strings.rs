@@ -253,6 +253,9 @@ texts! {
     KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
     KeysPress "keys.press" "按下新的快速鍵（Esc 取消，Delete 清除）" "Press a shortcut (Esc cancels, Delete clears)";
     KeyReserved "keys.reserved" "終端機程式使用此組合鍵，再按一次仍要指定" "Terminal programs use this shortcut: press it again to take it anyway";
+    SettingsSnippets "settings.snippets" "片段：從命令選擇區或建議清單輸入的文字" "Snippets: text the palette and the suggestions type";
+    SnippetsAdd "snippets.add" "新增片段" "Add snippet";
+    SnippetInput "snippets.input" "要輸入的文字，\\r 代表 Enter" "Text to type; \\r is Enter";
     KeysResetAll "keys.resetAll" "將所有快速鍵還原為預設值" "Reset all shortcuts to their defaults";
     KeyReplace "keys.replace" "取代" "Replace";
     // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
