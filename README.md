@@ -58,6 +58,10 @@ allow. Large and multi-line pastes ask first.
   grouped by state: *waiting*, *working*, *done*, *other*. Ctrl+Shift+U goes to the next tab that waits.
 - **Claude Code in the title bar.** Nekominal hands Claude Code a status line of its own (only when you have none), and shows
   the model, the context meter, the cost and the time, with the branch and the folder.
+- **Codex, Gemini CLI and Aider too.** Typed in a PowerShell tab, each gets Nekominal as its hook for that run (never written
+  to its own config, and not where you set that hook yourself), so its tab says when it works, waits or is done.
+- **Agents panel (Ctrl+Shift+J).** Every pane that runs an agent, in every window: its state, time, model, context and cost,
+  the ones that wait first, and what Claude Code cost today. Choosing one goes to it.
 - **Agent status protocol (OSC 7501)**, progress (OSC 9;4) and notifications (OSC 9, OSC 777) from any program, shown on its
   tab and raised to the taskbar when the window is in the background.
 - **A tab in a new git worktree.** Type a branch name in the palette: Nekominal runs `git worktree add` beside the
@@ -165,7 +169,7 @@ allow. Large and multi-line pastes ask first.
 | --- | --- |
 | New tab · choose a profile | Ctrl+Shift+T · Ctrl+Shift+N |
 | Next tab · tab 1–9 · tab left / right | Ctrl+Tab · Ctrl+Shift+1–9 · Ctrl+PageUp / PageDown |
-| Next tab that waits for you | Ctrl+Shift+U |
+| Next tab that waits for you · agents panel | Ctrl+Shift+U · Ctrl+Shift+J |
 | Split right · split down | Alt+Shift+D · Alt+Shift+S |
 | Move between panes · resize | Alt+Arrow · Alt+Shift+Arrow |
 | Zoom the pane · close it | Ctrl+Shift+Z · Ctrl+Shift+W |

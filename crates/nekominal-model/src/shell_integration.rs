@@ -6,6 +6,8 @@
 //! The PowerShell script also gives Claude Code the status line of the window: when `NEKOMINAL_CLAUDE_SETTINGS` names a
 //! settings file (the window sets it while its status bar is on), `claude` runs `claude.exe --settings <that file>`,
 //! unless the user has a `claude` function of their own or the project's `.claude\settings*.json` sets a status line.
+//! In the same way `codex`, `gemini` and `aider` get the window's hook for one run (`NEKOMINAL_CODEX_NOTIFY`, `_GEMINI_DEFAULTS`,
+//! `_AIDER_NOTIFY`, see the shell's `hooks.rs`), unless the user's own configuration already sets that hook.
 //!
 //! It is wired into the PowerShell profiles by [`powershell_args`].
 //!
@@ -50,6 +52,34 @@ if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude))
     # A project that sets a status line of its own keeps it: --settings would win over it.
     $own = Get-ChildItem -LiteralPath (Join-Path $PWD.ProviderPath '.claude') -Filter 'settings*.json' -ErrorAction SilentlyContinue | Select-String -SimpleMatch '"statusLine"' -Quiet
     if (-not $exe) { Write-Error 'claude.exe was not found' } elseif ($own) { & $exe @args } else { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args }
+  }
+}
+if ($env:NEKOMINAL_CODEX_NOTIFY -and -not (Test-Path function:global:codex)) {
+  function global:codex {
+    $exe = (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    $config = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$HOME\.codex" }
+    # A notify of the user's own stays: the override would replace it for the run.
+    $own = Get-Item -LiteralPath (Join-Path $config 'config.toml'), (Join-Path $PWD.ProviderPath '.codex\config.toml') -ErrorAction SilentlyContinue | Select-String -Pattern '^\s*notify\s*=' -Quiet
+    if (-not $exe) { Write-Error 'codex was not found' } elseif ($own) { & $exe @args } else { & $exe -c $env:NEKOMINAL_CODEX_NOTIFY @args }
+  }
+}
+if ($env:NEKOMINAL_GEMINI_DEFAULTS -and -not (Test-Path function:global:gemini)) {
+  function global:gemini {
+    $exe = (Get-Command gemini -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    # Only where nothing else is the layer of system defaults: the variable would hide an administrator's file.
+    $taken = $env:GEMINI_CLI_SYSTEM_DEFAULTS_PATH -or (Test-Path -LiteralPath "$env:ProgramData\gemini-cli\system-defaults.json")
+    if (-not $exe) { Write-Error 'gemini was not found' } elseif ($taken) { & $exe @args } else {
+      $env:GEMINI_CLI_SYSTEM_DEFAULTS_PATH = $env:NEKOMINAL_GEMINI_DEFAULTS
+      try { & $exe @args } finally { Remove-Item Env:GEMINI_CLI_SYSTEM_DEFAULTS_PATH }
+    }
+  }
+}
+if ($env:NEKOMINAL_AIDER_NOTIFY -and -not (Test-Path function:global:aider)) {
+  function global:aider {
+    $exe = (Get-Command aider -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    # A notifications command of the user's own stays: the flag would win over it.
+    $own = $env:AIDER_NOTIFICATIONS_COMMAND -or (Get-Item -LiteralPath "$HOME\.aider.conf.yml", (Join-Path $PWD.ProviderPath '.aider.conf.yml') -ErrorAction SilentlyContinue | Select-String -Pattern '^\s*notifications-command\s*:' -Quiet)
+    if (-not $exe) { Write-Error 'aider was not found' } elseif ($own) { & $exe @args } else { & $exe --notifications --notifications-command $env:NEKOMINAL_AIDER_NOTIFY @args }
   }
 }"#;
 
@@ -544,6 +574,46 @@ mod tests {
         };
         assert_eq!(run(&plain), "ARGS --settings C:\\n\\claude-settings.json --resume");
         assert_eq!(run(&own), "ARGS --resume", "the project's own status line stays");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Needs PowerShell 7 on PATH; run with `cargo test -p nekominal-model -- --ignored`.
+    #[test]
+    #[ignore = "starts pwsh"]
+    fn real_powershell_codex_gemini_and_aider_take_the_hook_unless_the_user_set_one() {
+        let root = std::env::temp_dir().join(format!("nekominal-hook-fn-{}", std::process::id()));
+        let (bin, home, own) = (root.join("bin"), root.join("home"), root.join("own"));
+        for dir in [&bin, &home, &own.join(".codex")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // Stand-ins that say what they were given; gemini says the variable it was run with.
+        for name in ["codex", "aider"] {
+            std::fs::write(bin.join(format!("{name}.cmd")), "@echo ARGS %*\r\n").unwrap();
+        }
+        std::fs::write(bin.join("gemini.cmd"), "@echo DEFAULTS %GEMINI_CLI_SYSTEM_DEFAULTS_PATH%\r\n").unwrap();
+        std::fs::write(own.join(".codex").join("config.toml"), "model = \"o3\"\nnotify = [\"mine\"]\n").unwrap();
+        std::fs::write(own.join(".aider.conf.yml"), "notifications-command: mine\n").unwrap();
+        let run = |dir: &std::path::Path, command: &str| {
+            let probe = format!("{POWERSHELL_SCRIPT}\nSet-Location -LiteralPath '{}'\n{command}\n$env:GEMINI_CLI_SYSTEM_DEFAULTS_PATH", dir.display());
+            let output = Command::new(find_program(&["pwsh.exe"]).expect("pwsh is on PATH"))
+                .args(["-NoLogo", "-NoProfile", "-EncodedCommand", &encode_command(&probe)])
+                .env("PATH", format!("{};{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
+                .env("USERPROFILE", &home)
+                .env("CODEX_HOME", home.join(".codex"))
+                .env_remove("GEMINI_CLI_SYSTEM_DEFAULTS_PATH")
+                .env_remove("AIDER_NOTIFICATIONS_COMMAND")
+                .env("NEKOMINAL_CODEX_NOTIFY", "notify=['C:\\n\\n.exe','--agent-hook','codex']")
+                .env("NEKOMINAL_GEMINI_DEFAULTS", "C:\\n\\gemini-defaults.json")
+                .env("NEKOMINAL_AIDER_NOTIFY", "C:\\n\\n.exe --agent-hook aider")
+                .output()
+                .expect("pwsh starts");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        assert_eq!(run(&home, "codex resume"), "ARGS -c notify=['C:\\n\\n.exe','--agent-hook','codex'] resume");
+        assert_eq!(run(&own, "codex resume"), "ARGS resume", "the project's own notify stays");
+        assert_eq!(run(&home, "aider --yes"), "ARGS --notifications --notifications-command \"C:\\n\\n.exe --agent-hook aider\" --yes");
+        assert_eq!(run(&own, "aider --yes"), "ARGS --yes", "the user's own notifications command stays");
+        assert_eq!(run(&home, "gemini"), "DEFAULTS C:\\n\\gemini-defaults.json", "for the run only: the variable is gone after it");
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

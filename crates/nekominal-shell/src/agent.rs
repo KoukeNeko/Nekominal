@@ -31,11 +31,29 @@ pub fn new_session() -> String {
 
 /// Where the file of a pane is; `None` for a name this program did not hand out.
 fn usage_file(session: &str) -> Option<PathBuf> {
+    session_file(session, "json")
+}
+
+/// A file of a pane with this extension (`json` for Claude Code's status line, `hook` for the hooks of the other agents).
+pub fn session_file(session: &str, extension: &str) -> Option<PathBuf> {
     if session.is_empty() || !session.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
         return None;
     }
     let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("Nekominal").join("agents").join(format!("{session}.json")))
+    Some(PathBuf::from(base).join("Nekominal").join("agents").join(format!("{session}.{extension}")))
+}
+
+/// Writes beside and moves over, so that the window never reads half a file. The name of the part is this process's: two
+/// commands that run at once (a status line and a hook) do not write into one another's.
+pub fn write_whole(file: &Path, text: &str) {
+    if let Some(dir) = file.parent()
+        && std::fs::create_dir_all(dir).is_ok()
+    {
+        let part = file.with_extension(format!("{}.part", std::process::id()));
+        if std::fs::write(&part, text).is_ok() && std::fs::rename(&part, file).is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+    }
 }
 
 /// Run as the `statusLine` command when the program was started with `--statusline`: keeps what Claude Code hands over
@@ -48,17 +66,10 @@ pub fn statusline_main() -> bool {
     // open after writing.
     let mut values = serde_json::Deserializer::from_reader(std::io::stdin().lock()).into_iter::<serde_json::Value>();
     let Some(Ok(value)) = values.next() else { return true };
-    let input = value.to_string();
-    if let Some(file) = std::env::var(SESSION_VAR).ok().as_deref().and_then(usage_file)
-        && let Some(dir) = file.parent()
-        && std::fs::create_dir_all(dir).is_ok()
-    {
-        // Written beside and moved over, so that the window never reads half a file.
-        let part = file.with_extension("part");
-        if std::fs::write(&part, input).is_ok() {
-            let _ = std::fs::rename(&part, &file);
-        }
+    if let Some(file) = std::env::var(SESSION_VAR).ok().as_deref().and_then(usage_file) {
+        write_whole(&file, &value.to_string());
     }
+    crate::spend::record(&value);
     true
 }
 
@@ -96,10 +107,12 @@ pub fn read_usage(session: &str) -> Option<Usage> {
     parse_usage(&std::fs::read_to_string(usage_file(session)?).ok()?)
 }
 
-/// Takes the file of a pane that is gone.
+/// Takes the files of a pane that is gone.
 pub fn forget(session: &str) {
-    if let Some(file) = usage_file(session) {
-        let _ = std::fs::remove_file(file);
+    for extension in ["json", crate::hooks::EXTENSION] {
+        if let Some(file) = session_file(session, extension) {
+            let _ = std::fs::remove_file(file);
+        }
     }
 }
 

@@ -93,6 +93,7 @@ texts! {
     PromptNext "prompt.next" "下一個提示字元" "Next prompt";
     ViewFullscreen "view.fullscreen" "全螢幕" "Full screen";
     ViewSidebar "view.sidebar" "切換側邊欄" "Toggle sidebar";
+    ViewAgents "view.agents" "代理程式面板" "Agents panel";
     AppUpdate "app.update" "更新並重新啟動" "Update and restart";
     TabColor "tab.color" "分頁顏色" "Tab color";
     PaneSwapLeft "pane.swapLeft" "與左側窗格交換" "Swap with the pane on the left";
@@ -180,6 +181,9 @@ texts! {
     AgentError "agent.error" "錯誤" "Error";
     AgentNotification "agent.notification" "通知" "Notification";
     AgentBell "agent.bell" "鈴聲" "Bell";
+    // The agents panel: its last row, and its only row when no pane runs an agent.
+    AgentsToday "agents.today" "今天的費用：{0}" "Spent today: {0}";
+    AgentsNone "agents.none" "沒有執行中的代理程式" "No agents are running";
 
     // Find bar. Its text box is labelled `EditFind`.
     FindNone "find.none" "沒有結果" "No results";

@@ -39,6 +39,8 @@ pub struct PaneEntry {
     pub job_path: Option<std::path::PathBuf>,
     /// An agent has run in the pane since its shell was last back at its prompt alone: the status bar is the agent's.
     pub agent_seen: bool,
+    /// When the pane was first seen running an agent by the name of its program, for the run time of the agents panel.
+    pub agent_since: Option<std::time::Instant>,
     /// A bell, a notification or a failed exit nobody has looked at.
     pub attention: Option<Attention>,
     /// What the notification said.
@@ -51,6 +53,8 @@ pub struct PaneEntry {
     pub session: String,
     pub usage: Option<crate::agent::Usage>,
     pub usage_stamp: Option<std::time::SystemTime>,
+    /// When the hook of the pane's agent (`hooks.rs`) last wrote its file, as last read.
+    pub hook_stamp: Option<std::time::SystemTime>,
     /// The Git branch of the folder the pane is in.
     pub branch: Option<String>,
     /// The scheme and the font size of its profile, when the profile sets its own.

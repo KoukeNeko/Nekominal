@@ -428,6 +428,7 @@ fn wired(command: Command) -> bool {
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
+            | Command::ViewAgents
             | Command::AppUpdate
             | Command::TabRename
             | Command::TabColor
@@ -464,6 +465,9 @@ fn wired(command: Command) -> bool {
 }
 
 use crate::widgets::{self, col, State};
+
+#[path = "agents_panel.rs"]
+pub mod agents_panel;
 
 /// The settings of the file, and whether it could be read: missing or empty is fine (the defaults), but text that is not
 /// JSON, or not UTF-8, is a file the user is in the middle of editing, which a save must not replace with the defaults.
@@ -794,6 +798,7 @@ impl App {
         let mut env = nekominal_pty::profiles::default_environment();
         if self.settings.agent_environment {
             env.extend(nekominal_pty::profiles::agent_environment());
+            env.extend(crate::hooks::environment());
         }
         // Which pane a program runs in, for the status line command of Claude Code, and the settings that make that command
         // this program, while the status bar is on and Claude Code has no status line of the user's own.
@@ -892,6 +897,7 @@ impl App {
             job: None,
             job_path: None,
             agent_seen: false,
+            agent_since: None,
             attention: None,
             note: None,
             progress: None,
@@ -899,6 +905,7 @@ impl App {
             session,
             usage: None,
             usage_stamp: None,
+            hook_stamp: None,
             branch: None,
             scheme: profile.options.color_scheme.clone(),
             font_size: profile.options.font_size,
@@ -1709,19 +1716,26 @@ impl App {
         for tab in &mut self.tabs {
             let Some(entry) = tab.focused_entry_mut() else { continue };
             let Some(job) = entry.pane.job() else { continue };
-            if job.name.to_ascii_lowercase().starts_with("claude") {
+            if crate::hooks::agent_of_program(&job.name).is_some() {
                 entry.agent_seen = true;
+                entry.agent_since.get_or_insert_with(Instant::now);
             }
             // The shell is alone again: whatever agent ran in the pane has ended, and what it last said is history.
             if job.root && (entry.agent_seen || entry.usage.is_some()) {
                 agent::forget(&entry.session);
-                (entry.agent_seen, entry.usage, entry.usage_stamp) = (false, None, None);
+                (entry.agent_seen, entry.agent_since, entry.usage, entry.usage_stamp) = (false, None, None, None);
                 changed = true;
             }
             if Some(&job.name) != entry.job.as_ref() {
                 entry.job = Some(job.name);
                 entry.job_path = job.path;
                 changed = true;
+            }
+        }
+        // What the hooks of the agents said, for every pane: a tab shows the state of all of its panes.
+        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+            if let Some(report) = crate::hooks::poll(&entry.session, &mut entry.hook_stamp) {
+                changed |= entry.pane.report_agent(&report);
             }
         }
         changed |= self.refresh_usage();
@@ -2054,6 +2068,9 @@ impl App {
             Command::EditMarkMode => self.toggle_mark_mode(),
             Command::EditSuggestions => self.open_suggestions(),
             Command::EditSearchTabs => self.open_search_tabs(),
+            // The panel lists the panes of every window: the window code gathers them once this window is free again.
+            // SAFETY: posting to a window of this thread.
+            Command::ViewAgents => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_AGENTS, WPARAM(0), LPARAM(0)); },
             Command::ViewAlwaysOnTop => self.toggle_on_top(),
             Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
             // The drop-down window is the process's, not this window's: the window code shows or makes it.
@@ -2330,7 +2347,7 @@ impl App {
             kind: match popup.kind {
                 popup::Kind::List => access::PopupKind::Menu,
                 popup::Kind::Confirm => access::PopupKind::Dialog,
-                popup::Kind::Palette | popup::Kind::Find => access::PopupKind::List,
+                popup::Kind::Palette | popup::Kind::Find | popup::Kind::Wide => access::PopupKind::List,
             },
             heading: if popup.kind == popup::Kind::Confirm { popup.heading.clone() } else { popup.query.clone().unwrap_or_default() },
             rows: popup.rows.iter().filter(|row| !row.is_separator()).map(|row| (row.label.clone(), row.hint.clone())).collect(),
@@ -3093,8 +3110,8 @@ impl App {
 
     // --- what the bar says about the focused pane ---------------------------------------------------------------
 
-    /// Whether the pane runs an agent: one that reported its state or its session, or Claude Code, seen by the name of its
-    /// program, until the shell is alone again (a tool it runs, `bash.exe`, does not end it).
+    /// Whether the pane runs an agent: one that reported its state or its session, or one seen by the name of its program
+    /// (`hooks::agent_of_program`), until the shell is alone again (a tool it runs, `bash.exe`, does not end it).
     fn runs_agent(entry: &PaneEntry) -> bool {
         entry.agent_seen || entry.usage.is_some() || entry.pane.agent_summary().is_some()
     }
@@ -5343,6 +5360,7 @@ impl App {
                 }
             }
             Some(popup::Action::Layout(action, index)) => self.layout_action(action, index),
+            Some(popup::Action::Agent { window, tab, pane }) => self.show_agent(window, tab, pane),
             Some(popup::Action::Suggestion(index)) => {
                 if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
                     self.type_text(input);

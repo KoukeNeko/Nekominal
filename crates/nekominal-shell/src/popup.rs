@@ -77,6 +77,8 @@ pub enum Action {
     Layout(nekominal_model::palette::LayoutAction, usize),
     /// Show the match at this index of the list of Search all tabs.
     SearchHit(usize),
+    /// Show this pane (its id) of the tab with this uid, in the window with this handle: a row of the agents panel.
+    Agent { window: isize, tab: u64, pane: nekominal_model::layout::PaneId },
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
@@ -268,6 +270,8 @@ pub enum Kind {
     Palette,
     /// The find bar: only the query line, with the count of matches at its right.
     Find,
+    /// A list as wide as the palette, for rows that say more (the agents panel).
+    Wide,
 }
 
 /// Blurs what is behind the window. The system backdrop attribute does not do it for these windows: they never take the
@@ -308,6 +312,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
     let (width, header, fixed_height, query) = match kind {
         Kind::Confirm => (DIALOG_WIDTH, DIALOG_HEADER, Some(DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING), None),
         Kind::List => (WIDTH, 0.0, None, None),
+        Kind::Wide => (PALETTE_WIDTH, 0.0, None, None),
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
         Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
     };
