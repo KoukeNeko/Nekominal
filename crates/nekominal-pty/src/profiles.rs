@@ -5,7 +5,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     env,
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs,
     io::Read,
     os::windows::process::CommandExt,
@@ -123,14 +123,6 @@ pub fn agent_environment() -> BTreeMap<String, String> {
         .into()
 }
 
-/// Whether this process inherited `NO_COLOR`. PowerShell 7 then switches
-/// `$PSStyle.OutputRendering` to PlainText whatever the value is, which strips every ANSI sequence
-/// from its output, and every child inherits the variable. It is never removed from the
-/// environment of a session; the settings page shows this instead.
-pub fn inherited_no_color() -> bool {
-    has_variable(env::vars_os().map(|(name, _)| name), "NO_COLOR")
-}
-
 /// `PSModulePath` without the folders of PowerShell 7 (its own `Modules`, those under `Documents\PowerShell` and
 /// `Program Files\PowerShell`, the Store package): `None` when nothing else is left. A process PowerShell 7 started carries
 /// them, and Windows PowerShell started from that process loads PowerShell 7's `Microsoft.PowerShell.Utility`, which it
@@ -146,13 +138,6 @@ pub fn windows_powershell_module_path(value: &str) -> Option<String> {
         })
         .collect();
     (!kept.is_empty()).then(|| kept.join(";"))
-}
-
-/// Environment variable names are case-insensitive on Windows.
-fn has_variable(names: impl IntoIterator<Item = OsString>, wanted: &str) -> bool {
-    names
-        .into_iter()
-        .any(|name| name.to_string_lossy().eq_ignore_ascii_case(wanted))
 }
 
 /// `symlink_metadata` is used because App Execution Aliases (such as the Store build of pwsh)
@@ -1040,20 +1025,6 @@ isPrerelease: 1
                 .keys()
                 .all(|name| !agent.contains_key(name))
         );
-    }
-
-    #[test]
-    fn no_color_is_found_whatever_its_case_or_value() {
-        let names = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
-        assert!(has_variable(names(&["PATH", "NO_COLOR"]), "NO_COLOR"));
-        assert!(has_variable(names(&["no_color"]), "NO_COLOR"));
-        assert!(!has_variable(
-            names(&["PATH", "NO_COLORS", "COLOR"]),
-            "NO_COLOR"
-        ));
-        assert!(!has_variable(names(&[]), "NO_COLOR"));
-        // The real environment answers consistently with a direct lookup.
-        assert_eq!(inherited_no_color(), env::var_os("NO_COLOR").is_some());
     }
 
     #[test]

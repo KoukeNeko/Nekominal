@@ -773,7 +773,8 @@ fn expand_references(vars: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString
         out.push_str(rest);
         out.into()
     };
-    vars.iter().map(|(k, v)| (k.clone(), expand(v))).collect()
+    // Only PSModulePath: any other value is as the registry has it, and a literal `%TEMP%` in a plain string stays.
+    vars.iter().map(|(k, v)| (k.clone(), if k.to_string_lossy().eq_ignore_ascii_case("PSModulePath") { expand(v) } else { v.clone() })).collect()
 }
 
 /// `NAME=value` as its name and value; the name may start with `=` (`=C:=C:\x`), so the split is at the first `=` after
@@ -844,6 +845,8 @@ mod tests {
         let vars = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (OsString::from(k), OsString::from(v))).collect::<Vec<_>>();
         let expanded = expand_references(vars(&[("PSModulePath", r"%ProgramFiles%\M;%NOPE%;50%;%%"), ("ProgramFiles", r"C:\Program Files")]));
         assert_eq!(expanded[0].1, OsString::from(r"C:\Program Files\M;%NOPE%;50%;%%"), "a name the block does not hold stays");
+        let literal = expand_references(vars(&[("MINE", "%ProgramFiles%"), ("ProgramFiles", r"C:\Program Files")]));
+        assert_eq!(literal[0].1, OsString::from("%ProgramFiles%"), "a plain string the user wrote is kept as written");
         assert!(saved.iter().all(|(key, value)| !key.to_string_lossy().eq_ignore_ascii_case("PSModulePath") || !value.to_string_lossy().contains("%ProgramFiles%")));
     }
 
@@ -868,7 +871,7 @@ mod tests {
     }
 
     /// Nothing the user exported is dropped, `NO_COLOR` included; the settings page reports it
-    /// instead (see `profiles::inherited_no_color`).
+    /// instead.
     #[test]
     fn environment_block_keeps_every_inherited_variable() {
         let text = String::from_utf16_lossy(&build_environment_block(&BTreeMap::new(), true));
