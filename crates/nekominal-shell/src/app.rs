@@ -2249,6 +2249,7 @@ impl App {
         let tone_color = |tone: settings_page::Tone| match tone {
             settings_page::Tone::Text => col(g.text()),
             settings_page::Tone::Quiet => col(g.text_secondary()),
+            settings_page::Tone::Error => col(g.mark(g.danger)),
         };
         let mut clipped = false;
         for item in &frame.items {
@@ -3418,9 +3419,13 @@ impl App {
     pub fn settings_ime_anchor(&mut self) -> Option<(i32, i32, i32)> {
         let scale = self.settings_win.as_ref()?.scale;
         let page = self.page.as_ref()?;
-        let (scroll, editing) = (page.scroll, page.editing.as_ref().map(|(id, _)| *id));
+        let (scroll, editing, env_row) = (page.scroll, page.editing.as_ref().map(|(id, _)| *id), page.env_row);
         let frame = self.page_frame()?;
-        let wanted = editing.map_or(Part::Search, |id| profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField));
+        let wanted = editing.map_or(Part::Search, |id| match id {
+            profile_edit::ENV_KEY_ID => Part::EnvKey(env_row),
+            profile_edit::ENV_VALUE_ID => Part::EnvValue(env_row),
+            _ => profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField),
+        });
         let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
         let rect = frame.on_screen(item, scroll);
         let left = rect.x + if editing.is_some() { 10.0 } else { 40.0 };
@@ -3444,11 +3449,21 @@ impl App {
     /// The text field of a row stops being edited; what was typed becomes the value.
     fn page_commit_edit(&mut self) {
         let Some((id, text)) = self.page.as_mut().and_then(|page| page.editing.take()) else { return };
-        if let Some(field) = profile_edit::Field::from_id(id) {
-            // What the profile cannot take (an empty name, a scheme there is none of) is dropped: the field shows the value it had.
-            self.edit_profile(|settings, profile| {
-                profile_edit::set(settings, profile, field, &text);
-            });
+        let env_row = self.page.as_ref().map_or(0, |page| page.env_row);
+        let profile_change = match (id, profile_edit::Field::from_id(id)) {
+            (profile_edit::ENV_KEY_ID, _) => Some(self.edit_profile(|settings, profile| profile_edit::rename_env(settings, profile, env_row, &text))),
+            (profile_edit::ENV_VALUE_ID, _) => Some(self.edit_profile(|settings, profile| Ok(profile_edit::set_env_value(settings, profile, env_row, &text)))),
+            (_, Some(field)) => Some(self.edit_profile(|settings, profile| profile_edit::set(settings, profile, field, &text))),
+            _ => None,
+        };
+        if let Some(result) = profile_change {
+            // What the profile cannot take keeps the field open, with the reason under it, until it is fixed or given up.
+            if let (Some(Err(error)), Some(page)) = (result, self.page.as_mut()) {
+                page.editing = Some((id, text));
+                page.error = Some((id, error));
+            } else if let Some(page) = self.page.as_mut() {
+                page.error = None;
+            }
         } else if let Some(row) = settings_ui::find(id) {
             self.set_setting(row, Value::Text(text));
         }
@@ -3505,6 +3520,8 @@ impl App {
         let same_field = match part {
             Some(Part::Field(id)) => editing == Some(id),
             Some(Part::ProfileField(field)) => editing == Some(field.id()),
+            Some(Part::EnvKey(i)) => editing == Some(profile_edit::ENV_KEY_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
+            Some(Part::EnvValue(i)) => editing == Some(profile_edit::ENV_VALUE_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             _ => false,
         };
         if !same_field {
@@ -3579,7 +3596,7 @@ impl App {
                     open_link(&format!("https://github.com/{login}"));
                 }
             }
-            Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) => self.press_profile_part(part),
+            Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) | Part::Browse(_) | Part::ProfileScheme(_) | Part::ProfileFont(_) | Part::ProfileFontReset | Part::EnvAdd | Part::EnvKey(_) | Part::EnvValue(_) | Part::EnvDelete(_) => self.press_profile_part(part),
         }
         self.page_redraw();
         capture
@@ -3611,7 +3628,7 @@ impl App {
                 VK_RETURN if !repeat => self.page_commit_edit(),
                 VK_ESCAPE => {
                     if let Some(page) = self.page.as_mut() {
-                        page.editing = None;
+                        (page.editing, page.error) = (None, None);
                     }
                     self.page_redraw();
                 }
@@ -3726,14 +3743,30 @@ impl App {
     }
 
     /// Changes the profile whose editor the page shows, and keeps the settings.
-    fn edit_profile(&mut self, change: impl FnOnce(&mut Settings, &Profile)) {
-        let Some(id) = self.page.as_ref().and_then(|page| page.profile.clone()) else { return };
-        let Some(profile) = self.profiles.iter().find(|p| p.id == id).cloned() else { return };
+    fn edit_profile<R>(&mut self, change: impl FnOnce(&mut Settings, &Profile) -> R) -> Option<R> {
+        let id = self.page.as_ref().and_then(|page| page.profile.clone())?;
+        let profile = self.profiles.iter().find(|p| p.id == id).cloned()?;
         let before = self.settings.clone();
-        change(&mut self.settings, &profile);
+        let result = change(&mut self.settings, &profile);
         self.apply_settings(&before);
+        Some(result)
     }
 
+    /// The profile whose editor the page shows.
+    fn edited_profile(&self) -> Option<&Profile> {
+        let id = self.page.as_ref()?.profile.as_deref()?;
+        self.profiles.iter().find(|p| p.id == id)
+    }
+
+    /// Starts editing a text field of the profile's editor (id), holding 	ext; nv_row is the variable it belongs to.
+    fn start_profile_edit(&mut self, id: &'static str, text: Option<String>, env_row: usize) {
+        if let (Some(text), Some(page)) = (text, self.page.as_mut())
+            && page.editing.is_none()
+        {
+            page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
+            (page.editing, page.env_row, page.error) = (Some((id, text)), env_row, None);
+        }
+    }
     /// What a press does on the buttons and rows of the profiles: open an editor, add, delete, edit a field.
     fn press_profile_part(&mut self, part: Part) {
         match part {
@@ -3762,15 +3795,47 @@ impl App {
                     self.show_profile(None);
                 }
             }
-            Part::ProfileField(profile_edit::Field::Elevate) => self.edit_profile(profile_edit::toggle_elevate),
-            Part::ProfileField(field) => {
-                let text = self.page.as_ref().and_then(|page| page.profile.as_deref()).and_then(|id| self.profiles.iter().find(|p| p.id == id)).map(|p| profile_edit::text(p, field));
-                if let (Some(text), Some(page)) = (text, self.page.as_mut())
-                    && page.editing.is_none()
-                {
-                    page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
-                    page.editing = Some((field.id(), text));
+            Part::ProfileField(profile_edit::Field::Elevate) => {
+                self.edit_profile(profile_edit::toggle_elevate);
+            }
+            Part::ProfileField(field) if field.is_text() => {
+                let text = self.edited_profile().map(|p| profile_edit::text(p, field));
+                self.start_profile_edit(field.id(), text, 0);
+            }
+            Part::ProfileField(_) => {}
+            Part::Browse(field) => {
+                let Some(current) = self.edited_profile().map(|p| profile_edit::text(p, field)) else { return };
+                let owner = self.settings_win.as_ref().map_or(self.hwnd, |win| win.hwnd);
+                let chosen = if field == profile_edit::Field::Program { crate::pick::program(owner, &current) } else { crate::pick::folder(owner, &current) };
+                if let Some(path) = chosen {
+                    self.edit_profile(|settings, profile| profile_edit::set(settings, profile, field, &path));
                 }
+            }
+            Part::ProfileScheme(index) => {
+                let name = index.and_then(|i| themes::theme_names().nth(i));
+                self.edit_profile(|settings, profile| profile_edit::set_scheme(settings, profile, name));
+            }
+            Part::ProfileFont(larger) => {
+                let window = self.settings.font.size;
+                self.edit_profile(|settings, profile| profile_edit::step_font_size(settings, profile, larger, window));
+            }
+            Part::ProfileFontReset => {
+                self.edit_profile(profile_edit::follow_window_font_size);
+            }
+            Part::EnvAdd => {
+                // The new variable's name is edited at once: its place is where its name sorts.
+                if let Some(name) = self.edit_profile(profile_edit::add_env) {
+                    let place = self.edited_profile().and_then(|p| p.options.env.keys().position(|key| *key == name)).unwrap_or(0);
+                    self.start_profile_edit(profile_edit::ENV_KEY_ID, Some(name), place);
+                }
+            }
+            Part::EnvKey(i) | Part::EnvValue(i) => {
+                let key = matches!(part, Part::EnvKey(_));
+                let text = self.edited_profile().and_then(|p| profile_edit::env_at(p, i)).map(|(k, v)| if key { k.clone() } else { v.clone() });
+                self.start_profile_edit(if key { profile_edit::ENV_KEY_ID } else { profile_edit::ENV_VALUE_ID }, text, i);
+            }
+            Part::EnvDelete(i) => {
+                self.edit_profile(|settings, profile| profile_edit::remove_env(settings, profile, i));
             }
             _ => {}
         }

@@ -304,6 +304,12 @@ texts! {
     ProfileDelete "profile.delete" "刪除設定檔" "Delete profile";
     ProfileRestore "profile.restore" "還原為偵測到的設定" "Restore as found";
     ProfileBack "profile.back" "所有設定檔" "All profiles";
+    ProfileNeedsValue "profile.needsValue" "不能空白" "Cannot be empty";
+    ProfileBadVariable "profile.badVariable" "名稱不能有空格或 =" "A name cannot have spaces or =";
+    ProfileDuplicateVariable "profile.duplicateVariable" "已經有這個變數" "This variable is already set";
+    ProfileAddVariable "profile.addVariable" "新增變數" "Add variable";
+    ProfileValue "profile.value" "值" "Value";
+    ProfileBrowse "profile.browse" "瀏覽…" "Browse…";
     SettingsCopyOnSelect "settings.copyOnSelect" "選取時複製" "Copy on select";
     SettingsRightClick "settings.rightClick" "右鍵" "Right click";
     RightClickSmart "rightClick.smart" "複製或貼上" "Copy or paste";

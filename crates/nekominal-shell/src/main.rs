@@ -19,6 +19,7 @@ mod logic;
 mod mark;
 mod motion;
 mod open;
+mod pick;
 mod popup;
 mod settings_page;
 mod settings_window;

@@ -89,6 +89,10 @@ pub struct Page {
     pub edit_cursor: crate::textfield::Cursor,
     /// The id of the profile whose editor the Profiles page shows instead of the list.
     pub profile: Option<String>,
+    /// The variable of the profile's environment whose name or value is being edited, by its place in the list.
+    pub env_row: usize,
+    /// Why what was typed in the field being edited (its id) was not taken: it stays open until it is fixed or given up.
+    pub error: Option<(&'static str, Text)>,
 }
 
 /// What a rectangle does when it is pressed.
@@ -126,12 +130,26 @@ pub enum Part {
     DeleteProfile,
     /// A row of the editor of a profile: its text field, or the switch of running as administrator.
     ProfileField(Field),
+    /// The button that chooses a file or a folder for a field in a dialog.
+    Browse(Field),
+    /// The scheme at this index of `themes::theme_names`, or the window's.
+    ProfileScheme(Option<usize>),
+    /// A point larger (true) or smaller, and the window's size again.
+    ProfileFont(bool),
+    ProfileFontReset,
+    /// The variables of the environment: adding one, and the name, the value and the delete button of the one at this place.
+    EnvAdd,
+    EnvKey(usize),
+    EnvValue(usize),
+    EnvDelete(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Tone {
     Text,
     Quiet,
+    /// What says why a value was not taken.
+    Error,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,6 +435,19 @@ fn icon_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, text: &s
     item(items, Rect::new(rect.x + 28.0, rect.y, (rect.w - 32.0).max(0.0), rect.h), None, label(text, 13.0, Tone::Text, false, Align::Left), true);
 }
 
+/// A line of text that is edited when pressed: what is typed while it is (diting), else what it holds, or placeholder
+/// greyed while it holds nothing.
+fn text_field(items: &mut Vec<Item>, rect: Rect, part: Part, editing: Option<String>, cursor: crate::textfield::Cursor, shown: &str, placeholder: &str) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
+    let inner = Rect::new(rect.x + 10.0, rect.y, (rect.w - 20.0).max(0.0), rect.h);
+    let visual = match editing {
+        Some(text) => Visual::Edit { text, cursor: Some(cursor), placeholder: placeholder.to_owned() },
+        None if shown.is_empty() => label(placeholder, 13.0, Tone::Quiet, false, Align::Left),
+        None => label(shown, 13.0, Tone::Quiet, false, Align::Left),
+    };
+    item(items, inner, None, visual, true);
+}
+
 /// The profile whose editor the page shows.
 pub fn edited<'a>(page: &Page, view: &View<'a>) -> Option<&'a Profile> {
     let id = page.profile.as_deref()?;
@@ -637,34 +668,117 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::ProfileField(field) => {
                 let profile = edited(page, view);
-                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 let part = Part::ProfileField(field);
-                // The switch is pressed anywhere on its row, like a toggle of the table.
-                item(&mut items, rect, (field == Field::Elevate).then_some(part), Visual::Plate(Fill::Row { focus }), true);
-                let room = rect.w - 2.0 * INNER;
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, room / 3.0, rect.h), None, label(field.label().get(lang), 13.0, Tone::Text, false, Align::Left), true);
-                let right = rect.x + rect.w - INNER;
-                if field == Field::Elevate {
-                    let switch = Rect::new(right - SWITCH.0, rect.y + (rect.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
-                    let on = profile.is_some_and(|p| p.options.elevate);
-                    item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(part) }), true);
-                } else {
-                    let width = room * 2.0 / 3.0 - GAP;
-                    let field_rect = Rect::new(right - width, rect.y + (rect.h - CONTROL) / 2.0, width, CONTROL);
-                    let editing = page.editing.as_ref().filter(|(id, _)| *id == field.id()).map(|(_, text)| text.clone());
-                    item(&mut items, field_rect, Some(part), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
-                    let inner = Rect::new(field_rect.x + 10.0, field_rect.y, field_rect.w - 20.0, field_rect.h);
-                    let shown = match editing {
-                        Some(text) => Visual::Edit { text, cursor: Some(page.edit_cursor), placeholder: String::new() },
-                        None => {
-                            let text = profile.map(|p| profile_edit::text(p, field)).unwrap_or_default();
-                            let text = if text.is_empty() { field.placeholder().map_or("", |t| t.get(lang)).to_owned() } else { text };
-                            label(text, 13.0, Tone::Quiet, false, Align::Left)
+                let room = content_width - 2.0 * INNER;
+                let right = x0 + content_width - INNER;
+                let mid = y + (ROW - ROW_GAP - CONTROL) / 2.0;
+                // The plate goes under what the row holds; its height is known once they are placed.
+                let plate = items.len();
+                item(&mut items, Rect::new(x0, y, content_width, 0.0), (field == Field::Elevate).then_some(part), Visual::Plate(Fill::Row { focus }), true);
+                item(&mut items, Rect::new(x0 + INNER, y, room / 3.0, ROW - ROW_GAP), None, label(field.label().get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let mut height = ROW;
+                let error_of = |id: &str| page.error.filter(|(error_id, _)| *error_id == id).map(|(_, text)| text.get(lang));
+                match field {
+                    Field::Elevate => {
+                        let switch = Rect::new(right - SWITCH.0, y + (ROW - ROW_GAP - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
+                        let on = profile.is_some_and(|p| p.options.elevate);
+                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(part) }), true);
+                    }
+                    Field::Scheme => {
+                        // The window's scheme beside the label, then the schemes as tiles, as on the Appearance page.
+                        let current = profile.and_then(|p| p.options.color_scheme.as_deref());
+                        let text = Text::ProfileSameAsWindow.get(lang);
+                        let same = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
+                        let same_part = Part::ProfileScheme(None);
+                        item(&mut items, same, Some(same_part), Visual::Plate(Fill::Button { selected: current.is_none(), hover: hover == Some(same_part) }), true);
+                        item(&mut items, same, None, label(text, 13.0, if current.is_none() { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                        let columns = (((room + TILE_GAP) / (TILE.0 + TILE_GAP)).floor() as usize).max(1);
+                        let tile_w = ((room - TILE_GAP * (columns - 1) as f32) / columns as f32).max(0.0);
+                        for (i, name) in theme_names.iter().enumerate() {
+                            let (col, line) = (i % columns, i / columns);
+                            let tile = Rect::new(x0 + INNER + col as f32 * (tile_w + TILE_GAP), y + ROW + line as f32 * (TILE.1 + TILE_GAP), tile_w, TILE.1);
+                            let tile_part = Part::ProfileScheme(Some(i));
+                            item(&mut items, tile, Some(tile_part), Visual::Tile { scheme: i, selected: current == Some(*name), hover: hover == Some(tile_part) }, true);
                         }
-                    };
-                    item(&mut items, inner, None, shown, true);
+                        height += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP) - TILE_GAP + GRID_BOTTOM;
+                    }
+                    Field::FontSize => {
+                        // The number steps like the font size of the window; while the profile has none, the window's shows greyed.
+                        let own = profile.and_then(|p| p.options.font_size);
+                        let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
+                        let value_box = Rect::new(plus.x - 72.0, mid, 72.0, CONTROL);
+                        let minus = Rect::new(value_box.x - CONTROL, mid, CONTROL, CONTROL);
+                        for (button, step, ch) in [(minus, Part::ProfileFont(false), '\u{E738}'), (plus, Part::ProfileFont(true), '\u{E710}')] {
+                            item(&mut items, button, Some(step), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(step) }), true);
+                            item(&mut items, button, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
+                        }
+                        let size = own.unwrap_or(view.settings.font.size);
+                        item(&mut items, value_box, None, label(format!("{size:.0}"), 13.0, if own.is_some() { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                        if own.is_some() {
+                            let reset = Rect::new(minus.x - GAP - RESET, y + (ROW - ROW_GAP - RESET) / 2.0, RESET, RESET);
+                            item(&mut items, reset, Some(Part::ProfileFontReset), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::ProfileFontReset) }), true);
+                            item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                        } else {
+                            let x = x0 + INNER + room / 3.0;
+                            item(&mut items, Rect::new(x, y, (minus.x - GAP - x).max(0.0), ROW - ROW_GAP), None, label(Text::ProfileSameAsWindow.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
+                        }
+                    }
+                    Field::Env => {
+                        let text = Text::ProfileAddVariable.get(lang);
+                        let add = Rect::new(right - measure(text, 13.0, false) - 40.0, mid, measure(text, 13.0, false) + 40.0, CONTROL);
+                        icon_button(&mut items, add, Part::EnvAdd, '\u{E710}', text, hover);
+                        // A line a variable: its name, its value and the button that deletes it.
+                        let mut line_y = y + ROW - ROW_GAP;
+                        let vars: Vec<(String, String)> = profile.map(|p| p.options.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
+                        for (i, (key, value)) in vars.iter().enumerate() {
+                            let key_w = ((room - CONTROL - 2.0 * GAP) * 0.35).max(0.0);
+                            let key_rect = Rect::new(x0 + INNER, line_y, key_w, CONTROL);
+                            let value_rect = Rect::new(key_rect.x + key_w + GAP, line_y, (room - key_w - CONTROL - 2.0 * GAP).max(0.0), CONTROL);
+                            let delete = Rect::new(right - CONTROL, line_y, CONTROL, CONTROL);
+                            let this_row = page.env_row == i;
+                            for (rect, cell_part, id, shown, placeholder) in [
+                                (key_rect, Part::EnvKey(i), profile_edit::ENV_KEY_ID, key, ""),
+                                (value_rect, Part::EnvValue(i), profile_edit::ENV_VALUE_ID, value, Text::ProfileValue.get(lang)),
+                            ] {
+                                let editing = page.editing.as_ref().filter(|(edit_id, _)| this_row && *edit_id == id).map(|(_, text)| text.clone());
+                                text_field(&mut items, rect, cell_part, editing, page.edit_cursor, shown, placeholder);
+                            }
+                            let delete_part = Part::EnvDelete(i);
+                            item(&mut items, delete, Some(delete_part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(delete_part) }), true);
+                            item(&mut items, delete, None, Visual::Glyph { ch: '\u{E711}', size: 10.0, tone: Tone::Quiet }, true);
+                            line_y += CONTROL + GAP;
+                            if let Some(error) = error_of(profile_edit::ENV_KEY_ID).filter(|_| this_row) {
+                                item(&mut items, Rect::new(key_rect.x, line_y - GAP + 2.0, room, 18.0), None, label(error, 12.0, Tone::Error, false, Align::Left), true);
+                                line_y += 20.0;
+                            }
+                        }
+                        height = line_y - y + if vars.is_empty() { 0.0 } else { GRID_BOTTOM - GAP };
+                        height = height.max(ROW);
+                    }
+                    _ => {
+                        // A line of text: as wide as two thirds of the row, less the button that browses for a file or folder.
+                        let mut field_right = right;
+                        if field.browses() {
+                            let text = Text::ProfileBrowse.get(lang);
+                            let browse = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
+                            let browse_part = Part::Browse(field);
+                            item(&mut items, browse, Some(browse_part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(browse_part) }), true);
+                            item(&mut items, browse, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                            field_right = browse.x - GAP;
+                        }
+                        let left = x0 + INNER + room / 3.0 + GAP;
+                        let field_rect = Rect::new(left, mid, (field_right - left).max(0.0), CONTROL);
+                        let editing = page.editing.as_ref().filter(|(id, _)| *id == field.id()).map(|(_, text)| text.clone());
+                        let shown = profile.map(|p| profile_edit::text(p, field)).unwrap_or_default();
+                        text_field(&mut items, field_rect, part, editing, page.edit_cursor, &shown, "");
+                        if let Some(error) = error_of(field.id()) {
+                            item(&mut items, Rect::new(field_rect.x, mid + CONTROL + 2.0, field_rect.w, 18.0), None, label(error, 12.0, Tone::Error, false, Align::Left), true);
+                            height += 20.0;
+                        }
+                    }
                 }
-                y += ROW;
+                items[plate].rect.h = height - ROW_GAP;
+                y += height;
             }
             Entry::Setting(row) => {
                 let id = row.id;
@@ -1070,8 +1184,27 @@ mod tests {
         let mine = build_for(&Page { section, profile: Some("mine".into()), ..Page::default() });
         assert_eq!(mine.entries.len(), 1 + Field::ALL.len());
         for field in Field::ALL {
-            assert!(parts(&mine).contains(&Part::ProfileField(field)), "{field:?}");
+            let wanted = match field {
+                Field::Scheme => Part::ProfileScheme(None),
+                Field::FontSize => Part::ProfileFont(true),
+                Field::Env => Part::EnvAdd,
+                _ => Part::ProfileField(field),
+            };
+            assert!(parts(&mine).contains(&wanted), "{field:?}");
         }
+        assert!(parts(&mine).contains(&Part::Browse(Field::Program)) && parts(&mine).contains(&Part::Browse(Field::Cwd)));
+        assert!(parts(&mine).contains(&Part::ProfileScheme(Some(0))), "the schemes are tiles to choose");
+        // A variable is a line of its own: its name, its value and its delete button; a refused name says why under it.
+        let mut settings = settings.clone();
+        settings.profiles[0].options.env.insert("LANG".into(), "zh_TW".into());
+        let profiles = nekominal_model::profiles::merge(&found, &settings.profiles);
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let page = Page { section, profile: Some("mine".into()), editing: Some((profile_edit::ENV_KEY_ID, "A B".into())), error: Some((profile_edit::ENV_KEY_ID, Text::ProfileBadVariable)), ..Page::default() };
+        let with_var = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+        for part in [Part::EnvKey(0), Part::EnvValue(0), Part::EnvDelete(0)] {
+            assert!(parts(&with_var).contains(&part), "{part:?}");
+        }
+        assert!(with_var.items.iter().any(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, text, .. } if text == Text::ProfileBadVariable.get(Lang::EnUs))));
         assert!(parts(&mine).contains(&Part::DeleteProfile) && parts(&mine).contains(&Part::ProfileBack));
         let pwsh = build_for(&Page { section, profile: Some("pwsh".into()), ..Page::default() });
         assert!(!parts(&pwsh).contains(&Part::DeleteProfile), "a shell nothing changes has nothing to put back");
