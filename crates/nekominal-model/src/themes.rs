@@ -265,10 +265,8 @@ impl Scheme {
     /// The scheme of an iTerm2 colour preset (`.itermcolors`), named `name` (the file's name, as iTerm2 names it). The
     /// file is a property list: each colour a `<dict>` under its `<key>`, its channels as `Red Component` and the others,
     /// from 0 to 1. `Background`, `Foreground` and the 16 `Ansi N Color` are needed; the cursor and the selection are
-    /// taken when there.
-    ///
-    /// shortcut: a colour in Display P3 (`Color Space` P3) is read as if it were sRGB, which makes a saturated one a
-    /// little duller; convert it if a preset in P3 looks off.
+    /// taken when there. A colour in Display P3 (`Color Space` P3, as macOS writes a wide-gamut pick) is converted to
+    /// sRGB; the others (sRGB, Calibrated, Device) are taken as sRGB.
     pub fn from_itermcolors(name: &str, plist: &str) -> Result<Scheme, String> {
         let colors = plist_colors(plist);
         let get = |key: &str| colors.iter().find(|(k, _)| k == key).map(|(_, color)| *color);
@@ -305,19 +303,35 @@ fn plist_colors(plist: &str) -> Vec<(String, Color)> {
         let Some(body_end) = rest[body_start..].find("</dict>") else { break };
         let body = &rest[body_start..body_start + body_end];
         rest = &rest[body_start + body_end + 7..];
-        let component = |name: &str| -> Option<u8> {
+        let component = |name: &str| -> Option<f64> {
             let at = body.find(&format!("<key>{name}</key>"))? + name.len() + 11;
             let value = body[at..].trim_start();
             let open = value.find('>')? + 1;
             let close = value.find("</")?;
             let number: f64 = value.get(open..close)?.trim().parse().ok()?;
-            number.is_finite().then(|| (number.clamp(0.0, 1.0) * 255.0).round() as u8)
+            number.is_finite().then(|| number.clamp(0.0, 1.0))
         };
         if let (Some(r), Some(g), Some(b)) = (component("Red Component"), component("Green Component"), component("Blue Component")) {
-            colors.push((key, Color { r, g, b, a: 255 }));
+            let p3 = body.contains("<string>P3</string>");
+            let [r, g, b] = if p3 { p3_to_srgb([r, g, b]) } else { [r, g, b] };
+            let byte = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+            colors.push((key, Color { r: byte(r), g: byte(g), b: byte(b), a: 255 }));
         }
     }
     colors
+}
+
+/// A Display P3 colour (D65, the sRGB curve) as sRGB: linear light, the matrix between the two primaries, the curve
+/// again. A P3 colour outside sRGB is clipped to its edge.
+fn p3_to_srgb(p3: [f64; 3]) -> [f64; 3] {
+    let linear = |c: f64| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    let encode = |c: f64| {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+    };
+    const M: [[f64; 3]; 3] = [[1.224_940_2, -0.224_940_4, 0.0], [-0.042_056_9, 1.042_057_1, 0.0], [-0.019_637_6, -0.078_636_1, 1.098_273_5]];
+    let [r, g, b] = p3.map(linear);
+    M.map(|row| encode(row[0] * r + row[1] * g + row[2] * b))
 }
 
 /// Written back with the keys [`Scheme::from_json`] reads.
@@ -354,6 +368,20 @@ mod tests {
         keys.push(("Cursor Color".into(), (0.5, 0.5, 0.5)));
         let body: String = keys.iter().filter(|(key, _)| Some(key.as_str()) != skip).map(|(key, rgb)| iterm_color(key, *rgb)).collect();
         format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n")
+    }
+
+    #[test]
+    fn a_display_p3_colour_is_converted_to_srgb_and_the_others_are_taken_as_they_are() {
+        let p3 = itermcolors(None).replace("<string>sRGB</string>", "<string>P3</string>");
+        let scheme = Scheme::from_itermcolors("p3", &p3).unwrap();
+        // Pure P3 blue is outside sRGB: clipped to sRGB blue. White and black are the same in both.
+        assert_eq!(scheme.ansi[0], Color::rgb(0x0000FF));
+        assert_eq!(p3_to_srgb([1.0, 1.0, 1.0]).map(|c| (c * 255.0).round() as u8), [255, 255, 255]);
+        assert_eq!(p3_to_srgb([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
+        // A P3 grey stays grey; P3 red is redder than sRGB can show, clipped to full red.
+        let grey = p3_to_srgb([0.5, 0.5, 0.5]).map(|c| (c * 255.0).round() as u8);
+        assert!(grey.iter().all(|c| (*c as i32 - 128).abs() <= 1), "{grey:?}");
+        assert_eq!(p3_to_srgb([1.0, 0.0, 0.0]).map(|c| (c * 255.0).round() as u8), [255, 0, 0]);
     }
 
     #[test]
