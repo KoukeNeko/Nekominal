@@ -48,7 +48,7 @@ use windows::{core::HSTRING, Win32::{
 }};
 
 use crate::{
-    access, agent, clipboard, design, find, icons, motion, textfield, update, welcome,
+    access, agent, clipboard, design, find, icons, mark, motion, textfield, update, welcome,
     settings_page::{self, Page, Part},
     settings_window::{self, SettingsWin},
     glass::{self, Glass},
@@ -239,6 +239,8 @@ pub struct App {
     renaming: Option<u64>,
     /// How the find bar searches (the case, a regular expression); kept from one opening of the bar to the next.
     find_options: find::Options,
+    /// Selecting with the keyboard in the focused pane: the caret and where the selection started.
+    mark: Option<mark::Mark>,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -378,6 +380,8 @@ fn wired(command: Command) -> bool {
             | Command::PaneToTab
             | Command::PaneBroadcast
             | Command::EditExport
+            | Command::EditMarkMode
+            | Command::EditCopyFormatted
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -508,6 +512,7 @@ impl App {
             origin: None,
             renaming: None,
             find_options: find::Options::default(),
+            mark: None,
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -1397,8 +1402,9 @@ impl App {
         };
         let before = self.buttons.contains(&true);
         let target = if down && !before {
-            // A press starts in the pane under it, which takes the keyboard.
+            // A press starts in the pane under it, which takes the keyboard; the pointer selects now, not mark mode.
             let Some(id) = self.tab().and_then(|t| t.pane_at(x, y)) else { return Capture::None };
+            self.mark = None;
             self.pointer_pane = Some(id);
             if self.tabs[self.selected].focus(id) {
                 self.sync_focus();
@@ -1761,6 +1767,8 @@ impl App {
                 }
             }
             Command::EditExport => self.export_text(),
+            Command::EditMarkMode => self.toggle_mark_mode(),
+            Command::EditCopyFormatted => self.copy_formatted(),
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
             Command::TabDuplicate => self.duplicate_tab(),
@@ -1856,6 +1864,9 @@ impl App {
         if self.popup_keeps_owner_active() {
             if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET { return false; }
             if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
+            return true;
+        }
+        if self.mark.is_some() && self.mark_key(vk_code) {
             return true;
         }
         let held = held();
@@ -4010,6 +4021,105 @@ impl App {
             }
             Err(e) => util::log(&format!("duplicate tab: {e}")),
         }
+    }
+
+    /// Starts selecting with the keyboard at the cursor of the focused pane, or stops when it is on.
+    fn toggle_mark_mode(&mut self) {
+        if self.mark.is_some() {
+            self.leave_mark_mode(true);
+            return;
+        }
+        let Some(entry) = self.focused() else { return };
+        let (row, column) = entry.pane.term.lock().cursor_cell();
+        self.mark = Some(mark::Mark::at((row as i32, column)));
+        self.show_mark();
+    }
+
+    fn leave_mark_mode(&mut self, clear: bool) {
+        self.mark = None;
+        if clear && let Some(entry) = self.focused() {
+            entry.pane.term.lock().selection_clear();
+        }
+        self.redraw();
+    }
+
+    /// Selects what mark mode holds and scrolls the pane so that the caret is in view.
+    fn show_mark(&mut self) {
+        let (Some(mark), Some(entry)) = (self.mark, self.focused()) else { return };
+        let mut core = entry.pane.term.lock();
+        core.select_between(mark.anchor, mark.caret);
+        let (rows, top) = (core.rows() as i32, -(core.display_offset() as i32));
+        if mark.caret.0 < top || mark.caret.0 > top + rows - 1 {
+            core.scroll_to_line(mark.caret.0 - rows / 2);
+        }
+        drop(core);
+        self.redraw();
+    }
+
+    /// A key while selecting with the keyboard: the moves move the caret (Shift selects), Enter and Ctrl+C copy what is
+    /// selected and stop, Escape stops. Any other key stops and goes on to the program as typed. True when the key was
+    /// mark mode's.
+    fn mark_key(&mut self, vk_code: i32) -> bool {
+        let Some(current) = self.mark else { return false };
+        let mods = held();
+        if matches!(vk_code, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C) {
+            return true;
+        }
+        if let Some(step) = mark::key_move(vk_code, mods.ctrl) {
+            let bounds = match self.focused() {
+                Some(entry) => {
+                    let core = entry.pane.term.lock();
+                    mark::Bounds { top: -(core.history_size() as i32), bottom: core.rows() as i32 - 1, last_column: core.columns().saturating_sub(1), page: (core.rows() as i32 - 1).max(1) }
+                }
+                None => return false,
+            };
+            self.mark = Some(current.moved(step, mods.shift, bounds));
+            self.show_mark();
+            return true;
+        }
+        match vk_code {
+            0x0D => {
+                self.copy_selection();
+                self.leave_mark_mode(true);
+                true
+            }
+            0x43 if mods.ctrl => {
+                self.copy_selection();
+                self.leave_mark_mode(true);
+                true
+            }
+            // Escape, and the chord that started it, stop it.
+            0x1B => {
+                self.leave_mark_mode(true);
+                true
+            }
+            0x4D if mods.ctrl && mods.shift => {
+                self.leave_mark_mode(true);
+                true
+            }
+            _ => {
+                self.leave_mark_mode(true);
+                false
+            }
+        }
+    }
+
+    /// Copies the selection of the focused pane with its colours and style: HTML beside the text on the clipboard.
+    fn copy_formatted(&mut self) {
+        let Some(entry) = self.focused() else { return };
+        let core = entry.pane.term.lock();
+        let (Some(text), Some(lines)) = (core.selection_text(), core.selection_runs()) else { return };
+        drop(core);
+        let theme = &self.theme;
+        let color = |c: nekominal_term::CellColor| match c {
+            nekominal_term::CellColor::Default => r::Color::Default,
+            nekominal_term::CellColor::Indexed(i) => r::Color::Indexed(i),
+            nekominal_term::CellColor::Rgb(red, green, blue) => r::Color::Rgb(red, green, blue),
+        };
+        let rgb = |c: r::Rgb| (c.0, c.1, c.2);
+        let font = self.settings.font.family.first().cloned().unwrap_or_default();
+        let html = clipboard::html_fragment(&lines, &font, |run| (rgb(theme.resolve_fg(color(run.fg))), rgb(theme.resolve_bg(color(run.bg)))), (rgb(theme.foreground), rgb(theme.background)));
+        clipboard::write_rich(&text, &html);
     }
 
     /// Writes all the text of the focused pane, its scrollback with it, to a file the save dialog asks for.

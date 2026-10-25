@@ -102,6 +102,8 @@ texts! {
     PaneToTab "pane.toTab" "將窗格移到新分頁" "Move pane to a new tab";
     PaneBroadcast "pane.broadcast" "廣播輸入到所有窗格" "Broadcast input to all panes";
     EditExport "edit.export" "匯出文字到檔案" "Export text to a file";
+    EditMarkMode "edit.markMode" "用鍵盤選取" "Select with the keyboard";
+    EditCopyFormatted "edit.copyFormatted" "複製（含格式）" "Copy with formatting";
     TabRenameTo "tab.renameTo" "命名為「{0}」" "Name it “{0}”";
     TabRenameAuto "tab.renameAuto" "使用自動標題" "Use the automatic title";
     DialogCloseTabs "dialog.closeTabs" "關閉 {0} 個分頁？" "Close {0} tabs?";

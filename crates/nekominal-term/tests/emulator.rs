@@ -874,6 +874,22 @@ fn search_finds_matches_in_scrollback_with_smart_case() {
 }
 
 #[test]
+fn a_selection_gives_its_runs_of_style_and_select_between_takes_grid_points() {
+    let mut core = core(20, 3);
+    feed(&mut core, "ok \x1b[1;31merror\x1b[0m   \r\nnext");
+    core.select_between((0, 0), (1, 3));
+    let lines = core.selection_runs().expect("a selection");
+    assert_eq!(lines.len(), 2);
+    let first: Vec<(&str, CellColor, bool)> = lines[0].iter().map(|r| (r.text.as_str(), r.fg, r.bold)).collect();
+    assert_eq!(first, [("ok ", CellColor::Default, false), ("error", CellColor::Indexed(1), true)], "the blanks after the text are left out");
+    assert_eq!(lines[1].iter().map(|r| r.text.as_str()).collect::<String>(), "next");
+    assert_eq!(core.selection_text().as_deref(), Some("ok error\nnext"));
+    // Backwards is the same selection.
+    core.select_between((1, 3), (0, 0));
+    assert_eq!(core.selection_text().as_deref(), Some("ok error\nnext"));
+}
+
+#[test]
 fn all_text_is_the_scrollback_and_the_screen_without_trailing_blank_lines() {
     let mut core = TerminalCore::new(20, 5, CoreConfig { scrollback_lines: 100, ..CoreConfig::default() });
     for i in 0..12 {

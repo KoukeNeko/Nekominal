@@ -257,6 +257,17 @@ pub enum CellColor {
     Rgb(u8, u8, u8),
 }
 
+/// A run of text of the selection with the colours and the style it is drawn in; the colours stay symbolic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StyledRun {
+    pub text: String,
+    pub fg: CellColor,
+    pub bg: CellColor,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
 fn cell_color(color: Color) -> CellColor {
     match color {
         Color::Spec(rgb) => CellColor::Rgb(rgb.r, rgb.g, rgb.b),
@@ -1269,6 +1280,58 @@ impl TerminalCore {
             selection.update(point, side.into());
             self.dirty = true;
         }
+    }
+
+    /// Selects from `start` to `end` in grid coordinates (`line < 0` is scrollback), both cells included: what the
+    /// keyboard selection (mark mode) holds.
+    pub fn select_between(&mut self, start: (i32, usize), end: (i32, usize)) {
+        let clamp = |p: (i32, usize)| Point::new(Line(p.0), Column(p.1)).grid_clamp(&self.term, Boundary::Grid);
+        let (start, end) = (clamp(start), clamp(end));
+        let (first, last) = if (start.line, start.column) <= (end.line, end.column) { (start, end) } else { (end, start) };
+        let mut selection = Selection::new(SelectionType::Simple, first, Side::Left);
+        selection.update(last, Side::Right);
+        self.term.selection = Some(selection);
+        self.dirty = true;
+    }
+
+    /// The selection as lines of runs of text that share their colours and style, the trailing blanks of each line left
+    /// out: what "copy with formatting" turns into HTML. None without a selection.
+    pub fn selection_runs(&self) -> Option<Vec<Vec<StyledRun>>> {
+        let range = self.term.selection.as_ref()?.to_range(&self.term)?;
+        let grid = self.term.grid();
+        let last_column = self.term.last_column().0;
+        let mut lines = Vec::new();
+        for line in range.start.line.0..=range.end.line.0 {
+            let (from, to) = if range.is_block {
+                (range.start.column.0, range.end.column.0)
+            } else {
+                (if line == range.start.line.0 { range.start.column.0 } else { 0 }, if line == range.end.line.0 { range.end.column.0 } else { last_column })
+            };
+            let row = &grid[Line(line)];
+            let mut runs: Vec<StyledRun> = Vec::new();
+            for column in from..=to.min(last_column) {
+                let cell = &row[Column(column)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                let style = (cell_color(cell.fg), cell_color(cell.bg), cell.flags.contains(Flags::BOLD), cell.flags.contains(Flags::ITALIC), cell.flags.intersects(Flags::ALL_UNDERLINES));
+                match runs.last_mut() {
+                    Some(run) if (run.fg, run.bg, run.bold, run.italic, run.underline) == style => run.text.push(cell.c),
+                    _ => runs.push(StyledRun { text: cell.c.to_string(), fg: style.0, bg: style.1, bold: style.2, italic: style.3, underline: style.4 }),
+                }
+            }
+            // The blanks after the text of a line are no part of what was copied.
+            while let Some(run) = runs.last_mut() {
+                let kept = run.text.trim_end_matches(' ').len();
+                if kept > 0 || run.bg != CellColor::Default {
+                    run.text.truncate(if run.bg == CellColor::Default { kept } else { run.text.len() });
+                    break;
+                }
+                runs.pop();
+            }
+            lines.push(runs);
+        }
+        Some(lines)
     }
 
     pub fn selection_clear(&mut self) {

@@ -14,6 +14,7 @@ mod icons;
 mod layout;
 #[allow(dead_code)]
 mod logic;
+mod mark;
 mod motion;
 mod open;
 mod popup;

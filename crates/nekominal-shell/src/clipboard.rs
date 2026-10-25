@@ -1,10 +1,11 @@
-//! Clipboard text through the Win32 clipboard (`CF_UNICODETEXT`).
+//! Clipboard text through the Win32 clipboard (`CF_UNICODETEXT`), and with it, for a copy with formatting, the same text
+//! as HTML ("HTML Format").
 
 use std::time::Duration;
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
@@ -74,6 +75,31 @@ fn clipboard_units(text: &str) -> Vec<u16> {
 /// Puts `text` on the clipboard, replacing what is there. False when the clipboard stays held by another
 /// program or the system refuses; the text itself is never logged.
 pub fn write_text(text: &str) -> bool {
+    write(text, None)
+}
+
+/// Puts `text` on the clipboard together with `html` (a fragment, see `cf_html`), for the programs that paste the
+/// colours and the style along with the text (Word, Outlook, OneNote); the others take the text.
+pub fn write_rich(text: &str, html: &str) -> bool {
+    write(text, Some(html))
+}
+
+/// The "HTML Format" of the Windows clipboard around `fragment`: a header that says where the HTML and the fragment start
+/// and end, in bytes of UTF-8 from the start of the header, then the document.
+pub fn cf_html(fragment: &str) -> String {
+    const HEADER: &str = "Version:0.9\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n";
+    let before = "<html><body>\r\n<!--StartFragment-->";
+    let after = "<!--EndFragment-->\r\n</body></html>";
+    let start_html = HEADER.len();
+    let start_fragment = start_html + before.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + after.len();
+    format!(
+        "Version:0.9\r\nStartHTML:{start_html:010}\r\nEndHTML:{end_html:010}\r\nStartFragment:{start_fragment:010}\r\nEndFragment:{end_fragment:010}\r\n{before}{fragment}{after}"
+    )
+}
+
+fn write(text: &str, html: Option<&str>) -> bool {
     let units = clipboard_units(text);
     // SAFETY: the clipboard is opened and closed around the write. The global block is ours until
     // `SetClipboardData` succeeds, and the system's after that.
@@ -105,6 +131,26 @@ pub fn write_text(text: &str) -> bool {
                 let _ = GlobalFree(Some(global));
                 return Err(error);
             }
+            // The formatted copy rides along; when it cannot be stored, the text still is.
+            if let Some(html) = html {
+                let format = RegisterClipboardFormatW(windows::core::w!("HTML Format"));
+                let mut bytes = cf_html(html).into_bytes();
+                bytes.push(0);
+                if format != 0
+                    && let Ok(block) = GlobalAlloc(GMEM_MOVEABLE, bytes.len())
+                {
+                    let data = GlobalLock(block).cast::<u8>();
+                    if data.is_null() {
+                        let _ = GlobalFree(Some(block));
+                    } else {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
+                        let _ = GlobalUnlock(block);
+                        if SetClipboardData(format, Some(HANDLE(block.0))).is_err() {
+                            let _ = GlobalFree(Some(block));
+                        }
+                    }
+                }
+            }
             Ok(())
         })();
         let _ = CloseClipboard();
@@ -118,9 +164,70 @@ pub fn write_text(text: &str) -> bool {
     }
 }
 
+/// The HTML of a copy with formatting: the lines of runs of the selection in a `<pre>` in the terminal's font and
+/// colours, each run in its own colours and style. `resolve` turns the symbolic colours into RGB (foreground, background).
+pub fn html_fragment(lines: &[Vec<nekominal_term::StyledRun>], font: &str, resolve: impl Fn(&nekominal_term::StyledRun) -> ((u8, u8, u8), (u8, u8, u8)), default: ((u8, u8, u8), (u8, u8, u8))) -> String {
+    let hex = |(r, g, b): (u8, u8, u8)| format!("#{r:02x}{g:02x}{b:02x}");
+    let escape = |text: &str| text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let mut html = format!(
+        "<pre style=\"font-family:'{}',Consolas,monospace;color:{};background-color:{};padding:8px;white-space:pre\">",
+        font.replace(['\'', '"', '<', '>'], ""),
+        hex(default.0),
+        hex(default.1)
+    );
+    for (n, runs) in lines.iter().enumerate() {
+        if n > 0 {
+            html.push('\n');
+        }
+        for run in runs {
+            let (fg, bg) = resolve(run);
+            let mut style = String::new();
+            if fg != default.0 {
+                style += &format!("color:{};", hex(fg));
+            }
+            if bg != default.1 {
+                style += &format!("background-color:{};", hex(bg));
+            }
+            for (on, css) in [(run.bold, "font-weight:bold;"), (run.italic, "font-style:italic;"), (run.underline, "text-decoration:underline;")] {
+                if on {
+                    style += css;
+                }
+            }
+            if style.is_empty() {
+                html += &escape(&run.text);
+            } else {
+                html += &format!("<span style=\"{style}\">{}</span>", escape(&run.text));
+            }
+        }
+    }
+    html += "</pre>";
+    html
+}
+
 #[cfg(test)]
 mod tests {
-    use super::clipboard_units;
+    use super::{cf_html, clipboard_units, html_fragment};
+    use nekominal_term::{CellColor, StyledRun};
+
+    #[test]
+    fn the_html_format_says_where_its_parts_are_in_bytes() {
+        let fragment = "<b>設定</b>";
+        let all = cf_html(fragment);
+        let field = |name: &str| -> usize { all.split(&format!("{name}:")).nth(1).unwrap()[..10].parse().unwrap() };
+        let (start, end) = (field("StartFragment"), field("EndFragment"));
+        assert_eq!(&all.as_bytes()[start..end], fragment.as_bytes(), "the fragment is where the header says, counted in bytes of UTF-8");
+        assert!(all[field("StartHTML")..].starts_with("<html>"));
+        assert_eq!(field("EndHTML"), all.len());
+    }
+
+    #[test]
+    fn a_formatted_copy_keeps_the_colours_and_style_of_each_run_and_escapes_the_text() {
+        let run = |text: &str, fg, bold| StyledRun { text: text.into(), fg, bg: CellColor::Default, bold, italic: false, underline: false };
+        let lines = vec![vec![run("ok ", CellColor::Default, false), run("<error>", CellColor::Indexed(1), true)], vec![]];
+        let html = html_fragment(&lines, "Cascadia Mono", |r| (if r.fg == CellColor::Indexed(1) { (255, 0, 0) } else { (200, 200, 200) }, (20, 20, 20)), ((200, 200, 200), (20, 20, 20)));
+        assert!(html.starts_with("<pre style=\"font-family:'Cascadia Mono',Consolas,monospace;color:#c8c8c8;background-color:#141414;"));
+        assert!(html.contains("ok <span style=\"color:#ff0000;font-weight:bold;\">&lt;error&gt;</span>\n</pre>"), "{html}");
+    }
 
     fn decoded(text: &str) -> String {
         let units = clipboard_units(text);

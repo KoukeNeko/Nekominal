@@ -40,6 +40,10 @@ pub enum Command {
     PaneBroadcast,
     /// Writes all the text of the focused pane, the scrollback with it, to a file.
     EditExport,
+    /// Selects with the keyboard: the arrows move a caret through the text, Shift selects, Enter copies.
+    EditMarkMode,
+    /// Copies the selection with its colours and style, as HTML beside the text.
+    EditCopyFormatted,
     EditCopy,
     /// Ctrl+C: copies only while text is selected, otherwise the key reaches the program as an interrupt.
     EditSmartCopy,
@@ -119,6 +123,8 @@ impl Command {
         Command::PaneToTab,
         Command::PaneBroadcast,
         Command::EditExport,
+        Command::EditMarkMode,
+        Command::EditCopyFormatted,
         Command::EditSmartCopy,
         Command::EditCopy,
         Command::EditPaste,
@@ -195,6 +201,8 @@ impl Command {
             Command::PaneToTab => "pane.toTab",
             Command::PaneBroadcast => "pane.broadcast",
             Command::EditExport => "edit.export",
+            Command::EditMarkMode => "edit.markMode",
+            Command::EditCopyFormatted => "edit.copyFormatted",
             Command::EditCopy => "edit.copy",
             Command::EditSmartCopy => "edit.smartCopy",
             Command::EditPaste => "edit.paste",
@@ -270,6 +278,8 @@ impl Command {
             Command::PaneToTab => Text::PaneToTab,
             Command::PaneBroadcast => Text::PaneBroadcast,
             Command::EditExport => Text::EditExport,
+            Command::EditMarkMode => Text::EditMarkMode,
+            Command::EditCopyFormatted => Text::EditCopyFormatted,
             // Copying with and without a selection check is one action, so it keeps one label.
             Command::EditCopy | Command::EditSmartCopy => Text::EditCopy,
             Command::EditPaste => Text::EditPaste,
@@ -347,7 +357,8 @@ impl Command {
             Command::PaneResize(Direction::Right) => &["Alt+Shift+Right"],
             Command::PaneResize(Direction::Up) => &["Alt+Shift+Up"],
             Command::PaneResize(Direction::Down) => &["Alt+Shift+Down"],
-            Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport => &[],
+            Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport | Command::EditCopyFormatted => &[],
+            Command::EditMarkMode => &["Ctrl+Shift+M"],
             Command::EditSmartCopy => &["Ctrl+C"],
             Command::EditCopy => &["Ctrl+Shift+C", "Ctrl+Insert"],
             Command::EditPaste => &["Ctrl+V", "Ctrl+Shift+V", "Shift+Insert"],
@@ -442,6 +453,8 @@ impl Command {
                 | Command::PaneToTab
                 | Command::PaneBroadcast
                 | Command::EditExport
+                | Command::EditMarkMode
+                | Command::EditCopyFormatted
                 | Command::EditFind
                 | Command::ViewFullscreen
                 | Command::ViewSidebar
@@ -557,9 +570,11 @@ mod tests {
             Command::PaneToTab => 50,
             Command::PaneBroadcast => 51,
             Command::EditExport => 52,
+            Command::EditMarkMode => 53,
+            Command::EditCopyFormatted => 54,
         }
     }
-    const VARIANTS: usize = 53;
+    const VARIANTS: usize = 55;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -890,6 +905,8 @@ mod tests {
             | Command::PaneToTab
             | Command::PaneBroadcast
             | Command::EditExport
+            | Command::EditMarkMode
+            | Command::EditCopyFormatted
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
