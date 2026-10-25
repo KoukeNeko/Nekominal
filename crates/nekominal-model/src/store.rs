@@ -63,8 +63,11 @@ fn decode(bytes: &[u8]) -> Result<String, &'static str> {
 
 /// Replaces the file with `text`: the new contents are written next to it and flushed to disk, the old
 /// file is copied to `<name>.bak`, and the new file is renamed over it, so a crash leaves either version
-/// whole. Creates the directory when needed.
+/// whole. Creates the directory when needed. A file that is a link (into a folder of dotfiles) is saved where it points,
+/// and the link stays.
 pub fn save(path: &Path, text: &str) -> io::Result<()> {
+    let target = fs::symlink_metadata(path).ok().filter(|meta| meta.file_type().is_symlink()).and_then(|_| fs::canonicalize(path).ok());
+    let path = target.as_deref().unwrap_or(path);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
