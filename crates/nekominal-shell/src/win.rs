@@ -57,6 +57,15 @@ thread_local! {
     static RETIRED: RefCell<Vec<Rc<RefCell<App>>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Asks every window of the shell to close, each with the check of its busy shells, as its close button does.
+pub fn close_all_windows() {
+    let windows: Vec<isize> = APPS.with(|apps| apps.borrow().keys().copied().collect());
+    for hwnd in windows {
+        // SAFETY: posting to windows of this thread.
+        unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+    }
+}
+
 /// Runs `f` on the application unless it is not there yet or already busy (a message sent from inside a handler).
 fn with_app<T>(hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
     let app = APPS.with(|apps| {
@@ -269,6 +278,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_SIZE => {
             let size = client_size(hwnd);
             with_app(hwnd, |app| app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
+            LRESULT(0)
+        }
+        WM_MOVE => {
+            with_app(hwnd, App::on_move);
             LRESULT(0)
         }
         WM_DPICHANGED => {

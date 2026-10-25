@@ -93,6 +93,7 @@ texts! {
     PromptNext "prompt.next" "下一個提示字元" "Next prompt";
     ViewFullscreen "view.fullscreen" "全螢幕" "Full screen";
     ViewSidebar "view.sidebar" "切換側邊欄" "Toggle sidebar";
+    AppUpdate "app.update" "更新並重新啟動" "Update and restart";
     ViewZoomIn "view.zoomIn" "放大字型" "Increase font size";
     ViewZoomOut "view.zoomOut" "縮小字型" "Decrease font size";
     ViewZoomReset "view.zoomReset" "重設字型大小" "Reset font size";

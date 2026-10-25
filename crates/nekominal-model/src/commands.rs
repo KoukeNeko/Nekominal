@@ -49,6 +49,8 @@ pub enum Command {
     ViewFullscreen,
     /// Hides or shows the sidebar of the tabs.
     ViewSidebar,
+    /// Closes the windows, has Scoop update the app and starts it again.
+    AppUpdate,
     ViewZoomIn,
     ViewZoomOut,
     ViewZoomReset,
@@ -111,6 +113,7 @@ impl Command {
         Command::PromptNext,
         Command::ViewFullscreen,
         Command::ViewSidebar,
+        Command::AppUpdate,
         Command::ViewZoomIn,
         Command::ViewZoomOut,
         Command::ViewZoomReset,
@@ -174,6 +177,7 @@ impl Command {
             Command::PromptNext => "prompt.next",
             Command::ViewFullscreen => "view.fullscreen",
             Command::ViewSidebar => "view.sidebar",
+            Command::AppUpdate => "app.update",
             Command::ViewZoomIn => "view.zoomIn",
             Command::ViewZoomOut => "view.zoomOut",
             Command::ViewZoomReset => "view.zoomReset",
@@ -236,6 +240,7 @@ impl Command {
             Command::PromptNext => Text::PromptNext,
             Command::ViewFullscreen => Text::ViewFullscreen,
             Command::ViewSidebar => Text::ViewSidebar,
+            Command::AppUpdate => Text::AppUpdate,
             Command::ViewZoomIn => Text::ViewZoomIn,
             Command::ViewZoomOut => Text::ViewZoomOut,
             Command::ViewZoomReset => Text::ViewZoomReset,
@@ -306,6 +311,7 @@ impl Command {
             Command::PromptNext => &["Ctrl+Alt+Down"],
             Command::ViewFullscreen => &["F11"],
             Command::ViewSidebar => &["Ctrl+Shift+B"],
+            Command::AppUpdate => &[],
             Command::ViewZoomIn => &["Ctrl+="],
             Command::ViewZoomOut => &["Ctrl+-"],
             Command::ViewZoomReset => &["Ctrl+0"],
@@ -385,6 +391,7 @@ impl Command {
                 | Command::EditFind
                 | Command::ViewFullscreen
                 | Command::ViewSidebar
+                | Command::AppUpdate
                 | Command::AppPalette
                 | Command::AppNewWindow
                 | Command::AppSettings
@@ -481,9 +488,10 @@ mod tests {
             Command::TabSelectRight => 40,
             Command::AppNewWindow => 41,
             Command::ViewSidebar => 42,
+            Command::AppUpdate => 43,
         }
     }
-    const VARIANTS: usize = 43;
+    const VARIANTS: usize = 44;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -813,6 +821,7 @@ mod tests {
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
+            | Command::AppUpdate
             | Command::AppPalette
             | Command::AppNewWindow
             | Command::AppSettings

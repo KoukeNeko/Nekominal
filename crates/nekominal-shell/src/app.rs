@@ -41,7 +41,7 @@ use windows::{core::HSTRING, Win32::{
         WindowsAndMessaging::{
             DestroyWindow, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
             SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
-            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
             SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND, WS_OVERLAPPEDWINDOW,
         },
     },
@@ -218,6 +218,8 @@ pub struct App {
     motion: bool,
     animating: bool,
     marks_epoch: Instant,
+    /// Where the window was last, on the screen: a move takes the pop-up along by the difference.
+    origin: Option<(i32, i32)>,
     /// Claude Code as the Agent page last found it.
     claude: agent::Claude,
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
@@ -340,6 +342,7 @@ fn wired(command: Command) -> bool {
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
+            | Command::AppUpdate
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -467,6 +470,7 @@ impl App {
             motion: true,
             animating: false,
             marks_epoch: Instant::now(),
+            origin: None,
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
@@ -857,6 +861,29 @@ impl App {
         }
         self.relayout();
         self.redraw();
+    }
+
+    /// The window moved (dragged by its title bar, snapped, moved with the keyboard): the pop-up that is open moves with it,
+    /// by as much, so that a menu stays hanging from its button and the find bar over its pane.
+    pub fn on_move(&mut self) {
+        let mut rect = RECT::default();
+        // SAFETY: plain queries and a move of windows of this thread.
+        unsafe {
+            if GetWindowRect(self.hwnd, &mut rect).is_err() {
+                return;
+            }
+            let origin = (rect.left, rect.top);
+            if let (Some(before), Some(popup)) = (self.origin, self.popup.as_ref())
+                && before != origin
+            {
+                let mut at = RECT::default();
+                if GetWindowRect(popup.hwnd, &mut at).is_ok() {
+                    let (dx, dy) = (origin.0 - before.0, origin.1 - before.1);
+                    let _ = SetWindowPos(popup.hwnd, None, at.left + dx, at.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
+            self.origin = Some(origin);
+        }
     }
 
     /// The pointer is over a caption button (or over none): the window gets these as non-client messages.
@@ -1499,6 +1526,33 @@ impl App {
         }
     }
 
+    /// Scoop does not replace a program that runs, and the update would be typed in this very terminal: a PowerShell window
+    /// of its own waits for this process and its OpenConsole to end, runs the update and starts the app again, while every
+    /// window here closes and saves the session.
+    fn update_and_restart(&mut self) {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x10;
+        // The program is ...\scoop\apps\nekominal\<version or current>\Nekominal.exe.
+        let app_dir = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.parent()?.to_owned()));
+        let Some(app_dir) = app_dir.filter(|dir| dir.parent().and_then(|apps| apps.file_name()).is_some_and(|name| name.eq_ignore_ascii_case("apps"))) else {
+            util::log("update: this copy was not installed with Scoop, so there is nothing to update");
+            return;
+        };
+        let quoted = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
+        let script = format!(
+            "$Host.UI.RawUI.WindowTitle = 'Nekominal update'; Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
+             Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{dir}\\*' }} | Wait-Process; \
+             scoop update nekominal; Start-Process '{exe}'",
+            pid = std::process::id(),
+            dir = quoted(&app_dir),
+            exe = quoted(&app_dir.join("current").join("Nekominal.exe")),
+        );
+        match std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]).creation_flags(CREATE_NEW_CONSOLE).spawn() {
+            Ok(_) => crate::win::close_all_windows(),
+            Err(e) => util::log(&format!("update: {e}")),
+        }
+    }
+
     /// WM_CLOSE may destroy the window only after the same check used by pane and tab close.
     pub fn request_close_window(&mut self) -> bool {
         let running = self.tabs.iter().flat_map(|t| &t.panes).filter(|p| !p.exited && p.pane.is_busy()).count() as u32;
@@ -1561,6 +1615,7 @@ impl App {
                     self.select(next);
                 }
             }
+            Command::AppUpdate => self.update_and_restart(),
             Command::ViewSidebar => {
                 let before = self.settings.clone();
                 self.settings.tabs.sidebar_open = !self.settings.tabs.sidebar_open;
