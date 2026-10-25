@@ -145,7 +145,8 @@ pub fn set(settings: &mut Settings, profile: &Profile, field: Field, typed: &str
     if matches!(field, Field::Name | Field::Program) && typed.is_empty() {
         return Err(Text::ProfileNeedsValue);
     }
-    if !field.is_text() {
+    // A field left as it was (the page sets a field whenever it loses focus) must not make an entry.
+    if !field.is_text() || typed == text(profile, field) {
         return Ok(());
     }
     let entry = entry(settings, profile);
@@ -323,6 +324,16 @@ mod tests {
         assert_eq!(with(&mut settings, |s, p| set(s, p, Field::Program, "")), Err(Text::ProfileNeedsValue));
         with(&mut settings, |s, p| set_scheme(s, p, Some("No Such Scheme")));
         assert!(settings.profiles.is_empty(), "nothing refused leaves an entry");
+    }
+
+    #[test]
+    fn leaving_a_field_as_it_was_makes_no_entry() {
+        let mut settings = Settings::default();
+        for field in [Field::Name, Field::Program, Field::Args, Field::Cwd] {
+            let p = pwsh(&settings);
+            assert_eq!(set(&mut settings, &p, field, &format!(" {} ", text(&p, field))), Ok(()));
+        }
+        assert!(settings.profiles.is_empty());
     }
 
     #[test]

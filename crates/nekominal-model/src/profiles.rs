@@ -62,7 +62,7 @@ pub struct Profile {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
-    /// Written in `settings.json` rather than found on the machine.
+    /// Written in `settings.json` rather than found on the machine (an entry replacing a found shell is not custom).
     pub custom: bool,
     /// What `settings.json` sets for this profile alone: its environment, scheme, font size and elevation.
     pub options: ProfileOptions,
@@ -162,8 +162,10 @@ pub fn merge(discovered: &[DiscoveredProfile], custom: &[CustomProfile]) -> Vec<
             .position(|existing| !existing.custom && existing.id == entry.id)
         {
             Some(index) => {
-                // A built-in given other arguments is still that shell: it keeps how its sessions behave.
+                // A built-in given other arguments is still that shell: it keeps how its sessions behave and its
+                // shell integration.
                 profile.kind = profiles[index].kind;
+                profile.custom = false;
                 profiles[index] = profile;
             }
             None => profiles.push(profile),
@@ -275,7 +277,7 @@ mod tests {
         let merged = merge(&shells(), &[custom("cmd", "C:\\tools\\cmd.exe")]);
         assert_eq!(ids(&merged), ["pwsh", "cmd", "wsl-Ubuntu"]);
         let replaced = &merged[1];
-        assert!(replaced.custom);
+        assert!(!replaced.custom, "still the shell found");
         assert_eq!(replaced.program, "C:\\tools\\cmd.exe");
         assert_eq!(replaced.args, ["-x"]);
     }
@@ -402,8 +404,8 @@ mod tests {
                 custom("cmd", "C:\\tools\\launcher.exe"),
             ],
         );
-        assert!(merged[0].custom && merged[1].custom);
         assert_eq!(merged[0].kind, ProfileKind::PowerShell);
+        assert_eq!(&launch_args(&merged[0], true)[1..3], ["-NoExit", "-EncodedCommand"], "keeps its shell integration");
         assert_eq!(merged[1].kind, ProfileKind::Cmd);
         assert!(merged[1].kind.closes_pane_on_clean_exit());
         // The profile that replaces nothing has only its program to go by.
