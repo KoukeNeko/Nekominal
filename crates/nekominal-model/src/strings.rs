@@ -252,7 +252,8 @@ texts! {
     KeyRecord "keys.record" "按下按鍵" "Press keys";
     KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
     KeysPress "keys.press" "按下新的快速鍵（Esc 取消，Delete 清除）" "Press a shortcut (Esc cancels, Delete clears)";
-    KeyReserved "keys.reserved" "終端機程式使用此組合鍵" "Terminal programs use this shortcut";
+    KeyReserved "keys.reserved" "終端機程式使用此組合鍵，再按一次仍要指定" "Terminal programs use this shortcut: press it again to take it anyway";
+    KeysResetAll "keys.resetAll" "將所有快速鍵還原為預設值" "Reset all shortcuts to their defaults";
     KeyReplace "keys.replace" "取代" "Replace";
     // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
     SettingInvalid "setting.invalid" "設定檔值無效" "Invalid value in file";

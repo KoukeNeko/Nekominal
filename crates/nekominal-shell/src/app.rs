@@ -3743,7 +3743,7 @@ impl App {
         if let Some(page) = self.page.as_mut() {
             // A press anywhere gives up the wait for a shortcut, unless it is on the row that waits.
             if page.capturing.is_some() && part != page.capturing.map(Part::Binding) {
-                (page.capturing, page.reserved) = (None, false);
+                (page.capturing, page.reserved) = (None, None);
             }
         }
         let editing = self.page.as_ref().and_then(|p| p.editing.as_ref()).map(|(id, _)| *id);
@@ -3814,12 +3814,15 @@ impl App {
                     self.apply_settings(&before);
                 }
             }
-            Part::Binding(command) => {
-                if let Some(page) = self.page.as_mut() {
-                    (page.capturing, page.reserved) = (Some(command), false);
+            Part::Binding(command) => self.record_key(command, settings_page::KeySlot::First),
+            Part::Chip(command, index) => {
+                if let Some(&chord) = self.keymap.shortcuts(command).get(index) {
+                    self.record_key(command, settings_page::KeySlot::Chip(chord));
                 }
             }
+            Part::AddKey(command) => self.record_key(command, settings_page::KeySlot::New),
             Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
+            Part::ResetKeys => self.change_bindings(std::collections::BTreeMap::clear),
             Part::CheckUpdate => self.check_for_update(),
             Part::Update => self.update_and_restart(),
             Part::OpenRepo => open_link(update::REPO),
@@ -3916,8 +3919,8 @@ impl App {
                 self.step_setting(row.id, vk_code == VK_RIGHT, shift);
             }
             VK_RETURN if !repeat && focused_command.is_some() => {
-                if let (Some(command), Some(page)) = (focused_command, self.page.as_mut()) {
-                    (page.capturing, page.reserved) = (Some(command), false);
+                if let Some(command) = focused_command {
+                    self.record_key(command, settings_page::KeySlot::First);
                 }
             }
             VK_RETURN if !repeat && focused_profile_part.is_some() => {
@@ -4083,6 +4086,13 @@ impl App {
         self.apply_settings(&before);
     }
 
+    /// Waits for the chord that becomes the shortcut of `command` in `slot`.
+    fn record_key(&mut self, command: Command, slot: settings_page::KeySlot) {
+        if let Some(page) = self.page.as_mut() {
+            (page.capturing, page.slot, page.reserved) = (Some(command), slot, None);
+        }
+    }
+
     /// A key while the page waits for the shortcut of a command: the chord pressed becomes its shortcut. Escape gives up,
     /// Delete and Backspace take the shortcuts away, a chord that programs in the terminal need is refused. True when the
     /// key was taken.
@@ -4097,26 +4107,37 @@ impl App {
         if repeat || modifier_only {
             return true;
         }
+        let (slot, reserved) = self.page.as_ref().map_or((settings_page::KeySlot::First, None), |page| (page.slot, page.reserved));
+        let keymap = self.keymap.clone();
         match vk_code {
             0x1B => {}
-            0x08 | 0x2E if !mods.ctrl && !mods.alt && !mods.shift && !mods.meta => self.change_bindings(|bindings| keybindings::set(bindings, command, &[])),
+            // Delete takes away the shortcut pressed, or all of them from the row; there is nothing to take from the add button.
+            0x08 | 0x2E if !mods.ctrl && !mods.alt && !mods.shift && !mods.meta => match slot {
+                settings_page::KeySlot::First => self.change_bindings(|bindings| keybindings::set(bindings, command, &[])),
+                settings_page::KeySlot::Chip(chord) => self.change_bindings(|bindings| keybindings::remove(bindings, &keymap, command, chord)),
+                settings_page::KeySlot::New => {}
+            },
             _ => {
                 let chord = nekominal_input::physical_key(scan, extended).and_then(|key| keybindings::chord_of(key.name(), mods));
                 let Some(chord) = chord else { return true };
-                if keybindings::needed_by_programs(chord) {
+                // A chord a program needs is taken only when it is pressed a second time, after the warning.
+                if keybindings::needed_by_programs(chord) && reserved != Some(chord) {
                     if let Some(page) = self.page.as_mut() {
-                        page.reserved = true;
+                        page.reserved = Some(chord);
                     }
                     self.page_redraw();
                     return true;
                 }
-                let keymap = self.keymap.clone();
-                let replacing = keymap.shortcuts(command).first().copied();
+                let replacing = match slot {
+                    settings_page::KeySlot::First => keymap.shortcuts(command).first().copied(),
+                    settings_page::KeySlot::Chip(chord) => Some(chord),
+                    settings_page::KeySlot::New => None,
+                };
                 self.change_bindings(|bindings| keybindings::assign(bindings, &keymap, command, replacing, chord));
             }
         }
         if let Some(page) = self.page.as_mut() {
-            (page.capturing, page.reserved) = (None, false);
+            (page.capturing, page.reserved) = (None, None);
         }
         self.page_redraw();
         true

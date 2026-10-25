@@ -8,7 +8,7 @@
 
 use nekominal_model::{
     commands::Command,
-    keymap::Keymap,
+    keymap::{Keymap, Shortcut},
     profile_edit::{self, Field},
     profiles::Profile,
     settings::Settings,
@@ -81,9 +81,11 @@ pub struct Page {
     pub drag: Option<&'static str>,
     /// The text field being typed in: the id of its row and what it holds so far.
     pub editing: Option<(&'static str, String)>,
-    /// The command whose shortcut the next chord pressed becomes, and whether the last chord was one a program needs.
+    /// The command whose shortcut the next chord pressed becomes, which of its shortcuts it takes the place of, and the
+    /// last chord pressed when it was one a program needs (pressed again, it is taken all the same).
     pub capturing: Option<Command>,
-    pub reserved: bool,
+    pub slot: KeySlot,
+    pub reserved: Option<Shortcut>,
     /// The caret and the selection of the search line, and of the text field being edited.
     pub cursor: crate::textfield::Cursor,
     pub edit_cursor: crate::textfield::Cursor,
@@ -93,6 +95,18 @@ pub struct Page {
     pub env_row: usize,
     /// Why what was typed in the field being edited (its id) was not taken: it stays open until it is fixed or given up.
     pub error: Option<(&'static str, Text)>,
+}
+
+/// Which shortcut of the command being recorded the chord pressed is for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeySlot {
+    /// The row was pressed: the first shortcut, and Delete takes them all away.
+    #[default]
+    First,
+    /// A shortcut was pressed: that one, and Delete takes only it away.
+    Chip(Shortcut),
+    /// The add button was pressed: one more.
+    New,
 }
 
 /// What a rectangle does when it is pressed.
@@ -117,6 +131,12 @@ pub enum Part {
     Binding(Command),
     /// Puts the shortcuts of a command back to the default.
     ResetKey(Command),
+    /// The shortcut at this index of a command's: pressing it waits for the chord that takes its place.
+    Chip(Command, usize),
+    /// Waits for one more shortcut of a command.
+    AddKey(Command),
+    /// Puts every shortcut back to the default.
+    ResetKeys,
     /// Looks again for a newer version, and updates to it and starts the app again.
     CheckUpdate,
     Update,
@@ -503,6 +523,13 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     let x0 = page_x + PAD;
     let title = if searching { Text::SettingsResults } else { Section::ALL[page.section.min(Section::ALL.len() - 1)].text() };
     item(&mut items, Rect::new(x0 + INNER, oy + 18.0, (content_width - 2.0 * INNER).max(0.0), 32.0), None, label(title.get(lang), 20.0, Tone::Text, true, Align::Left), false);
+    // Beside the title of the shortcuts page, while any differs from its default: all of them back at once.
+    if !searching && Section::ALL.get(page.section) == Some(&Section::Keys) && !view.settings.keybindings.is_empty() {
+        let text = Text::KeysResetAll.get(lang);
+        let button = Rect::new(x0 + content_width - INNER - measure(text, 13.0, false) - 28.0, oy + 18.0, measure(text, 13.0, false) + 28.0, CONTROL);
+        item(&mut items, button, Some(Part::ResetKeys), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::ResetKeys) }), false);
+        item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), false);
+    }
     let top = oy + CONTENT_TOP;
     let viewport = Rect::new(page_x, top, (width - nav.w).max(0.0), (oy + height - top).max(0.0));
     let mut rows = Vec::new();
@@ -530,19 +557,26 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 item(&mut items, Rect::new(rect.x + INNER, rect.y, (rect.w - 2.0 * INNER) / 2.0, rect.h), None, label(command.label(lang), 13.0, Tone::Text, false, Align::Left), true);
                 let mut right = rect.x + rect.w - INNER;
                 if capturing {
-                    let text = if page.reserved { Text::KeyReserved } else { Text::KeysPress };
+                    let text = if page.reserved.is_some() { Text::KeyReserved } else { Text::KeysPress };
                     item(&mut items, Rect::new(rect.x + rect.w / 2.0, rect.y, rect.w / 2.0 - INNER, rect.h), None, label(text.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
                     y += ROW;
                     rows.push(Rect::new(x0, start, content_width, y - start));
                     continue;
                 }
-                for shortcut in view.keymap.shortcuts(command).iter().rev() {
+                // Each shortcut is a button that records the chord taking its place; the add button records one more.
+                for (index, shortcut) in view.keymap.shortcuts(command).iter().enumerate().rev() {
                     let text = shortcut.to_string();
                     let chip = Rect::new(right - measure(&text, 12.0, false) - 20.0, rect.y + (rect.h - 24.0) / 2.0, measure(&text, 12.0, false) + 20.0, 24.0);
-                    item(&mut items, chip, None, Visual::Plate(Fill::Button { selected: false, hover: false }), true);
+                    let part = Part::Chip(command, index);
+                    item(&mut items, chip, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
                     item(&mut items, chip, None, label(text, 12.0, Tone::Quiet, false, Align::Center), true);
                     right = chip.x - GAP;
                 }
+                let add = Rect::new(right - RESET, rect.y + (rect.h - RESET) / 2.0, RESET, RESET);
+                let part = Part::AddKey(command);
+                item(&mut items, add, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                item(&mut items, add, None, Visual::Glyph { ch: '\u{E710}', size: 11.0, tone: Tone::Quiet }, true);
+                right = add.x - GAP;
                 // The reset button left of the shortcuts it puts back.
                 if nekominal_model::keybindings::is_modified(&view.settings.keybindings, command) {
                     let reset = Rect::new(right - RESET, rect.y + (rect.h - RESET) / 2.0, RESET, RESET);
@@ -1121,6 +1155,23 @@ mod tests {
         let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), false);
         assert_eq!(elsewhere, [Part::CheckUpdate], "a copy Scoop did not install is not updated by it");
         assert!(texts.iter().any(|t| t == Text::UpdateNotScoop.get(Lang::EnUs)));
+    }
+
+    #[test]
+    fn each_shortcut_of_a_command_is_its_own_button_with_an_add_button_and_reset_all_shows_once_one_changed() {
+        let keys = Section::ALL.iter().position(|s| *s == Section::Keys).unwrap();
+        let page = Page { section: keys, ..Page::default() };
+        let parts = |settings: &Settings| frame(&page, settings).items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
+        let mut settings = Settings::default();
+        let all = parts(&settings);
+        let paste = keymap().shortcuts(Command::EditPaste).len();
+        assert!(paste > 1, "paste has more than one shortcut by default");
+        assert_eq!(all.iter().filter(|p| matches!(p, Part::Chip(Command::EditPaste, _))).count(), paste);
+        assert!(all.contains(&Part::AddKey(Command::TabClose)), "a command without a shortcut can be given one");
+        assert!(all.contains(&Part::AddKey(Command::TabGoto(3))) && all.contains(&Part::AddKey(Command::EditSmartCopy)));
+        assert!(!all.contains(&Part::ResetKeys), "nothing to reset");
+        settings.keybindings.insert("tab.close".into(), vec!["Ctrl+Shift+Q".into()]);
+        assert!(parts(&settings).contains(&Part::ResetKeys));
     }
 
     #[test]
