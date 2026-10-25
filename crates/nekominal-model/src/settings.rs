@@ -575,7 +575,7 @@ impl Default for Settings {
             confirm_close: true,
             confirm_close_threshold: 1,
             restore_session: false,
-            explorer_menu: false,
+            explorer_menu: true,
             inherit_environment: false,
             welcomed: false,
             keybindings: BTreeMap::new(),
@@ -1394,10 +1394,10 @@ mod tests {
     }
 
     #[test]
-    fn the_explorer_menu_is_opt_in_and_written_back() {
-        assert!(!Settings::default().explorer_menu);
-        let written = round_trips(Settings { explorer_menu: true, ..Settings::default() });
-        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "explorerMenu": true }));
+    fn the_explorer_menu_is_on_unless_turned_off_and_written_back() {
+        assert!(Settings::default().explorer_menu);
+        let written = round_trips(Settings { explorer_menu: false, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "explorerMenu": false }));
     }
 
     #[test]

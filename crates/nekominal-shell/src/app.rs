@@ -567,8 +567,10 @@ impl App {
         if first_window && !app.settings.welcomed {
             app.welcome = Some(welcome::Welcome::default());
         }
-        // The entry of Explorer's menu is written again at each start while it is on: the program may have moved.
-        if first_window && app.settings.explorer_menu {
+        // The entry of Explorer's menu is written again at each start while it is on: the program may have moved. Only by the
+        // copy Scoop installed: a build run from elsewhere (a checkout) must not take the menu over; turning the setting on in
+        // the settings still writes it.
+        if first_window && app.settings.explorer_menu && update::scoop_dir().is_some() {
             app.sync_explorer_menu();
         }
         // The taskbar button's menu lists the profiles, each starting a window with it.
@@ -4398,8 +4400,9 @@ impl App {
 
     /// Puts "Open in Nekominal" in Explorer's menu of a folder, or takes it out, as the setting says.
     fn sync_explorer_menu(&self) {
-        let label = Text::ExplorerOpenHere.get(self.language());
-        if let Err(e) = crate::integration::set_explorer_menu(self.settings.explorer_menu, label) {
+        let lang = self.language();
+        let labels = crate::integration::MenuLabels { menu: Text::ExplorerOpenHere.get(lang), open: Text::ExplorerOpen.get(lang), admin: Text::ExplorerOpenAdmin.get(lang) };
+        if let Err(e) = crate::integration::set_explorer_menu(self.settings.explorer_menu, &labels) {
             util::log(&format!("explorer menu: {e}"));
         }
     }

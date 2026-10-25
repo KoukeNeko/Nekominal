@@ -50,7 +50,7 @@ pub fn parse(args: &[String]) -> Vec<Action> {
         let mut vertical = split.unwrap_or(true);
         while let Some(word) = words.next() {
             match word {
-                "-d" | "--startingDirectory" => target.directory = words.next().map(str::to_owned),
+                "-d" | "--startingDirectory" => target.directory = words.next().map(folder),
                 "-p" | "--profile" => target.profile = words.next().map(str::to_owned),
                 "-H" | "--horizontal" if split.is_some() => vertical = false,
                 "-V" | "--vertical" if split.is_some() => vertical = true,
@@ -71,6 +71,13 @@ pub fn parse(args: &[String]) -> Vec<Action> {
         }
     }
     actions
+}
+
+/// The folder `-d` names, as a path: `D:\x\.` (what Explorer's entry passes) is `D:\x`, and `C:"` is `C:\`, which is what
+/// `"C:\"` becomes on a command line, its backslash escaping the quote (an entry written by an older version).
+fn folder(raw: &str) -> String {
+    let fixed = raw.strip_suffix('"').map_or_else(|| raw.to_owned(), |rest| format!("{rest}\\"));
+    std::path::Path::new(&fixed).components().collect::<std::path::PathBuf>().display().to_string()
 }
 
 #[cfg(test)]
@@ -97,6 +104,13 @@ mod tests {
         assert_eq!(parse(&args("-p pwsh -d C:\\")), [Action::NewTab(target(Some("C:\\"), Some("pwsh"), &[]))]);
         assert_eq!(parse(&args("cmd /k echo hi")), [Action::NewTab(target(None, None, &["cmd", "/k", "echo", "hi"]))]);
         assert_eq!(parse(&args("-d C:\\ -- ping -t localhost")), [Action::NewTab(target(Some("C:\\"), None, &["ping", "-t", "localhost"]))]);
+    }
+
+    #[test]
+    fn the_folder_is_the_path_whatever_way_explorer_wrote_it() {
+        for (raw, wanted) in [(r"D:\src\.", r"D:\src"), (r"C:\\.", r"C:\"), (r#"C:""#, r"C:\"), (r"D:\a b", r"D:\a b"), (r"C:\", r"C:\")] {
+            assert_eq!(folder(raw), wanted, "{raw}");
+        }
     }
 
     #[test]

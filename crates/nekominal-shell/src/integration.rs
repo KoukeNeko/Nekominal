@@ -19,24 +19,46 @@ pub fn launch_exe() -> Option<PathBuf> {
 }
 
 /// The command of the menu entry: the program with the folder clicked (`%V`) as its starting folder.
+/// `\.` after it: a drive root is `C:\`, and in `"C:\"` the backslash would escape the closing quote.
 pub fn explorer_command(exe: &Path) -> String {
-    format!("\"{}\" -d \"%V\"", exe.display())
+    format!("\"{}\" -d \"%V\\.\"", exe.display())
 }
 
-/// Puts "Open in Nekominal" (`label`) in Explorer's menus of a folder, or takes it out.
-pub fn set_explorer_menu(on: bool, label: &str) -> Result<(), String> {
+/// The words of the menu: its own name ("Open in Nekominal"), and its two entries, here and as administrator.
+pub struct MenuLabels<'a> {
+    pub menu: &'a str,
+    pub open: &'a str,
+    pub admin: &'a str,
+}
+
+/// Puts "Open in Nekominal" in Explorer's menus of a folder, a submenu that opens it here or as administrator, or takes
+/// it out. The second entry is the verb `runas`: Windows asks for elevation itself and shows the shield beside it.
+pub fn set_explorer_menu(on: bool, labels: &MenuLabels) -> Result<(), String> {
+    for key in MENU_KEYS {
+        // SAFETY: deletes a key of this user's tree; a key that is not there is no error worth telling. Written afresh
+        // below, so that an entry of an older version (one verb, no submenu) leaves nothing behind.
+        let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key)) };
+    }
     if !on {
-        for key in MENU_KEYS {
-            // SAFETY: deletes a key of this user's tree; a key that is not there is no error worth telling.
-            let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &HSTRING::from(key)) };
-        }
         return Ok(());
     }
     let exe = launch_exe().ok_or("the program's path is not known")?;
+    let icon = exe.display().to_string();
+    let command = explorer_command(&exe);
     for key in MENU_KEYS {
-        write_string(key, None, label)?;
-        write_string(key, Some("Icon"), &exe.display().to_string())?;
-        write_string(&format!(r"{key}\command"), None, &explorer_command(&exe))?;
+        write_string(key, Some("MUIVerb"), labels.menu)?;
+        write_string(key, Some("Icon"), &icon)?;
+        // An empty SubCommands makes the entry a submenu of the verbs under its own `shell` key.
+        write_string(key, Some("SubCommands"), "")?;
+        for (verb, label, shield) in [("open", labels.open, false), ("runas", labels.admin, true)] {
+            let entry = format!(r"{key}\shell\{verb}");
+            write_string(&entry, Some("MUIVerb"), label)?;
+            write_string(&entry, Some("Icon"), &icon)?;
+            if shield {
+                write_string(&entry, Some("HasLUAShield"), "")?;
+            }
+            write_string(&format!(r"{entry}\command"), None, &command)?;
+        }
     }
     Ok(())
 }
@@ -172,9 +194,28 @@ mod tests {
     #[test]
     fn the_menu_entry_starts_the_program_in_the_folder_that_was_clicked() {
         let command = explorer_command(Path::new(r"C:\Users\a b\scoop\apps\nekominal\current\Nekominal.exe"));
-        assert_eq!(command, r#""C:\Users\a b\scoop\apps\nekominal\current\Nekominal.exe" -d "%V""#);
-        // What the command line makes of it once Explorer puts the folder in.
-        let args: Vec<String> = ["-d", r"D:\src\my project"].map(str::to_owned).to_vec();
-        assert!(matches!(&crate::cli::parse(&args)[..], [crate::cli::Action::NewTab(target)] if target.directory.as_deref() == Some(r"D:\src\my project")));
+        assert_eq!(command, r#""C:\Users\a b\scoop\apps\nekominal\current\Nekominal.exe" -d "%V\.""#);
+        // What the command line makes of it once Explorer puts the folder in, split as Windows splits a command line.
+        for (clicked, folder) in [(r"D:\src\my project", r"D:\src\my project"), (r"C:\", r"C:\"), (r"\\server\share\x", r"\\server\share\x")] {
+            let line = command.replace("%V", clicked);
+            let args: Vec<String> = split_command_line(&line).into_iter().skip(1).collect();
+            assert!(
+                matches!(&crate::cli::parse(&args)[..], [crate::cli::Action::NewTab(target)] if target.directory.as_deref() == Some(folder)),
+                "{clicked}: {args:?}"
+            );
+        }
+    }
+
+    /// What `CommandLineToArgvW` makes of a command line: the arguments a program started with it gets.
+    fn split_command_line(line: &str) -> Vec<String> {
+        use windows::Win32::UI::Shell::CommandLineToArgvW;
+        let mut count = 0;
+        // SAFETY: the string lives through the call; the array it returns is read and then freed.
+        unsafe {
+            let argv = CommandLineToArgvW(&HSTRING::from(line), &mut count);
+            let args = (0..count as usize).map(|i| (*argv.add(i)).to_string().unwrap()).collect();
+            let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(argv as _)));
+            args
+        }
     }
 }

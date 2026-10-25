@@ -14,6 +14,9 @@ if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw "Not a SHA-256: $Sha256" }
 # The running window is stopped first: Scoop replaces the files of the version in place.
 $stop = 'Get-Process Nekominal -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process'
 
+# Uninstalling (not updating, which runs the same hook) takes out the entries of Explorer's menu the app wrote.
+$unregister = "if (`$cmd -eq 'uninstall') { Remove-Item 'HKCU:\Software\Classes\Directory\shell\Nekominal', 'HKCU:\Software\Classes\Directory\Background\shell\Nekominal' -Recurse -ErrorAction SilentlyContinue }"
+
 $manifest = [ordered]@{
     version      = $Version
     description  = 'A Windows terminal in Rust for coding agents: Claude Code, including its full-screen mode, runs in it'
@@ -25,7 +28,7 @@ $manifest = [ordered]@{
     bin           = 'Nekominal.exe'
     shortcuts     = @(, @('Nekominal.exe', 'Nekominal'))
     pre_install   = $stop
-    pre_uninstall = $stop
+    pre_uninstall = @($stop, $unregister)
 }
 
 $json = $manifest | ConvertTo-Json -Depth 6
