@@ -144,7 +144,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 
 3. **執行 agent。** 在 PowerShell 分頁輸入 `claude`。它的狀態會顯示在分頁上，模型、context 與費用則顯示在標題列。
 
-4. **調成你要的樣子。** Ctrl+, 開啟設定：設定檔、配色、字型、快速鍵。所有設定也都在
+4. **調成你要的樣子。** Ctrl+Shift+O 開啟設定：設定檔、配色、字型、快速鍵。所有設定也都在
    `%APPDATA%\Nekominal\settings.json`，設定視窗可以直接幫你開啟它。
 
 5. **從任何地方啟動。** 在檔案總管對資料夾按右鍵、從工作列按鈕選設定檔，或寫成指令：
@@ -165,7 +165,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | 放大窗格 · 關閉窗格 | Ctrl+Shift+Z · Ctrl+Shift+W |
 | 提示選取 · 鍵盤選取 · 建議 | Ctrl+Shift+E · Ctrl+Shift+M · Ctrl+Shift+H |
 | 上一個／下一個提示字元 | Ctrl+Alt+Up／Down |
-| 搜尋 · 搜尋所有分頁 · 命令選擇區 · 設定 | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+, |
+| 搜尋 · 搜尋所有分頁 · 命令選擇區 · 設定 | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+Shift+O |
 | 字型大小 | Ctrl+= · Ctrl+- · Ctrl+0 |
 | 側邊欄 · 全螢幕 · 下拉視窗 | Ctrl+Shift+B · F11 · Win+` |
 

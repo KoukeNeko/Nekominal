@@ -448,7 +448,7 @@ impl Command {
             Command::ViewZoomOut => &["Ctrl+-"],
             Command::ViewZoomReset => &["Ctrl+0"],
             Command::AppPalette => &["Ctrl+Shift+P"],
-            Command::AppSettings => &["Ctrl+,", "Ctrl+Shift+O"],
+            Command::AppSettings => &["Ctrl+Shift+O"],
             Command::TabClose
             | Command::AppNewWindow
             | Command::TabGoto(_)
@@ -870,8 +870,8 @@ mod tests {
                 command.id()
             );
         }
-        // Settings keeps the familiar Ctrl+, next to the IME-proof one.
-        assert!(Command::AppSettings.default_shortcuts().contains(&"Ctrl+,"));
+        // Not Ctrl+, for the settings: Microsoft Bopomofo types its full-width comma with it.
+        assert!(!Command::AppSettings.default_shortcuts().contains(&"Ctrl+,"));
     }
 
     #[test]
@@ -898,7 +898,8 @@ mod tests {
         // A letter, which an IME passes on, as no punctuation key would be.
         assert_eq!(keymap.find(ctrl_shift, "KeyJ"), Some(Command::ViewAgents));
         assert_eq!(keymap.find(ctrl_shift, "KeyC"), Some(Command::EditCopy));
-        assert_eq!(keymap.find(ctrl, "Comma"), Some(Command::AppSettings));
+        assert_eq!(keymap.find(ctrl, "Comma"), None, "Bopomofo's full-width comma");
+        assert_eq!(keymap.find(ctrl_shift, "KeyO"), Some(Command::AppSettings));
         assert_eq!(
             keymap.find(Modifiers::default(), "F11"),
             Some(Command::ViewFullscreen)

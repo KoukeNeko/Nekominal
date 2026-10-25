@@ -154,7 +154,7 @@ allow. Large and multi-line pastes ask first.
 3. **Run an agent.** Type `claude` in a PowerShell tab. Its state shows on the tab, and the model, context and cost in the
    title bar.
 
-4. **Make it yours.** Ctrl+, opens the settings: profiles, schemes, fonts, shortcuts. Everything is also in
+4. **Make it yours.** Ctrl+Shift+O opens the settings: profiles, schemes, fonts, shortcuts. Everything is also in
    `%APPDATA%\Nekominal\settings.json`, which the settings open for you.
 
 5. **Start it from anywhere.** Right-click a folder in Explorer, pick a profile from the taskbar button, or script it:
@@ -175,7 +175,7 @@ allow. Large and multi-line pastes ask first.
 | Zoom the pane · close it | Ctrl+Shift+Z · Ctrl+Shift+W |
 | Hints · keyboard selection · suggestions | Ctrl+Shift+E · Ctrl+Shift+M · Ctrl+Shift+H |
 | Previous / next prompt | Ctrl+Alt+Up / Down |
-| Find · search all tabs · command palette · settings | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+, |
+| Find · search all tabs · command palette · settings | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+Shift+O |
 | Font size | Ctrl+= · Ctrl+- · Ctrl+0 |
 | Sidebar · full screen · drop-down window | Ctrl+Shift+B · F11 · Win+` |
 
