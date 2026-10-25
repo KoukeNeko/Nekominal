@@ -2,6 +2,7 @@
 
 pub mod bell;
 pub mod commands;
+pub mod editor;
 pub mod fuzzy;
 pub mod keybindings;
 pub mod keymap;
