@@ -24,6 +24,7 @@ mod pick;
 mod popup;
 mod settings_page;
 mod settings_window;
+mod spend;
 mod status;
 mod tab;
 mod textfield;

@@ -71,6 +71,8 @@ pub enum Command {
     ViewFullscreen,
     /// Hides or shows the sidebar of the tabs.
     ViewSidebar,
+    /// Lists the panes of every window that run an agent, with their state and usage, and what today cost.
+    ViewAgents,
     /// Closes the windows, has Scoop update the app and starts it again.
     AppUpdate,
     /// Names the selected tab, gives it a colour, opens a copy of it, closes the others, closes those right of it.
@@ -161,6 +163,7 @@ impl Command {
         Command::PromptNext,
         Command::ViewFullscreen,
         Command::ViewSidebar,
+        Command::ViewAgents,
         Command::AppUpdate,
         Command::TabRename,
         Command::TabColor,
@@ -248,6 +251,7 @@ impl Command {
             Command::PromptNext => "prompt.next",
             Command::ViewFullscreen => "view.fullscreen",
             Command::ViewSidebar => "view.sidebar",
+            Command::ViewAgents => "view.agents",
             Command::AppUpdate => "app.update",
             Command::TabRename => "tab.rename",
             Command::TabColor => "tab.color",
@@ -334,6 +338,7 @@ impl Command {
             Command::PromptNext => Text::PromptNext,
             Command::ViewFullscreen => Text::ViewFullscreen,
             Command::ViewSidebar => Text::ViewSidebar,
+            Command::ViewAgents => Text::ViewAgents,
             Command::AppUpdate => Text::AppUpdate,
             Command::TabRename => Text::TabRename,
             Command::TabColor => Text::TabColor,
@@ -417,6 +422,7 @@ impl Command {
             Command::PromptNext => &["Ctrl+Alt+Down"],
             Command::ViewFullscreen => &["F11"],
             Command::ViewSidebar => &["Ctrl+Shift+B"],
+            Command::ViewAgents => &["Ctrl+Shift+G"],
             Command::AppUpdate => &[],
             Command::TabRename | Command::TabColor | Command::TabDuplicate | Command::TabCloseOthers | Command::TabCloseRight => &[],
             Command::ViewZoomIn => &["Ctrl+="],
@@ -622,9 +628,10 @@ mod tests {
             Command::EditHints => 61,
             Command::AppImportSchemes => 62,
             Command::AppImportItermColors => 63,
+            Command::ViewAgents => 64,
         }
     }
-    const VARIANTS: usize = 64;
+    const VARIANTS: usize = 65;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -864,6 +871,8 @@ mod tests {
             Some(Command::TabNextNeedsResponse)
         );
         assert_eq!(keymap.find(ctrl, "KeyC"), Some(Command::EditSmartCopy));
+        // A letter, which an IME passes on, as no punctuation key would be.
+        assert_eq!(keymap.find(ctrl_shift, "KeyG"), Some(Command::ViewAgents));
         assert_eq!(keymap.find(ctrl_shift, "KeyC"), Some(Command::EditCopy));
         assert_eq!(keymap.find(ctrl, "Comma"), Some(Command::AppSettings));
         assert_eq!(

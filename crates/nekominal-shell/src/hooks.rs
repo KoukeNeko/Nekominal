@@ -34,6 +34,11 @@ pub fn agent_of_program(file: &str) -> Option<&'static str> {
     AGENTS.iter().map(|(id, _)| *id).find(|id| file.starts_with(id))
 }
 
+/// The name an agent is shown by, from its id or the app of its OSC 7501 reports; an app nobody knows as itself.
+pub fn agent_name(app: &str) -> String {
+    AGENTS.iter().find(|(id, _)| app.eq_ignore_ascii_case(id)).map_or_else(|| app.to_owned(), |(_, name)| (*name).to_owned())
+}
+
 /// The OSC 7501 report a hook of `agent` stands for, from what the hook was handed (Codex: JSON as its last argument;
 /// Gemini: JSON on stdin; Aider: nothing). None for an event that says nothing about the state.
 pub fn report_of(agent: &str, payload: &str) -> Option<String> {
@@ -178,6 +183,9 @@ mod tests {
         assert_eq!(agent_of_program("aider.exe"), Some("aider"));
         assert_eq!(agent_of_program("node.exe"), None, "an agent run by node is known by its hook only");
         assert_eq!(agent_of_program("pwsh.exe"), None);
+        assert_eq!(agent_name("codex"), "Codex");
+        assert_eq!(agent_name("Claude"), "Claude Code");
+        assert_eq!(agent_name("my-bot"), "my-bot", "an app of an OSC 7501 report nobody knows goes by its own name");
     }
 
     #[test]

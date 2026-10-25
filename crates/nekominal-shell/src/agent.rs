@@ -68,6 +68,7 @@ pub fn statusline_main() -> bool {
     if let Some(file) = std::env::var(SESSION_VAR).ok().as_deref().and_then(usage_file) {
         write_whole(&file, &value.to_string());
     }
+    crate::spend::record(&value);
     true
 }
 

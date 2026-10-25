@@ -415,6 +415,7 @@ fn wired(command: Command) -> bool {
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
+            | Command::ViewAgents
             | Command::AppUpdate
             | Command::TabRename
             | Command::TabColor
@@ -450,6 +451,9 @@ fn wired(command: Command) -> bool {
 }
 
 use crate::widgets::{self, col, State};
+
+#[path = "agents_panel.rs"]
+pub mod agents_panel;
 
 /// The settings of the file, and whether it could be read: missing or empty is fine (the defaults), but text that is not
 /// JSON, or not UTF-8, is a file the user is in the middle of editing, which a save must not replace with the defaults.
@@ -858,6 +862,7 @@ impl App {
             job: None,
             job_path: None,
             agent_seen: false,
+            agent_since: None,
             attention: None,
             note: None,
             progress: None,
@@ -1668,11 +1673,12 @@ impl App {
             let Some(job) = entry.pane.job() else { continue };
             if crate::hooks::agent_of_program(&job.name).is_some() {
                 entry.agent_seen = true;
+                entry.agent_since.get_or_insert_with(Instant::now);
             }
             // The shell is alone again: whatever agent ran in the pane has ended, and what it last said is history.
             if job.root && (entry.agent_seen || entry.usage.is_some()) {
                 agent::forget(&entry.session);
-                (entry.agent_seen, entry.usage, entry.usage_stamp) = (false, None, None);
+                (entry.agent_seen, entry.agent_since, entry.usage, entry.usage_stamp) = (false, None, None, None);
                 changed = true;
             }
             if Some(&job.name) != entry.job.as_ref() {
@@ -2005,6 +2011,9 @@ impl App {
             Command::EditExport => self.export_text(),
             Command::EditMarkMode => self.toggle_mark_mode(),
             Command::EditSuggestions => self.open_suggestions(),
+            // The panel lists the panes of every window: the window code gathers them once this window is free again.
+            // SAFETY: posting to a window of this thread.
+            Command::ViewAgents => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_AGENTS, WPARAM(0), LPARAM(0)); },
             Command::ViewAlwaysOnTop => self.toggle_on_top(),
             Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
             // The drop-down window is the process's, not this window's: the window code shows or makes it.
@@ -2279,7 +2288,7 @@ impl App {
             kind: match popup.kind {
                 popup::Kind::List => access::PopupKind::Menu,
                 popup::Kind::Confirm => access::PopupKind::Dialog,
-                popup::Kind::Palette | popup::Kind::Find => access::PopupKind::List,
+                popup::Kind::Palette | popup::Kind::Find | popup::Kind::Wide => access::PopupKind::List,
             },
             heading: if popup.kind == popup::Kind::Confirm { popup.heading.clone() } else { popup.query.clone().unwrap_or_default() },
             rows: popup.rows.iter().filter(|row| !row.is_separator()).map(|row| (row.label.clone(), row.hint.clone())).collect(),
@@ -5200,6 +5209,7 @@ impl App {
                     self.type_text(&input);
                 }
             }
+            Some(popup::Action::Agent { window, tab, pane }) => self.show_agent(window, tab, pane),
             Some(popup::Action::Suggestion(index)) => {
                 if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
                     self.type_text(input);

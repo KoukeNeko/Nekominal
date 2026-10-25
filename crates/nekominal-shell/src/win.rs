@@ -55,6 +55,10 @@ pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 pub(crate) const WM_DESTROY_WINDOW: u32 = WM_APP + 3;
 /// Shows, hides or makes the drop-down window (the "show the drop-down window" command posts it).
 pub(crate) const WM_QUAKE: u32 = WM_APP + 4;
+/// Opens the agents panel on the window, with the panes of every window (`App::run` posts it for `ViewAgents`).
+pub(crate) const WM_AGENTS: u32 = WM_APP + 0x40;
+/// Shows a pane a row of the agents panel of another window chose: wParam the uid of its tab, lParam its id.
+pub(crate) const WM_SHOW_PANE: u32 = WM_APP + 0x41;
 /// The id of the global hotkey that does the same: Win+` (the key under Esc), as in Windows Terminal.
 const QUAKE_HOTKEY: i32 = 1;
 
@@ -154,6 +158,20 @@ fn recover_gpu(hwnd: HWND, forced: bool) {
             crate::util::log(&format!("device lost: {e}"));
         }
     }
+}
+
+/// The agents panel on `hwnd`, listing the panes of every window: this one's first, then the others by handle, an order
+/// that holds while they live.
+fn open_agents_panel(hwnd: HWND) {
+    let mut apps: Vec<(isize, Rc<RefCell<App>>)> = APPS.with(|apps| apps.borrow().iter().map(|(key, app)| (*key, app.clone())).collect());
+    apps.sort_by_key(|(key, _)| (*key != hwnd.0 as isize, *key));
+    let seen: Vec<_> = apps
+        .iter()
+        .enumerate()
+        .filter_map(|(order, (_, app))| app.try_borrow().ok().map(|app| app.agents_seen(order)))
+        .flatten()
+        .collect();
+    with_app(hwnd, |app| app.open_agents(seen));
 }
 
 fn reap_closed_windows() {
@@ -587,6 +605,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_QUAKE => {
             quake_toggle();
+            LRESULT(0)
+        }
+        WM_AGENTS => {
+            open_agents_panel(hwnd);
+            LRESULT(0)
+        }
+        WM_SHOW_PANE => {
+            with_app(hwnd, |app| app.show_pane(wparam.0 as u64, lparam.0 as u32));
             LRESULT(0)
         }
         WM_NEW_WINDOW => {
