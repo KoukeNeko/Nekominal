@@ -1635,16 +1635,8 @@ impl App {
             util::log("update: this copy was not installed with Scoop, so there is nothing to update");
             return;
         };
-        let quoted = |path: &std::path::Path| path.display().to_string().replace('\'', "''");
-        let script = format!(
-            "$Host.UI.RawUI.WindowTitle = 'Nekominal update'; Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
-             Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{dir}\\*' }} | Wait-Process; \
-             scoop update nekominal; Start-Process '{exe}'",
-            pid = std::process::id(),
-            dir = quoted(&app_dir),
-            exe = quoted(&app_dir.join("current").join("Nekominal.exe")),
-        );
-        match std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script]).creation_flags(CREATE_NEW_CONSOLE).spawn() {
+        let script = update::encoded(&update::update_script(std::process::id(), &app_dir));
+        match std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &script]).creation_flags(CREATE_NEW_CONSOLE).spawn() {
             Ok(_) => crate::win::close_all_windows(),
             Err(e) => util::log(&format!("update: {e}")),
         }

@@ -64,6 +64,44 @@ pub fn contributors() -> Vec<String> {
     serde_json::from_str(CONTRIBUTORS).unwrap_or_default()
 }
 
+/// The PowerShell script that updates the app from its own console window, once process `pid` (this one) has closed:
+/// it waits for the process and for the OpenConsole it ran the shells on (Scoop does not replace a file that runs),
+/// brings Scoop and its buckets up to date (without that, the bucket on this computer may not know the new version
+/// yet), updates the app, and starts it again. When the version did not change it says so and waits for a key, so that
+/// what Scoop said stays on the screen.
+pub fn update_script(pid: u32, app_dir: &Path) -> String {
+    let quoted = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let dir = quoted(app_dir);
+    let manifest = quoted(&app_dir.join("current").join("manifest.json"));
+    let exe = quoted(&app_dir.join("current").join("Nekominal.exe"));
+    format!(
+        r#"$Host.UI.RawUI.WindowTitle = 'Nekominal update'
+$dir = {dir}
+function Installed {{ try {{ (Get-Content {manifest} -Raw | ConvertFrom-Json).version }} catch {{ '' }} }}
+$before = Installed
+Write-Host "Waiting for Nekominal $before to close..."
+Wait-Process -Id {pid} -ErrorAction SilentlyContinue
+Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like "$dir\*" }} | Wait-Process
+scoop update
+scoop update nekominal
+$after = Installed
+if ($after -eq $before) {{
+    Write-Host ''
+    Write-Host "Nekominal is still $before."
+    Read-Host 'Press Enter to start it again'
+}}
+Start-Process {exe}
+"#
+    )
+}
+
+/// `script` as `powershell.exe -EncodedCommand` takes it: UTF-16LE in base64, which no path can break the quoting of.
+pub fn encoded(script: &str) -> String {
+    use base64::Engine;
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
 /// `...\apps\nekominal\<version or current>\Nekominal.exe`.
 pub fn scoop_dir() -> Option<PathBuf> {
@@ -88,6 +126,28 @@ mod tests {
         assert!(!newer("0.0.12", "0.0.12") && !newer("0.0.12.0", "0.0.12"), "the same version is not newer");
         assert!(!newer("0.0.11", "0.0.12"));
         assert!(!newer("latest", "0.0.12") && !newer("", "0.0.12"), "what is not a version is never newer");
+    }
+
+    #[test]
+    fn the_update_script_refreshes_the_buckets_before_the_app_and_quotes_its_paths() {
+        let script = update_script(4242, Path::new(r"C:\Users\o'neil\scoop\apps\nekominal"));
+        let bucket = script.find("scoop update\n").expect("the buckets are brought up to date");
+        let app = script.find("scoop update nekominal").expect("the app is updated");
+        assert!(bucket < app, "the buckets first: without them the new version is unknown");
+        assert!(script.contains("Wait-Process -Id 4242"));
+        assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current\Nekominal.exe'"), "a quote in a path is doubled");
+        // The base64 of UTF-16LE: "a" is 61 00.
+        assert_eq!(encoded("a"), "YQA=");
+    }
+
+    #[test]
+    fn windows_powershell_reads_the_encoded_update_script() {
+        // Decoded and compiled by the PowerShell the app starts, as it would be, but not run: a script that does not
+        // parse would close the app and update nothing.
+        let script = encoded(&update_script(1, Path::new(r"C:\Users\a b\scoop\apps\nekominal")));
+        let check = format!("$s = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{script}')); [void][scriptblock]::Create($s)");
+        let status = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &check]).status().expect("powershell.exe runs");
+        assert!(status.success(), "the update script does not parse");
     }
 
     #[test]

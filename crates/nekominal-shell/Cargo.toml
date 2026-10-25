@@ -18,6 +18,7 @@ nekominal-render = { workspace = true }
 nekominal-pane = { workspace = true }
 nekominal-ui = { workspace = true }
 serde_json = "1"
+base64 = { workspace = true }
 accesskit = { workspace = true }
 accesskit_windows = { workspace = true }
 windows = { workspace = true, features = [

@@ -475,6 +475,7 @@ version = "0.0.17"
 dependencies = [
  "accesskit",
  "accesskit_windows",
+ "base64",
  "embed-resource",
  "nekominal-input",
  "nekominal-model",
