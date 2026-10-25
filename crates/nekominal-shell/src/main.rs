@@ -44,6 +44,18 @@ mod util {
 }
 
 fn main() {
+    // Started from PowerShell 7, the shells and the update window would inherit its module folders, which break Windows
+    // PowerShell (and Scoop in it).
+    if let Some(value) = std::env::var_os("PSModulePath") {
+        let kept = nekominal_pty::profiles::windows_powershell_module_path(&value.to_string_lossy());
+        // SAFETY: the first thing the program does, before any other thread runs.
+        unsafe {
+            match kept {
+                Some(kept) => std::env::set_var("PSModulePath", kept),
+                None => std::env::remove_var("PSModulePath"),
+            }
+        }
+    }
     // Claude Code's status line command is this program too: it hands the session over and is gone.
     if agent::statusline_main() {
         return;

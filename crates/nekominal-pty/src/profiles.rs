@@ -130,6 +130,23 @@ pub fn inherited_no_color() -> bool {
     has_variable(env::vars_os().map(|(name, _)| name), "NO_COLOR")
 }
 
+/// `PSModulePath` without the folders of PowerShell 7 (its own `Modules`, those under `Documents\PowerShell` and
+/// `Program Files\PowerShell`, the Store package): `None` when nothing else is left. A process PowerShell 7 started carries
+/// them, and Windows PowerShell started from that process loads PowerShell 7's `Microsoft.PowerShell.Utility`, which it
+/// cannot use: `Get-FileHash` is then missing, and Scoop fails every hash check. PowerShell 7 adds its folders again
+/// itself, so taking them out is what `pwsh` does when it starts `powershell.exe`.
+pub fn windows_powershell_module_path(value: &str) -> Option<String> {
+    let kept: Vec<&str> = value
+        .split(';')
+        .filter(|entry| {
+            let lower = entry.trim().trim_end_matches('\\').to_ascii_lowercase();
+            let seven = lower.ends_with("\\powershell\\modules") || lower.contains("\\powershell\\7") || lower.contains("\\microsoft.powershell_");
+            !entry.trim().is_empty() && !seven
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(";"))
+}
+
 /// Environment variable names are case-insensitive on Windows.
 fn has_variable(names: impl IntoIterator<Item = OsString>, wanted: &str) -> bool {
     names
@@ -987,6 +1004,16 @@ isPrerelease: 1
         assert_eq!((config.cols, config.rows), (120, 30));
         assert_eq!(config.width_model, WidthModel::Graphemes);
         assert_eq!(config.env, default_environment());
+    }
+
+    #[test]
+    fn the_module_path_of_powershell_7_is_taken_out_for_windows_powershell() {
+        let from_pwsh = r"C:\Users\me\Documents\PowerShell\Modules;C:\Program Files\PowerShell\Modules;c:\program files\windowsapps\microsoft.powershell_7.6.8.0_x64__8wekyb3d8bbwe\Modules;C:\Program Files\PowerShell\7\Modules;C:\Program Files\WindowsPowerShell\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules;D:\mine;D:\PowerShell\Scripts";
+        assert_eq!(
+            windows_powershell_module_path(from_pwsh).as_deref(),
+            Some(r"C:\Program Files\WindowsPowerShell\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules;D:\mine;D:\PowerShell\Scripts")
+        );
+        assert_eq!(windows_powershell_module_path(r"C:\Program Files\PowerShell\7\Modules;"), None, "nothing left: no variable, the defaults");
     }
 
     #[test]

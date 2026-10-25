@@ -72,12 +72,13 @@ pub fn contributors() -> Vec<String> {
 pub fn update_script(pid: u32, app_dir: &Path) -> String {
     let quoted = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
     let dir = quoted(app_dir);
-    let manifest = quoted(&app_dir.join("current").join("manifest.json"));
-    let exe = quoted(&app_dir.join("current").join("Nekominal.exe"));
+    let current = quoted(&app_dir.join("current"));
     format!(
         r#"$Host.UI.RawUI.WindowTitle = 'Nekominal update'
 $dir = {dir}
-function Installed {{ try {{ (Get-Content {manifest} -Raw | ConvertFrom-Json).version }} catch {{ '' }} }}
+# The folder Scoop runs the app from: `current`, unless Scoop is set to keep no junction, then the version's own.
+function Prefix {{ $p = scoop prefix nekominal 2>$null 6>$null | Select-Object -Last 1; if ($p -and (Test-Path -LiteralPath $p)) {{ $p }} else {{ {current} }} }}
+function Installed {{ try {{ (Get-Content -LiteralPath (Join-Path (Prefix) 'manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json).version }} catch {{ '' }} }}
 $before = Installed
 Write-Host "Waiting for Nekominal $before to close..."
 Wait-Process -Id {pid} -ErrorAction SilentlyContinue
@@ -90,7 +91,7 @@ if ($after -eq $before) {{
     Write-Host "Nekominal is still $before."
     Read-Host 'Press Enter to start it again'
 }}
-Start-Process {exe}
+Start-Process -FilePath (Join-Path (Prefix) 'Nekominal.exe')
 "#
     )
 }
@@ -137,7 +138,8 @@ mod tests {
         let app = lines.iter().position(|line| *line == "scoop update nekominal").expect("the app is updated");
         assert!(bucket < app, "the buckets first: without them the new version is unknown");
         assert!(script.contains("Wait-Process -Id 4242"));
-        assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current\Nekominal.exe'"), "a quote in a path is doubled");
+        assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current'"), "a quote in a path is doubled");
+        assert!(script.contains("scoop prefix nekominal"), "the folder Scoop runs the app from, junction or not");
         // The base64 of UTF-16LE: "a" is 61 00.
         assert_eq!(encoded("a"), "YQA=");
     }
