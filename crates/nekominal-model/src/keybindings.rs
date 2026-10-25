@@ -175,7 +175,7 @@ mod tests {
     fn ctrl_c_is_the_smart_copy_and_must_be_replaced_on_purpose() {
         let keymap = keymap(&BTreeMap::new());
         assert_eq!(clash(&keymap, chord("Ctrl+C"), Command::TabClose), Some(Clash::Command(Command::EditSmartCopy)));
-        assert_eq!(Command::EditSmartCopy.label(Lang::ZhTw), "複製", "the name the conflict shows");
+        assert_eq!(Command::EditSmartCopy.label(Lang::ZhTw), "有選取時複製，否則送出按鍵", "the name the conflict shows");
     }
 
     #[test]

@@ -336,8 +336,9 @@ impl Command {
             Command::ViewFocusMode => Text::ViewFocusMode,
             Command::ViewQuake => Text::ViewQuake,
             Command::EditSuggestions => Text::EditSuggestions,
-            // Copying with and without a selection check is one action, so it keeps one label.
-            Command::EditCopy | Command::EditSmartCopy => Text::EditCopy,
+            Command::EditCopy => Text::EditCopy,
+            // Its own label on the shortcuts page, where it sits beside Copy: it gives the key to the program without a selection.
+            Command::EditSmartCopy => Text::EditSmartCopy,
             Command::EditPaste => Text::EditPaste,
             Command::EditSelectAll => Text::EditSelectAll,
             Command::EditFind => Text::EditFind,

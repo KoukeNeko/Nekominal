@@ -502,9 +502,10 @@ impl Row {
     }
 }
 
-/// The rows of the shortcuts page: the commands of the palette, in the order of the palette.
+/// The rows of the shortcuts page: every command, in the order of the palette, the ones it leaves out (the copy that
+/// leaves the key to the program, the numbered tabs, the profiles menu) included: each has a shortcut to change.
 pub fn key_rows() -> impl Iterator<Item = Command> {
-    Command::ALL.iter().copied().filter(|command| command.in_palette())
+    Command::ALL.iter().copied()
 }
 
 /// How much better a match of the label is than a match of anything else the row is called.
@@ -807,11 +808,11 @@ mod tests {
     }
 
     #[test]
-    fn the_shortcuts_page_lists_the_commands_of_the_palette_in_its_order() {
+    fn the_shortcuts_page_lists_every_command_in_the_order_of_the_palette() {
         let listed: Vec<Command> = key_rows().collect();
         assert_eq!(listed.first(), Some(&Command::TabNew));
-        assert!(!listed.contains(&Command::EditSmartCopy) && !listed.contains(&Command::TabGoto(3)));
+        assert!(listed.contains(&Command::EditSmartCopy) && listed.contains(&Command::TabGoto(3)) && listed.contains(&Command::TabProfiles));
         assert!(listed.contains(&Command::TabClose), "a command without a shortcut can be given one");
-        assert_eq!(listed.len(), Command::ALL.iter().filter(|c| c.in_palette()).count());
+        assert_eq!(listed.len(), Command::ALL.len());
     }
 }

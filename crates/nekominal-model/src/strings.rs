@@ -81,6 +81,7 @@ texts! {
     PaneResizeUp "pane.resizeUp" "向上調整窗格大小" "Resize pane up";
     PaneResizeDown "pane.resizeDown" "向下調整窗格大小" "Resize pane down";
     EditCopy "edit.copy" "複製" "Copy";
+    EditSmartCopy "edit.smartCopy" "有選取時複製，否則送出按鍵" "Copy the selection, else send the key";
     EditPaste "edit.paste" "貼上" "Paste";
     EditSelectAll "edit.selectAll" "全選" "Select all";
     EditFind "edit.find" "尋找" "Find";
@@ -615,9 +616,8 @@ mod tests {
         for command in Command::ALL {
             let by_id = Text::from_id(command.id());
             match command {
-                // Numbered tabs share one template; Ctrl+C shares the Copy label.
+                // Numbered tabs share one template.
                 Command::TabGoto(_) => assert_eq!(by_id, None),
-                Command::EditSmartCopy => assert_eq!(command.text(), Text::EditCopy),
                 _ => assert_eq!(by_id, Some(command.text()), "{}", command.id()),
             }
         }
