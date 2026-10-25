@@ -749,6 +749,24 @@ fn the_output_of_each_command_is_selected_and_copied_by_its_marks_newest_first()
 }
 
 #[test]
+fn the_command_line_is_read_from_the_prompt_marks_when_its_output_starts() {
+    let mut core = core(30, 12);
+    assert_eq!(core.last_command_line(), None);
+    feed(&mut core, &command("cargo build", "Compiling\r\n", 0));
+    assert_eq!(core.last_command_line().as_deref(), Some("cargo build"));
+    // It stays while the next prompt is up, and a line that runs on past the width is read whole.
+    feed(&mut core, "\x1b]133;A\x07PS> \x1b]133;B\x07");
+    assert_eq!(core.last_command_line().as_deref(), Some("cargo build"));
+    feed(&mut core, "echo 0123456789012345678901234567\r\n\x1b]133;C\x07");
+    assert_eq!(core.last_command_line().as_deref(), Some("echo 0123456789012345678901234567"));
+    // An empty line, or an output start without a prompt before it, has none.
+    feed(&mut core, &command("", "", 0));
+    assert_eq!(core.last_command_line(), None);
+    feed(&mut core, "\x1b]133;C\x07");
+    assert_eq!(core.last_command_line(), None);
+}
+
+#[test]
 fn selection_simple_block_lines_and_semantic() {
     let mut core = core(20, 5);
     feed(&mut core, "hello world\r\nsecond line");

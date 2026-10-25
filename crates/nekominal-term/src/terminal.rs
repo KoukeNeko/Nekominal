@@ -514,6 +514,9 @@ pub struct TerminalCore {
     /// What the commands the shell marked wrote, oldest first: from the line their output started on (OSC 133 `C`) to
     /// the last line before the shell's next mark (`D`), held by `LineId` like the prompts.
     outputs: Vec<Output>,
+    /// Where the line typed at the prompt began (OSC 133 `B`), and that line as it was when its output began (`C`).
+    command_from: Option<(LineId, usize)>,
+    command_line: Option<String>,
     /// The first bytes of a character whose last bytes the next `feed` brings (see `incomplete_utf8_tail`).
     utf8_tail: Vec<u8>,
 }
@@ -603,6 +606,8 @@ impl TerminalCore {
             line_epoch: 0,
             prompts: Vec::new(),
             outputs: Vec::new(),
+            command_from: None,
+            command_line: None,
             utf8_tail: Vec::new(),
         }
     }
@@ -811,6 +816,30 @@ impl TerminalCore {
         }
     }
 
+    /// Reads the line typed at the prompt when its command starts: between the end of the prompt (`B`) and the start of
+    /// the output (`C`). Read then, because the output may scroll it out of the buffer before the command ends.
+    fn mark_command_line(&mut self, mark: PromptMark, cursor: Option<MarkCursor>) {
+        match mark {
+            PromptMark::CommandStart => self.command_from = cursor.and_then(|cursor| Some((cursor.line_id?, cursor.column))),
+            PromptMark::OutputStart => {
+                let from = self.command_from.take().and_then(|(id, column)| Some((self.line_of(id)?, column)));
+                self.command_line = from.zip(cursor).and_then(|(from, to)| {
+                    // The Enter that ended the line put the cursor at the start of the next one.
+                    let end = if to.column == 0 { (to.line - 1, self.columns().saturating_sub(1)) } else { (to.line, to.column - 1) };
+                    let text = self.text_between(from, end);
+                    let text = text.trim();
+                    (!text.is_empty()).then(|| text.to_owned())
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// The command line of the command that runs or ran last, as typed at the prompt; None when the shell did not mark it.
+    pub fn last_command_line(&self) -> Option<String> {
+        self.command_line.clone()
+    }
+
     /// The outputs of the commands the shell marked that are still in the buffer, oldest first. A command still running
     /// reaches the cursor's line; one that wrote nothing is left out.
     pub fn command_outputs(&self) -> Vec<CommandOutput> {
@@ -988,6 +1017,7 @@ impl TerminalCore {
                     }
                 });
                 self.mark_output(mark, cursor);
+                self.mark_command_line(mark, cursor);
                 if mark == PromptMark::PromptStart
                     && let Some(id) = cursor.and_then(|cursor| cursor.line_id)
                     && let Err(at) = self.prompts.binary_search(&id)
