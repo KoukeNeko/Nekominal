@@ -20,7 +20,10 @@ use nekominal_pty::{
     session::{Event, Session, Sessions, Sink},
 };
 
-pub const NODE: &str = "C:/Users/doeshing/scoop/apps/nodejs-lts/current/node.exe";
+/// The Node on PATH (Scoop, nvm, the installer: wherever it is), or the name, which then fails to start with a message.
+pub fn node() -> PathBuf {
+    nekominal_pty::profiles::resolve_program("node.exe").unwrap_or_else(|| PathBuf::from("node.exe"))
+}
 
 /// Printable rendering of a byte stream: ESC as `\e`, CR `\r`, LF `\n`, TAB `\t`, other controls
 /// as `\xNN`, bytes that are not valid UTF-8 as `<NN>`.
@@ -114,7 +117,7 @@ pub fn probe_command(child: Child, log: &Path, setup: &[u8]) -> (PathBuf, Vec<St
             if !setup.is_empty() {
                 args.push(setup_hex);
             }
-            (PathBuf::from(NODE), args)
+            (node(), args)
         }
         Child::Win32 | Child::VtInput | Child::Win32Quiet | Child::VtInputQuiet => {
             let mode = match child {
