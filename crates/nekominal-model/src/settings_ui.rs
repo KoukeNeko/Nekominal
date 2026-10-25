@@ -563,7 +563,7 @@ mod tests {
         ("profiles", "the profiles page lists and edits them, a page of its own for each"),
         ("snippets", "the palette and the suggestions list them; adding one is an edit of the file"),
         ("keybindings", "the shortcuts page edits them"),
-        ("schemes", "the colour scheme tiles list them; adding one is an edit of the file or the import from Windows Terminal"),
+        ("schemes", "the colour scheme tiles list them, with buttons that import them and a delete button on the user's own"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),

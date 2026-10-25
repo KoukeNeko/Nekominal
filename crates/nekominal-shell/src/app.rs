@@ -3801,6 +3801,16 @@ impl App {
                     self.set_setting(row, Value::Text(name.to_owned()));
                 }
             }
+            Part::DeleteScheme(i) => {
+                let name = themes::theme_names(&self.settings.schemes).nth(i).map(str::to_owned);
+                if let Some(name) = name {
+                    let before = self.settings.clone();
+                    self.settings.schemes.retain(|scheme| scheme.name != name);
+                    self.apply_settings(&before);
+                }
+            }
+            Part::ImportSchemes => self.import_schemes(),
+            Part::ImportItermColors => self.import_itermcolors(),
             Part::Profile(i) => {
                 if let (Some(row), Some(profile)) = (settings_ui::find("defaultProfile"), self.profiles.get(i)) {
                     let id = profile.id.clone();

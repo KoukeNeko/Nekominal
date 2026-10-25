@@ -124,6 +124,11 @@ pub enum Part {
     Field(&'static str),
     /// The color scheme at this index of `themes::theme_names`.
     Tile(usize),
+    /// Deletes the scheme of the user's own at this index of `themes::theme_names`.
+    DeleteScheme(usize),
+    /// Imports the colour schemes of Windows Terminal, and iTerm2 presets the user picks.
+    ImportSchemes,
+    ImportItermColors,
     /// The profile at this index.
     Profile(usize),
     Reset(&'static str),
@@ -935,9 +940,27 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             let (col, line) = (i % columns, i / columns);
                             let tile = Rect::new(x0 + INNER + col as f32 * (tile_w + TILE_GAP), y + line as f32 * (TILE.1 + TILE_GAP), tile_w, TILE.1);
                             let part = Part::Tile(i);
-                            item(&mut items, tile, Some(part), Visual::Tile { scheme: i, selected: *name == current, hover: hover == Some(part) }, true);
+                            let delete = Part::DeleteScheme(i);
+                            let hovered = hover == Some(part) || hover == Some(delete);
+                            item(&mut items, tile, Some(part), Visual::Tile { scheme: i, selected: *name == current, hover: hovered }, true);
+                            // A scheme of the user's own (imported or written) can go again; the built-in ones cannot.
+                            if hovered && view.settings.schemes.iter().any(|scheme| scheme.name == *name) {
+                                let button = Rect::new(tile.x + tile.w - RESET - 6.0, tile.y + 6.0, RESET, RESET);
+                                item(&mut items, button, Some(delete), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(delete) }), true);
+                                item(&mut items, button, None, Visual::Glyph { ch: '\u{E74D}', size: 11.0, tone: Tone::Quiet }, true);
+                            }
                         }
-                        y += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP) - TILE_GAP + GRID_BOTTOM;
+                        y += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP) - TILE_GAP + 12.0;
+                        // Schemes come in from Windows Terminal's settings and from iTerm2 presets here, as from the palette.
+                        let mut at = x0 + INNER;
+                        for (part, text) in [(Part::ImportSchemes, Text::AppImportSchemes), (Part::ImportItermColors, Text::AppImportItermColors)] {
+                            let text = text.get(lang);
+                            let button = Rect::new(at, y, measure(text, 13.0, false) + 28.0, CONTROL);
+                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+                            item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                            at = button.x + button.w + GAP;
+                        }
+                        y += CONTROL + GRID_BOTTOM;
                     }
                     (Control::Profiles, Value::Text(current)) => {
                         y += ROW;
@@ -1172,6 +1195,26 @@ mod tests {
         assert!(!all.contains(&Part::ResetKeys), "nothing to reset");
         settings.keybindings.insert("tab.close".into(), vec!["Ctrl+Shift+Q".into()]);
         assert!(parts(&settings).contains(&Part::ResetKeys));
+    }
+
+    #[test]
+    fn the_schemes_can_be_imported_from_the_page_and_only_ones_own_can_be_deleted_from_its_tile() {
+        let appearance = Section::ALL.iter().position(|s| *s == Section::Appearance).unwrap();
+        let mut settings = Settings::default();
+        let mut own = themes::scheme("Nord").clone();
+        own.name = "Mine".into();
+        settings.schemes.push(own);
+        let names: Vec<String> = themes::theme_names(&settings.schemes).map(str::to_owned).collect();
+        let (mine, builtin) = (names.iter().position(|n| n == "Mine").unwrap(), names.iter().position(|n| n == "Nord").unwrap());
+        let parts = |hover: Option<Part>| {
+            let page = Page { section: appearance, hover, ..Page::default() };
+            frame(&page, &settings).items.iter().filter_map(|item| item.part).collect::<Vec<_>>()
+        };
+        let idle = parts(None);
+        assert!(idle.contains(&Part::ImportSchemes) && idle.contains(&Part::ImportItermColors));
+        assert!(!idle.iter().any(|p| matches!(p, Part::DeleteScheme(_))), "the delete button waits for the pointer");
+        assert!(parts(Some(Part::Tile(mine))).contains(&Part::DeleteScheme(mine)));
+        assert!(!parts(Some(Part::Tile(builtin))).contains(&Part::DeleteScheme(builtin)), "a built-in scheme stays");
     }
 
     #[test]
