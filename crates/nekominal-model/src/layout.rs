@@ -123,6 +123,24 @@ impl Node {
         }
     }
 
+    /// The same layout with panes `a` and `b` in each other's places; the sizes of the places stay. Unchanged when either
+    /// is not in it.
+    pub fn swap_panes(&self, a: PaneId, b: PaneId) -> Node {
+        if !self.contains(a) || !self.contains(b) {
+            return self.clone();
+        }
+        self.swap_leaves(a, b)
+    }
+
+    fn swap_leaves(&self, a: PaneId, b: PaneId) -> Node {
+        match self {
+            Node::Leaf(id) if *id == a => Node::Leaf(b),
+            Node::Leaf(id) if *id == b => Node::Leaf(a),
+            Node::Leaf(_) => self.clone(),
+            Node::Split(split) => Node::Split(Box::new(Split { first: split.first.swap_leaves(a, b), second: split.second.swap_leaves(a, b), ..**split })),
+        }
+    }
+
     /// Pane rectangles in tree order.
     pub fn layout_rects(&self, rect: Rect) -> Vec<(PaneId, Rect)> {
         match self {
@@ -380,5 +398,16 @@ mod tests {
         let tree = three_panes();
         assert!(tree.contains(3));
         assert!(!tree.contains(4));
+    }
+
+    #[test]
+    fn swapping_two_panes_trades_their_places_and_keeps_the_sizes() {
+        let tree = three_panes();
+        let swapped = tree.swap_panes(1, 3);
+        assert_eq!(rect(&swapped, 3), rect(&tree, 1), "3 is where 1 was");
+        assert_eq!(rect(&swapped, 1), rect(&tree, 3), "and 1 where 3 was");
+        assert_eq!(rect(&swapped, 2), rect(&tree, 2), "the others stay");
+        assert_eq!(swapped.swap_panes(1, 3), tree, "swapping back gives the tree back");
+        assert_eq!(tree.swap_panes(1, 9), tree, "a pane not in the tree: nothing changes");
     }
 }

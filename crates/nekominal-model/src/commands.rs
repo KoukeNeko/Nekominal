@@ -33,6 +33,11 @@ pub enum Command {
     PaneRestart,
     PaneFocus(Direction),
     PaneResize(Direction),
+    /// Trades places with the pane in a direction, which keeps the keyboard; moves the focused pane into a tab of its own;
+    /// sends what is typed to every pane of the tab.
+    PaneSwap(Direction),
+    PaneToTab,
+    PaneBroadcast,
     EditCopy,
     /// Ctrl+C: copies only while text is selected, otherwise the key reaches the program as an interrupt.
     EditSmartCopy,
@@ -105,6 +110,12 @@ impl Command {
         Command::PaneResize(Direction::Right),
         Command::PaneResize(Direction::Up),
         Command::PaneResize(Direction::Down),
+        Command::PaneSwap(Direction::Left),
+        Command::PaneSwap(Direction::Right),
+        Command::PaneSwap(Direction::Up),
+        Command::PaneSwap(Direction::Down),
+        Command::PaneToTab,
+        Command::PaneBroadcast,
         Command::EditSmartCopy,
         Command::EditCopy,
         Command::EditPaste,
@@ -174,6 +185,12 @@ impl Command {
             Command::PaneResize(Direction::Right) => "pane.resizeRight",
             Command::PaneResize(Direction::Up) => "pane.resizeUp",
             Command::PaneResize(Direction::Down) => "pane.resizeDown",
+            Command::PaneSwap(Direction::Left) => "pane.swapLeft",
+            Command::PaneSwap(Direction::Right) => "pane.swapRight",
+            Command::PaneSwap(Direction::Up) => "pane.swapUp",
+            Command::PaneSwap(Direction::Down) => "pane.swapDown",
+            Command::PaneToTab => "pane.toTab",
+            Command::PaneBroadcast => "pane.broadcast",
             Command::EditCopy => "edit.copy",
             Command::EditSmartCopy => "edit.smartCopy",
             Command::EditPaste => "edit.paste",
@@ -242,6 +259,12 @@ impl Command {
             Command::PaneResize(Direction::Right) => Text::PaneResizeRight,
             Command::PaneResize(Direction::Up) => Text::PaneResizeUp,
             Command::PaneResize(Direction::Down) => Text::PaneResizeDown,
+            Command::PaneSwap(Direction::Left) => Text::PaneSwapLeft,
+            Command::PaneSwap(Direction::Right) => Text::PaneSwapRight,
+            Command::PaneSwap(Direction::Up) => Text::PaneSwapUp,
+            Command::PaneSwap(Direction::Down) => Text::PaneSwapDown,
+            Command::PaneToTab => Text::PaneToTab,
+            Command::PaneBroadcast => Text::PaneBroadcast,
             // Copying with and without a selection check is one action, so it keeps one label.
             Command::EditCopy | Command::EditSmartCopy => Text::EditCopy,
             Command::EditPaste => Text::EditPaste,
@@ -319,6 +342,7 @@ impl Command {
             Command::PaneResize(Direction::Right) => &["Alt+Shift+Right"],
             Command::PaneResize(Direction::Up) => &["Alt+Shift+Up"],
             Command::PaneResize(Direction::Down) => &["Alt+Shift+Down"],
+            Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast => &[],
             Command::EditSmartCopy => &["Ctrl+C"],
             Command::EditCopy => &["Ctrl+Shift+C", "Ctrl+Insert"],
             Command::EditPaste => &["Ctrl+V", "Ctrl+Shift+V", "Shift+Insert"],
@@ -410,6 +434,8 @@ impl Command {
                 | Command::PaneClose
                 | Command::PaneZoom
                 | Command::PaneRestart
+                | Command::PaneToTab
+                | Command::PaneBroadcast
                 | Command::EditFind
                 | Command::ViewFullscreen
                 | Command::ViewSidebar
@@ -521,9 +547,12 @@ mod tests {
             Command::TabDuplicate => 46,
             Command::TabCloseOthers => 47,
             Command::TabCloseRight => 48,
+            Command::PaneSwap(_) => 49,
+            Command::PaneToTab => 50,
+            Command::PaneBroadcast => 51,
         }
     }
-    const VARIANTS: usize = 49;
+    const VARIANTS: usize = 52;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -557,6 +586,7 @@ mod tests {
         for kind in [
             Command::PaneFocus as fn(Direction) -> Command,
             Command::PaneResize,
+            Command::PaneSwap,
         ] {
             let directions: Vec<Direction> = DIRECTIONS
                 .iter()
@@ -850,6 +880,8 @@ mod tests {
             | Command::PaneClose
             | Command::PaneZoom
             | Command::PaneRestart
+            | Command::PaneToTab
+            | Command::PaneBroadcast
             | Command::EditFind
             | Command::ViewFullscreen
             | Command::ViewSidebar
@@ -873,6 +905,7 @@ mod tests {
             | Command::TabMoveRight
             | Command::PaneFocus(_)
             | Command::PaneResize(_)
+            | Command::PaneSwap(_)
             | Command::EditCopy
             | Command::EditSmartCopy
             | Command::EditPaste

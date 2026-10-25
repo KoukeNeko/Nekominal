@@ -95,6 +95,12 @@ texts! {
     ViewSidebar "view.sidebar" "切換側邊欄" "Toggle sidebar";
     AppUpdate "app.update" "更新並重新啟動" "Update and restart";
     TabColor "tab.color" "分頁顏色" "Tab color";
+    PaneSwapLeft "pane.swapLeft" "與左側窗格交換" "Swap with the pane on the left";
+    PaneSwapRight "pane.swapRight" "與右側窗格交換" "Swap with the pane on the right";
+    PaneSwapUp "pane.swapUp" "與上方窗格交換" "Swap with the pane above";
+    PaneSwapDown "pane.swapDown" "與下方窗格交換" "Swap with the pane below";
+    PaneToTab "pane.toTab" "將窗格移到新分頁" "Move pane to a new tab";
+    PaneBroadcast "pane.broadcast" "廣播輸入到所有窗格" "Broadcast input to all panes";
     TabRenameTo "tab.renameTo" "命名為「{0}」" "Name it “{0}”";
     TabRenameAuto "tab.renameAuto" "使用自動標題" "Use the automatic title";
     DialogCloseTabs "dialog.closeTabs" "關閉 {0} 個分頁？" "Close {0} tabs?";

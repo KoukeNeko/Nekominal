@@ -76,6 +76,8 @@ pub struct Tab {
     pub name: Option<String>,
     /// The colour the user gave the tab, an index into `logic::TAB_COLORS`.
     pub color: Option<usize>,
+    /// What is typed goes to every pane of the tab, not only the focused one.
+    pub broadcast: bool,
     next: PaneId,
 }
 
@@ -83,7 +85,7 @@ impl Tab {
     /// A tab with one pane; its id is the first one this tab hands out.
     pub fn new(make: impl FnOnce(PaneId) -> Result<PaneEntry, String>) -> Result<Tab, String> {
         let entry = make(1)?;
-        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, name: None, color: None, next: 2 })
+        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, next: 2 })
     }
 
     /// A tab as a saved session had it: the layout with its ratios, a pane for every leaf (make starts it), the pane that
@@ -108,7 +110,7 @@ impl Tab {
         }
         let focused = if ids.contains(&active) { active } else { ids[0] };
         let next = ids.iter().max().map_or(1, |highest| highest + 1);
-        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, next })
+        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, broadcast: false, next })
     }
 
     pub fn next_id(&mut self) -> PaneId {
@@ -199,6 +201,43 @@ impl Tab {
                 false
             }
         }
+    }
+
+    /// Takes a pane out of a tab of more than one, running, for another tab; the focus goes to a neighbour. None for the
+    /// last pane of the tab, which stays.
+    pub fn take(&mut self, id: PaneId) -> Option<PaneEntry> {
+        if self.panes.len() < 2 {
+            return None;
+        }
+        let neighbour = [Direction::Left, Direction::Up, Direction::Right, Direction::Down].into_iter().find_map(|d| self.tree.neighbor(id, d));
+        self.tree = self.tree.remove_pane(id)?;
+        let entry = self.panes.iter().position(|p| p.id == id).map(|i| self.panes.remove(i))?;
+        if self.focused == id {
+            self.focused = neighbour.or_else(|| self.panes.first().map(|p| p.id)).unwrap_or(self.focused);
+        }
+        self.zoomed = false;
+        Some(entry)
+    }
+
+    /// A tab of one pane taken out of another (see `take`): the pane keeps its id and its session.
+    pub fn from_entry(entry: PaneEntry) -> Tab {
+        let id = entry.id;
+        Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(id), focused: id, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, next: id + 1 }
+    }
+
+    /// The focused pane trades places with its neighbour in `direction`, and keeps the keyboard. False when there is none.
+    pub fn swap_focused(&mut self, direction: Direction) -> bool {
+        let Some(other) = self.tree.neighbor(self.focused, direction) else { return false };
+        self.tree = self.tree.swap_panes(self.focused, other);
+        true
+    }
+
+    /// The panes what is typed goes to besides the focused one: the others of the tab while it broadcasts.
+    pub fn broadcast_targets(&self) -> Vec<PaneId> {
+        if !self.broadcast {
+            return Vec::new();
+        }
+        self.panes.iter().filter(|p| p.id != self.focused && !p.exited).map(|p| p.id).collect()
     }
 
     /// Computes the pixel rectangle of every shown pane inside `area` (window pixels); `divider` is the gap between panes.

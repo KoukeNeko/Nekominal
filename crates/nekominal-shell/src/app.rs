@@ -372,6 +372,9 @@ fn wired(command: Command) -> bool {
             | Command::TabDuplicate
             | Command::TabCloseOthers
             | Command::TabCloseRight
+            | Command::PaneSwap(_)
+            | Command::PaneToTab
+            | Command::PaneBroadcast
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -1541,7 +1544,7 @@ impl App {
             for unit in text.encode_utf16() { self.popup_char(unit); }
             return;
         }
-        if let Some(entry) = self.focused() {
+        for entry in self.typed_panes() {
             entry.pane.send_text(text);
         }
     }
@@ -1591,7 +1594,12 @@ impl App {
         if let (Some(text), Some(entry)) = (clipboard::read_text(), self.focused()) {
             let warning = logic::paste_warning(&text, entry.pane.input_modes().bracketed_paste, &self.settings.paste);
             let title = match warning {
-                None => return entry.pane.paste(&text),
+                None => {
+                    for entry in self.typed_panes() {
+                        entry.pane.paste(&text);
+                    }
+                    return;
+                }
                 Some(logic::PasteWarning::Lines(lines)) => Text::DialogPasteLines.format(self.language(), &[&lines]),
                 Some(logic::PasteWarning::Bytes(bytes)) => Text::DialogPasteSize.format(self.language(), &[&logic::size_label(bytes)]),
             };
@@ -1726,6 +1734,28 @@ impl App {
                 }
             }
             Command::AppUpdate => self.update_and_restart(),
+            Command::PaneSwap(direction) => {
+                if self.tabs.get_mut(self.selected).is_some_and(|tab| tab.swap_focused(direction)) {
+                    self.relayout();
+                    self.redraw();
+                }
+            }
+            Command::PaneToTab => {
+                let taken = self.tabs.get_mut(self.selected).and_then(|tab| { let id = tab.focused; tab.take(id) });
+                if let Some(entry) = taken {
+                    self.tabs.insert(self.selected + 1, Tab::from_entry(entry));
+                    self.selected += 1;
+                    self.relayout();
+                    self.sync_focus();
+                    self.redraw();
+                }
+            }
+            Command::PaneBroadcast => {
+                if let Some(tab) = self.tabs.get_mut(self.selected) {
+                    tab.broadcast = !tab.broadcast;
+                    self.redraw();
+                }
+            }
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
             Command::TabDuplicate => self.duplicate_tab(),
@@ -1844,9 +1874,13 @@ impl App {
         }
         let mods = input_mods(held);
         let Some(key) = vk::key_for_vk_scan(vk_code, scan, extended, mods) else { return false };
-        let Some(entry) = self.focused() else { return false };
+        if self.focused().is_none() {
+            return false;
+        }
         let event = if repeat { KeyEvent::Repeat } else { KeyEvent::Press };
-        entry.pane.send_key(&KeyInput::new(key).with_mods(mods).with_event(event));
+        for entry in self.typed_panes() {
+            entry.pane.send_key(&KeyInput::new(key).with_mods(mods).with_event(event));
+        }
         true
     }
 
@@ -1862,9 +1896,15 @@ impl App {
         }
         let mods = input_mods(held());
         let Some(key) = vk::key_for_vk_scan(vk_code, scan, extended, mods) else { return };
-        if let Some(entry) = self.focused() {
+        for entry in self.typed_panes() {
             entry.pane.send_key(&KeyInput::new(key).with_mods(mods).with_event(KeyEvent::Release));
         }
+    }
+
+    /// The panes what is typed goes to: the focused one, and the others of the tab while it broadcasts.
+    fn typed_panes(&self) -> Vec<&PaneEntry> {
+        let Some(tab) = self.tab() else { return Vec::new() };
+        tab.focused_entry().into_iter().chain(tab.broadcast_targets().into_iter().filter_map(|id| tab.entry(id))).collect()
     }
 
     /// One UTF-16 unit of text from the keyboard or the IME.
@@ -1873,10 +1913,10 @@ impl App {
         if unit < 0x20 || unit == 0x7F {
             return;
         }
-        if let Some(ch) = self.text.push(unit)
-            && let Some(entry) = self.focused()
-        {
-            entry.pane.send_text(&ch.to_string());
+        if let Some(ch) = self.text.push(unit) {
+            for entry in self.typed_panes() {
+                entry.pane.send_text(&ch.to_string());
+            }
         }
     }
 
@@ -2297,6 +2337,15 @@ impl App {
             let s = self.scale;
             for (_, rect) in tab.splitters(area, divider) {
                 self.ui.fill(Rect::new(rect.x as f32 / s, rect.y as f32 / s, rect.w as f32 / s, rect.h as f32 / s), col(g.divider()));
+            }
+            // A tab that broadcasts what is typed says so around every pane it reaches, so that nothing is typed into a
+            // pane by surprise.
+            if tab.broadcast {
+                let accent = col(g.accent);
+                let rects: Vec<Rect> = tab.shown().into_iter().filter_map(|id| tab.entry(id)).map(|e| Rect::new(e.rect.x as f32 / s + 1.0, e.rect.y as f32 / s + 1.0, e.rect.w as f32 / s - 2.0, e.rect.h as f32 / s - 2.0)).collect();
+                for rect in rects {
+                    self.ui.rrect(rect, 2.0, Color::TRANSPARENT, Some((accent, 1.5)));
+                }
             }
         }
 
@@ -4159,8 +4208,12 @@ impl App {
         match action {
             Some(popup::Action::Confirm) => match confirmation {
                 Some(Confirmation::Paste { tab, pane, text }) => {
-                    if let Some(entry) = self.tabs.get(tab).and_then(|t| t.entry(pane)) {
-                        if !entry.exited { entry.pane.paste(&text); }
+                    // The pane it was asked for, and the others of its tab while it broadcasts.
+                    if let Some(tab) = self.tabs.get(tab) {
+                        let targets = std::iter::once(pane).chain(tab.broadcast_targets().into_iter().filter(|id| *id != pane));
+                        for entry in targets.filter_map(|id| tab.entry(id)).filter(|entry| !entry.exited) {
+                            entry.pane.paste(&text);
+                        }
                     }
                 }
                 Some(Confirmation::ClosePane { tab, pane }) => self.close_pane(tab, pane),
