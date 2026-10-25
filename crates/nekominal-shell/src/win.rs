@@ -161,14 +161,14 @@ fn scale_of(hwnd: HWND) -> f32 {
     unsafe { GetDpiForWindow(hwnd) as f32 / 96.0 }
 }
 
-fn client_size(hwnd: HWND) -> (u32, u32) {
+pub fn client_size(hwnd: HWND) -> (u32, u32) {
     let mut rect = RECT::default();
     // SAFETY: a window handle of this thread and a rect that lives through the call.
     unsafe { GetClientRect(hwnd, &mut rect).ok() };
     ((rect.right - rect.left).max(1) as u32, (rect.bottom - rect.top).max(1) as u32)
 }
 
-fn is_maximized(hwnd: HWND) -> bool {
+pub fn is_maximized(hwnd: HWND) -> bool {
     // SAFETY: a window handle of this thread.
     unsafe { IsZoomed(hwnd).as_bool() }
 }

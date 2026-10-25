@@ -4083,6 +4083,7 @@ impl App {
                 SetWindowLongPtrW(self.hwnd, GWL_STYLE, style);
                 let _ = SetWindowPlacement(self.hwnd, &placement);
                 let _ = SetWindowPos(self.hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+                self.sync_size();
                 return;
             }
             let style = GetWindowLongPtrW(self.hwnd, GWL_STYLE);
@@ -4098,6 +4099,13 @@ impl App {
             let r = monitor.rcMonitor;
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         }
+        self.sync_size();
+    }
+
+    /// Takes the size the window has now. A move this window makes of itself sends WM_SIZE while the application is borrowed,
+    /// so the window procedure cannot hand it over: without this the panes and the swap chain keep the old size.
+    fn sync_size(&mut self) {
+        self.on_size(crate::win::client_size(self.hwnd), crate::win::is_maximized(self.hwnd));
     }
 
     fn open_find(&mut self) {
@@ -4426,7 +4434,7 @@ impl App {
 
     /// Puts the window along the top of the work area of the monitor under the pointer, as wide as it and almost half as
     /// tall.
-    pub fn dock_at_top(&self) {
+    pub fn dock_at_top(&mut self) {
         use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         // SAFETY: plain queries and a move of our own window; the structures live through the calls.
@@ -4442,6 +4450,7 @@ impl App {
             let height = ((work.bottom - work.top) as f32 * logic::QUAKE_SHARE).round() as i32;
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), work.left, work.top, work.right - work.left, height, SWP_NOOWNERZORDER);
         }
+        self.sync_size();
     }
 
     /// Starts selecting with the keyboard at the cursor of the focused pane, or stops when it is on.
