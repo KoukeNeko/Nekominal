@@ -51,7 +51,13 @@ impl Renderer {
                     self.reset_glyph_caches();
                     restarts += 1;
                     if restarts >= 3 {
-                        return UpdateStats { rows_total: view.rows, atlas_restarts: restarts, ..Default::default() };
+                        // One frame needs more glyphs than the atlas holds: raise the limit rather than draw wrong glyphs.
+                        if self.cfg.atlas_max >= 16384 {
+                            return UpdateStats { rows_total: view.rows, atlas_restarts: restarts, ..Default::default() };
+                        }
+                        self.cfg.atlas_max = (self.cfg.atlas_max * 2).min(16384);
+                        self.atlas_gray.set_max_size(self.cfg.atlas_max);
+                        self.atlas_rgba.set_max_size(self.cfg.atlas_max);
                     }
                 }
             }

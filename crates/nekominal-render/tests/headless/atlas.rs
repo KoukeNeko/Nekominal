@@ -106,3 +106,19 @@ fn a_full_atlas_clears_and_restarts_without_changing_a_pixel() {
     assert_eq!(restarted.rgba, fresh.rgba, "the frame after a restart matches a renderer that never restarted");
     assert!(restarted.rgba.iter().any(|&b| b != 0), "and it is not empty");
 }
+
+#[test]
+fn a_frame_with_more_glyphs_than_the_atlas_holds_raises_the_limit_instead_of_drawing_wrong_glyphs() {
+    let theme = theme_with_opacity(Theme::campbell(), 0.72); // gray glyphs: the R8 atlas
+    // 128x128 R8 texels hold about 45 wide glyphs; one frame of 100 never fits.
+    let tiny = RendererConfig { atlas_initial: 128, atlas_max: 128, ..test_config() };
+    let mut renderer = new_renderer(tiny, &theme);
+    let mut pane = PaneState::new();
+    let chars = cjk_chars(&mut renderer, 0, 100);
+    let scene = cjk_scene(&chars, 100);
+    update(&mut renderer, &mut pane, &scene);
+    assert!(renderer.cfg.atlas_max > 128, "the limit was raised");
+    let drawn = draw_frame(&mut renderer, &pane, &theme, scene.cols, scene.rows);
+    let fresh = render(&scene, &theme, test_config());
+    assert_eq!(drawn.rgba, fresh.rgba, "the frame matches a renderer whose atlas was large enough");
+}
