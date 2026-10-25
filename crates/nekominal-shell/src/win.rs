@@ -59,6 +59,19 @@ pub(crate) const WM_QUAKE: u32 = WM_APP + 4;
 pub(crate) const WM_AGENTS: u32 = WM_APP + 0x40;
 /// Shows a pane a row of the agents panel of another window chose: wParam the uid of its tab, lParam its id.
 pub(crate) const WM_SHOW_PANE: u32 = WM_APP + 0x41;
+// The messages of the modules are numbered apart; two with one number would send the second to the handler of the first.
+const _: () = {
+    let all = [crate::app::WM_WAKE, WM_NEW_WINDOW, WM_DESTROY_WINDOW, WM_QUAKE, crate::app::WM_GPU_LOST, WM_AGENTS, WM_SHOW_PANE, crate::toast::WM_TOAST];
+    let mut i = 0;
+    while i < all.len() {
+        let mut j = i + 1;
+        while j < all.len() {
+            assert!(all[i] != all[j], "two window messages share a number");
+            j += 1;
+        }
+        i += 1;
+    }
+};
 /// The id of the global hotkey that does the same: Win+` (the key under Esc), as in Windows Terminal.
 const QUAKE_HOTKEY: i32 = 1;
 
