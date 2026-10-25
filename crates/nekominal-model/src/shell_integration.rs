@@ -1,5 +1,5 @@
 //! Shell integration: a script that makes PowerShell report its working directory and where each prompt, command
-//! and exit status begins, as OSC 133 marks (`A` prompt start, `B` command start, `D;<code>` command end)
+//! and exit status begins, as OSC 133 marks (`A` prompt start, `B` command start, `C` output start, `D;<code>` command end)
 //! plus the directory (`OSC 9;9`). The emulator reads them to jump between prompts and to open new tabs in the
 //! current directory.
 //!
@@ -25,6 +25,16 @@ pub const POWERSHELL_SCRIPT: &str = r#"if (-not $global:__NekominalPrompt) {
     $text = & $global:__NekominalPrompt
     $global:LASTEXITCODE = $native
     ('{0}]133;D;{1}{2}{0}]133;A{2}{0}]9;9;"{3}"{2}{4}{0}]133;B{2}' -f $esc, $exit, $bel, $cwd, $text)
+  }
+  # The line typed is accepted when ReadLine returns: what follows is the command's output (133;C).
+  $readLine = Get-Command PSConsoleHostReadLine -CommandType Function -ErrorAction SilentlyContinue
+  if ($readLine) {
+    $global:__NekominalReadLine = $readLine.ScriptBlock
+    function global:PSConsoleHostReadLine {
+      $line = & $global:__NekominalReadLine
+      [Console]::Write("$([char]27)]133;C$([char]7)")
+      $line
+    }
   }
 }
 if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude)) {

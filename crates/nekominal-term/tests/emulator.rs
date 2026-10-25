@@ -714,6 +714,40 @@ fn resizing_while_scrolled_back_keeps_the_view_valid() {
 }
 // --- selection and search ---------------------------------------------------------------------
 
+/// A prompt, a command typed at it, what it wrote and how it ended, as the shell integration marks them.
+fn command(typed: &str, output: &str, exit: i64) -> String {
+    format!("\x1b]133;A\x07PS> \x1b]133;B\x07{typed}\r\n\x1b]133;C\x07{output}\x1b]133;D;{exit}\x07")
+}
+
+#[test]
+fn the_output_of_each_command_is_selected_and_copied_by_its_marks_newest_first() {
+    let mut core = core(30, 12);
+    feed(&mut core, &command("ls", "a.txt\r\nb.txt\r\n", 0));
+    feed(&mut core, &command("cat nope", "not found\r\n", 1));
+    feed(&mut core, &command("cls", "", 0));
+    feed(&mut core, "\x1b]133;A\x07PS> \x1b]133;B\x07");
+    let outputs = core.command_outputs();
+    assert_eq!(outputs.len(), 2, "a command that wrote nothing has no output: {outputs:?}");
+    assert_eq!((outputs[0].first, outputs[0].last, outputs[0].exit), (1, 2, Some(0)));
+    assert_eq!((outputs[1].first, outputs[1].last, outputs[1].exit), (4, 4, Some(1)));
+    assert_eq!(core.last_command_output().as_deref(), Some("not found"));
+    // Each press goes one command further back, and the oldest stays.
+    assert!(core.select_command_output());
+    assert_eq!(core.selection_text().as_deref(), Some("not found"));
+    assert!(core.select_command_output());
+    assert_eq!(core.selection_text().as_deref(), Some("a.txt\nb.txt"));
+    assert!(core.select_command_output());
+    assert_eq!(core.selection_text().as_deref(), Some("a.txt\nb.txt"));
+    // A command still running reaches the cursor; a shell without the marks has nothing to select.
+    feed(&mut core, "sleep\r\n\x1b]133;C\x07tick 1\r\ntick 2");
+    let running = *core.command_outputs().last().unwrap();
+    assert!(running.running && running.exit.is_none());
+    assert_eq!(core.last_command_output().as_deref(), Some("tick 1\ntick 2"));
+    let mut plain = self::core(30, 5);
+    feed(&mut plain, "PS> ls\r\na.txt\r\nPS> ");
+    assert!(!plain.select_command_output() && plain.last_command_output().is_none());
+}
+
 #[test]
 fn selection_simple_block_lines_and_semantic() {
     let mut core = core(20, 5);

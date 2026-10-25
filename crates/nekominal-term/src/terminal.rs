@@ -111,6 +111,27 @@ impl LineId {
     }
 }
 
+/// One command's output as the shell marked it, by the ids of its first and last lines.
+#[derive(Clone, Copy, Debug)]
+struct Output {
+    start: LineId,
+    end: Option<LineId>,
+    exit: Option<i64>,
+}
+
+/// The outputs kept at most: the oldest goes past it.
+const MAX_OUTPUTS: usize = 4096;
+
+/// What a command wrote, in grid lines (negative ones are in the scrollback), first and last included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandOutput {
+    pub first: i32,
+    pub last: i32,
+    /// The exit code the shell reported; None while the command runs or when it said none.
+    pub exit: Option<i64>,
+    pub running: bool,
+}
+
 /// Where the cursor was when an OSC 133 mark arrived (grid coordinates: line 0 is the top of the
 /// screen, negative lines are scrollback).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -490,6 +511,9 @@ pub struct TerminalCore {
     /// first. Held by `LineId`, so they stay on their text while it scrolls into the scrollback, go when the
     /// scrollback trims them, and all go with the ids when the buffer is rewritten.
     prompts: Vec<LineId>,
+    /// What the commands the shell marked wrote, oldest first: from the line their output started on (OSC 133 `C`) to
+    /// the last line before the shell's next mark (`D`), held by `LineId` like the prompts.
+    outputs: Vec<Output>,
     /// The first bytes of a character whose last bytes the next `feed` brings (see `incomplete_utf8_tail`).
     utf8_tail: Vec<u8>,
 }
@@ -578,6 +602,7 @@ impl TerminalCore {
             line_base: 0,
             line_epoch: 0,
             prompts: Vec::new(),
+            outputs: Vec::new(),
             utf8_tail: Vec::new(),
         }
     }
@@ -688,6 +713,8 @@ impl TerminalCore {
             // Ids grow downward, so the prompts that were trimmed are the oldest ones.
             let trimmed = self.prompts.partition_point(|id| id.index < self.line_base);
             self.prompts.drain(..trimmed);
+            // An output whose last line is gone is gone; one whose first line is gone keeps what is left of it.
+            self.outputs.retain(|output| output.end.is_none_or(|end| end.index >= self.line_base));
         }
         if self.history_limit != limit {
             self.term.grid_mut().update_history(limit);
@@ -699,6 +726,7 @@ impl TerminalCore {
         self.line_epoch = self.line_epoch.wrapping_add(1);
         self.line_base = 0;
         self.prompts.clear();
+        self.outputs.clear();
         self.events.push(CoreEvent::LineIdsReset);
     }
 
@@ -759,6 +787,73 @@ impl TerminalCore {
     /// ones are in the scrollback).
     pub fn prompt_lines(&self) -> Vec<i32> {
         self.prompts.iter().filter_map(|id| self.line_of(*id)).collect()
+    }
+
+    /// The start of a command's output (C) opens an output, the end of the command (D) closes the open one, on the
+    /// line before the cursor's (the shell's next prompt starts there), or on its line when the output did not end its
+    /// line. A D with no output open (the first prompt, Ctrl+C at a prompt) closes nothing.
+    fn mark_output(&mut self, mark: PromptMark, cursor: Option<MarkCursor>) {
+        let Some((id, column)) = cursor.and_then(|cursor| Some((cursor.line_id?, cursor.column))) else { return };
+        match mark {
+            PromptMark::OutputStart => {
+                if self.outputs.len() >= MAX_OUTPUTS {
+                    self.outputs.remove(0);
+                }
+                self.outputs.push(Output { start: id, end: None, exit: None });
+            }
+            PromptMark::CommandEnd { exit_code } => {
+                if let Some(open) = self.outputs.last_mut().filter(|output| output.end.is_none()) {
+                    open.end = Some(if column == 0 { id.offset(-1) } else { id });
+                    open.exit = exit_code;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The outputs of the commands the shell marked that are still in the buffer, oldest first. A command still running
+    /// reaches the cursor's line; one that wrote nothing is left out.
+    pub fn command_outputs(&self) -> Vec<CommandOutput> {
+        let oldest = -(self.term.history_size() as i32);
+        let cursor = self.term.grid().cursor.point.line.0;
+        self.outputs
+            .iter()
+            .filter_map(|output| {
+                let first = self.line_of(output.start).unwrap_or(oldest);
+                let last = match output.end {
+                    Some(end) => self.line_of(end)?,
+                    None => cursor,
+                };
+                (last >= first).then_some(CommandOutput { first, last, exit: output.exit, running: output.end.is_none() })
+            })
+            .collect()
+    }
+
+    /// Selects what the last command wrote, or, when that is what is selected, what the command before it wrote; the view
+    /// scrolls to its first line when that is out of sight. False when no command the shell marked wrote anything.
+    pub fn select_command_output(&mut self) -> bool {
+        let outputs = self.command_outputs();
+        let selected = self.term.selection.as_ref().and_then(|selection| selection.to_range(&self.term)).map(|range| (range.start.line.0, range.end.line.0));
+        let at = outputs.iter().rposition(|output| Some((output.first, output.last)) == selected);
+        let Some(output) = (match at {
+            Some(at) => outputs.get(at.saturating_sub(1)),
+            None => outputs.last(),
+        }) else {
+            return false;
+        };
+        let (first, last) = (output.first, output.last);
+        self.select_between((first, 0), (last, self.columns().saturating_sub(1)));
+        let top = -(self.display_offset() as i32);
+        if first < top || first >= top + self.term.screen_lines() as i32 {
+            self.scroll_to_line(first);
+        }
+        true
+    }
+
+    /// The text the last command wrote (the one running included), without the blanks at the ends of its lines.
+    pub fn last_command_output(&self) -> Option<String> {
+        let output = self.command_outputs().pop()?;
+        Some(self.text_between((output.first, 0), (output.last, self.columns().saturating_sub(1))))
     }
 
     /// Clears the screen and the scrollback ("Clear buffer"). The alternate screen is left alone: a full-screen
@@ -892,6 +987,7 @@ impl TerminalCore {
                         line_id: self.line_id(point.line.0),
                     }
                 });
+                self.mark_output(mark, cursor);
                 if mark == PromptMark::PromptStart
                     && let Some(id) = cursor.and_then(|cursor| cursor.line_id)
                     && let Err(at) = self.prompts.binary_search(&id)
