@@ -20,6 +20,8 @@ use crate::renderer::{
 };
 use crate::sprites;
 
+const CLUSTER_CACHE_MAX: usize = 65536;
+
 fn rgba(c: Rgb, a: u8) -> [u8; 4] {
     [c.0, c.1, c.2, a]
 }
@@ -494,6 +496,10 @@ impl Renderer {
             return Ok(v.clone());
         }
         let placed: Arc<[PlacedGlyph]> = self.build_cluster(ch, zw, style, span)?.into();
+        // Distinct combining sequences (Zalgo text) never fill the atlas, so nothing else would bound this cache.
+        if self.cluster_cache.len() > CLUSTER_CACHE_MAX {
+            self.cluster_cache.clear();
+        }
         self.cluster_cache.insert(key, placed.clone());
         Ok(placed)
     }
@@ -867,5 +873,25 @@ fn build_overlay(m: &crate::fonts::CellMetrics, theme: &Theme, view: &GridView<'
             };
             out.push(RectInstance { rect: [left, y, width, 2.0], color });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::d3d::{AdapterKind, Gpu};
+    use crate::renderer::RendererConfig;
+
+    #[test]
+    fn the_cluster_cache_is_cleared_past_its_cap() {
+        let gpu = Gpu::new(AdapterKind::Warp).expect("WARP adapter");
+        let mut renderer = Renderer::new(&gpu, RendererConfig::default()).expect("renderer");
+        let empty: Arc<[PlacedGlyph]> = Arc::from([]);
+        for ch in (0u32..).filter_map(char::from_u32).take(CLUSTER_CACHE_MAX + 1) {
+            let key = ClusterKey { ch, zw: Box::new(['\u{301}']), style: Style::REGULAR, span: 1 };
+            renderer.cluster_cache.insert(key, empty.clone());
+        }
+        renderer.cluster_glyphs('x', &['\u{302}'], Style::REGULAR, 1).expect("room in the atlas");
+        assert_eq!(renderer.cluster_cache.len(), 1);
     }
 }
