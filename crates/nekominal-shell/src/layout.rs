@@ -10,7 +10,7 @@ use nekominal_ui::Rect;
 use crate::logic;
 
 /// Height of the title bar: the tabs (on top), the buttons and the caption buttons live in it.
-pub const TITLE_HEIGHT: f32 = 32.0;
+pub const TITLE_HEIGHT: f32 = 40.0;
 /// Space left of the first tab, and of the first button with the tabs in the sidebar.
 pub const STRIP_LEFT: f32 = 6.0;
 /// Space between two tabs of the strip: words with a line under the selected one need some air between them.

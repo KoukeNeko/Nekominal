@@ -65,11 +65,11 @@ function Next-At([double]$X, [double]$Y) {
 function Next-MenuX([double]$Width) { $Width - 120 - 16 }
 
 # The height of the title bar, in DIP, and the middle of it.
-$global:NextBar = 32
+$global:NextBar = 40
 function Next-BarY { $global:NextBar / 2 }
 
 # Where a pop-up that hangs from a button of the bar starts, in DIP from the top of the window: the buttons are as tall as
-# the bar (32), and the pop-up hangs 4 below them. Its rows start 4 further down and are 32 tall.
+# the bar (40), and the pop-up hangs 4 below them. Its rows start 4 further down and are 32 tall.
 function Next-PopupTop { $global:NextBar + 4 }
 function Next-PopupRowY([int]$Row) { (Next-PopupTop) + 4 + 32 * $Row + 16 }
 
@@ -1276,7 +1276,7 @@ function Scenario-NextCentre {
                 # The glyphs of the buttons are quiet and the mark of a failure red: both lighter than the bar. The rows stop
                 # above the line under the selected tab.
                 $light = 0.4
-                for ($py = [int](2 * $s); $py -lt [int](29 * $s); $py++) {
+                for ($py = [int](2 * $s); $py -lt [int](($global:NextBar - 3) * $s); $py++) {
                     for ($px = [int](($spots[$name] - 10) * $s); $px -le [int](($spots[$name] + 10) * $s); $px++) { if ($bitmap.GetPixel($px, $py).GetBrightness() -gt $light) { $rows += $py; break } }
                 }
                 $middle = if ($rows.Count) { ($rows[0] + $rows[-1]) / 2 } else { -100 }
