@@ -2,7 +2,7 @@
 //! pop-up that is open. The tree is built from the state of the window only when a client has asked for it (see
 //! `App::access_update`), so a window nobody listens to pays nothing.
 
-use accesskit::{ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, Tree, TreeId, TreeUpdate};
+use accesskit::{ActionHandler, ActionRequest, ActivationHandler, Node, NodeId, Role, TreeId, TreeInfo, TreeUpdate};
 
 const WINDOW: NodeId = NodeId(0);
 const TABS: NodeId = NodeId(1);
@@ -97,7 +97,7 @@ pub fn tree(view: &View) -> TreeUpdate {
     window.set_children(children);
     nodes.push((WINDOW, window));
 
-    TreeUpdate { nodes, tree: Some(Tree::new(WINDOW)), tree_id: TreeId::ROOT, focus }
+    TreeUpdate { nodes, tree: Some(TreeInfo::new(WINDOW)), tree_id: TreeId::ROOT, focus }
 }
 
 /// What the tree of the window of the settings is built from.
@@ -162,7 +162,7 @@ pub fn page_tree(view: &PageView) -> TreeUpdate {
     window.set_children(vec![TABS, SEARCH, POPUP]);
     nodes.push((WINDOW, window));
     let focus = view.focused.filter(|&i| i < view.rows.len()).map_or(SEARCH, |i| NodeId(FIRST_ROW + i as u64));
-    TreeUpdate { nodes, tree: Some(Tree::new(WINDOW)), tree_id: TreeId::ROOT, focus }
+    TreeUpdate { nodes, tree: Some(TreeInfo::new(WINDOW)), tree_id: TreeId::ROOT, focus }
 }
 
 /// The reader may ask for actions (focus, click); the window answers keys and the pointer only.

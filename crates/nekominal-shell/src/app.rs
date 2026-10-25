@@ -1173,7 +1173,7 @@ impl App {
 
     pub fn redraw(&self) {
         // SAFETY: invalidating our own window; WM_PAINT arrives when the queue is otherwise empty.
-        unsafe { InvalidateRect(Some(self.hwnd), None, false).ok() };
+        unsafe { let _ = InvalidateRect(Some(self.hwnd), None, false); };
     }
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
