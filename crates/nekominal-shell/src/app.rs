@@ -5334,6 +5334,14 @@ impl App {
         let area = self.pane_area();
         let size = (area.w.max(1) as u32, area.h.max(1) as u32);
         for record in &parsed.session.tabs {
+            // A tab whose focused pane ran as administrator comes back in an elevated window of its own, as it was opened;
+            // declined, it comes back here without elevation. The elevated window gets one pane: its splits are not kept.
+            let active = record.panes.get(&record.active);
+            if let Some(profile) = active.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).cloned() {
+                if self.opens_elevated(&profile, active.and_then(|pane| pane.cwd.as_deref())) {
+                    continue;
+                }
+            }
             let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
                 let pane = record.panes.get(&id);
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
