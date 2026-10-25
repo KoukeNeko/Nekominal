@@ -44,6 +44,15 @@ pub struct PaneRecord {
     pub profile: String,
     /// Working directory the pane was in; a directory that no longer exists is the shell's to handle.
     pub cwd: Option<String>,
+    /// Name of the file that holds the pane's text (see [`is_buffer_name`]), shown again when it is restored.
+    pub buffer: Option<String>,
+}
+
+/// A name the session may give the file of a pane's text: letters, digits and `-`, then `.vt`. The file lives in a
+/// directory of the program's own and the session file is outside its control: anything else (a path, `..`) is not a
+/// name to open.
+pub fn is_buffer_name(name: &str) -> bool {
+    name.strip_suffix(".vt").is_some_and(|stem| (1..=64).contains(&stem.len()) && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -186,6 +195,9 @@ fn node_to_value(node: &Node, panes: &BTreeMap<PaneId, PaneRecord>) -> Value {
             map.insert("profile".into(), json!(record.profile));
             if let Some(cwd) = record.cwd {
                 map.insert("cwd".into(), json!(cwd));
+            }
+            if let Some(buffer) = record.buffer {
+                map.insert("buffer".into(), json!(buffer));
             }
             Value::Object(map)
         }
@@ -468,9 +480,17 @@ impl TabReader<'_> {
                 None
             }
         };
+        let buffer = match map.get("buffer") {
+            None => None,
+            Some(Value::String(name)) if is_buffer_name(name) => Some(name.clone()),
+            Some(_) => {
+                self.problems.push(format!("{path}.buffer：需要 .vt 檔名"));
+                None
+            }
+        };
         let id = *self.next_id;
         *self.next_id += 1;
-        self.panes.insert(id, PaneRecord { profile, cwd });
+        self.panes.insert(id, PaneRecord { profile, cwd, buffer });
         Some(Node::Leaf(id))
     }
 }
@@ -490,6 +510,7 @@ mod tests {
         PaneRecord {
             profile: profile.into(),
             cwd: cwd.map(str::to_owned),
+            buffer: None,
         }
     }
 
@@ -1050,6 +1071,33 @@ mod tests {
             across.is_reachable_on(&monitors[1..]),
             "and 600 on the second"
         );
+    }
+
+    #[test]
+    fn the_file_of_a_panes_text_round_trips_and_a_session_without_one_reads_as_before() {
+        let mut tab = three_pane_tab();
+        tab.panes.get_mut(&3).unwrap().buffer = Some("1761400000000-2-3.vt".into());
+        let json = Session { window: None, tabs: vec![tab], active_tab: 0 }.to_json();
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["tabs"][0]["layout"]["second"]["first"], json!({ "profile": "cmd", "buffer": "1761400000000-2-3.vt" }));
+        assert_eq!(value["tabs"][0]["layout"]["first"].get("buffer"), None, "a pane without text writes no key");
+        let restored = parse_ok(&json);
+        assert_eq!(restored.tabs[0].panes[&2].buffer.as_deref(), Some("1761400000000-2-3.vt"), "ids are renumbered in tree order");
+
+        // What 0.0.23 wrote, with no buffer anywhere.
+        let old = r#"{ "version": 1, "activeTab": 0, "tabs": [ { "active": 0, "layout": { "profile": "pwsh", "cwd": "C:\\a" } } ] }"#;
+        assert_eq!(parse_ok(old).tabs[0].panes[&1], pane("pwsh", Some("C:\\a")));
+    }
+
+    #[test]
+    fn a_buffer_that_is_not_a_plain_file_name_is_dropped_with_a_report() {
+        for bad in [r#""..\\..\\secrets.vt""#, r#""C:\\x.vt""#, r#""a/b.vt""#, r#""x.txt""#, r#"".vt""#, "5", r#""a b.vt""#] {
+            let parsed = Session::parse(&format!(r#"{{ "version": 1, "tabs": [ {{ "layout": {{ "profile": "p", "buffer": {bad} }} }} ] }}"#));
+            assert_eq!(parsed.problems.len(), 1, "{bad}: {:?}", parsed.problems);
+            assert_eq!(parsed.session.tabs[0].panes[&1], pane("p", None), "{bad}");
+        }
+        assert!(is_buffer_name("1761400000000-12-3.vt"));
+        assert!(!is_buffer_name(&format!("{}.vt", "a".repeat(65))));
     }
 
     #[test]
