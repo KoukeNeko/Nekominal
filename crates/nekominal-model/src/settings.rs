@@ -496,6 +496,8 @@ pub struct Settings {
     pub confirm_close_threshold: u32,
     /// Reopen the tabs and panes of the previous run on start.
     pub restore_session: bool,
+    /// Explorer's right-click menu of a folder has "Open in Nekominal".
+    pub explorer_menu: bool,
     /// The welcome of the first start, where the layout is picked, was seen.
     pub welcomed: bool,
     /// Command id to shortcuts; an empty list unbinds a default.
@@ -541,6 +543,7 @@ impl Default for Settings {
             confirm_close: true,
             confirm_close_threshold: 1,
             restore_session: false,
+            explorer_menu: false,
             welcomed: false,
             keybindings: BTreeMap::new(),
         }
@@ -989,6 +992,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         confirm_close: boolean(&root, "confirmClose", d.confirm_close, "", &mut problems),
         confirm_close_threshold: number(&root, "confirmCloseThreshold", d.confirm_close_threshold as f64, (1.0, 1000.0), "", &mut problems) as u32,
         restore_session: boolean(&root, "restoreSession", d.restore_session, "", &mut problems),
+        explorer_menu: boolean(&root, "explorerMenu", d.explorer_menu, "", &mut problems),
         welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
         keybindings: read_keybindings(&root, &mut problems),
     };
@@ -1280,6 +1284,13 @@ mod tests {
         assert_eq!(Language::Auto.resolve("ja-JP"), Lang::EnUs);
         assert_eq!(Language::ZhTw.resolve("en-US"), Lang::ZhTw);
         assert_eq!(Language::EnUs.resolve("zh-TW"), Lang::EnUs);
+    }
+
+    #[test]
+    fn the_explorer_menu_is_opt_in_and_written_back() {
+        assert!(!Settings::default().explorer_menu);
+        let written = round_trips(Settings { explorer_menu: true, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "explorerMenu": true }));
     }
 
     #[test]

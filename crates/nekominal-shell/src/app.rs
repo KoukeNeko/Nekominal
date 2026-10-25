@@ -557,13 +557,64 @@ impl App {
         if first_window && !app.settings.welcomed {
             app.welcome = Some(welcome::Welcome::default());
         }
+        // The entry of Explorer's menu is written again at each start while it is on: the program may have moved.
+        if first_window && app.settings.explorer_menu {
+            app.sync_explorer_menu();
+        }
         app.relayout();
+        // What the command line asks for (a folder, a profile, a program, more tabs and panes) is what the first window
+        // opens, instead of the saved session.
+        let launch = crate::cli::launch();
+        if first_tab && first_window && !launch.is_empty() {
+            app.launch(launch);
+            if !app.tabs.is_empty() {
+                return Ok(app);
+            }
+        }
         // Only the window the process starts with picks up the saved session; a window opened later starts empty.
         let first_window = first_window && app.settings.restore_session;
         if first_tab && !(first_window && app.restore_session()) {
             app.new_tab()?;
         }
         Ok(app)
+    }
+
+    /// The profile a target of the command line names, by id or by name (any case), or the default one; with the
+    /// target's program instead of the profile's when it gives one.
+    fn target_profile(&self, target: &crate::cli::Target) -> Profile {
+        let named = target.profile.as_deref().and_then(|wanted| self.profiles.iter().find(|p| p.id.eq_ignore_ascii_case(wanted) || p.name.eq_ignore_ascii_case(wanted)));
+        let mut profile = named.cloned().unwrap_or_else(|| self.profile.clone());
+        if let Some((program, args)) = target.command.split_first() {
+            profile.program = program.clone();
+            profile.args = args.to_vec();
+        }
+        profile
+    }
+
+    /// Opens the tabs and panes the command line asks for. A pane that cannot start is told in the log and left out.
+    fn launch(&mut self, actions: &[crate::cli::Action]) {
+        let area = self.pane_area();
+        let size = (area.w.max(1) as u32, area.h.max(1) as u32);
+        for action in actions {
+            match action {
+                crate::cli::Action::NewTab(target) => {
+                    let profile = self.target_profile(target);
+                    match Tab::new(|id| self.make_entry_with(id, size, &profile, target.directory.as_deref())) {
+                        Ok(tab) => {
+                            self.tabs.push(tab);
+                            self.selected = self.tabs.len() - 1;
+                        }
+                        Err(e) => util::log(&format!("command line: {e}")),
+                    }
+                }
+                crate::cli::Action::Split { vertical, target } => {
+                    let profile = self.target_profile(target);
+                    self.split_with(if *vertical { Axis::Row } else { Axis::Column }, &profile, target.directory.as_deref());
+                }
+            }
+        }
+        self.relayout();
+        self.sync_focus();
     }
 
     pub fn backdrop(&self) -> Backdrop {
@@ -732,6 +783,12 @@ impl App {
     }
 
     fn split(&mut self, axis: Axis) {
+        let profile = self.profile.clone();
+        self.split_with(axis, &profile, None);
+    }
+
+    /// Splits the focused pane: the new pane runs `profile` in `directory` (the profile's own when none).
+    fn split_with(&mut self, axis: Axis, profile: &Profile, directory: Option<&str>) {
         let Some(tab) = self.tab() else { return };
         let Some(focused) = tab.focused_entry() else { return };
         // About half of the pane that is split; the layout corrects it right after.
@@ -740,7 +797,7 @@ impl App {
             Axis::Column => (focused.rect.w as u32, focused.rect.h as u32 / 2),
         };
         let id = self.tabs[self.selected].next_id();
-        match self.make_entry(id, size) {
+        match self.make_entry_with(id, size, profile, directory) {
             Ok(entry) => {
                 self.tabs[self.selected].split(axis, entry);
                 self.relayout();
@@ -3727,6 +3784,9 @@ impl App {
         if self.settings.tabs != before.tabs {
             self.relayout();
         }
+        if self.settings.explorer_menu != before.explorer_menu {
+            self.sync_explorer_menu();
+        }
         let effects = logic::effects(before, &self.settings);
         if effects.font {
             for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
@@ -4052,6 +4112,14 @@ impl App {
                 self.redraw();
             }
             Err(e) => util::log(&format!("duplicate tab: {e}")),
+        }
+    }
+
+    /// Puts "Open in Nekominal" in Explorer's menu of a folder, or takes it out, as the setting says.
+    fn sync_explorer_menu(&self) {
+        let label = Text::ExplorerOpenHere.get(self.language());
+        if let Err(e) = crate::integration::set_explorer_menu(self.settings.explorer_menu, label) {
+            util::log(&format!("explorer menu: {e}"));
         }
     }
 

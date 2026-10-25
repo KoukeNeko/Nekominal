@@ -5,12 +5,14 @@
 mod access;
 mod agent;
 mod app;
+mod cli;
 mod clipboard;
 mod design;
 mod find;
 mod glass;
 mod gpu;
 mod icons;
+mod integration;
 mod layout;
 #[allow(dead_code)]
 mod logic;
@@ -45,6 +47,8 @@ fn main() {
     if agent::statusline_main() {
         return;
     }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    cli::set_launch(cli::parse(&args));
     if let Err(e) = win::run() {
         std::fs::write(std::env::temp_dir().join("nekominal-next.log"), format!("{e}\n")).ok();
     }
