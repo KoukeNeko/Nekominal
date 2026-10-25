@@ -1,7 +1,8 @@
-# Fetches the version-matched conpty.dll + OpenConsole.exe pair (x64) from the
-# Microsoft.Windows.Console.ConPTY NuGet package into crates/nekominal-pty/resources.
+# Fetches the version-matched conpty.dll + OpenConsole.exe pair from the Microsoft.Windows.Console.ConPTY
+# NuGet package: the x64 pair into crates/nekominal-pty/resources, the ARM64 pair (-Arch arm64) into resources/arm64.
 # The pair must come from the same package; a stale or mismatched pair crashes shells.
 param(
+    [ValidateSet('x64', 'arm64')][string]$Arch = 'x64',
     [string]$Version = '1.25.260930003',
     [string]$Sha256 = '02B07B349AF66D801159BDF9E440D4A1CE78BB951F37FC8609731665AFDAE7EE'
 )
@@ -10,11 +11,12 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $dest = Join-Path $root 'crates\nekominal-pty\resources'
+if ($Arch -eq 'arm64') { $dest = Join-Path $dest 'arm64' }
 
 $current = Join-Path $dest 'VERSION'
 if ((Test-Path $current) -and ((Get-Content $current -Raw).Trim() -eq $Version) -and
     (Test-Path (Join-Path $dest 'conpty.dll')) -and (Test-Path (Join-Path $dest 'OpenConsole.exe'))) {
-    Write-Host "ConPTY $Version already present."
+    Write-Host "ConPTY $Version ($Arch) already present."
     return
 }
 
@@ -35,8 +37,8 @@ try {
     Expand-Archive $nupkg $extracted -Force
 
     $files = @{
-        'conpty.dll'      = Join-Path $extracted 'runtimes\win-x64\native\conpty.dll'
-        'OpenConsole.exe' = Join-Path $extracted 'build\native\runtimes\x64\OpenConsole.exe'
+        'conpty.dll'      = Join-Path $extracted "runtimes\win-$Arch\native\conpty.dll"
+        'OpenConsole.exe' = Join-Path $extracted "build\native\runtimes\$Arch\OpenConsole.exe"
     }
 
     foreach ($file in $files.Values) {
@@ -51,7 +53,7 @@ try {
         Copy-Item $files[$name] (Join-Path $dest $name) -Force
     }
     Set-Content -Path (Join-Path $dest 'VERSION') -Value $Version -NoNewline
-    Write-Host "ConPTY $Version installed to $dest"
+    Write-Host "ConPTY $Version ($Arch) installed to $dest"
 }
 finally {
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
