@@ -918,6 +918,16 @@ fn a_selection_gives_its_runs_of_style_and_select_between_takes_grid_points() {
 }
 
 #[test]
+fn a_selection_s_runs_keep_combining_marks_and_whole_clusters() {
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    let mut core = core(20, 3);
+    feed(&mut core, &format!("e\u{0301}{family}\x1b[1me\u{0301}"));
+    core.select_between((0, 0), (0, 3));
+    let text: Vec<String> = core.selection_runs().expect("a selection")[0].iter().map(|r| r.text.clone()).collect();
+    assert_eq!(text, [format!("e\u{0301}{family}"), "e\u{0301}".to_owned()], "a new run starts with a mark too");
+}
+
+#[test]
 fn all_text_is_the_scrollback_and_the_screen_without_trailing_blank_lines() {
     let mut core = TerminalCore::new(20, 5, CoreConfig { scrollback_lines: 100, ..CoreConfig::default() });
     for i in 0..12 {

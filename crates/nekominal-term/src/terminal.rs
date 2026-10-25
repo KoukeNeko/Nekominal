@@ -1334,6 +1334,10 @@ impl TerminalCore {
                     Some(run) if (run.fg, run.bg, run.bold, run.italic, run.underline) == style => run.text.push(cell.c),
                     _ => runs.push(StyledRun { text: cell.c.to_string(), fg: style.0, bg: style.1, bold: style.2, italic: style.3, underline: style.4 }),
                 }
+                // Combining marks and the rest of a cluster (a ZWJ family) follow the base character.
+                if let (Some(run), Some(rest)) = (runs.last_mut(), cell.zerowidth()) {
+                    run.text.extend(rest);
+                }
             }
             // The blanks after the text of a line are no part of what was copied.
             while let Some(run) = runs.last_mut() {
