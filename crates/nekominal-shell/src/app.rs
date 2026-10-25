@@ -4088,6 +4088,11 @@ impl App {
         if self.settings.profiles != before.profiles {
             self.profiles = profiles::merge(&self.found, &self.settings.profiles);
             self.programs = self.profiles.iter().map(|p| nekominal_pty::profiles::resolve_program(&p.program)).collect();
+            // The taskbar's list of profiles names them too.
+            let listed: Vec<(String, String, Option<std::path::PathBuf>)> = self.profiles.iter().zip(&self.programs).map(|(p, program)| (p.id.clone(), p.name.clone(), program.clone())).collect();
+            if let Err(e) = crate::integration::set_jump_list(&listed) {
+                util::log(&format!("jump list: {e}"));
+            }
             if let Some(profile) = profiles::resolve_default(&self.profiles, &self.settings.default_profile) {
                 self.profile = profile.clone();
             }

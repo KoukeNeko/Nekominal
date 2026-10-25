@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 use crate::util::log;
@@ -16,6 +16,25 @@ use crate::util::log;
 const OPEN_ATTEMPTS: u32 = 5;
 const OPEN_RETRY: Duration = Duration::from_millis(10);
 
+/// Opens the clipboard, with the retries; false (and logged) when it stays held.
+fn open() -> bool {
+    // SAFETY: opening the clipboard for this thread; the callers close it.
+    unsafe {
+        let mut opened = OpenClipboard(None);
+        for _ in 1..OPEN_ATTEMPTS {
+            if opened.is_ok() {
+                break;
+            }
+            std::thread::sleep(OPEN_RETRY);
+            opened = OpenClipboard(None);
+        }
+        if let Err(e) = &opened {
+            log(&format!("OpenClipboard: {e}"));
+        }
+        opened.is_ok()
+    }
+}
+
 /// The text on the clipboard, with line breaks as the source wrote them. `None` when there is no text or
 /// the clipboard is held by another program.
 pub fn read_text() -> Option<String> {
@@ -23,8 +42,7 @@ pub fn read_text() -> Option<String> {
     // NUL-terminated UTF-16 contents are copied out.
     unsafe {
         IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)).ok()?;
-        if let Err(e) = OpenClipboard(None) {
-            log(&format!("OpenClipboard: {e}"));
+        if !open() {
             return None;
         }
         let text = (|| {
@@ -34,10 +52,9 @@ pub fn read_text() -> Option<String> {
             if data.is_null() {
                 return None;
             }
-            let mut len = 0;
-            while *data.add(len) != 0 {
-                len += 1;
-            }
+            // Up to the NUL, but never past the block: another program may have put text there without one.
+            let units = GlobalSize(global) / 2;
+            let len = (0..units).take_while(|&i| *data.add(i) != 0).count();
             let text = String::from_utf16_lossy(std::slice::from_raw_parts(data, len));
             let _ = GlobalUnlock(global);
             Some(text)
@@ -104,16 +121,7 @@ fn write(text: &str, html: Option<&str>) -> bool {
     // SAFETY: the clipboard is opened and closed around the write. The global block is ours until
     // `SetClipboardData` succeeds, and the system's after that.
     unsafe {
-        let mut opened = OpenClipboard(None);
-        for _ in 1..OPEN_ATTEMPTS {
-            if opened.is_ok() {
-                break;
-            }
-            std::thread::sleep(OPEN_RETRY);
-            opened = OpenClipboard(None);
-        }
-        if let Err(e) = opened {
-            log(&format!("OpenClipboard: {e}"));
+        if !open() {
             return false;
         }
         let stored = (|| -> windows::core::Result<()> {
