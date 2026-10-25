@@ -2,6 +2,7 @@
 name = "d3d11-spike"
 description = "Spike: the memory floor of a Win32 window with DirectComposition and a plain D3D11 swap chain"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false

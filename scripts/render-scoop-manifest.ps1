@@ -25,7 +25,7 @@ $manifest = [ordered]@{
     version      = $Version
     description  = 'A Windows terminal in Rust for coding agents: Claude Code, including its full-screen mode, runs in it'
     homepage     = 'https://github.com/KoukeNeko/scoop-bucket#nekominal'
-    license      = 'Proprietary'
+    license      = 'MIT'
     architecture = [ordered]@{
         '64bit' = [ordered]@{ url = $Url; hash = $Sha256.ToLowerInvariant() }
         'arm64' = [ordered]@{ url = $Arm64Url; hash = $Arm64Sha256.ToLowerInvariant() }

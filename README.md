@@ -14,6 +14,7 @@
   <a href="https://github.com/KoukeNeko/Nekominal/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/KoukeNeko/Nekominal/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white&label=CI"></a>
   <img alt="Windows 11, x64 and ARM64" src="https://img.shields.io/badge/WINDOWS_11-x64_%7C_ARM64-0078D4?style=for-the-badge&logo=windows11&logoColor=white">
   <img alt="Written in Rust" src="https://img.shields.io/badge/RUST-1.95+-DEA584?style=for-the-badge&logo=rust&logoColor=black">
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/LICENSE-MIT-4CAF50?style=for-the-badge&logo=github"></a>
 </p>
 
 <p align="center">
@@ -266,4 +267,5 @@ If Nekominal is useful to you, you can support its development:
 
 ## License
 
-© KoukeNeko. All rights reserved.
+[MIT](LICENSE) © KoukeNeko. The ConPTY files in the release archives are Microsoft's, also under MIT; see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

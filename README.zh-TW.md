@@ -14,6 +14,7 @@
   <a href="https://github.com/KoukeNeko/Nekominal/actions/workflows/ci.yml"><img alt="CI 狀態" src="https://img.shields.io/github/actions/workflow/status/KoukeNeko/Nekominal/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white&label=CI"></a>
   <img alt="Windows 11，x64 與 ARM64" src="https://img.shields.io/badge/WINDOWS_11-x64_%7C_ARM64-0078D4?style=for-the-badge&logo=windows11&logoColor=white">
   <img alt="以 Rust 撰寫" src="https://img.shields.io/badge/RUST-1.95+-DEA584?style=for-the-badge&logo=rust&logoColor=black">
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/LICENSE-MIT-4CAF50?style=for-the-badge&logo=github"></a>
 </p>
 
 <p align="center">
@@ -257,4 +258,5 @@ git push origin v0.2.0
 
 ## 授權
 
-© KoukeNeko，保留所有權利。
+[MIT](LICENSE) © KoukeNeko。發布檔裡的 ConPTY 檔案來自 Microsoft，同樣採用 MIT，詳見
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。

@@ -2,6 +2,7 @@
 name = "nekominal-ui"
 description = "Self-drawn UI layer: rounded rectangles, shadows and text on Direct3D 11, in DIP with a scale factor"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

@@ -48,7 +48,9 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 foreach ($entry in $files.GetEnumerator()) {
     Copy-Item $entry.Value (Join-Path $stage $entry.Key)
 }
-Copy-Item (Join-Path $root 'README.md') (Join-Path $stage 'README.md')
+foreach ($doc in 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md') {
+    Copy-Item (Join-Path $root $doc) (Join-Path $stage $doc)
+}
 
 # The files at the top of the archive, so that Scoop and a plain unzip both find the executable at once.
 $zip = Join-Path $dist "$name.zip"

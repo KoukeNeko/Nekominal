@@ -2,6 +2,7 @@
 name = "nekominal-model"
 description = "Toolkit-independent application model: layout, settings, themes, commands, keymap, strings, profiles, session"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

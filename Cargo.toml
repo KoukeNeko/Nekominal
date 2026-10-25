@@ -17,6 +17,8 @@ members = [
 [workspace.package]
 version = "0.0.22"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/KoukeNeko/Nekominal"
 # windows-core/windows-bindgen 0.100 declare rust-version 1.95.
 rust-version = "1.95"
 

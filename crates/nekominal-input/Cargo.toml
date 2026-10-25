@@ -2,6 +2,7 @@
 name = "nekominal-input"
 description = "Toolkit-independent translation of key, mouse, focus and paste events into terminal input bytes"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

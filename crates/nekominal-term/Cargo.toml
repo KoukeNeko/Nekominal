@@ -2,6 +2,7 @@
 name = "nekominal-term"
 description = "VT emulator core (alacritty_terminal) with an OSC/CSI sniffer, snapshots, selection and search"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

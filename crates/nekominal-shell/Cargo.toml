@@ -2,6 +2,7 @@
 name = "nekominal-shell"
 description = "Nekominal with a self-drawn shell: a Win32 window, DirectComposition, Direct3D 11 and nekominal-ui, no WinUI"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

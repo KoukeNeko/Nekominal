@@ -2,6 +2,7 @@
 name = "agent-probe"
 description = "Headless harness that drives coding-agent CLIs (Claude Code, ...) through ConPTY and the emulator"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish = false
