@@ -127,6 +127,83 @@ fn trim_end(url: &[char]) -> usize {
     end
 }
 
+/// The paths in one line of text as a compiler or a tool prints them (`src\main.rs:12:5`, `C:\work\x.txt`), with their
+/// `:line` or `:line:column`, as ranges of `cells` (one `char` per cell, `'\0'` for the spacer of a wide character).
+/// A path is a word between blanks, quotes and brackets, without the punctuation that ends a sentence, that starts at a
+/// drive or `.\` or `..\`, or that has a folder and a file name with an extension. Whether the file is there is the
+/// caller's to check.
+pub fn find_paths(cells: &[char]) -> Vec<Range<usize>> {
+    let breaks = |c: char| c == '\0' || c.is_whitespace() || "\"'`<>()[]{}|".contains(c);
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < cells.len() {
+        if breaks(cells[at]) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < cells.len() && !breaks(cells[at]) {
+            at += 1;
+        }
+        let word: String = cells[start..at].iter().collect();
+        let trimmed = word.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+        if looks_like_path(split_position(trimmed).0) {
+            found.push(start..start + trimmed.chars().count());
+        }
+    }
+    found
+}
+
+/// Whether a word (without its position) is a path as [`find_paths`] means it.
+pub fn looks_like_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let rooted = (bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'))
+        || ["\\\\", "./", "../", ".\\", "..\\", "~/", "~\\"].iter().any(|start| path.starts_with(start));
+    let last = path.rsplit(['/', '\\']).next().unwrap_or_default();
+    let nested = path.contains(['/', '\\']) && last.contains('.') && !last.starts_with('.') && !last.ends_with('.');
+    (rooted && path.len() > 3) || nested
+}
+
+/// A path and the `:line` or `:line:column` after it (as `src/main.rs:12:5`), the position empty when there is none.
+pub fn split_position(text: &str) -> (&str, &str) {
+    let mut path = text;
+    for _ in 0..2 {
+        match path.rsplit_once(':') {
+            Some((before, number)) if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) && !before.is_empty() => path = before,
+            _ => break,
+        }
+    }
+    (path, &text[path.len()..])
+}
+
+/// The line and the column (when there is one) a path names after it: `a.rs:12:5` is line 12, column 5. `None` without a
+/// line, or with a number no file has.
+pub fn position(text: &str) -> Option<(u32, Option<u32>)> {
+    let (_, after) = split_position(text);
+    let mut numbers = after.split(':').skip(1).map(|n| n.parse::<u32>().ok().filter(|n| *n > 0));
+    let line = numbers.next()??;
+    match numbers.next() {
+        None => Some((line, None)),
+        Some(column) => Some((line, Some(column?))),
+    }
+}
+
+/// The `file:` link of a Windows path, for [`openable`].
+pub fn file_uri(path: &str) -> String {
+    let mut uri = String::from("file:///");
+    for c in path.chars() {
+        match c {
+            '\\' => uri.push('/'),
+            ' ' => uri.push_str("%20"),
+            '%' => uri.push_str("%25"),
+            '#' => uri.push_str("%23"),
+            '?' => uri.push_str("%3F"),
+            c => uri.push(c),
+        }
+    }
+    uri
+}
+
 /// Full-width and CJK punctuation, the ideographic space and the general punctuation of running text: no address a
 /// person writes goes on through them, though the letters around them may be any script.
 fn ends_text(c: char) -> bool {
@@ -347,6 +424,42 @@ mod tests {
         let cells: Vec<char> = "ab https://a.b/c d".chars().collect();
         assert_eq!(find_urls(&cells), [3..16]);
         assert!(find_urls(&[]).is_empty());
+    }
+
+    fn paths(text: &str) -> Vec<String> {
+        let cells: Vec<char> = text.chars().collect();
+        find_paths(&cells).into_iter().map(|range| cells[range].iter().collect()).collect()
+    }
+
+    #[test]
+    fn a_printed_path_is_found_with_its_position_and_without_the_punctuation_after_it() {
+        assert_eq!(paths("error at src\\main.rs:12:5: expected ;"), ["src\\main.rs:12:5"]);
+        assert_eq!(paths("--> crates/a/b.rs:7, see C:\\work\\x.txt."), ["crates/a/b.rs:7", "C:\\work\\x.txt"]);
+        assert_eq!(paths("(.\\run.log) \"..\\up\\notes.md\""), [".\\run.log", "..\\up\\notes.md"]);
+        assert_eq!(paths("貓 a/b.rs\0c"), ["a/b.rs"], "a wide character's spacer ends a word");
+    }
+
+    #[test]
+    fn words_numbers_versions_and_urls_are_not_paths() {
+        assert!(paths("hello 1.2.3 v0.0.21 a.b ... 12:30 https:x").is_empty());
+        assert!(paths("src/ .hidden/.git C:").is_empty());
+    }
+
+    #[test]
+    fn the_position_after_a_path_is_its_line_and_column() {
+        assert_eq!(split_position("src/main.rs:12:5"), ("src/main.rs", ":12:5"));
+        assert_eq!(split_position("C:\\x.txt"), ("C:\\x.txt", ""));
+        assert_eq!(position("src/main.rs:12:5"), Some((12, Some(5))));
+        assert_eq!(position("src/main.rs:12"), Some((12, None)));
+        assert_eq!(position("C:\\x.txt"), None, "the colon of a drive is no position");
+        assert_eq!(position("a.rs:0"), None, "no file has a line 0");
+        assert_eq!(position("a.rs:99999999999"), None, "a number no file has");
+    }
+
+    #[test]
+    fn a_path_becomes_a_file_link_with_what_a_uri_cannot_hold_escaped() {
+        assert_eq!(file_uri("C:\\My Docs\\50% #1?.txt"), "file:///C:/My%20Docs/50%25%20%231%3F.txt");
+        assert_eq!(open_target(&file_uri("C:\\My Docs\\a.txt")).unwrap().target, "C:\\My Docs\\a.txt");
     }
 
     fn accepted(uri: &str) -> OpenTarget {

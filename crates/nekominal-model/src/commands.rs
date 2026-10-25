@@ -61,6 +61,8 @@ pub enum Command {
     EditPaste,
     EditSelectAll,
     EditFind,
+    /// Searches every pane of every tab and lists the matches; the one chosen is shown in its pane, selected.
+    EditSearchTabs,
     EditClear,
     ScrollPageUp,
     ScrollPageDown,
@@ -156,6 +158,7 @@ impl Command {
         Command::EditPaste,
         Command::EditSelectAll,
         Command::EditFind,
+        Command::EditSearchTabs,
         Command::EditClear,
         Command::ScrollPageUp,
         Command::ScrollPageDown,
@@ -245,6 +248,7 @@ impl Command {
             Command::EditPaste => "edit.paste",
             Command::EditSelectAll => "edit.selectAll",
             Command::EditFind => "edit.find",
+            Command::EditSearchTabs => "edit.searchTabs",
             Command::EditClear => "edit.clear",
             Command::ScrollPageUp => "scroll.pageUp",
             Command::ScrollPageDown => "scroll.pageDown",
@@ -333,6 +337,7 @@ impl Command {
             Command::EditPaste => Text::EditPaste,
             Command::EditSelectAll => Text::EditSelectAll,
             Command::EditFind => Text::EditFind,
+            Command::EditSearchTabs => Text::EditSearchTabs,
             Command::EditClear => Text::EditClear,
             Command::ScrollPageUp => Text::ScrollPageUp,
             Command::ScrollPageDown => Text::ScrollPageDown,
@@ -419,6 +424,8 @@ impl Command {
             Command::EditPaste => &["Ctrl+V", "Ctrl+Shift+V", "Shift+Insert"],
             Command::EditSelectAll => &["Ctrl+Shift+A"],
             Command::EditFind => &["Ctrl+Shift+F"],
+            // G for grep: a letter with Ctrl+Shift, which no program needs and an IME lets through.
+            Command::EditSearchTabs => &["Ctrl+Shift+G"],
             Command::ScrollPageUp => &["Ctrl+Shift+PageUp"],
             Command::ScrollPageDown => &["Ctrl+Shift+PageDown"],
             Command::ScrollTop => &["Ctrl+Shift+Home"],
@@ -636,9 +643,10 @@ mod tests {
             Command::AppImportItermColors => 63,
             Command::TabNewWorktree => 64,
             Command::AppSaveLayout => 65,
+            Command::EditSearchTabs => 66,
         }
     }
-    const VARIANTS: usize = 66;
+    const VARIANTS: usize = 67;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

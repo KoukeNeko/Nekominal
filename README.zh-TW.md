@@ -67,7 +67,9 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - 從命令選擇區 **選取或複製指令的輸出**；再按一次會換成前一個指令。失敗的指令在捲軸上有紅色標記，
   Ctrl+Alt+Up／Down 在提示字元之間跳動。
 - **提示選取（Ctrl+Shift+E）。** 畫面上的每個網址、檔案路徑（含 `:行:欄`）與 git 雜湊都會有一個字母標籤，
-  輸入它就複製，Shift+字母則開啟。
+  輸入它就複製，Shift+字母則開啟：帶行號的路徑會在 VS Code（或 Cursor、Windsurf、Zed，或設定中 `editor` 的指令）
+  開到那一行。按住 Ctrl 點一下印出的 `src\main.rs:12:5` 也一樣。
+- **搜尋所有分頁（Ctrl+Shift+G）** 列出每個窗格中符合的結果與所在分頁的標題，按 Enter 就跳過去。
 - **鍵盤選取（Ctrl+Shift+M）**、Alt+拖曳區塊選取、含格式複製（HTML）、把整個窗格匯出成檔案、支援大小寫與規則運算式的搜尋。
 - **建議（Ctrl+Shift+H）**，來自你的片段與 PowerShell 的歷史紀錄。
 
@@ -159,7 +161,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | 放大窗格 · 關閉窗格 | Ctrl+Shift+Z · Ctrl+Shift+W |
 | 提示選取 · 鍵盤選取 · 建議 | Ctrl+Shift+E · Ctrl+Shift+M · Ctrl+Shift+H |
 | 上一個／下一個提示字元 | Ctrl+Alt+Up／Down |
-| 搜尋 · 命令選擇區 · 設定 | Ctrl+Shift+F · Ctrl+Shift+P · Ctrl+, |
+| 搜尋 · 搜尋所有分頁 · 命令選擇區 · 設定 | Ctrl+Shift+F · Ctrl+Shift+G · Ctrl+Shift+P · Ctrl+, |
 | 字型大小 | Ctrl+= · Ctrl+- · Ctrl+0 |
 | 側邊欄 · 全螢幕 · 下拉視窗 | Ctrl+Shift+B · F11 · Win+` |
 

@@ -75,6 +75,8 @@ pub enum Action {
     Entered,
     /// Do this to the saved layout at this index of the names of the layouts.
     Layout(nekominal_model::palette::LayoutAction, usize),
+    /// Show the match at this index of the list of Search all tabs.
+    SearchHit(usize),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).

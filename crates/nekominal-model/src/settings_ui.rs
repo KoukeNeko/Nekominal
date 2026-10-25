@@ -399,6 +399,20 @@ pub const TABLE: &[Descriptor] = &[
     toggle!("restoreSession", Terminal, SettingsRestoreSession, restore_session),
     toggle!("explorerMenu", Advanced, SettingsExplorerMenu, explorer_menu),
     toggle!("inheritEnvironment", Advanced, SettingsInheritEnvironment, inherit_environment),
+    Descriptor {
+        id: "editor",
+        section: Section::Advanced,
+        label: Text::SettingsEditor,
+        control: Control::Text,
+        get: |s| Value::Text(s.editor.clone()),
+        set: |s, v| {
+            if let Value::Text(text) = v
+                && crate::editor::is_valid(&text)
+            {
+                s.editor = text.trim().to_owned();
+            }
+        },
+    },
     // Profiles
     Descriptor {
         id: "defaultProfile",
@@ -612,7 +626,7 @@ mod tests {
         let ids = |section| in_section(section).map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids(Section::Profiles), ["defaultProfile"]);
         assert_eq!(ids(Section::Keys), Vec::<&str>::new(), "the shortcuts page lists commands, not settings");
-        assert_eq!(ids(Section::Advanced), ["explorerMenu", "inheritEnvironment", "language"]);
+        assert_eq!(ids(Section::Advanced), ["explorerMenu", "inheritEnvironment", "editor", "language"]);
         assert_eq!(ids(Section::About), Vec::<&str>::new(), "the About page shows the version, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
@@ -648,6 +662,7 @@ mod tests {
             (Control::Themes, _) => Value::Text("Nord".to_owned()),
             (Control::Profiles, _) => Value::Text("wsl".to_owned()),
             (Control::Text, _) if row.id == "tabs.title.parts" => Value::Text("folder, title|profile".to_owned()),
+            (Control::Text, _) if row.id == "editor" => Value::Text(r#"zed "{file}:{line}""#.to_owned()),
             (Control::Text, _) => Value::Text("Fira Code, Consolas".to_owned()),
             (control, value) => panic!("{}: {control:?} cannot hold {value:?}", row.id),
         }
@@ -694,6 +709,8 @@ mod tests {
             ("tabs.title.parts", Value::Text("folder, branch".into())),
             ("tabs.title.parts", Value::Text(" , ".into())),
             ("osc52", Value::Text("write".into())),
+            ("editor", Value::Text("code -g".into())),
+            ("editor", Value::Text("{file}".into())),
         ] {
             (find(id).unwrap().set)(&mut settings, bad);
             assert_eq!(settings, before, "{id}");

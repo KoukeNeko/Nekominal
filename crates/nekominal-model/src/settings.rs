@@ -534,6 +534,9 @@ pub struct Settings {
     /// A new pane takes the environment Nekominal was started with, rather than the one Windows gives a program started
     /// anew (what Windows Terminal does by default, and its `compatibility.reloadEnvironmentVariables` turns off).
     pub inherit_environment: bool,
+    /// What opens a `file:line:column` of the output: `auto` (VS Code or another editor found), a command line with
+    /// `{file}`, `{line}` and `{column}` (see `editor`), or empty for the default program of the file.
+    pub editor: String,
     /// The welcome of the first start, where the layout is picked, was seen.
     pub welcomed: bool,
     /// Command id to shortcuts; an empty list unbinds a default.
@@ -585,6 +588,7 @@ impl Default for Settings {
             restore_session: false,
             explorer_menu: true,
             inherit_environment: false,
+            editor: crate::editor::AUTO.to_owned(),
             welcomed: false,
             keybindings: BTreeMap::new(),
         }
@@ -1204,6 +1208,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         restore_session: boolean(&root, "restoreSession", d.restore_session, "", &mut problems),
         explorer_menu: boolean(&root, "explorerMenu", d.explorer_menu, "", &mut problems),
         inherit_environment: boolean(&root, "inheritEnvironment", d.inherit_environment, "", &mut problems),
+        editor: text(&root, "editor", &d.editor, "", &mut problems),
         welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
         keybindings: read_keybindings(&root, &mut problems),
     };
@@ -1634,6 +1639,15 @@ mod tests {
         assert!(!Settings::default().inherit_environment);
         let written = round_trips(Settings { inherit_environment: true, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "inheritEnvironment": true }));
+    }
+
+    #[test]
+    fn the_editor_is_found_automatically_unless_a_command_is_given() {
+        assert_eq!(Settings::default().editor, "auto");
+        assert_eq!(parsed_ok(r#""editor": "zed {file}""#).editor, "zed {file}");
+        rejected(r#""editor": 3"#);
+        let written = round_trips(Settings { editor: String::new(), ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "editor": "" }));
     }
 
     #[test]
