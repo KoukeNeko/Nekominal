@@ -212,24 +212,39 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     if names.iter().any(|name| !name.is_empty() && name.trim_end_matches(['.', ' ']).is_empty()) {
         return Err(Refusal::Malformed);
     }
-    // Windows ignores trailing dots and spaces when it opens a file, so `a.exe.` runs a.exe.
-    let last = names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default();
-    let last = last.trim_end_matches(['.', ' ']);
-    if let Some((_, extension)) = last.rsplit_once('.')
-        && EXECUTABLE_EXTENSIONS.iter().any(|runs| extension.eq_ignore_ascii_case(runs))
-    {
+    if runs_code(names.iter().rev().find(|name| !name.is_empty()).copied().unwrap_or_default()) {
         return Err(Refusal::Executable);
     }
     let path: Vec<&str> = std::iter::once(drive).chain(names.iter().copied()).collect();
     Ok(if names.iter().all(|name| name.is_empty()) { format!("{drive}\\") } else { path.join("\\") })
 }
 
+/// Whether a file name has a type that runs code. Windows ignores trailing dots and spaces when it opens a file, so
+/// `a.exe.` runs a.exe.
+fn runs_code(name: &str) -> bool {
+    name.trim_end_matches(['.', ' '])
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| EXECUTABLE_EXTENSIONS.iter().any(|runs| extension.eq_ignore_ascii_case(runs)))
+}
+
 /// What to hand to the shell for a link, or `None` when it may not be opened: [`open_target`]'s target, and for a file
 /// only one that exists as named, because `ShellExecute` tries `.exe`, `.bat` and the other program extensions on a
-/// name that does not (`file:///C:/x/setup` runs setup.exe).
+/// name that does not (`file:///C:/x/setup` runs setup.exe). A file is opened by its full path, checked again: the
+/// name as written may be a short name (`RUN~1.APP` for run.appref-ms) or a link to a program.
 pub fn openable(uri: &str) -> Option<String> {
     let open = open_target(uri).ok()?;
-    (open.kind != LinkKind::File || std::path::Path::new(&open.target).exists()).then_some(open.target)
+    if open.kind != LinkKind::File {
+        return Some(open.target);
+    }
+    let full = std::fs::canonicalize(&open.target).ok()?;
+    if full.file_name().is_some_and(|name| runs_code(&name.to_string_lossy())) {
+        return None;
+    }
+    let full = full.into_os_string().into_string().ok()?;
+    Some(match full.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => full.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(full),
+    })
 }
 
 /// `decodeURIComponent` of a path: an invalid escape, or a result that is not UTF-8, is an error.
@@ -408,5 +423,29 @@ mod tests {
         assert!(open_target("file:///C:/x/exe").is_ok());
         assert!(open_target("file:///C:/x/folder.d/").is_ok());
         assert!(open_target("file:///C:/x/a.pdf").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_that_runs_code_is_refused_by_its_short_name_too() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let dir = std::env::temp_dir().join(format!("nekominal-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = |path: &std::path::Path| format!("file:///{}", path.display().to_string().replace('\\', "/").replace(' ', "%20"));
+        let (runs, text) = (dir.join("a.appref-ms"), dir.join("a.txt"));
+        std::fs::write(&runs, "").unwrap();
+        std::fs::write(&text, "").unwrap();
+        assert_eq!(openable(&uri(&runs)), None);
+        assert_eq!(openable(&uri(&text)).as_deref(), Some(std::fs::canonicalize(&text).unwrap().to_str().unwrap().trim_start_matches(r"\\?\")));
+        let wide: Vec<u16> = runs.as_os_str().encode_wide().chain([0]).collect();
+        let mut short = vec![0u16; 1024];
+        let len = unsafe { windows_sys::Win32::Storage::FileSystem::GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), 1024) } as usize;
+        let short = std::path::PathBuf::from(std::ffi::OsString::from_wide(&short[..len]));
+        // Skipped where the volume makes no short names: the short path is then the long one.
+        if short.file_name() != runs.file_name() {
+            assert!(open_target(&uri(&short)).is_ok(), "{short:?} is not refused by its name alone");
+            assert_eq!(openable(&uri(&short)), None, "{short:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
