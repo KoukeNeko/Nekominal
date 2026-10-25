@@ -46,8 +46,6 @@ pub struct RendererConfig {
     /// default 1.6 adds about 9% ink at 72% opacity and 12-14% at 50% (measured as coverage mass of mixed
     /// Latin / CJK text, light and dark). 0.0 turns it off.
     pub translucent_text_boost: f32,
-    /// Run shaping for ligature-capable fonts (Cascadia Code, ...).
-    pub ligatures: bool,
     pub atlas_initial: u32,
     /// Largest side of a glyph atlas texture. 2048 holds about 17,000 distinct wide CJK glyphs (5,000 use 28%
     /// of it), which is more than the Traditional Chinese characters in everyday use; past it the atlas
@@ -71,7 +69,6 @@ impl Default for RendererConfig {
             grayscale_contrast: 0.5,
             lcd_contrast: 0.5,
             translucent_text_boost: 1.6,
-            ligatures: false,
             atlas_initial: 1024,
             atlas_max: 2048,
         }
@@ -237,9 +234,6 @@ pub struct PaneDraw<'a> {
     pub rect: [u32; 4],
 }
 
-/// Per-cell glyph ids of a shaped run of ASCII symbols, `None` when shaping changed nothing.
-pub(crate) type LigatureCache = FxHashMap<(Box<str>, Style), Option<Arc<[u16]>>>;
-
 pub struct Renderer {
     pub(crate) gpu: Gpu,
     pub cfg: RendererConfig,
@@ -253,7 +247,6 @@ pub struct Renderer {
     pub(crate) glyph_cache: FxHashMap<GlyphKey, CachedGlyph>,
     pub(crate) sprite_cache: FxHashMap<(SpriteKey, u32, u32), Option<CachedBitmap>>,
     pub(crate) cluster_cache: FxHashMap<ClusterKey, Arc<[PlacedGlyph]>>,
-    pub(crate) ligature_cache: LigatureCache,
     pub(crate) epoch: u64,
     pub(crate) gpu_gen: u64,
     pub(crate) lcd_supported: bool,
@@ -330,7 +323,6 @@ impl Renderer {
             glyph_cache: FxHashMap::default(),
             sprite_cache: FxHashMap::default(),
             cluster_cache: FxHashMap::default(),
-            ligature_cache: FxHashMap::default(),
             epoch: 0,
             gpu_gen: 0,
             lcd_supported,
@@ -426,7 +418,6 @@ impl Renderer {
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
-        self.ligature_cache.clear();
         self.atlas_gray.clear();
         self.atlas_rgba.clear();
         self.stats.atlas_clears += 1;

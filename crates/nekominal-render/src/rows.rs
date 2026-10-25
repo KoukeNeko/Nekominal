@@ -196,7 +196,6 @@ impl Renderer {
         };
 
         let lcd_on = self.lcd_active();
-        let lig = if self.cfg.ligatures { self.ligature_overrides(&cells) } else { Vec::new() };
         let mut bg_run: Option<(usize, [u8; 4])> = None;
         let mut ul_rects: Vec<RectInstance> = Vec::new();
         let mut ul2_rects: Vec<RectInstance> = Vec::new();
@@ -313,13 +312,7 @@ impl Renderer {
             if !hidden && !blank {
                 let fg_px = rgba(fg, 255);
                 let style = style_of(cell.flags);
-                let lig_glyph = lig.get(c).copied().unwrap_or(0);
-                let placed: Arc<[PlacedGlyph]> = match self.fonts.primary(style) {
-                    Some(primary) if lig_glyph != 0 && span == 1 && zw.is_empty() => {
-                        self.place_single(primary, lig_glyph, style, 1)?.into()
-                    }
-                    _ => self.cluster_glyphs(cell.ch, zw, style, span as u8)?,
-                };
+                let placed = self.cluster_glyphs(cell.ch, zw, style, span as u8)?;
                 for g in placed.iter() {
                     let mut dst_y = y0 + g.dy;
                     let mut src_y = g.bitmap.src[1] as i32;
@@ -413,71 +406,6 @@ impl Renderer {
         }
         out.glyphs.extend(sprite_ul);
         Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // Ligatures: shape runs of ASCII symbol cells with the primary face and keep
-    // one glyph per cell (Cascadia Code `calt` spreads a ligature over N cells).
-    // -----------------------------------------------------------------------
-
-    fn ligature_overrides(&mut self, cells: &[Cell]) -> Vec<u16> {
-        let mut over = vec![0u16; cells.len()];
-        let candidate = |cell: &Cell| {
-            cell.ch.is_ascii_graphic()
-                && cell.extra.is_none()
-                && !cell.flags.has(CellFlags::WIDE | CellFlags::WIDE_SPACER)
-        };
-        let mut c = 0;
-        while c < cells.len() {
-            if !candidate(&cells[c]) {
-                c += 1;
-                continue;
-            }
-            let style = style_of(cells[c].flags);
-            let mut end = c + 1;
-            while end < cells.len() && candidate(&cells[end]) && style_of(cells[end].flags) == style {
-                end += 1;
-            }
-            if end - c >= 2 {
-                let text: String = cells[c..end].iter().map(|x| x.ch).collect();
-                let key: (Box<str>, Style) = (text.as_str().into(), style);
-                let glyphs = match self.ligature_cache.get(&key) {
-                    Some(v) => v.clone(),
-                    None => {
-                        let v = self.shape_run(&text, style);
-                        self.ligature_cache.insert(key, v.clone());
-                        v
-                    }
-                };
-                if let Some(gs) = glyphs {
-                    for (i, g) in gs.iter().enumerate() {
-                        over[c + i] = *g;
-                    }
-                }
-            }
-            c = end;
-        }
-        over
-    }
-
-    /// Per-cell glyph ids for a run, or None when shaping changed nothing or
-    /// the glyph count no longer matches the cell count.
-    fn shape_run(&mut self, text: &str, style: Style) -> Option<Arc<[u16]>> {
-        let choice = self.fonts.primary(style)?;
-        let face = self.fonts.face(choice.face);
-        let font = face.shaping_font()?;
-        let sf = harfrust::ShaperFont::new(font);
-        let mut buf = harfrust::Buffer::new();
-        buf.push_str(text);
-        buf.guess_segment_properties();
-        harfrust::shape(&sf, &mut buf, harfrust::ShapeOptions::new()).ok()?;
-        let infos = buf.glyph_infos();
-        if infos.len() != text.chars().count() {
-            return None;
-        }
-        let glyphs: Vec<u16> = infos.iter().map(|i| i.glyph_id as u16).collect();
-        let nominal: Vec<u16> = text.chars().map(|ch| face.glyph(ch)).collect();
-        (glyphs != nominal).then(|| glyphs.into())
     }
 
     // -----------------------------------------------------------------------
