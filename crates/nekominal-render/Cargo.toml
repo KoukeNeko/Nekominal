@@ -19,11 +19,11 @@ png = { workspace = true, optional = true }
 memmap2 = { workspace = true }
 rustc-hash = { workspace = true }
 unicode-width = { workspace = true }
-unicode-segmentation = { workspace = true }
 
 [dev-dependencies]
 # This crate's own tests and examples drive the renderer headlessly.
 nekominal-render = { workspace = true, features = ["offscreen"] }
+unicode-segmentation = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
