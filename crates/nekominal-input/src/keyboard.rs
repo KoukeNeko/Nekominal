@@ -25,7 +25,8 @@ pub(crate) struct Norm<'a> {
     base: Option<char>,
 }
 
-fn lower(c: char) -> char {
+/// The lower case of `c` when it is a single character, else `c`.
+pub(crate) fn lower(c: char) -> char {
     let mut it = c.to_lowercase();
     match (it.next(), it.next()) {
         (Some(l), None) => l,
@@ -33,7 +34,8 @@ fn lower(c: char) -> char {
     }
 }
 
-fn upper(c: char) -> char {
+/// The upper case of `c` when it is a single character, else `c`.
+pub(crate) fn upper(c: char) -> char {
     let mut it = c.to_uppercase();
     match (it.next(), it.next()) {
         (Some(u), None) => u,
