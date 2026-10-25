@@ -395,21 +395,6 @@ impl Backdrop {
         Backdrop::ALL.iter().position(|choice| *choice == self).map_or(-1, |at| at as i32)
     }
 
-    /// The choice at a selected index; `None` for -1, which a list reports while it moves its selection.
-    pub fn from_index(index: i32) -> Option<Backdrop> {
-        usize::try_from(index).ok().and_then(|at| Backdrop::ALL.get(at).copied())
-    }
-
-    /// The order the "switch backdrop" command cycles through.
-    pub fn next(self) -> Backdrop {
-        match self {
-            Backdrop::Acrylic => Backdrop::Mica,
-            Backdrop::Mica => Backdrop::MicaAlt,
-            Backdrop::MicaAlt => Backdrop::None,
-            Backdrop::None => Backdrop::Acrylic,
-        }
-    }
-
     pub fn text(self) -> Text {
         match self {
             Backdrop::Acrylic => Text::BackdropAcrylic,
@@ -1551,19 +1536,6 @@ mod tests {
     }
 
     #[test]
-    fn the_backdrop_command_visits_every_backdrop_and_comes_back() {
-        let mut seen = vec![Backdrop::Acrylic];
-        let mut current = Backdrop::Acrylic;
-        for _ in 0..3 {
-            current = current.next();
-            assert!(!seen.contains(&current), "{current:?} came up twice");
-            seen.push(current);
-        }
-        assert_eq!(current.next(), Backdrop::Acrylic);
-        assert_eq!(seen, vec![Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]);
-    }
-
-    #[test]
     fn osc52_lets_programs_copy_but_never_read_unless_the_file_says_so() {
         assert_eq!(Settings::default().osc52, Osc52Policy::Write);
         for (name, expected) in [("off", Osc52Policy::Off), ("write", Osc52Policy::Write), ("read-write", Osc52Policy::ReadWrite)] {
@@ -1597,14 +1569,10 @@ mod tests {
     }
 
     #[test]
-    fn a_backdrop_list_maps_selected_indexes_both_ways_and_ignores_no_selection() {
+    fn a_backdrop_list_maps_each_choice_to_its_selected_index() {
         for (at, backdrop) in Backdrop::ALL.into_iter().enumerate() {
             assert_eq!(backdrop.index(), at as i32);
-            assert_eq!(Backdrop::from_index(at as i32), Some(backdrop));
         }
-        // A list reports -1 while its selection moves from one choice to the next: that is not a choice.
-        assert_eq!(Backdrop::from_index(-1), None);
-        assert_eq!(Backdrop::from_index(Backdrop::ALL.len() as i32), None);
     }
 
     #[test]

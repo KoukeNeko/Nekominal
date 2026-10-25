@@ -113,15 +113,6 @@ pub struct Parsed {
 }
 
 impl Session {
-    /// The first pane id no pane of the session uses, for the pane ids the caller hands out after restoring.
-    pub fn next_pane_id(&self) -> PaneId {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.layout.pane_ids())
-            .max()
-            .map_or(1, |highest| highest + 1)
-    }
-
     /// The file contents. Pane ids are not written: panes are identified by their place in the tree.
     pub fn to_json(&self) -> String {
         let mut root = Map::new();
@@ -140,7 +131,7 @@ impl Session {
     }
 
     /// Reads the file contents. Pane ids are assigned afresh, from 1, in tab order and then tree order, so
-    /// they are unique across the whole session; continue with [`Session::next_pane_id`].
+    /// they are unique across the whole session.
     pub fn parse(text: &str) -> Parsed {
         let mut problems = Vec::new();
         let session = read_session(text, &mut problems).unwrap_or_default();
@@ -587,7 +578,6 @@ mod tests {
             (3, Some(4)),
             "active and zoomed follow their panes"
         );
-        assert_eq!(restored.next_pane_id(), 5);
     }
 
     #[test]
@@ -609,7 +599,6 @@ mod tests {
             json!({ "version": 1, "activeTab": 0, "tabs": [] })
         );
         assert_eq!(parse_ok(&json), Session::default());
-        assert_eq!(Session::default().next_pane_id(), 1);
     }
 
     #[test]
