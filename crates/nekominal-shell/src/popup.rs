@@ -199,11 +199,12 @@ pub fn layout(rows: &[Row], width: f32) -> (Vec<Rect>, (f32, f32)) {
     (rects, (width, y + PADDING))
 }
 
-/// Two equally sized buttons; Cancel is first and is the initial keyboard choice.
-pub fn dialog_buttons(width: f32) -> (Vec<Rect>, (f32, f32)) {
+/// Two equally sized buttons; Cancel is first and is the initial keyboard choice. A notice has one button, in the place
+/// of the second (`count` 1).
+pub fn dialog_buttons(width: f32, count: usize) -> (Vec<Rect>, (f32, f32)) {
     let button_width = (width - 3.0 * PADDING) / 2.0;
-    (vec![Rect::new(PADDING, PADDING, button_width, ROW_HEIGHT),
-          Rect::new(2.0 * PADDING + button_width, PADDING, button_width, ROW_HEIGHT)],
+    let second = Rect::new(2.0 * PADDING + button_width, PADDING, button_width, ROW_HEIGHT);
+    (if count == 1 { vec![second] } else { vec![Rect::new(PADDING, PADDING, button_width, ROW_HEIGHT), second] },
      (width, ROW_HEIGHT + 2.0 * PADDING))
 }
 
@@ -227,7 +228,7 @@ pub fn paint_confirmation(ui: &mut Ui, heading: &str, rows: &[Row], hover: Optio
     }
     ui.text(16.0, y, &text, font_size, color(glass.text()), false);
     ui.pop_clip();
-    let (rects, _) = dialog_buttons(width);
+    let (rects, _) = dialog_buttons(width, rows.len());
     for (i, (row, rect)) in rows.iter().zip(rects).enumerate() {
         let rect = Rect::new(rect.x, rect.y + DIALOG_HEADER, rect.w, rect.h);
         crate::widgets::button(ui, &glass, rect, crate::widgets::State::chosen(hover == Some(i), false));
@@ -304,7 +305,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
         Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
     };
-    let (rects, rows_size) = if kind == Kind::Confirm { dialog_buttons(width) } else { layout(&rows, width) };
+    let (rects, rows_size) = if kind == Kind::Confirm { dialog_buttons(width, rows.len()) } else { layout(&rows, width) };
     let content_height = rows_size.1;
     let size = (width, fixed_height.unwrap_or(header + rows_size.1));
     let (w, h) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
@@ -416,7 +417,7 @@ mod tests {
     fn dialog_buttons_are_separate_equal_and_hit_only_their_own_action() {
         let rows = vec![Row { action: Some(Action::Cancel), ..row("Cancel") },
                         Row { action: Some(Action::Confirm), ..row("Close") }];
-        let (rects, size) = dialog_buttons(DIALOG_WIDTH);
+        let (rects, size) = dialog_buttons(DIALOG_WIDTH, 2);
         assert_eq!(rects[0].w, rects[1].w);
         assert!(rects[0].x + rects[0].w < rects[1].x);
         for (i, rect) in rects.iter().enumerate() {
@@ -435,7 +436,7 @@ mod tests {
         let rows = vec![Row { action: Some(Action::Cancel), ..row("取消") },
                         Row { action: Some(Action::Confirm), ..row("關閉") }];
         for scale in [1.0, 1.5] {
-            let height = DIALOG_HEADER + dialog_buttons(DIALOG_WIDTH).1.1;
+            let height = DIALOG_HEADER + dialog_buttons(DIALOG_WIDTH, 2).1.1;
             let size = ((DIALOG_WIDTH * scale) as u32, (height * scale) as u32);
             let target = OffscreenTarget::new(&gpu, size.0, size.1);
             gpu.clear(&target.view, [0.03, 0.03, 0.03, 1.0]);
@@ -461,7 +462,7 @@ mod tests {
             };
             assert!(ink(Rect::new(16.0, 12.0, DIALOG_WIDTH - 32.0, 28.0)) > 30, "question missing");
             assert!(ink(Rect::new(16.0, 16.0 + line_height, DIALOG_WIDTH - 32.0, line_height)) > 20, "wrapped text missing");
-            for rect in dialog_buttons(DIALOG_WIDTH).0 {
+            for rect in dialog_buttons(DIALOG_WIDTH, 2).0 {
                 assert!(ink(Rect::new(rect.x + 12.0, DIALOG_HEADER + rect.y + 6.0, rect.w - 24.0, rect.h - 12.0)) > 10,
                         "button label missing at {scale}x");
             }

@@ -352,6 +352,8 @@ enum Confirmation {
     /// The tabs with these uids, closed together.
     CloseTabs(Vec<u64>),
     CloseWindow,
+    /// A notice: nothing to do when it closes.
+    Notice,
 }
 
 /// Tells window `hwnd` that the device is gone; it makes everything again once no window is borrowed.
@@ -1878,17 +1880,28 @@ impl App {
     }
 
     fn confirm(&mut self, title: String, accept: Text, action: Confirmation) {
-        if self.confirmation.is_some() {
-            return;
-        }
-        self.close_popup();
         let lang = self.language();
         let rows = vec![
             popup::Row { label: Text::CommonCancel.get(lang).into(), hint: String::new(), action: Some(popup::Action::Cancel), current: false, mark: None, program: None },
             popup::Row { label: accept.get(lang).into(), hint: String::new(), action: Some(popup::Action::Confirm), current: false, mark: None, program: None },
         ];
+        self.dialog(title, rows, action);
+    }
+
+    /// Tells the user something that needs no answer: a dialog with one button that closes it.
+    fn inform(&mut self, title: String) {
+        let ok = Text::CommonOk.get(self.language()).into();
+        let rows = vec![popup::Row { label: ok, hint: String::new(), action: Some(popup::Action::Cancel), current: false, mark: None, program: None }];
+        self.dialog(title, rows, Confirmation::Notice);
+    }
+
+    fn dialog(&mut self, title: String, rows: Vec<popup::Row>, action: Confirmation) {
+        if self.confirmation.is_some() {
+            return;
+        }
+        self.close_popup();
         let size = self.surface.size();
-        let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH).1.1;
+        let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH, 2).1.1;
         let anchor = self.screen_point((size.0 as f32 + popup::DIALOG_WIDTH * self.scale) / 2.0,
                                       (size.1 as f32 - height * self.scale) / 2.0 - 4.0 * self.scale);
         match popup::open(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark()) {
@@ -4123,29 +4136,59 @@ impl App {
         let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
         let packages = ["Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe"];
         let files = packages.map(|package| local.join("Packages").join(package).join("LocalState")).into_iter().chain([local.join("Microsoft").join("Windows Terminal")]);
+        let mut added = Vec::new();
+        let mut failed = Vec::new();
         for path in files.map(|folder| folder.join("settings.json")) {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
             match settings::import_schemes(&mut self.settings, &text) {
-                Ok(added) => util::log(&format!("import schemes: {} from {}: {}", added.len(), path.display(), added.join(", "))),
-                Err(e) => util::log(&format!("import schemes: {}: {e}", path.display())),
+                Ok(names) => added.extend(names),
+                Err(e) => {
+                    util::log(&format!("import schemes: {}: {e}", path.display()));
+                    failed.push(path.display().to_string());
+                }
             }
         }
         self.apply_settings(&before);
+        self.report_import(&added, &failed);
+    }
+
+    /// Says what an import of colour schemes added, and what it could not read.
+    fn report_import(&mut self, added: &[String], failed: &[String]) {
+        let lang = self.language();
+        let mut lines = Vec::new();
+        if added.is_empty() {
+            lines.push(Text::SchemesNoneNew.get(lang).to_owned());
+        } else {
+            lines.push(Text::SchemesImported.format(lang, &[&added.len(), &added.join("、")]));
+        }
+        if !failed.is_empty() {
+            lines.push(Text::SchemesNotImported.format(lang, &[&failed.join("、")]));
+        }
+        self.inform(lines.join(" "));
     }
 
     /// Adds the schemes of the iTerm2 colour presets the user picks, each named after its file, and keeps them in the file.
     fn import_itermcolors(&mut self) {
         let files = crate::pick::color_presets(self.hwnd);
         self.wake_after_dialog();
+        if files.is_empty() {
+            return;
+        }
         let before = self.settings.clone();
+        let (mut added, mut failed) = (Vec::new(), Vec::new());
         for path in files.iter().map(std::path::Path::new) {
             let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
             let result = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| settings::import_itermcolors(&mut self.settings, &name, &text));
-            if let Err(e) = result {
-                util::log(&format!("import {}: {e}", path.display()));
+            match result {
+                Ok(()) => added.push(name),
+                Err(e) => {
+                    util::log(&format!("import {}: {e}", path.display()));
+                    failed.push(name);
+                }
             }
         }
         self.apply_settings(&before);
+        self.report_import(&added, &failed);
     }
 
     /// Puts what differs from `before` in effect and keeps the settings in the file.
@@ -5170,7 +5213,7 @@ impl App {
                 Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
                 Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
-                None => {}
+                Some(Confirmation::Notice) | None => {}
             },
             Some(popup::Action::Cancel) => {},
             Some(popup::Action::Command(command)) => self.run(command),

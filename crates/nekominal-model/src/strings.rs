@@ -137,6 +137,9 @@ texts! {
     AppReloadSettings "app.reloadSettings" "重新載入設定" "Reload settings";
     AppImportSchemes "app.importSchemes" "從 Windows Terminal 匯入色彩配置" "Import color schemes from Windows Terminal";
     AppImportItermColors "app.importItermColors" "匯入 iTerm2 色彩配置（.itermcolors）" "Import iTerm2 color presets (.itermcolors)";
+    SchemesImported "schemes.imported" "已匯入 {0} 個色彩配置：{1}" "Imported {0} color schemes: {1}";
+    SchemesNoneNew "schemes.noneNew" "沒有新的色彩配置可以匯入" "No new color schemes to import";
+    SchemesNotImported "schemes.notImported" "無法匯入：{0}" "Could not import: {0}";
     AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
     AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
     AppearanceOpacityDown "appearance.opacity.down" "降低背景不透明度" "Decrease background opacity";
@@ -199,6 +202,7 @@ texts! {
     // Buttons shared by dialogs. A confirmation's button names the action; Paste uses `EditPaste`.
     CommonClose "common.close" "關閉" "Close";
     CommonCancel "common.cancel" "取消" "Cancel";
+    CommonOk "common.ok" "確定" "OK";
     CommonRetry "common.retry" "重試" "Retry";
     CommonAuto "common.auto" "自動" "Automatic";
     // A row of the settings drawer that differs from its default: the button that puts it back, and the two buttons that
