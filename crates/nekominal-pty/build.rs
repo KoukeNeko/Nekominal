@@ -6,10 +6,14 @@ fn main() {
 
 /// Copies the bundled conpty.dll / OpenConsole.exe pair next to the built executables (and the
 /// test binaries in `deps`) so `cargo run` and `cargo test` load the same matched pair that a
-/// release ships. Run `scripts/fetch-conpty.ps1` to populate `resources/`.
+/// release ships. Run `scripts/fetch-conpty.ps1` to populate `resources/` (`-Arch arm64` for
+/// `resources/arm64/`, the pair of an ARM64 build).
 fn stage_conpty() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let source = manifest_dir.join("resources");
+    let mut source = manifest_dir.join("resources");
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        source.push("arm64");
+    }
     println!("cargo:rerun-if-changed={}", source.display());
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") || !source.is_dir() {

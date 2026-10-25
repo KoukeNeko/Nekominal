@@ -5,6 +5,7 @@ target/
 /crates/nekominal-pty/resources/conpty.dll
 /crates/nekominal-pty/resources/OpenConsole.exe
 /crates/nekominal-pty/resources/VERSION
+/crates/nekominal-pty/resources/arm64/
 
 # Previous Tauri + TypeScript prototype: kept on disk for reference, not part of the history
 /legacy/
