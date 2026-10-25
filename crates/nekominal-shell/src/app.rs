@@ -257,6 +257,8 @@ pub struct App {
     quake: bool,
     /// Points the font of this window's panes is larger (or smaller) than the settings say: Ctrl+= and Ctrl+-, not saved.
     zoom: f64,
+    /// The session file was written by a newer version: it is left as it is.
+    newer_session: bool,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -562,6 +564,7 @@ impl App {
             focus_mode: false,
             quake: false,
             zoom: 0.0,
+            newer_session: false,
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -5000,8 +5003,9 @@ impl App {
     /// Writes the tabs, the layout of their panes, the directories they were in and the place of the window, for the next run
     /// to start where this one stopped. A window with no tab left writes an empty session: the next run starts afresh.
     pub fn save_session(&self) {
-        // A window with no tab (one that handed its tab to an elevated window) must not wipe the session of the others.
-        if self.tabs.is_empty() {
+        // A window with no tab (one that handed its tab to an elevated window) must not wipe the session of the others, and
+        // a session a newer version wrote is kept for it.
+        if self.tabs.is_empty() || self.newer_session {
             return;
         }
         let Some(path) = store::session_path() else { return };
@@ -5035,6 +5039,7 @@ impl App {
     /// Starts the tabs of the saved session. False when there is nothing to restore (or nothing could be started).
     fn restore_session(&mut self) -> bool {
         let Some(text) = store::session_path().and_then(|path| store::load(&path).ok().flatten()) else { return false };
+        self.newer_session = session::written_by_newer(&text);
         let parsed = session::Session::parse(&text);
         for problem in &parsed.problems {
             util::log(&format!("session: {problem}"));

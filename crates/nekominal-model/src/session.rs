@@ -15,6 +15,15 @@ use crate::layout::{Axis, MAX_RATIO, MIN_RATIO, Node, PaneId, Split};
 
 /// The version written, and the newest one read.
 pub const VERSION: u32 = 1;
+
+/// The session file was written by a newer version of the app, which this one cannot read: it must not be written over
+/// either, or going back to the newer version loses its tabs.
+pub fn written_by_newer(text: &str) -> bool {
+    serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+        .ok()
+        .and_then(|document| document.get("version").and_then(Value::as_u64))
+        .is_some_and(|version| version > u64::from(VERSION))
+}
 /// More tabs or panes than this in a file are dropped: the file is outside the program's control, and
 /// restoring would start one shell for each.
 pub const MAX_TABS: usize = 100;
@@ -469,6 +478,13 @@ impl TabReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_of_a_newer_version_is_told_apart_from_one_this_version_writes() {
+        assert!(written_by_newer(&format!(r#"{{ "version": {} }}"#, VERSION + 1)));
+        assert!(!written_by_newer(&format!(r#"{{ "version": {VERSION} }}"#)));
+        assert!(!written_by_newer("not json"), "a broken file is no newer version: it is written over");
+    }
 
     fn pane(profile: &str, cwd: Option<&str>) -> PaneRecord {
         PaneRecord {
