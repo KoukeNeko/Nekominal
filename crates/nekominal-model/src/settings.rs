@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
+    commands::Command,
     strings::{Lang, Text},
     themes,
 };
@@ -394,21 +395,6 @@ impl Backdrop {
         Backdrop::ALL.iter().position(|choice| *choice == self).map_or(-1, |at| at as i32)
     }
 
-    /// The choice at a selected index; `None` for -1, which a list reports while it moves its selection.
-    pub fn from_index(index: i32) -> Option<Backdrop> {
-        usize::try_from(index).ok().and_then(|at| Backdrop::ALL.get(at).copied())
-    }
-
-    /// The order the "switch backdrop" command cycles through.
-    pub fn next(self) -> Backdrop {
-        match self {
-            Backdrop::Acrylic => Backdrop::Mica,
-            Backdrop::Mica => Backdrop::MicaAlt,
-            Backdrop::MicaAlt => Backdrop::None,
-            Backdrop::None => Backdrop::Acrylic,
-        }
-    }
-
     pub fn text(self) -> Text {
         match self {
             Backdrop::Acrylic => Text::BackdropAcrylic,
@@ -644,6 +630,8 @@ pub enum Expected {
     /// A colour scheme that exists; this is the name that was not found.
     KnownTheme(String),
     KnownCommand,
+    /// A shortcut no other binding of the user has; this is the command that has it.
+    Clash(Command),
     /// A shortcut that can be read; this is the text that could not be.
     Shortcut(String),
     /// The whole file is not JSON; this is what the parser said.
@@ -672,6 +660,7 @@ impl Expected {
             Expected::Required => Text::ProblemRequired.get(lang).to_owned(),
             Expected::KnownTheme(name) => Text::ProblemUnknownTheme.format(lang, &[name]),
             Expected::KnownCommand => Text::ProblemUnknownCommand.get(lang).to_owned(),
+            Expected::Clash(owner) => Text::KeyConflict.format(lang, &[&owner.label(lang)]),
             Expected::Shortcut(text) => Text::ProblemBadShortcut.format(lang, &[text]),
             Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
             Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),
@@ -836,15 +825,44 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             continue;
         }
         let name = text(map, "name", if program.is_empty() { &given_id } else { &program }, &path, problems);
+        // What cannot be read is reported and the rest of the entry kept, so that the user sees it before a save drops it.
         let args = match map.get("args") {
-            Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
-            _ => Vec::new(),
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    let arg = v.as_str().map(str::to_owned);
+                    if arg.is_none() {
+                        problems.fail(&path, &format!("args[{i}]"), Expected::Text);
+                    }
+                    arg
+                })
+                .collect(),
+            Some(_) => {
+                problems.fail(&path, "args", Expected::Array);
+                Vec::new()
+            }
         };
         let cwd = text(map, "cwd", "", &path, problems);
         // An empty id could never be picked (the empty default profile means "the first one").
-        let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| format!("custom-{name}"));
+        // Profiles of one name get ids of their own (`custom-Node`, `custom-Node-2`), or merge would keep only the first.
+        let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| {
+            (1..)
+                .map(|n| if n == 1 { format!("custom-{name}") } else { format!("custom-{name}-{n}") })
+                .find(|id| !profiles.iter().any(|p: &CustomProfile| p.id == *id))
+                .unwrap_or_default()
+        });
         let env = match map.get("env") {
-            Some(Value::Object(vars)) => vars.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect(),
+            Some(Value::Object(vars)) => vars
+                .iter()
+                .filter_map(|(k, v)| {
+                    if !v.is_string() {
+                        problems.fail(&format!("{path}.env"), k, Expected::Text);
+                    }
+                    Some((k.clone(), v.as_str()?.to_owned()))
+                })
+                .collect(),
             Some(_) => {
                 problems.fail(&path, "env", Expected::Object);
                 BTreeMap::new()
@@ -852,7 +870,8 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             None => BTreeMap::new(),
         };
         let scheme = text(map, "colorScheme", "", &path, problems);
-        let font_size = map.get("fontSize").and_then(Value::as_f64).filter(|size| (FONT_SIZE_RANGE.0..=FONT_SIZE_RANGE.1).contains(size));
+        // NaN stands for a size that was reported: the profile then follows the window's.
+        let font_size = map.contains_key("fontSize").then(|| number(map, "fontSize", f64::NAN, FONT_SIZE_RANGE, &path, problems)).filter(|size| !size.is_nan());
         let elevate = boolean(map, "elevate", false, &path, problems);
         profiles.push(CustomProfile {
             id,
@@ -1371,11 +1390,11 @@ mod tests {
         ] }"#);
         let admin = &result.settings.profiles[0];
         assert_eq!(admin.options.env.get("LANG").map(String::as_str), Some("zh_TW"));
-        assert!(!admin.options.env.contains_key("BAD"), "a value that is not text is left out");
+        assert!(!admin.options.env.contains_key("BAD"), "a value that is not text is left out, reported");
         assert_eq!((admin.options.color_scheme.as_deref(), admin.options.font_size, admin.options.elevate), (Some("Nord"), Some(14.0), true));
         assert_eq!((result.settings.profiles[1].program.as_str(), result.settings.profiles[1].cwd.as_deref()), ("", Some("D:\\")), "an id alone adjusts a profile found on the machine");
         assert_eq!(result.settings.profiles.len(), 2, "no program and no id: nothing to run, reported");
-        assert_eq!(result.problems.len(), 1, "{:?}", result.problems);
+        assert_eq!(result.problems.len(), 2, "{:?}", result.problems);
         let written = round_trips(Settings { profiles: vec![admin.clone()], ..Settings::default() });
         let value: Value = serde_json::from_str(&written).unwrap();
         assert_eq!(value["profiles"][0]["colorScheme"], "Nord");
@@ -1529,19 +1548,6 @@ mod tests {
     }
 
     #[test]
-    fn the_backdrop_command_visits_every_backdrop_and_comes_back() {
-        let mut seen = vec![Backdrop::Acrylic];
-        let mut current = Backdrop::Acrylic;
-        for _ in 0..3 {
-            current = current.next();
-            assert!(!seen.contains(&current), "{current:?} came up twice");
-            seen.push(current);
-        }
-        assert_eq!(current.next(), Backdrop::Acrylic);
-        assert_eq!(seen, vec![Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None]);
-    }
-
-    #[test]
     fn osc52_lets_programs_copy_but_never_read_unless_the_file_says_so() {
         assert_eq!(Settings::default().osc52, Osc52Policy::Write);
         for (name, expected) in [("off", Osc52Policy::Off), ("write", Osc52Policy::Write), ("read-write", Osc52Policy::ReadWrite)] {
@@ -1575,14 +1581,10 @@ mod tests {
     }
 
     #[test]
-    fn a_backdrop_list_maps_selected_indexes_both_ways_and_ignores_no_selection() {
+    fn a_backdrop_list_maps_each_choice_to_its_selected_index() {
         for (at, backdrop) in Backdrop::ALL.into_iter().enumerate() {
             assert_eq!(backdrop.index(), at as i32);
-            assert_eq!(Backdrop::from_index(at as i32), Some(backdrop));
         }
-        // A list reports -1 while its selection moves from one choice to the next: that is not a choice.
-        assert_eq!(Backdrop::from_index(-1), None);
-        assert_eq!(Backdrop::from_index(Backdrop::ALL.len() as i32), None);
     }
 
     #[test]
@@ -1627,6 +1629,24 @@ mod tests {
         let result = parsed(r#"{ "profiles": [ { "id": "", "name": "Node", "program": "node.exe" } ] }"#);
         assert!(result.problems.is_empty(), "{:?}", result.problems);
         assert_eq!(result.settings.profiles[0].id, "custom-Node");
+    }
+
+    #[test]
+    fn profiles_of_one_name_without_ids_get_ids_of_their_own() {
+        let result = parsed(r#"{ "profiles": [ { "name": "Node", "program": "a.exe" }, { "name": "Node", "program": "b.exe" }, { "name": "Node", "program": "c.exe" } ] }"#);
+        let ids: Vec<&str> = result.settings.profiles.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["custom-Node", "custom-Node-2", "custom-Node-3"]);
+    }
+
+    #[test]
+    fn a_profile_value_that_cannot_be_read_is_reported_and_the_rest_of_the_entry_kept() {
+        let result = parsed(r#"{ "profiles": [ { "name": "Node", "program": "node.exe", "fontSize": 80, "env": { "N": 1, "A": "b" }, "args": [1, "x"] } ] }"#);
+        let keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["profiles[0].args[0]", "profiles[0].env.N", "profiles[0].fontSize"]);
+        let profile = &result.settings.profiles[0];
+        assert_eq!((&profile.args[..], profile.options.font_size), (&["x".to_owned()][..], None));
+        assert_eq!(profile.options.env.keys().collect::<Vec<_>>(), ["A"]);
+        assert_eq!(parsed(r#"{ "profiles": [ { "program": "x", "args": "-i" } ] }"#).problems[0].key, "profiles[0].args");
     }
 
     #[test]

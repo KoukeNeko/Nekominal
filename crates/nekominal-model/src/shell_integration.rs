@@ -1,15 +1,13 @@
-//! Shell integration: scripts that make a shell report its working directory and where each prompt, command
+//! Shell integration: a script that makes PowerShell report its working directory and where each prompt, command
 //! and exit status begins, as OSC 133 marks (`A` prompt start, `B` command start, `D;<code>` command end)
-//! plus the directory (`OSC 9;9` for PowerShell, `OSC 7` for the Unix shells). The emulator reads them to
-//! jump between prompts and to open new tabs in the current directory.
+//! plus the directory (`OSC 9;9`). The emulator reads them to jump between prompts and to open new tabs in the
+//! current directory.
 //!
 //! The PowerShell script also gives Claude Code the status line of the window: when `NEKOMINAL_CLAUDE_SETTINGS` names a
 //! settings file (the window sets it while its status bar is on), `claude` runs `claude.exe --settings <that file>`,
 //! unless the user has a `claude` function of their own or the project's `.claude\settings*.json` sets a status line.
 //!
-//! Only PowerShell is wired into profiles ([`powershell_args`]). The Unix scripts are ready to be sourced
-//! by whatever starts those shells (an rc file, `--rcfile`, `ZDOTDIR`); they must run after the user's own
-//! prompt is set because they wrap it.
+//! It is wired into the PowerShell profiles by [`powershell_args`].
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -38,57 +36,6 @@ if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude))
     if (-not $exe) { Write-Error 'claude.exe was not found' } elseif ($own) { & $exe @args } else { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args }
   }
 }"#;
-
-/// Bash: the directory goes out as an OSC 7 `file://` URI, percent-encoded byte by byte (the technique
-/// of Apple's Terminal integration, so multi-byte characters in a path survive).
-pub const BASH_SCRIPT: &str = r#"if [[ -z ${__nekominal_integration-} ]]; then
-  __nekominal_integration=1
-  __nekominal_precmd() {
-    local exit_code=$? i char hex url_path=
-    local LC_CTYPE=C LC_ALL=
-    for ((i = 0; i < ${#PWD}; i++)); do
-      char=${PWD:i:1}
-      case $char in
-        [a-zA-Z0-9/._~-]) url_path+=$char ;;
-        *) printf -v hex '%02X' "'$char"; url_path+=%${hex: -2:2} ;;
-      esac
-    done
-    printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$exit_code" "${HOSTNAME-}" "$url_path"
-  }
-  PROMPT_COMMAND="__nekominal_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-  PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
-fi"#;
-
-/// Zsh: as Bash, through `precmd_functions`; the marks sit in `%{ %}` so they take no prompt width.
-pub const ZSH_SCRIPT: &str = r#"if [[ -z ${__nekominal_integration-} ]]; then
-  typeset -g __nekominal_integration=1
-  __nekominal_precmd() {
-    local exit_code=$? i char hex url_path=
-    local LC_CTYPE=C LC_ALL=
-    for ((i = 1; i <= ${#PWD}; i++)); do
-      char=${PWD[i]}
-      case $char in
-        [a-zA-Z0-9/._~-]) url_path+=$char ;;
-        *) printf -v hex '%02X' "'$char"; url_path+=%${hex: -2:2} ;;
-      esac
-    done
-    printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$exit_code" "${HOST-}" "$url_path"
-  }
-  precmd_functions=(__nekominal_precmd $precmd_functions)
-  PS1=$'%{\e]133;A\a%}'"$PS1"$'%{\e]133;B\a%}'
-fi"#;
-
-/// Fish: wraps `fish_prompt`.
-pub const FISH_SCRIPT: &str = r#"if not set -q __nekominal_integration
-    set -g __nekominal_integration 1
-    functions --copy fish_prompt __nekominal_prompt
-    function fish_prompt
-        set -l exit_code $status
-        printf '\e]133;D;%s\a\e]7;file://%s%s\a\e]133;A\a' $exit_code $hostname (string escape --style=url -- $PWD)
-        __nekominal_prompt
-        printf '\e]133;B\a'
-    end
-end"#;
 
 /// Switches after which PowerShell runs the command or script the profile names; `-EncodedCommand` cannot
 /// be added next to them. Compared without the leading `-` or `/` and without case.
@@ -209,38 +156,6 @@ mod tests {
         }
     }
 
-    /// Every OSC introducer of a Unix script, up to its terminator: the text between `\e]` and `\a`.
-    fn unix_osc_payloads(script: &str) -> Vec<&str> {
-        script
-            .split("\\e]")
-            .skip(1)
-            .map(|rest| rest.split("\\a").next().expect("split yields one item"))
-            .collect()
-    }
-
-    /// What is wrong with the sequences a Unix script emits; empty when it emits exactly the intended four.
-    fn unexpected_sequences(script: &str) -> Vec<String> {
-        let allowed = ["133;A", "133;B", "133;D;%s", "7;file://%s%s"];
-        let payloads = unix_osc_payloads(script);
-        let mut found = Vec::new();
-        for payload in &payloads {
-            if !allowed.contains(payload) {
-                found.push(format!("unexpected OSC {payload:?}"));
-            }
-        }
-        for wanted in allowed {
-            if !payloads.contains(&wanted) {
-                found.push(format!("missing OSC {wanted:?}"));
-            }
-        }
-        for forbidden in ["\\e[", "\\033", "\\x1b", "\\E[", "\\E]"] {
-            if script.contains(forbidden) {
-                found.push(format!("{forbidden} is not an integration sequence"));
-            }
-        }
-        found
-    }
-
     #[test]
     fn the_powershell_script_reports_the_directory_and_prompt_marks_and_nothing_else() {
         let payloads: Vec<&str> = POWERSHELL_SCRIPT
@@ -256,44 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn the_unix_scripts_emit_only_osc_133_marks_and_the_directory() {
-        for (name, script) in [
-            ("bash", BASH_SCRIPT),
-            ("zsh", ZSH_SCRIPT),
-            ("fish", FISH_SCRIPT),
-        ] {
-            assert_eq!(unexpected_sequences(script), Vec::<String>::new(), "{name}");
-            assert_eq!(unix_osc_payloads(script).len(), 4, "{name}");
-            assert!(
-                script.contains("__nekominal_integration"),
-                "{name}: sourcing it twice must change nothing"
-            );
-        }
-    }
-
-    #[test]
-    fn the_scripts_never_contain_a_raw_escape_or_bell_byte() {
-        for script in [POWERSHELL_SCRIPT, BASH_SCRIPT, ZSH_SCRIPT, FISH_SCRIPT] {
-            assert!(
-                !script.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
-                "the sequences are spelled out, not embedded"
-            );
-        }
-    }
-
-    #[test]
-    fn the_sequence_check_flags_an_extra_or_missing_sequence() {
-        let extra = format!("{BASH_SCRIPT}\nprintf '\\e]0;title\\a'");
-        assert_eq!(unexpected_sequences(&extra), ["unexpected OSC \"0;title\""]);
-        let colour = format!("{ZSH_SCRIPT}\nprintf '\\e[31m'");
-        assert_eq!(
-            unexpected_sequences(&colour),
-            ["\\e[ is not an integration sequence"]
-        );
-        let without_marks = BASH_SCRIPT.replace("\\e]133;B\\a", "");
-        assert_eq!(
-            unexpected_sequences(&without_marks),
-            ["missing OSC \"133;B\""]
+    fn the_script_never_contains_a_raw_escape_or_bell_byte() {
+        assert!(
+            !POWERSHELL_SCRIPT.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
+            "the sequences are spelled out, not embedded"
         );
     }
 
@@ -405,47 +286,5 @@ mod tests {
         assert_eq!(run(&plain), "ARGS --settings C:\\n\\claude-settings.json --resume");
         assert_eq!(run(&own), "ARGS --resume", "the project's own status line stays");
         std::fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// Needs Git Bash on PATH or in the usual places.
-    #[test]
-    #[ignore = "starts bash"]
-    fn real_bash_marks_the_exit_status_and_percent_encodes_the_directory() {
-        let bash = find_program(&["bash.exe"])
-            .or_else(|| {
-                ["C:\\Program Files\\Git\\bin\\bash.exe"]
-                    .iter()
-                    .map(PathBuf::from)
-                    .find(|p| p.exists())
-            })
-            .expect("bash is installed");
-        let directory = std::env::temp_dir().join("nekominal model 你好");
-        std::fs::create_dir_all(&directory).unwrap();
-        // A non-interactive bash drops PS1 from the environment, so the script sets the user's prompt itself.
-        let script = format!(
-            "PS1='$ '\n{BASH_SCRIPT}\nfalse\n__nekominal_precmd\nprintf '\\n---\\n%s' \"$PS1\"\n"
-        );
-        let output = Command::new(bash)
-            .args(["--noprofile", "--norc", "-c", &script])
-            .current_dir(&directory)
-            .output()
-            .expect("bash starts");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let (marks, prompt) = text.split_once("\n---\n").expect("both parts are printed");
-        assert!(
-            marks.starts_with("\u{1b}]133;D;1\u{7}\u{1b}]7;file://"),
-            "{marks:?}"
-        );
-        assert!(
-            marks.ends_with("nekominal%20model%20%E4%BD%A0%E5%A5%BD\u{7}"),
-            "{marks:?}"
-        );
-        assert_eq!(prompt, "\\[\\e]133;A\\a\\]$ \\[\\e]133;B\\a\\]");
-        std::fs::remove_dir_all(&directory).unwrap();
     }
 }
