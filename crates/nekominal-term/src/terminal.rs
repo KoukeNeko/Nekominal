@@ -132,6 +132,17 @@ pub struct CommandOutput {
     pub running: bool,
 }
 
+/// Which prompt line is pinned over the top row of a view whose top row is grid line `top`: the prompt of the first
+/// command whose output reaches `top` or lower, while that prompt is above the view. A view whose top is in the command
+/// lines between the prompt and the output (a wrapped command, a two-line prompt) keeps it; one whose top is on the
+/// prompt or in the gap before it shows none, the prompt being in sight or not this command's. `outputs` and `prompts`
+/// are oldest first, as `command_outputs` and `prompt_lines` give them.
+pub fn sticky_prompt_line(top: i32, outputs: &[CommandOutput], prompts: &[i32]) -> Option<i32> {
+    let output = outputs.iter().find(|output| output.last >= top)?;
+    let prompt = *prompts[..prompts.partition_point(|line| *line <= output.first)].last()?;
+    (prompt < top).then_some(prompt)
+}
+
 /// Where the cursor was when an OSC 133 mark arrived (grid coordinates: line 0 is the top of the
 /// screen, negative lines are scrollback).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -241,6 +252,9 @@ pub struct CoreConfig {
     /// misses the base cell of a wide glyph that gets overwritten through its spacer and the cell a
     /// combining mark attaches to; 2 covers both (see the damage audit tests).
     pub damage_margin: usize,
+    /// While the view is scrolled up into a command's output, its prompt line is pinned over the top row
+    /// (`Snapshot::sticky_header`).
+    pub sticky_header: bool,
 }
 
 /// Default semantic escape characters plus the full-width punctuation Traditional Chinese text uses.
@@ -262,6 +276,7 @@ impl Default for CoreConfig {
             cursor_style: CursorStyle::default(),
             da1_reply: None,
             damage_margin: 2,
+            sticky_header: true,
         }
     }
 }
@@ -371,6 +386,8 @@ pub struct Snapshot {
     pub overrides: Vec<(usize, Rgb)>,
     /// Identity of the top viewport row. Row `r` below it is `top_line.offset(r)`; `None` on the alternate screen.
     pub top_line: Option<LineId>,
+    /// The cells of the prompt line pinned over the top row (`TerminalCore::sticky_prompt`); empty when none is.
+    pub sticky_header: Vec<SnapCell>,
 }
 
 impl Default for Snapshot {
@@ -387,6 +404,7 @@ impl Default for Snapshot {
             damage: Damage::Full,
             overrides: Vec::new(),
             top_line: None,
+            sticky_header: Vec::new(),
         }
     }
 }
@@ -787,6 +805,23 @@ impl TerminalCore {
     /// ones are in the scrollback).
     pub fn prompt_lines(&self) -> Vec<i32> {
         self.prompts.iter().filter_map(|id| self.line_of(*id)).collect()
+    }
+
+    /// The prompt line pinned over the top row of the view (sticky scroll): see [`sticky_prompt_line`]. None at the
+    /// bottom (the prompt in use is in sight there), with the setting off, and on the alternate screen (no marks).
+    pub fn sticky_prompt(&self) -> Option<i32> {
+        let offset = self.display_offset();
+        if !self.config.sticky_header || offset == 0 {
+            return None;
+        }
+        sticky_prompt_line(-(offset as i32), &self.command_outputs(), &self.prompt_lines())
+    }
+
+    /// Scrolls the view so the pinned prompt line is the top row (a click on the header). False when none is pinned.
+    pub fn scroll_to_sticky_prompt(&mut self) -> bool {
+        let Some(line) = self.sticky_prompt() else { return false };
+        self.scroll_to_line(line);
+        true
     }
 
     /// The start of a command's output (C) opens an output, the end of the command (D) closes the open one, on the
@@ -1196,6 +1231,12 @@ impl TerminalCore {
         self.dirty = true;
     }
 
+    /// Turns the pinned prompt line on or off in a terminal that already runs (the setting changed).
+    pub fn set_sticky_header(&mut self, on: bool) {
+        self.config.sticky_header = on;
+        self.dirty = true;
+    }
+
     /// Changes how many lines of scrollback are kept, in a terminal that already runs (the setting changed): a smaller
     /// number drops the oldest lines at once, like a narrower terminal with a smaller budget does.
     pub fn set_scrollback_lines(&mut self, lines: usize) {
@@ -1370,6 +1411,11 @@ impl TerminalCore {
         };
         out.history_size = self.term.history_size();
         out.top_line = self.line_id(-(display_offset as i32));
+        out.sticky_header.clear();
+        if let Some(line) = self.sticky_prompt() {
+            let row = &self.term.grid()[Line(line)];
+            out.sticky_header.extend((0..columns).map(|column| snap_cell(&row[Column(column)])));
+        }
         out.overrides.clear();
         out.overrides.extend((0..alacritty_terminal::term::color::COUNT).filter_map(|slot| colors[slot].map(|rgb| (slot, rgb))));
     }

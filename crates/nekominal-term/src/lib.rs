@@ -14,7 +14,7 @@ pub use alacritty_terminal;
 pub use crate::terminal::{
     CellColor, CellSide, ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, Damage, LineDamage, LineId,
     CommandOutput, MarkCursor, MouseExtensions, SearchMatch, SearchSession, SelectionKind, SnapCell, SnapCursor, Snapshot, StyledRun,
-    TermDims, TerminalCore, DEFAULT_SCROLLBACK_BYTES, SEMANTIC_ESCAPE_CHARS_CJK,
+    TermDims, TerminalCore, DEFAULT_SCROLLBACK_BYTES, SEMANTIC_ESCAPE_CHARS_CJK, sticky_prompt_line,
 };
 pub use links::{Link, LinkKind, OpenTarget, Refusal};
 pub use sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported};
