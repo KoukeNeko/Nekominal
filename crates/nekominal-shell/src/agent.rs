@@ -4,9 +4,10 @@
 //! of Nekominal that command is this program with `--statusline`: it writes what it is handed to a file named by the pane
 //! it runs in (`NEKOMINAL_SESSION`, set for every pane), and the window reads the file of the focused pane once a second.
 //! Nothing leaves the machine, and Claude Code's own settings are never written: the command reaches it only through
-//! `--settings`, which the `claude` function of the PowerShell integration adds when `NEKOMINAL_CLAUDE_SETTINGS` names a
-//! file. The window sets that variable for a new pane while the status bar is on, unless Claude Code has a status line of
-//! the user's own, which it would replace.
+//! `--settings`, which the `claude` function (a doskey macro in cmd) of the shell integration adds when
+//! `NEKOMINAL_CLAUDE_SETTINGS` names a file. The window sets that variable for a new pane while the status bar is on, unless
+//! Claude Code has a status line of the user's own, which it would replace. In WSL, `WSLENV` carries both variables in and
+//! the pane back out to this program.
 
 use std::{
     path::{Path, PathBuf},
@@ -18,7 +19,7 @@ use std::{
 pub const SESSION_VAR: &str = "NEKOMINAL_SESSION";
 /// The argument that makes this program the `statusLine` command instead of a window.
 const FLAG: &str = "--statusline";
-/// The variable that names the settings file the `claude` function of the PowerShell integration hands to Claude Code.
+/// The variable that names the settings file the `claude` function of the shell integration hands to Claude Code.
 pub const CLAUDE_SETTINGS_VAR: &str = "NEKOMINAL_CLAUDE_SETTINGS";
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -198,15 +199,32 @@ fn status_line_settings(exe: &Path) -> String {
     serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
 }
 
-/// Writes the file `NEKOMINAL_CLAUDE_SETTINGS` names and returns where it is: next to the files of the panes, rewritten
-/// when this program moved (another build, an update).
-pub fn claude_settings_file() -> Option<PathBuf> {
-    let file = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("claude-settings.json");
-    let text = status_line_settings(&std::env::current_exe().ok()?);
-    if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
+/// The settings Claude Code of a WSL distribution takes: the same command, which a Linux shell runs through interop at
+/// the path `wslpath` gives (it knows where the distribution mounts the drives). The `claude` function of the bash
+/// integration picks this file, beside the other, inside WSL.
+fn wsl_status_line_settings(exe: &Path) -> String {
+    let exe = exe.to_string_lossy().replace('\'', r"'\''");
+    let command = format!("\"$(wslpath -u '{exe}')\" {FLAG}");
+    serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
+}
+
+/// Writes `text` to `file` unless it holds it already.
+fn write_if_changed(file: &Path, text: &str) -> Option<()> {
+    if std::fs::read_to_string(file).ok().as_deref() != Some(text) {
         std::fs::create_dir_all(file.parent()?).ok()?;
-        std::fs::write(&file, &text).ok()?;
+        std::fs::write(file, text).ok()?;
     }
+    Some(())
+}
+
+/// Writes the file `NEKOMINAL_CLAUDE_SETTINGS` names, and its WSL twin `claude-settings-wsl.json`, and returns where the
+/// first is: next to the files of the panes, rewritten when this program moved (another build, an update).
+pub fn claude_settings_file() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal");
+    let exe = std::env::current_exe().ok()?;
+    write_if_changed(&dir.join("claude-settings-wsl.json"), &wsl_status_line_settings(&exe))?;
+    let file = dir.join("claude-settings.json");
+    write_if_changed(&file, &status_line_settings(&exe))?;
     Some(file)
 }
 
@@ -254,6 +272,14 @@ mod tests {
         assert_eq!(plain["statusLine"]["type"], "command");
         let spaced: serde_json::Value = serde_json::from_str(&status_line_settings(Path::new(r"C:\Program Files\N\n.exe"))).unwrap();
         assert_eq!(spaced["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline");
+    }
+
+    #[test]
+    fn the_settings_of_a_wsl_pane_run_this_program_at_the_path_wslpath_gives() {
+        let spaced: serde_json::Value = serde_json::from_str(&wsl_status_line_settings(Path::new(r"C:\Program Files\N\n.exe"))).unwrap();
+        assert_eq!(spaced["statusLine"]["command"], r#""$(wslpath -u 'C:\Program Files\N\n.exe')" --statusline"#);
+        let quoted: serde_json::Value = serde_json::from_str(&wsl_status_line_settings(Path::new(r"C:\Bob's\n.exe"))).unwrap();
+        assert_eq!(quoted["statusLine"]["command"], r#""$(wslpath -u 'C:\Bob'\''s\n.exe')" --statusline"#, "a quote in the path ends no string");
     }
 
     #[test]
