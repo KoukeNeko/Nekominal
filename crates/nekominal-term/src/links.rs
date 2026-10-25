@@ -224,6 +224,14 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
     Ok(if names.iter().all(|name| name.is_empty()) { format!("{drive}\\") } else { path.join("\\") })
 }
 
+/// What to hand to the shell for a link, or `None` when it may not be opened: [`open_target`]'s target, and for a file
+/// only one that exists as named, because `ShellExecute` tries `.exe`, `.bat` and the other program extensions on a
+/// name that does not (`file:///C:/x/setup` runs setup.exe).
+pub fn openable(uri: &str) -> Option<String> {
+    let open = open_target(uri).ok()?;
+    (open.kind != LinkKind::File || std::path::Path::new(&open.target).exists()).then_some(open.target)
+}
+
 /// `decodeURIComponent` of a path: an invalid escape, or a result that is not UTF-8, is an error.
 fn percent_decode(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
@@ -248,6 +256,8 @@ fn percent_decode(input: &str) -> Option<String> {
 pub struct Link {
     /// What the link points at, as the program or the text wrote it.
     pub uri: String,
+    /// What to open: the target [`openable`] checked, never the raw `uri`.
+    pub target: String,
     /// The cells it covers, one span per row of the viewport: (row, first column, end column), the end exclusive.
     pub spans: Vec<(usize, usize, usize)>,
 }

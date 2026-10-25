@@ -1011,15 +1011,22 @@ fn an_osc8_link_that_wraps_is_one_link_on_every_row_and_one_id_joins_separate_ru
 
 #[test]
 fn only_a_link_that_may_be_opened_is_a_link() {
-    let mut core = core(60, 3);
-    feed(&mut core, "\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///C:/Windows/System32/calc.exe\x07program\x1b]8;;\x07 \x1b]8;;file:///C:/Users/me/a.txt\x07file\x1b]8;;\x07");
+    let mut core = core(60, 4);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml");
+    let uri = format!("file:///{}", path.replace('\\', "/").replace(' ', "%20"));
+    feed(&mut core, &format!("\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///C:/Windows/System32/calc.exe\x07program\x1b]8;;\x07 \x1b]8;;{uri}\x07file\x1b]8;;\x07"));
     assert_eq!(core.link_at(0, 2), None, "a script address is text");
     assert_eq!(core.link_at(0, 10), None, "so is a program");
-    assert_eq!(core.link_at(0, 18).map(|l| l.uri), Some("file:///C:/Users/me/a.txt".to_owned()));
+    let link = core.link_at(0, 18).expect("a file that exists");
+    assert_eq!((link.uri.as_str(), link.target.as_str()), (uri.as_str(), path), "what is opened is the checked path");
     feed(&mut core, "\r\njavascript:alert(1) calc.exe file:///C:/Windows/System32/calc.exe http://");
     for column in [0, 10, 25, 40, 59] {
         assert_eq!(core.link_at(1, column), None, "column {column}");
     }
+    // ShellExecute runs setup.exe for a name with no extension that does not exist.
+    feed(&mut core, "\r\n\x1b]8;;file:///C:/nekominal-no-such-dir/setup\x07setup\x1b]8;;\x07 file:///C:/nekominal-no-such-dir/setup");
+    assert_eq!(core.link_at(2, 1), None, "a file that does not exist is text");
+    assert_eq!(core.link_at(2, 20), None, "in the text too");
 }
 
 #[test]

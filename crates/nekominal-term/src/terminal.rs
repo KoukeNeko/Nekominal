@@ -1431,7 +1431,7 @@ impl TerminalCore {
         self.term.grid()[point].hyperlink()
     }
 
-    /// The link under a cell of the viewport, when it is one that may be opened (`links::open_target`): a
+    /// The link under a cell of the viewport, when it is one that may be opened (`links::openable`): a
     /// hyperlink a program set (OSC 8), with every cell of the viewport that holds it, or else a URL in the text,
     /// which covers several rows when its line wraps.
     pub fn link_at(&self, row: usize, column: usize) -> Option<Link> {
@@ -1444,7 +1444,7 @@ impl TerminalCore {
         let line_of = |row: usize| Line(row as i32 - offset);
 
         if let Some(hyperlink) = grid[line_of(row)][Column(column)].hyperlink() {
-            links::open_target(hyperlink.uri()).ok()?;
+            let target = links::openable(hyperlink.uri())?;
             let mut spans = Vec::new();
             for r in 0..rows {
                 let cells = &grid[line_of(r)];
@@ -1485,10 +1485,10 @@ impl TerminalCore {
                 if !kept.iter().any(|&(r, first, end)| r == row && (first..end).contains(&column)) {
                     return None;
                 }
-                links::open_target(&uri).ok()?;
-                return Some(Link { uri, spans: kept });
+                let target = links::openable(&uri)?;
+                return Some(Link { uri, target, spans: kept });
             }
-            return Some(Link { uri: hyperlink.uri().to_owned(), spans });
+            return Some(Link { uri: hyperlink.uri().to_owned(), target, spans });
         }
 
         // A row whose last cell wraps continues on the next row: they are one line of text.
@@ -1517,7 +1517,7 @@ impl TerminalCore {
         let at = (here - first) as usize * columns + column;
         let found = links::find_urls(&text).into_iter().find(|range| range.contains(&at))?;
         let uri: String = text[found.clone()].iter().collect();
-        links::open_target(&uri).ok()?;
+        let target = links::openable(&uri)?;
         let spans = (0..rows)
             .filter_map(|r| {
                 let line = line_of(r).0;
@@ -1526,7 +1526,7 @@ impl TerminalCore {
                 (line <= last && start < end).then(|| (r, start - base, end - base))
             })
             .collect();
-        Some(Link { uri, spans })
+        Some(Link { uri, target, spans })
     }
 }
 

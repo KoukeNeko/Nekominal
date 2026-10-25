@@ -26,7 +26,7 @@ pub struct PointerEffects {
     pub reports: Vec<Vec<u8>>,
     /// A selection gesture ended with text selected: copy on select copies it now.
     pub selected: bool,
-    /// Ctrl+click on a link that may be opened, released in the cell it was pressed in: where the link goes.
+    /// Ctrl+click on a link that may be opened, released in the cell it was pressed in: what to open (`Link::target`).
     pub open_link: Option<String>,
 }
 
@@ -86,7 +86,8 @@ impl Pointer {
                 PointerOutcome::Report(bytes) => effects.reports.push(bytes),
                 PointerOutcome::Scroll(lines) => core.scroll_display(Scroll::Delta(lines)),
                 PointerOutcome::OpenLink { col, row } => {
-                    effects.open_link = core.link_at(usize::from(row), usize::from(col)).map(|link| link.uri);
+                    // The checked target, not the address as written: for a file, the path that was checked.
+                    effects.open_link = core.link_at(usize::from(row), usize::from(col)).map(|link| link.target);
                 }
                 PointerOutcome::SelectionStart { point, kind, extend } => {
                     let extended = extend && core.selection_active();
@@ -405,6 +406,17 @@ mod tests {
         let effects = ctrl(&mut rig, up, right(12, 0));
         assert_eq!((effects.open_link, effects.selected), (None, true));
         assert_eq!(rig.text().as_deref(), Some("://a."));
+    }
+
+    #[test]
+    fn ctrl_click_on_a_file_link_opens_the_checked_path_and_not_the_address_as_written() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml");
+        let uri = format!("file:///{}", path.replace('\\', "/").replace(' ', "%20"));
+        let mut rig = Rig::new(&format!("\x1b]8;;{uri}\x07file\x1b]8;;\x07"));
+        let down = PointerKind::Press(MouseButton::Left);
+        let up = PointerKind::Release(MouseButton::Left);
+        rig.send(down, left(1, 0), Mods::CTRL);
+        assert_eq!(rig.send(up, left(1, 0), Mods::CTRL).open_link.as_deref(), Some(path));
     }
 
     #[test]
