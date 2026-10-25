@@ -420,8 +420,13 @@ impl Pty {
     pub fn job(&self) -> Option<Job> {
         let names = process_names()?;
         let name_of = |pid: u32| names.iter().find(|(id, _)| *id == pid).map(|(_, name)| name.clone());
+        let pids = self.job_process_ids();
+        // The child is in its job while it lives: an empty list is a query that failed, not a shell alone at its prompt.
+        if pids.is_empty() {
+            return None;
+        }
         let mut newest: Option<(u64, u32, String)> = None;
-        for pid in self.job_process_ids() {
+        for pid in pids {
             if pid == self.pid {
                 continue;
             }

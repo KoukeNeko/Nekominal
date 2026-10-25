@@ -129,6 +129,9 @@ fn elevated() -> bool {
 }
 
 /// Opens an address in the browser, or a file with its program; what goes wrong goes to the log.
+/// Seconds (job ticks) in a row the shell must be alone before what its agent said is dropped from the bar.
+const ALONE_TICKS: u8 = 3;
+
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
         util::log(&format!("open link: {e}"));
@@ -889,6 +892,7 @@ impl App {
             job_path: None,
             agent_seen: false,
             agent_since: None,
+            alone_ticks: 0,
             attention: None,
             note: None,
             progress: None,
@@ -1712,7 +1716,8 @@ impl App {
                 entry.agent_since.get_or_insert_with(Instant::now);
             }
             // The shell is alone again: whatever agent ran in the pane has ended, and what it last said is history.
-            if job.root && (entry.agent_seen || entry.usage.is_some()) {
+            entry.alone_ticks = if job.root { entry.alone_ticks.saturating_add(1) } else { 0 };
+            if entry.alone_ticks >= ALONE_TICKS && (entry.agent_seen || entry.usage.is_some()) {
                 agent::forget(&entry.session);
                 (entry.agent_seen, entry.agent_since, entry.usage, entry.usage_stamp) = (false, None, None, None);
                 changed = true;

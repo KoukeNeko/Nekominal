@@ -41,6 +41,9 @@ pub struct PaneEntry {
     pub agent_seen: bool,
     /// When the pane was first seen running an agent by the name of its program, for the run time of the agents panel.
     pub agent_since: Option<std::time::Instant>,
+    /// Ticks in a row the shell has been seen alone: the agent is taken for gone only after a few, as one look at the
+    /// processes can miss one that runs.
+    pub alone_ticks: u8,
     /// A bell, a notification or a failed exit nobody has looked at.
     pub attention: Option<Attention>,
     /// What the notification said.

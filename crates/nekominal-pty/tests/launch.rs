@@ -121,6 +121,42 @@ fn the_cmd_profile_gets_the_environment_contract_and_the_requested_directory() {
 }
 
 #[test]
+fn the_job_is_the_shell_alone_at_its_prompt_and_the_program_it_runs_while_that_runs() {
+    let profile = find(|p| p.id == "cmd").expect("cmd is part of Windows");
+    let (tx, rx) = channel();
+    let sink: Sink = Box::new(move |event| tx.send(event).is_ok());
+    let sessions = Sessions::default();
+    let (id, _) = sessions.spawn(&profile.spawn_config(None, 120, 30), sink).expect("spawn");
+    let session = sessions.get(id).unwrap();
+    // Drained on the side, as the window does, so that the console never waits on its output.
+    let reader = session.clone();
+    std::thread::spawn(move || {
+        while let Ok(event) = rx.recv() {
+            if let Event::Data(bytes) = event {
+                if bytes.windows(DA1_QUERY.len()).any(|w| w == DA1_QUERY) {
+                    let _ = reader.write(DA1_REPLY);
+                }
+                reader.ack(bytes.len());
+            }
+        }
+    });
+    let wait_for = |want: &dyn Fn(&nekominal_pty::conpty::Job) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if session.job().is_some_and(|job| want(&job)) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+    assert!(wait_for(&|job| job.root && job.name.eq_ignore_ascii_case("cmd.exe")), "cmd alone at its prompt");
+    session.write(b"ping -n 6 127.0.0.1 >nul\r").unwrap();
+    assert!(wait_for(&|job| !job.root && job.name.eq_ignore_ascii_case("PING.EXE")), "the program cmd runs");
+    sessions.close(id);
+}
+
+#[test]
 fn the_agent_environment_reaches_the_child_when_merged_in() {
     let profile = find(|p| p.id == "cmd").expect("cmd is part of Windows");
     let agent: Vec<(String, String)> = profiles::agent_environment().into_iter().collect();
