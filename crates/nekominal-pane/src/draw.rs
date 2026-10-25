@@ -30,6 +30,8 @@ pub struct PaneRenderer {
     /// The lines of the prompts the shell marked, and of the matches of the find bar with the one it is on: the marks of
     /// the scrollbar.
     prompt_lines: Vec<i32>,
+    /// Where the output of each command that failed starts.
+    failed_lines: Vec<i32>,
     find_lines: Vec<(i32, bool)>,
     marks: Vec<r::ScrollMark>,
 }
@@ -72,6 +74,7 @@ impl PaneRenderer {
             focused: true,
             cursor_on: true,
             prompt_lines: Vec::new(),
+            failed_lines: Vec::new(),
             find_lines: Vec::new(),
             marks: Vec::new(),
         })
@@ -205,6 +208,7 @@ impl PaneRenderer {
             if core.take_dirty() {
                 core.snapshot(&mut self.snapshot);
                 self.prompt_lines = core.prompt_lines();
+                self.failed_lines = core.command_outputs().iter().filter(|output| output.exit.is_some_and(|code| code != 0)).map(|output| output.first).collect();
                 true
             } else {
                 false
@@ -222,7 +226,7 @@ impl PaneRenderer {
             r::Preedit { row: row as u16, col: col as u16, text: text.clone() }
         });
         let scrollbar = view::scrollbar(&self.snapshot, !self.find_lines.is_empty());
-        self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.find_lines) } else { Vec::new() };
+        self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.failed_lines, &self.find_lines) } else { Vec::new() };
         let themed = view::themed(&self.theme, &self.snapshot);
         self.renderer.set_theme(&if self.focused { themed } else { view::dimmed(&themed) });
         let grid = r::GridView {

@@ -801,6 +801,8 @@ fn build_overlay(m: &crate::fonts::CellMetrics, theme: &Theme, view: &GridView<'
             let y = (mark.at.clamp(0.0, 1.0) * track_h).min(track_h - 2.0).round();
             let (left, width, color) = match mark.kind {
                 crate::cell::MarkKind::Prompt => (x, w, rgba(theme.foreground, 170)),
+                // The red of the scheme, as a shell paints an error.
+                crate::cell::MarkKind::Failed => (x, w, rgba(theme.ansi[1], 255)),
                 crate::cell::MarkKind::Match => (x + w / 2.0, w / 2.0, rgba(theme.search_match_bg, 255)),
                 crate::cell::MarkKind::CurrentMatch => (x, w, rgba(theme.search_current_bg, 255)),
             };

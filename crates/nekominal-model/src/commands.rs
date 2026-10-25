@@ -44,6 +44,9 @@ pub enum Command {
     EditMarkMode,
     /// Copies the selection with its colours and style, as HTML beside the text.
     EditCopyFormatted,
+    /// What the last command wrote, by the marks of the shell; again, the command before it.
+    EditSelectOutput,
+    EditCopyOutput,
     /// Keeps the window over the others; hides the title bar and the sidebar; shows or hides the drop-down window.
     ViewAlwaysOnTop,
     ViewFocusMode,
@@ -131,6 +134,8 @@ impl Command {
         Command::EditExport,
         Command::EditMarkMode,
         Command::EditCopyFormatted,
+        Command::EditSelectOutput,
+        Command::EditCopyOutput,
         Command::ViewAlwaysOnTop,
         Command::ViewFocusMode,
         Command::ViewQuake,
@@ -213,6 +218,8 @@ impl Command {
             Command::EditExport => "edit.export",
             Command::EditMarkMode => "edit.markMode",
             Command::EditCopyFormatted => "edit.copyFormatted",
+            Command::EditSelectOutput => "edit.selectOutput",
+            Command::EditCopyOutput => "edit.copyOutput",
             Command::ViewAlwaysOnTop => "view.alwaysOnTop",
             Command::ViewFocusMode => "view.focusMode",
             Command::ViewQuake => "view.quake",
@@ -294,6 +301,8 @@ impl Command {
             Command::EditExport => Text::EditExport,
             Command::EditMarkMode => Text::EditMarkMode,
             Command::EditCopyFormatted => Text::EditCopyFormatted,
+            Command::EditSelectOutput => Text::EditSelectOutput,
+            Command::EditCopyOutput => Text::EditCopyOutput,
             Command::ViewAlwaysOnTop => Text::ViewAlwaysOnTop,
             Command::ViewFocusMode => Text::ViewFocusMode,
             Command::ViewQuake => Text::ViewQuake,
@@ -375,7 +384,7 @@ impl Command {
             Command::PaneResize(Direction::Right) => &["Alt+Shift+Right"],
             Command::PaneResize(Direction::Up) => &["Alt+Shift+Up"],
             Command::PaneResize(Direction::Down) => &["Alt+Shift+Down"],
-            Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport | Command::EditCopyFormatted => &[],
+            Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport | Command::EditCopyFormatted | Command::EditSelectOutput | Command::EditCopyOutput => &[],
             Command::EditMarkMode => &["Ctrl+Shift+M"],
             Command::ViewAlwaysOnTop | Command::ViewFocusMode | Command::ViewQuake => &[],
             Command::EditSuggestions => &["Ctrl+Shift+H"],
@@ -590,9 +599,11 @@ mod tests {
             Command::ViewFocusMode => 56,
             Command::ViewQuake => 57,
             Command::EditSuggestions => 58,
+            Command::EditSelectOutput => 59,
+            Command::EditCopyOutput => 60,
         }
     }
-    const VARIANTS: usize = 59;
+    const VARIANTS: usize = 61;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

@@ -426,6 +426,8 @@ fn wired(command: Command) -> bool {
             | Command::ViewZoomOut
             | Command::ViewZoomReset
             | Command::PaneRestart
+            | Command::EditSelectOutput
+            | Command::EditCopyOutput
             | Command::EditSuggestions
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
@@ -2057,6 +2059,14 @@ impl App {
                 let Some(entry) = self.focused() else { return };
                 match other {
                     Command::EditSelectAll => entry.pane.select_all(),
+                    Command::EditSelectOutput => {
+                        entry.pane.term.lock().select_command_output();
+                    }
+                    Command::EditCopyOutput => {
+                        if let Some(text) = entry.pane.term.lock().last_command_output() {
+                            clipboard::write_text(&text);
+                        }
+                    }
                     Command::EditClear => entry.pane.clear_buffer(),
                     Command::ScrollPageUp => entry.pane.scroll(Scroll::PageUp),
                     Command::ScrollPageDown => entry.pane.scroll(Scroll::PageDown),

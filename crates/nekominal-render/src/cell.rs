@@ -374,6 +374,8 @@ pub struct Scrollbar {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkKind {
     Prompt,
+    /// A command that ended with a failure: where its output starts.
+    Failed,
     Match,
     CurrentMatch,
 }
