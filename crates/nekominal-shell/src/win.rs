@@ -53,6 +53,42 @@ pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 /// Destroys the window from the message loop: the application asks for it from inside a handler, while it is borrowed, and
 /// `WM_DESTROY` needs it free to save the session.
 pub(crate) const WM_DESTROY_WINDOW: u32 = WM_APP + 3;
+/// Shows, hides or makes the drop-down window (the "show the drop-down window" command posts it).
+pub(crate) const WM_QUAKE: u32 = WM_APP + 4;
+/// The id of the global hotkey that does the same: Win+` (the key under Esc), as in Windows Terminal.
+const QUAKE_HOTKEY: i32 = 1;
+
+/// The drop-down window: shown at the top of the screen and given the keyboard when it is hidden or behind another
+/// window, hidden when it has the keyboard, made the first time.
+fn quake_toggle() {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsWindowVisible, SW_HIDE, SetForegroundWindow};
+    let quake = APPS.with(|apps| {
+        apps.borrow().iter().find(|(_, app)| app.try_borrow().is_ok_and(|app| app.is_quake())).map(|(hwnd, _)| HWND(*hwnd as *mut _))
+    });
+    // SAFETY: plain calls on windows of this thread.
+    unsafe {
+        match quake {
+            Some(hwnd) if IsWindowVisible(hwnd).as_bool() && GetForegroundWindow() == hwnd => {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+            Some(hwnd) => {
+                with_app(hwnd, |app| app.dock_at_top());
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = SetForegroundWindow(hwnd);
+            }
+            None => {
+                let gpu = APPS.with(|apps| apps.borrow().values().find_map(|app| app.try_borrow().ok().map(|app| app.shared_gpu())));
+                match create_window(gpu, None, true) {
+                    Ok(hwnd) => {
+                        with_app(hwnd, App::become_quake);
+                        let _ = SetForegroundWindow(hwnd);
+                    }
+                    Err(e) => crate::util::log(&format!("drop-down window: {e}")),
+                }
+            }
+        }
+    }
+}
 
 thread_local! {
     static APPS: RefCell<HashMap<isize, Rc<RefCell<App>>>> = RefCell::new(HashMap::new());
@@ -519,6 +555,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_MENUCHAR => LRESULT((1isize) << 16),
         WM_WAKE => {
             with_app(hwnd, App::on_wake);
+            LRESULT(0)
+        }
+        WM_QUAKE => {
+            quake_toggle();
             LRESULT(0)
         }
         WM_NEW_WINDOW => {
@@ -1008,7 +1048,21 @@ pub fn run() -> Result<(), String> {
         create_window(None, None, true)?;
 
         let mut message = MSG::default();
+        // The hotkey belongs to the thread, not to a window: it works whichever windows are open. Another program (Windows
+        // Terminal) may hold it already; the command of the palette still works then.
+        if let Err(e) = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
+            None,
+            QUAKE_HOTKEY,
+            windows::Win32::UI::Input::KeyboardAndMouse::MOD_WIN | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
+            0xC0,
+        ) {
+            crate::util::log(&format!("drop-down hotkey Win+`: {e}"));
+        }
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
+            if message.message == windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY && message.hwnd.is_invalid() && message.wParam.0 == QUAKE_HOTKEY as usize {
+                quake_toggle();
+                continue;
+            }
             let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
             reap_closed_windows();

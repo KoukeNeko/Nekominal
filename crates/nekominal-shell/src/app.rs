@@ -241,6 +241,11 @@ pub struct App {
     find_options: find::Options,
     /// Selecting with the keyboard in the focused pane: the caret and where the selection started.
     mark: Option<mark::Mark>,
+    /// The window stays over the others; it has no title bar and no sidebar (focus mode); it is the drop-down window the
+    /// global hotkey shows and hides.
+    on_top: bool,
+    focus_mode: bool,
+    quake: bool,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -382,6 +387,9 @@ fn wired(command: Command) -> bool {
             | Command::EditExport
             | Command::EditMarkMode
             | Command::EditCopyFormatted
+            | Command::ViewAlwaysOnTop
+            | Command::ViewFocusMode
+            | Command::ViewQuake
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -513,6 +521,9 @@ impl App {
             renaming: None,
             find_options: find::Options::default(),
             mark: None,
+            on_top: false,
+            focus_mode: false,
+            quake: false,
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -587,7 +598,7 @@ impl App {
 
     /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open, admin: elevated() }
+        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated() }
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, or, when the list is
@@ -615,7 +626,7 @@ impl App {
 
     /// Pixels between the top of the window and the top of the panes.
     fn pane_top(&self) -> f32 {
-        (layout::TITLE_HEIGHT * self.scale).round()
+        if self.focus_mode { 0.0 } else { (layout::TITLE_HEIGHT * self.scale).round() }
     }
 
     // --- tabs and panes -----------------------------------------------------------------------------------------
@@ -1155,6 +1166,11 @@ impl App {
     }
 
     pub fn hit_test(&self, x: i32, y: i32) -> Hit {
+        // Without the bar every point of the window is a pane's.
+        if self.focus_mode {
+            let (w, h) = self.surface.size();
+            return if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h { Hit::Pane } else { Hit::None };
+        }
         let (x, y) = self.point(x, y);
         if self.plate_rect.is_some_and(|plate| plate.contains(x, y)) {
             return Hit::Plate;
@@ -1768,6 +1784,11 @@ impl App {
             }
             Command::EditExport => self.export_text(),
             Command::EditMarkMode => self.toggle_mark_mode(),
+            Command::ViewAlwaysOnTop => self.toggle_on_top(),
+            Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
+            // The drop-down window is the process's, not this window's: the window code shows or makes it.
+            // SAFETY: posting to a window of this thread.
+            Command::ViewQuake => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_QUAKE, WPARAM(0), LPARAM(0)); },
             Command::EditCopyFormatted => self.copy_formatted(),
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
@@ -2289,9 +2310,37 @@ impl App {
         })
     }
 
+    /// The dividers between the panes of the selected tab, and the outline of each pane while the tab broadcasts.
+    fn paint_dividers(&mut self) {
+        let g = self.glass;
+        // The dividers between panes.
+        let area = self.pane_area();
+        let divider = logic::divider_px(f64::from(self.scale));
+        if let Some(tab) = self.tabs.get(self.selected) {
+            let s = self.scale;
+            for (_, rect) in tab.splitters(area, divider) {
+                self.ui.fill(Rect::new(rect.x as f32 / s, rect.y as f32 / s, rect.w as f32 / s, rect.h as f32 / s), col(g.divider()));
+            }
+            // A tab that broadcasts what is typed says so around every pane it reaches, so that nothing is typed into a
+            // pane by surprise.
+            if tab.broadcast {
+                let accent = col(g.accent);
+                let rects: Vec<Rect> = tab.shown().into_iter().filter_map(|id| tab.entry(id)).map(|e| Rect::new(e.rect.x as f32 / s + 1.0, e.rect.y as f32 / s + 1.0, e.rect.w as f32 / s - 2.0, e.rect.h as f32 / s - 2.0)).collect();
+                for rect in rects {
+                    self.ui.rrect(rect, 2.0, Color::TRANSPARENT, Some((accent, 1.5)));
+                }
+            }
+        }
+    }
+
     /// Draws the bar, the sidebar and the dividers. True when the layout changed with what the bar says: the chips go to
     /// their new places in the frames after this one (a redraw asked for while painting would be cleared with the frame).
     fn paint_chrome(&mut self) -> bool {
+        // Focus mode has no bar and no sidebar: the panes are all there is.
+        if self.focus_mode {
+            self.paint_dividers();
+            return false;
+        }
         let g = self.glass;
         let lang = self.language();
         let width = self.layout.size.0;
@@ -2346,24 +2395,7 @@ impl App {
             self.icon_centered(cell, glyph, ICON_SIZE, color);
         }
 
-        // The dividers between panes.
-        let area = self.pane_area();
-        let divider = logic::divider_px(f64::from(self.scale));
-        if let Some(tab) = self.tabs.get(self.selected) {
-            let s = self.scale;
-            for (_, rect) in tab.splitters(area, divider) {
-                self.ui.fill(Rect::new(rect.x as f32 / s, rect.y as f32 / s, rect.w as f32 / s, rect.h as f32 / s), col(g.divider()));
-            }
-            // A tab that broadcasts what is typed says so around every pane it reaches, so that nothing is typed into a
-            // pane by surprise.
-            if tab.broadcast {
-                let accent = col(g.accent);
-                let rects: Vec<Rect> = tab.shown().into_iter().filter_map(|id| tab.entry(id)).map(|e| Rect::new(e.rect.x as f32 / s + 1.0, e.rect.y as f32 / s + 1.0, e.rect.w as f32 / s - 2.0, e.rect.h as f32 / s - 2.0)).collect();
-                for rect in rects {
-                    self.ui.rrect(rect, 2.0, Color::TRANSPARENT, Some((accent, 1.5)));
-                }
-            }
-        }
+        self.paint_dividers();
 
         if self.mode().layout.is_side() {
             self.paint_title();
@@ -4020,6 +4052,54 @@ impl App {
                 self.redraw();
             }
             Err(e) => util::log(&format!("duplicate tab: {e}")),
+        }
+    }
+
+    /// Keeps the window over all the others, or lets it go back among them.
+    fn toggle_on_top(&mut self) {
+        use windows::Win32::UI::WindowsAndMessaging::{HWND_NOTOPMOST, HWND_TOPMOST};
+        self.on_top = !self.on_top;
+        let after = if self.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        // SAFETY: changes the z-order of our own window only.
+        unsafe { let _ = SetWindowPos(self.hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+    }
+
+    /// Hides the title bar and the sidebar (focus mode), or shows them again.
+    fn set_focus_mode(&mut self, on: bool) {
+        self.focus_mode = on;
+        self.close_popup();
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Makes this window the drop-down one: in focus mode, docked along the top of the screen the pointer is on.
+    pub fn become_quake(&mut self) {
+        self.quake = true;
+        self.set_focus_mode(true);
+        self.dock_at_top();
+    }
+
+    pub fn is_quake(&self) -> bool {
+        self.quake
+    }
+
+    /// Puts the window along the top of the work area of the monitor under the pointer, as wide as it and almost half as
+    /// tall.
+    pub fn dock_at_top(&self) {
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        // SAFETY: plain queries and a move of our own window; the structures live through the calls.
+        unsafe {
+            let mut pointer = POINT::default();
+            let _ = GetCursorPos(&mut pointer);
+            let monitor = MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return;
+            }
+            let work = info.rcWork;
+            let height = ((work.bottom - work.top) as f32 * logic::QUAKE_SHARE).round() as i32;
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), work.left, work.top, work.right - work.left, height, SWP_NOOWNERZORDER);
         }
     }
 

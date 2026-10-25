@@ -442,6 +442,9 @@ pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
 /// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
 /// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
 /// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
+/// How much of the height of the screen the drop-down window takes.
+pub const QUAKE_SHARE: f32 = 0.45;
+
 /// The colours a tab can be given, with their names: clear on the dark bar and on a light one alike.
 pub const TAB_COLORS: [(nekominal_model::strings::Text, (u8, u8, u8)); 8] = {
     use nekominal_model::strings::Text;
