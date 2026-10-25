@@ -125,7 +125,7 @@ fn elevated() -> bool {
     *ELEVATED.get_or_init(|| unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() })
 }
 
-/// Opens an address in the browser; what goes wrong goes to the log.
+/// Opens an address in the browser, or a file with its program; what goes wrong goes to the log.
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
         util::log(&format!("open link: {e}"));
@@ -1344,10 +1344,9 @@ impl App {
         if effects.selected && self.settings.copy_on_select {
             self.copy_selection();
         }
-        if let Some(uri) = effects.open_link
-            && let Err(e) = open::shell_open(&uri)
-        {
-            util::log(&format!("open link: {e}"));
+        // What the link checks let through: the address, or the path of a file that is there.
+        if let Some(target) = effects.open_link {
+            open_link(&target);
         }
         self.redraw();
     }
