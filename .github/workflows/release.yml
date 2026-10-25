@@ -107,10 +107,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The notes written for this version, or notes generated from the commits when there are none.
+          notes="distribution/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then from=(--notes-file "$notes"); else from=(--generate-notes); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            if [ -f "$notes" ]; then gh release edit "$GITHUB_REF_NAME" --notes-file "$notes"; fi
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --title "Nekominal $VERSION" --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/* --title "Nekominal $VERSION" "${from[@]}"
           fi
       - name: Publish the archive on the bucket
         env:
