@@ -60,6 +60,9 @@ allow. Large and multi-line pastes ask first.
   the model, the context meter, the cost and the time, with the branch and the folder.
 - **Agent status protocol (OSC 7501)**, progress (OSC 9;4) and notifications (OSC 9, OSC 777) from any program, shown on its
   tab and raised to the taskbar when the window is in the background.
+- **A tab in a new git worktree.** Type a branch name in the palette: Nekominal runs `git worktree add` beside the
+  repository (branch `fix/login` of `app` goes to `app-fix-login`) and opens a tab there named after the branch, so each
+  agent has files of its own.
 
 ### Commands and their output
 
@@ -80,6 +83,8 @@ allow. Large and multi-line pastes ask first.
 - Drag a tab out of the window to make a window of it, or onto another window.
 - A drop-down window on **Win+`**, focus mode, always on top, full screen.
 - The tabs, panes and their folders come back at the next start, if you want them to.
+- Save the tabs of a window as a named layout, and open it again from the palette, here or in a new window, or with
+  `nekominal --layout <name>`.
 
 ### Profiles
 

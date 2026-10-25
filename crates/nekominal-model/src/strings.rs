@@ -140,6 +140,8 @@ texts! {
     SchemesImported "schemes.imported" "已匯入 {0} 個色彩配置：{1}" "Imported {0} color schemes: {1}";
     SchemesNoneNew "schemes.noneNew" "沒有新的色彩配置可以匯入" "No new color schemes to import";
     SchemesNotImported "schemes.notImported" "無法匯入：{0}" "Could not import: {0}";
+    TabNewWorktree "tab.newWorktree" "在新的 git 工作樹開啟分頁" "New tab in a git worktree";
+    AppSaveLayout "app.saveLayout" "儲存視窗配置" "Save window layout";
     AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
     AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
     AppearanceOpacityDown "appearance.opacity.down" "降低背景不透明度" "Decrease background opacity";
@@ -195,6 +197,21 @@ texts! {
     // An entry that opens the settings drawer at a row.
     PaletteSetting "palette.setting" "設定：{0}" "Settings: {0}";
     PaletteSnippet "palette.snippet" "片段：{0}" "Snippet: {0}";
+    // The entries of a saved layout, by its name.
+    PaletteOpenLayout "palette.openLayout" "開啟配置：{0}" "Open layout: {0}";
+    PaletteOpenLayoutWindow "palette.openLayoutWindow" "在新視窗開啟配置：{0}" "Open layout in a new window: {0}";
+    PaletteRenameLayout "palette.renameLayout" "重新命名配置：{0}" "Rename layout: {0}";
+    PaletteDeleteLayout "palette.deleteLayout" "刪除配置：{0}" "Delete layout: {0}";
+    // The palette as a line to type a name in: the row Enter chooses, or what is wrong with the line.
+    LayoutTypeName "layout.typeName" "輸入配置名稱" "Type a name for the layout";
+    LayoutSaveAs "layout.saveAs" "儲存為配置「{0}」" "Save as layout “{0}”";
+    LayoutRenameTo "layout.renameTo" "將配置重新命名為「{0}」" "Rename the layout to “{0}”";
+    LayoutFailed "layout.failed" "無法儲存配置：{0}" "The layout could not be saved: {0}";
+    WorktreeTypeBranch "worktree.typeBranch" "輸入新分支的名稱" "Type a name for the new branch";
+    WorktreeCreate "worktree.create" "建立分支「{0}」與它的工作樹" "Create branch “{0}” and its worktree";
+    WorktreeBadBranch "worktree.badBranch" "「{0}」不能當分支名稱" "“{0}” cannot be a branch name";
+    WorktreeNotRepo "worktree.notRepo" "這個窗格的資料夾不在 git 儲存庫裡" "The folder of this pane is not in a git repository";
+    WorktreeFailed "worktree.failed" "無法建立工作樹：{0}" "The worktree could not be made: {0}";
     SuggestionHistory "suggestion.history" "最近的指令" "Recent command";
     SuggestionSnippet "suggestion.snippet" "片段" "Snippet";
     EditSuggestions "edit.suggestions" "建議（片段與最近的指令）" "Suggestions (snippets and recent commands)";

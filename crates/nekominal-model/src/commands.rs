@@ -91,6 +91,10 @@ pub enum Command {
     AppImportSchemes,
     /// Adds the schemes of iTerm2 colour presets (`.itermcolors`) the user picks.
     AppImportItermColors,
+    /// Makes a git worktree on a new branch beside the repository of the focused pane, and opens a tab in it.
+    TabNewWorktree,
+    /// Keeps the tabs of the window under a name, for the palette to open again (`workspaces`).
+    AppSaveLayout,
     AppearanceBackdropNext,
     AppearanceOpacityUp,
     AppearanceOpacityDown,
@@ -177,6 +181,8 @@ impl Command {
         Command::AppReloadSettings,
         Command::AppImportSchemes,
         Command::AppImportItermColors,
+        Command::TabNewWorktree,
+        Command::AppSaveLayout,
         Command::AppearanceBackdropNext,
         Command::AppearanceOpacityUp,
         Command::AppearanceOpacityDown,
@@ -264,6 +270,8 @@ impl Command {
             Command::AppReloadSettings => "app.reloadSettings",
             Command::AppImportSchemes => "app.importSchemes",
             Command::AppImportItermColors => "app.importItermColors",
+            Command::TabNewWorktree => "tab.newWorktree",
+            Command::AppSaveLayout => "app.saveLayout",
             Command::AppearanceBackdropNext => "appearance.backdrop.next",
             Command::AppearanceOpacityUp => "appearance.opacity.up",
             Command::AppearanceOpacityDown => "appearance.opacity.down",
@@ -350,6 +358,8 @@ impl Command {
             Command::AppReloadSettings => Text::AppReloadSettings,
             Command::AppImportSchemes => Text::AppImportSchemes,
             Command::AppImportItermColors => Text::AppImportItermColors,
+            Command::TabNewWorktree => Text::TabNewWorktree,
+            Command::AppSaveLayout => Text::AppSaveLayout,
             Command::AppearanceBackdropNext => Text::AppearanceBackdropNext,
             Command::AppearanceOpacityUp => Text::AppearanceOpacityUp,
             Command::AppearanceOpacityDown => Text::AppearanceOpacityDown,
@@ -435,6 +445,8 @@ impl Command {
             | Command::AppReloadSettings
             | Command::AppImportSchemes
             | Command::AppImportItermColors
+            | Command::TabNewWorktree
+            | Command::AppSaveLayout
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown => &[],
@@ -622,9 +634,11 @@ mod tests {
             Command::EditHints => 61,
             Command::AppImportSchemes => 62,
             Command::AppImportItermColors => 63,
+            Command::TabNewWorktree => 64,
+            Command::AppSaveLayout => 65,
         }
     }
-    const VARIANTS: usize = 64;
+    const VARIANTS: usize = 66;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

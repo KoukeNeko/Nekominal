@@ -24,6 +24,18 @@ pub enum PaletteAction {
     OpenSetting(String),
     /// Type the snippet at this index of the settings into the focused pane.
     Snippet(usize),
+    /// Do this to the saved layout of this name.
+    Layout(LayoutAction, String),
+}
+
+/// What an entry of a saved layout does to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutAction {
+    /// Opens its tabs in this window, after the ones it has; in a window of their own.
+    Open,
+    OpenInNewWindow,
+    Rename,
+    Delete,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,6 +121,27 @@ pub fn snippet_items(lang: Lang, snippets: &[crate::settings::Snippet]) -> Vec<P
         .collect()
 }
 
+/// Four entries per saved layout, by its name: open it here, open it in a new window, rename it, delete it.
+pub fn layout_items(lang: Lang, names: &[&str]) -> Vec<PaletteItem> {
+    let entries = [
+        (LayoutAction::Open, "open", Text::PaletteOpenLayout),
+        (LayoutAction::OpenInNewWindow, "openWindow", Text::PaletteOpenLayoutWindow),
+        (LayoutAction::Rename, "rename", Text::PaletteRenameLayout),
+        (LayoutAction::Delete, "delete", Text::PaletteDeleteLayout),
+    ];
+    names
+        .iter()
+        .flat_map(|name| {
+            entries.map(|(action, id, text)| PaletteItem {
+                id: format!("layout.{id}.{name}"),
+                label: text.format(lang, &[name]),
+                shortcut: String::new(),
+                action: PaletteAction::Layout(action, (*name).to_owned()),
+            })
+        })
+        .collect()
+}
+
 /// The entries matching `query`, best match first; an empty query keeps the order of `items`.
 pub fn search(items: Vec<PaletteItem>, query: &str) -> Vec<PaletteItem> {
     fuzzy::rank(items, query, |item| item.label.as_str())
@@ -153,6 +186,20 @@ mod tests {
         assert_eq!(entries[0].label, "Snippet: git status");
         assert_eq!(entries[0].action, PaletteAction::Snippet(0));
         assert_eq!(search(entries, "gst").len(), 1);
+    }
+
+    #[test]
+    fn a_saved_layout_has_entries_to_open_it_here_or_in_a_window_rename_it_and_delete_it() {
+        let entries = layout_items(Lang::EnUs, &["agents", "{0}"]);
+        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(&labels[..4], ["Open layout: agents", "Open layout in a new window: agents", "Rename layout: agents", "Delete layout: agents"]);
+        assert_eq!(entries[1].action, PaletteAction::Layout(LayoutAction::OpenInNewWindow, "agents".into()));
+        assert_eq!(entries[7].label, "Delete layout: {0}", "a name with braces is shown literally");
+        let ids: BTreeSet<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), entries.len());
+        let found = search(entries, "open layout agents");
+        assert_eq!(found[0].action, PaletteAction::Layout(LayoutAction::Open, "agents".into()));
+        assert_eq!(layout_items(Lang::ZhTw, &["工作"])[0].label, "開啟配置：工作");
     }
 
     fn default_items(lang: Lang) -> Vec<PaletteItem> {
