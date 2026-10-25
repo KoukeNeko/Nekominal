@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 /// The most bytes a link may have. Browsers cope with much more; a link that long is not one a person follows.
-const MAX_LINK_BYTES: usize = 2048;
+pub const MAX_LINK_BYTES: usize = 2048;
 
 /// Schemes [`find_urls`] looks for, written with what must follow the scheme: `//` for the ones with an authority.
 const URL_PREFIXES: [&str; 5] = ["https://", "http://", "ftp://", "file://", "mailto:"];
