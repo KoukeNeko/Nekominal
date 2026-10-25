@@ -77,7 +77,7 @@ pub fn join_words(words: &[String]) -> String {
     words
         .iter()
         .map(|word| {
-            if !word.is_empty() && !word.contains([' ', '"']) {
+            if !word.is_empty() && !word.contains(|c: char| c.is_whitespace() || c == '"') {
                 return word.clone();
             }
             let (mut quoted, mut slashes) = (String::from('"'), 0);
@@ -249,7 +249,8 @@ pub fn rename_env(settings: &mut Settings, profile: &Profile, index: usize, name
         return Ok(());
     }
     valid_name(name)?;
-    if profile.options.env.contains_key(name) {
+    // Windows folds the case of a variable's name: PATH and path are one variable.
+    if profile.options.env.keys().any(|key| *key != old && key.eq_ignore_ascii_case(name)) {
         return Err(Text::ProfileDuplicateVariable);
     }
     let env = &mut entry(settings, profile).options.env;
@@ -275,7 +276,7 @@ pub fn remove_env(settings: &mut Settings, profile: &Profile, index: usize) {
 pub fn add_env(settings: &mut Settings, profile: &Profile) -> String {
     let name = (1..)
         .map(|n| if n == 1 { "NAME".to_owned() } else { format!("NAME{n}") })
-        .find(|name| !profile.options.env.contains_key(name))
+        .find(|name| !profile.options.env.keys().any(|key| key.eq_ignore_ascii_case(name)))
         .unwrap_or_default();
     entry(settings, profile).options.env.insert(name.clone(), String::new());
     name
@@ -337,6 +338,9 @@ mod tests {
         assert_eq!(split_words(r#"-c  "echo hi" """#), ["-c", "echo hi", ""]);
         let words = split_words(r#"-NoLogo "C:\Program Files\x" """#);
         assert_eq!(split_words(&join_words(&words)), words);
+        // Any space a split would split at is quoted: the ideographic one, a tab.
+        let spaced: Vec<String> = ["D:\\資料\u{3000}夾", "echo\thi"].map(String::from).into();
+        assert_eq!(split_words(&join_words(&spaced)), spaced);
     }
 
     #[test]
@@ -411,6 +415,7 @@ mod tests {
         assert_eq!(with(&mut settings, |s, p| rename_env(s, p, 1, "LANG")), Err(Text::ProfileDuplicateVariable));
         assert_eq!(with(&mut settings, |s, p| rename_env(s, p, 1, "A B")), Err(Text::ProfileBadVariable));
         assert_eq!(with(&mut settings, |s, p| rename_env(s, p, 1, "")), Err(Text::ProfileNeedsValue));
+        assert_eq!(with(&mut settings, |s, p| rename_env(s, p, 1, "lang")), Err(Text::ProfileDuplicateVariable), "LANG and lang are one variable");
         assert_eq!(with(&mut settings, |s, p| rename_env(s, p, 1, "PATH")), Ok(()));
         with(&mut settings, |s, p| set_env_value(s, p, 1, "C:\\a b;C:\\c"));
         assert_eq!(text(&pwsh(&settings), Field::Env), r#"LANG=zh_TW "PATH=C:\a b;C:\c""#);

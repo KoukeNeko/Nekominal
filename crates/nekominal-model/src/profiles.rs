@@ -187,7 +187,9 @@ pub fn resolve_default<'a>(profiles: &'a [Profile], default_id: &str) -> Option<
 /// The arguments to start the profile with. A discovered PowerShell gets the prompt marks and working
 /// directory reports when `shell_integration` is on; custom profiles are launched exactly as written.
 pub fn launch_args(profile: &Profile, shell_integration: bool) -> Vec<String> {
-    if shell_integration && profile.kind == ProfileKind::PowerShell && !profile.custom {
+    // The program decides, not only the kind: a found PowerShell given another program (bash) keeps its kind for how its
+    // sessions behave, and must not get PowerShell's arguments.
+    if shell_integration && profile.kind == ProfileKind::PowerShell && !profile.custom && kind_for_program(&profile.program) == ProfileKind::PowerShell {
         shell_integration::powershell_args(&profile.args)
     } else {
         profile.args.clone()
@@ -225,6 +227,10 @@ mod tests {
         assert!(merged[0].options.elevate, "it takes the options of the entry");
         let stray = CustomProfile { id: "nope".into(), name: "nope".into(), program: String::new(), args: vec![], cwd: None, options: Default::default() };
         assert!(merge(&[], &[stray]).is_empty(), "naming no profile, it has nothing to run");
+        // A found PowerShell given another program keeps its kind, but the program gets no PowerShell arguments.
+        let bash = CustomProfile { id: "pwsh".into(), name: "Bash".into(), program: r"C:\Program Files\Git\bin\bash.exe".into(), args: vec!["-l".into()], cwd: None, options: Default::default() };
+        let merged = merge(&[discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe")], &[bash]);
+        assert_eq!(launch_args(&merged[0], true), ["-l"]);
         // A name equal to the id is a rename like any other; an entry that gives none keeps the name found.
         let to_id = CustomProfile { id: "pwsh".into(), name: "pwsh".into(), program: String::new(), args: vec![], cwd: None, options: Default::default() };
         assert_eq!(merge(&[discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe")], &[to_id])[0].name, "pwsh");
