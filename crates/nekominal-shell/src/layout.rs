@@ -13,6 +13,8 @@ use crate::logic;
 pub const TITLE_HEIGHT: f32 = 40.0;
 /// Space left of the first tab, and of the first button with the tabs in the sidebar.
 pub const STRIP_LEFT: f32 = 6.0;
+/// The slot of the shield of an elevated window, before the tabs.
+pub const SHIELD: f32 = 28.0;
 /// Space between two tabs of the strip: words with a line under the selected one need some air between them.
 pub const CHIP_GAP: f32 = 4.0;
 /// Width of the three caption buttons together.
@@ -60,15 +62,16 @@ pub enum Hit {
     Pane,
 }
 
-/// How the tabs are shown: where (`TabLayout`) and whether the sidebar is open.
+/// How the tabs are shown: where (`TabLayout`), whether the sidebar is open, and whether the shield of an elevated window
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mode {
     pub layout: TabLayout,
     pub sidebar_open: bool,
+    pub admin: bool,
 }
 
 impl Mode {
-    pub const TOP: Mode = Mode { layout: TabLayout::Top, sidebar_open: true };
+    pub const TOP: Mode = Mode { layout: TabLayout::Top, sidebar_open: true, admin: false };
 
     /// The width of the sidebar on show; 0 with the tabs on top or the sidebar hidden.
     pub fn side_width(self) -> f32 {
@@ -91,6 +94,10 @@ pub struct Layout {
     pub shown: usize,
     /// The headings of the groups of the list, with the group each names (an index into the groups given).
     pub headings: Vec<(Rect, usize)>,
+    /// The shield of a window that runs as administrator, at the left end of the bar before everything else.
+    pub shield: Option<Rect>,
+    /// Where the tabs (or the buttons of the sidebar) start: after the shield, when there is one.
+    pub left: f32,
     /// Hides and shows the sidebar: only with the tabs in a sidebar.
     pub sidebar_button: Option<Rect>,
     pub new_tab: Rect,
@@ -117,12 +124,14 @@ impl Layout {
     pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize, mode: Mode, right: f32, groups: &[Vec<usize>]) -> Layout {
         let menu = Rect::new((width - caption - BUTTON).max(0.0), 0.0, BUTTON, TITLE_HEIGHT);
         let caption_buttons = [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * caption / 3.0, 0.0, caption / 3.0, TITLE_HEIGHT));
-        let right_room = right.clamp(0.0, (menu.x - STRIP_LEFT - 3.0 * BUTTON).max(0.0));
+        let shield = mode.admin.then(|| Rect::new(STRIP_LEFT, 0.0, SHIELD, TITLE_HEIGHT));
+        let left = STRIP_LEFT + if mode.admin { SHIELD } else { 0.0 };
+        let right_room = right.clamp(0.0, (menu.x - left - 3.0 * BUTTON).max(0.0));
         let right = Rect::new(menu.x - right_room, 0.0, right_room, TITLE_HEIGHT);
         let side = mode.side_width();
         let pane = Rect::new(side, TITLE_HEIGHT, (width - side).max(0.0), (height - TITLE_HEIGHT).max(0.0));
         if mode.layout.is_side() {
-            let button = |i: f32| Rect::new(STRIP_LEFT + i * BUTTON, 0.0, BUTTON, TITLE_HEIGHT);
+            let button = |i: f32| Rect::new(left + i * BUTTON, 0.0, BUTTON, TITLE_HEIGHT);
             let (sidebar_button, new_tab, profiles) = (button(0.0), button(1.0), button(2.0));
             let title_x = profiles.x + BUTTON + 8.0;
             let title = Rect::new(title_x, 0.0, (right.x - DRAG_MIN / 2.0 - title_x).max(0.0), TITLE_HEIGHT);
@@ -148,23 +157,23 @@ impl Layout {
             }
             // shortcut: the sidebar does not scroll; rows past its bottom are not shown (about 14 rows at 720 DIP).
             let shown = if sidebar.is_some() { tabs } else { 0 };
-            return Layout { size: (width, height), mode, chips, first: 0, shown, headings, sidebar_button: Some(sidebar_button), new_tab, profiles, menu, caption_buttons, sidebar, title, right, pane };
+            return Layout { size: (width, height), mode, chips, first: 0, shown, headings, shield, left, sidebar_button: Some(sidebar_button), new_tab, profiles, menu, caption_buttons, sidebar, title, right, pane };
         }
         let strip_end = right.x - DRAG_MIN;
         // The room for the chips: what is between the strip start and the two buttons after the strip.
-        let available = (strip_end - STRIP_LEFT - 2.0 * BUTTON).max(0.0);
+        let available = (strip_end - left - 2.0 * BUTTON).max(0.0);
         let chip_width = logic::tab_width(tabs, f64::from(available), f64::from(CHIP_GAP)) as f32;
         // The epsilon: chips that fill the strip exactly divide to 5.999... as easily as to 6.
         let fits = (((available + CHIP_GAP) / (chip_width + CHIP_GAP) + 1e-3).floor() as usize).max(1);
         let shown = tabs.min(fits);
         let first = if tabs <= shown { 0 } else { (selected + 1).saturating_sub(shown).min(tabs - shown) };
         let chips: Vec<Rect> = (0..tabs)
-            .map(|i| Rect::new(STRIP_LEFT + (i as f32 - first as f32) * (chip_width + CHIP_GAP), 0.0, chip_width, TITLE_HEIGHT))
+            .map(|i| Rect::new(left + (i as f32 - first as f32) * (chip_width + CHIP_GAP), 0.0, chip_width, TITLE_HEIGHT))
             .collect();
-        let after = STRIP_LEFT + shown as f32 * (chip_width + CHIP_GAP);
-        let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON).max(STRIP_LEFT), 0.0, BUTTON, TITLE_HEIGHT);
+        let after = left + shown as f32 * (chip_width + CHIP_GAP);
+        let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON).max(left), 0.0, BUTTON, TITLE_HEIGHT);
         let profiles = Rect::new(new_tab.x + BUTTON, 0.0, BUTTON, TITLE_HEIGHT);
-        Layout { size: (width, height), mode, chips, first, shown, headings: Vec::new(), sidebar_button: None, new_tab, profiles, menu, caption_buttons, sidebar: None, title: Rect::new(0.0, 0.0, 0.0, 0.0), right, pane }
+        Layout { size: (width, height), mode, chips, first, shown, headings: Vec::new(), shield, left, sidebar_button: None, new_tab, profiles, menu, caption_buttons, sidebar: None, title: Rect::new(0.0, 0.0, 0.0, 0.0), right, pane }
     }
 
     /// Whether tab `i` is on show (in the strip, or in the sidebar while it is open and above its bottom).
@@ -228,7 +237,7 @@ mod tests {
 
     fn side(layout: TabLayout, open: bool, groups: &[Vec<usize>]) -> Layout {
         let tabs = groups.iter().map(Vec::len).sum();
-        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, sidebar_open: open }, 200.0, groups)
+        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, sidebar_open: open, admin: false }, 200.0, groups)
     }
 
     #[test]
@@ -311,6 +320,22 @@ mod tests {
         let grouped = side(TabLayout::List, true, &[vec![1], vec![], vec![0, 2]]);
         assert_eq!(grouped.headings.iter().map(|(_, g)| *g).collect::<Vec<_>>(), [0, 2], "empty groups have no heading");
         assert!(grouped.headings[1].0.y < grouped.chips[0].y);
+    }
+
+    #[test]
+    fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
+        for layout in [TabLayout::Top, TabLayout::List] {
+            let plain = Mode { layout, sidebar_open: true, admin: false };
+            let admin = Mode { admin: true, ..plain };
+            let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]]);
+            let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]]);
+            assert!(without.shield.is_none());
+            let shield = with.shield.expect("the shield");
+            assert_eq!((shield.x, shield.w), (STRIP_LEFT, SHIELD));
+            assert_eq!(with.new_tab.x - without.new_tab.x, SHIELD, "{layout:?}: the buttons move over by the shield");
+            let first = if layout == TabLayout::Top { with.chips[0].x } else { with.sidebar_button.unwrap().x };
+            assert!(first >= shield.x + shield.w, "{layout:?}: nothing under the shield");
+        }
     }
 
     #[test]

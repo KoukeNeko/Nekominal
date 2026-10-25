@@ -112,6 +112,14 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
     }
 }
 
+/// Whether this process runs as administrator (elevated by UAC): its shells do too, which the shield in the bar says.
+/// Asked once; elevation does not change while a process runs.
+fn elevated() -> bool {
+    static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // SAFETY: a plain query of the token of this process.
+    *ELEVATED.get_or_init(|| unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() })
+}
+
 /// Opens an address in the browser; what goes wrong goes to the log.
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
@@ -555,9 +563,9 @@ impl App {
         PxRect { x: left, y: top, w: (w as i32 - left).max(1), h: (h as i32 - top).max(1) }
     }
 
-    /// Where the tabs are shown, as the settings say.
+    /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open }
+        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open, admin: elevated() }
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, or, when the list is
@@ -2279,6 +2287,11 @@ impl App {
             self.paint_sidebar();
         } else {
             self.paint_strip();
+        }
+        // An elevated window says so before anything else, as Windows' own administrator windows do: the shield, in the
+        // amber of what asks for care.
+        if let Some(shield) = self.layout.shield {
+            self.icon_centered(shield, '\u{E83D}', 14.0, col(g.mark(g.warning)));
         }
         if let Some(button) = self.layout.sidebar_button {
             let open = self.settings.tabs.sidebar_open;
@@ -4159,7 +4172,8 @@ impl App {
             };
             let shown = match active {
                 Some(drag) if drag.tab == i => {
-                    let left = (drag.x - drag.grab).clamp(layout::STRIP_LEFT, (self.layout.menu.x - target.w).max(layout::STRIP_LEFT));
+                    let start = self.layout.left;
+                    let left = (drag.x - drag.grab).clamp(start, (self.layout.menu.x - target.w).max(start));
                     Rect::new(left, target.y, target.w, target.h)
                 }
                 _ => {
