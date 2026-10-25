@@ -47,7 +47,8 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: Swatinem/rust-cache@v2
+      # Pinned: this job builds what the public bucket serves.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Fetch ConPTY
         run: scripts\fetch-conpty.ps1
       # The About page lists who worked on the app from this file, embedded in the build. A failed look keeps the copy in
@@ -81,7 +82,8 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref_type == 'tag'
+    # Only for a pushed tag: a run by hand on a tag stops before publishing, as the header says.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -99,7 +101,8 @@ jobs:
           TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
         run: |
           [ -n "$TOKEN" ] || { echo "::error::the secret SCOOP_BUCKET_TOKEN is not set" >&2; exit 1; }
-      # Runs again without harm when a step after it failed: the files of a release that exists are replaced.
+      # Runs again without harm when a step after it failed: the files of a release that exists are replaced. The archive
+      # Scoop downloads is the bucket's (below), which is never replaced.
       - name: Publish the release of this repository
         env:
           GH_TOKEN: ${{ github.token }}
@@ -115,7 +118,9 @@ jobs:
         run: |
           tag="nekominal-v$VERSION"
           if gh release view "$tag" -R "$BUCKET" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* -R "$BUCKET" --clobber
+            # A run again rebuilds an archive with other bytes (the zip keeps the time of its files). What is published
+            # stays, and the manifest takes its hash, so an install never meets a hash that does not match.
+            gh release download "$tag" -R "$BUCKET" -p '*.sha256' -D dist --clobber
           else
             gh release create "$tag" dist/* -R "$BUCKET" --title "Nekominal $VERSION" \
               --notes "The Windows archive of Nekominal $VERSION for the Scoop manifest." --latest=false
