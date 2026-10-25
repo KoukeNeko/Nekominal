@@ -87,7 +87,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 ### 外觀
 
 - Mica、Mica Alt、壓克力或無，透明度可自訂。
-- 內建色彩配置、Windows Terminal 格式的自訂配色，以及從 Windows Terminal 匯入配色。
+- 內建色彩配置、Windows Terminal 格式的自訂配色、從 Windows Terminal 匯入配色，以及匯入 iTerm2 色彩配置檔（`.itermcolors`，
+  例如 iTerm2-Color-Schemes 收錄的配色）。
 - 自選字型、行高、游標樣式與閃爍速度。文字在每種配色上都保有對比。
 
 ### 融入 Windows

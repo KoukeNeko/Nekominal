@@ -990,6 +990,17 @@ pub fn import_schemes(settings: &mut Settings, windows_terminal: &str) -> Result
     Ok(added)
 }
 
+/// Adds the scheme of an iTerm2 preset (`.itermcolors`) named `name` to `settings`, in place of a scheme of their own with
+/// that name: importing a preset again takes its newer colours. What is wrong with the file, when it is no preset.
+pub fn import_itermcolors(settings: &mut Settings, name: &str, plist: &str) -> Result<(), String> {
+    let scheme = themes::Scheme::from_itermcolors(name, plist)?;
+    match settings.schemes.iter_mut().find(|own| own.name == scheme.name) {
+        Some(own) => *own = scheme,
+        None => settings.schemes.push(scheme),
+    }
+    Ok(())
+}
+
 fn read_keybindings(source: &Map<String, Value>, problems: &mut Problems) -> BTreeMap<String, Vec<String>> {
     let Some(value) = source.get("keybindings") else { return BTreeMap::new() };
     let Value::Object(map) = value else {

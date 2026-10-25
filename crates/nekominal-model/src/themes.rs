@@ -261,6 +261,65 @@ impl Scheme {
     }
 }
 
+impl Scheme {
+    /// The scheme of an iTerm2 colour preset (`.itermcolors`), named `name` (the file's name, as iTerm2 names it). The
+    /// file is a property list: each colour a `<dict>` under its `<key>`, its channels as `Red Component` and the others,
+    /// from 0 to 1. `Background`, `Foreground` and the 16 `Ansi N Color` are needed; the cursor and the selection are
+    /// taken when there.
+    ///
+    /// shortcut: a colour in Display P3 (`Color Space` P3) is read as if it were sRGB, which makes a saturated one a
+    /// little duller; convert it if a preset in P3 looks off.
+    pub fn from_itermcolors(name: &str, plist: &str) -> Result<Scheme, String> {
+        let colors = plist_colors(plist);
+        let get = |key: &str| colors.iter().find(|(k, _)| k == key).map(|(_, color)| *color);
+        let required = |key: &str| get(key).ok_or_else(|| format!("no \"{key}\""));
+        let mut ansi = [Color::rgb(0); 16];
+        for (i, slot) in ansi.iter_mut().enumerate() {
+            *slot = required(&format!("Ansi {i} Color"))?;
+        }
+        let foreground = required("Foreground Color")?;
+        Ok(Scheme {
+            name: Cow::Owned(name.trim().to_owned()),
+            background: required("Background Color")?,
+            foreground,
+            cursor: get("Cursor Color").unwrap_or(foreground),
+            selection: get("Selection Color").unwrap_or(Color { a: 0x40, ..foreground }),
+            ansi,
+        })
+    }
+}
+
+/// The colours of a property list, by their keys: every `<key>` followed by a `<dict>` that has the three components.
+fn plist_colors(plist: &str) -> Vec<(String, Color)> {
+    let mut colors = Vec::new();
+    let mut rest = plist;
+    while let Some(start) = rest.find("<key>") {
+        let after = &rest[start + 5..];
+        let Some(end) = after.find("</key>") else { break };
+        let key = after[..end].trim().to_owned();
+        rest = &after[end + 6..];
+        if !rest.trim_start().starts_with("<dict>") {
+            continue;
+        }
+        let body_start = rest.find("<dict>").map_or(0, |at| at + 6);
+        let Some(body_end) = rest[body_start..].find("</dict>") else { break };
+        let body = &rest[body_start..body_start + body_end];
+        rest = &rest[body_start + body_end + 7..];
+        let component = |name: &str| -> Option<u8> {
+            let at = body.find(&format!("<key>{name}</key>"))? + name.len() + 11;
+            let value = body[at..].trim_start();
+            let open = value.find('>')? + 1;
+            let close = value.find("</")?;
+            let number: f64 = value.get(open..close)?.trim().parse().ok()?;
+            number.is_finite().then(|| (number.clamp(0.0, 1.0) * 255.0).round() as u8)
+        };
+        if let (Some(r), Some(g), Some(b)) = (component("Red Component"), component("Green Component"), component("Blue Component")) {
+            colors.push((key, Color { r, g, b, a: 255 }));
+        }
+    }
+    colors
+}
+
 /// Written back with the keys [`Scheme::from_json`] reads.
 impl Serialize for Scheme {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -280,6 +339,59 @@ impl Serialize for Scheme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A colour as iTerm2 writes it: the components in the order it sorts its keys, among the alpha and the colour space.
+    fn iterm_color(key: &str, (r, g, b): (f64, f64, f64)) -> String {
+        format!(
+            "\t<key>{key}</key>\n\t<dict>\n\t\t<key>Alpha Component</key>\n\t\t<real>1</real>\n\t\t<key>Blue Component</key>\n\t\t<real>{b}</real>\n\t\t<key>Color Space</key>\n\t\t<string>sRGB</string>\n\t\t<key>Green Component</key>\n\t\t<real>{g}</real>\n\t\t<key>Red Component</key>\n\t\t<real>{r}</real>\n\t</dict>\n"
+        )
+    }
+
+    fn itermcolors(skip: Option<&str>) -> String {
+        let mut keys: Vec<(String, (f64, f64, f64))> = (0..16).map(|i| (format!("Ansi {i} Color"), (i as f64 / 15.0, 0.0, 1.0))).collect();
+        keys.push(("Background Color".into(), (0.15686275064945221, 0.16470588743686676, 0.21176470816135406)));
+        keys.push(("Foreground Color".into(), (0.97254902124404907, 0.97254902124404907, 0.94901961088180542)));
+        keys.push(("Cursor Color".into(), (0.5, 0.5, 0.5)));
+        let body: String = keys.iter().filter(|(key, _)| Some(key.as_str()) != skip).map(|(key, rgb)| iterm_color(key, *rgb)).collect();
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n")
+    }
+
+    #[test]
+    fn an_iterm2_preset_becomes_a_scheme_named_after_its_file() {
+        let scheme = Scheme::from_itermcolors("Dracula", &itermcolors(None)).expect("a whole preset");
+        assert_eq!(scheme.name, "Dracula");
+        assert_eq!(scheme.background, Color::rgb(0x282A36), "components from 0 to 1, rounded to the byte");
+        assert_eq!(scheme.foreground, Color::rgb(0xF8F8F2));
+        assert_eq!(scheme.cursor, Color::rgb(0x808080));
+        assert_eq!(scheme.selection, Color { a: 0x40, ..scheme.foreground }, "no selection colour: the text's, faint");
+        assert_eq!((scheme.ansi[0], scheme.ansi[15]), (Color::rgb(0x0000FF), Color::rgb(0xFF00FF)));
+        let integers = itermcolors(None).replace("<real>1</real>", "<integer>1</integer>");
+        assert!(Scheme::from_itermcolors("x", &integers).is_ok(), "a whole number may be written as an integer");
+        assert_eq!(Scheme::from_itermcolors("x", &itermcolors(Some("Ansi 5 Color"))).err().as_deref(), Some("no \"Ansi 5 Color\""));
+        assert!(Scheme::from_itermcolors("x", "not a plist").is_err());
+        // Read back by the settings like any other scheme of their own.
+        let json = serde_json::to_value(&scheme).unwrap();
+        assert_eq!(Scheme::from_json(json.as_object().unwrap()).unwrap(), scheme);
+    }
+
+    /// Every `.itermcolors` file of the folder `NEKOMINAL_ITERMCOLORS` names reads as a scheme (the presets of
+    /// iTerm2-Color-Schemes, say). Nothing to read when the variable is not set.
+    #[test]
+    #[ignore = "reads the iTerm2 presets of a folder NEKOMINAL_ITERMCOLORS names"]
+    fn the_iterm2_presets_of_a_folder_all_read() {
+        let Some(folder) = std::env::var_os("NEKOMINAL_ITERMCOLORS") else { return };
+        let mut read = 0;
+        for entry in std::fs::read_dir(folder).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "itermcolors") {
+                let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                let scheme = Scheme::from_itermcolors(&name, &std::fs::read_to_string(&path).unwrap());
+                assert!(scheme.is_ok(), "{name}: {scheme:?}");
+                read += 1;
+            }
+        }
+        assert!(read > 0, "no .itermcolors file in the folder");
+    }
 
     #[test]
     fn theme_names_are_unique_and_include_the_default() {

@@ -1,4 +1,4 @@
-//! The dialog of Windows that chooses a program file or a folder, for the fields of a profile.
+//! The dialog of Windows that chooses a program file or a folder, for the fields of a profile, or colour presets to import.
 
 use std::path::Path;
 
@@ -16,6 +16,36 @@ pub fn program(owner: HWND, current: &str) -> Option<String> {
 /// A folder the user chose, the dialog starting at `current`; None when it was closed.
 pub fn folder(owner: HWND, current: &str) -> Option<String> {
     choose(owner, current, true)
+}
+
+/// The iTerm2 colour presets (`.itermcolors`) the user chose, several at once; none when the dialog was closed.
+pub fn color_presets(owner: HWND) -> Vec<String> {
+    use windows::Win32::UI::Shell::FOS_ALLOWMULTISELECT;
+    // SAFETY: as in `choose`; each path handed back is freed once copied.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let Ok(dialog) = CoCreateInstance::<_, IFileOpenDialog>(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) else { return Vec::new() };
+        let Ok(options) = dialog.GetOptions() else { return Vec::new() };
+        let _ = dialog.SetOptions(options | FOS_FORCEFILESYSTEM | FOS_ALLOWMULTISELECT);
+        let filters = [
+            COMDLG_FILTERSPEC { pszName: w!("iTerm2 color presets (*.itermcolors)"), pszSpec: w!("*.itermcolors") },
+            COMDLG_FILTERSPEC { pszName: w!("All files (*.*)"), pszSpec: w!("*.*") },
+        ];
+        let _ = dialog.SetFileTypes(&filters);
+        if dialog.Show(Some(owner)).is_err() {
+            return Vec::new();
+        }
+        let Ok(items) = dialog.GetResults() else { return Vec::new() };
+        let count = items.GetCount().unwrap_or(0);
+        (0..count)
+            .filter_map(|i| {
+                let path = items.GetItemAt(i).ok()?.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+                let text = path.to_string().ok();
+                CoTaskMemFree(Some(path.0 as *const _));
+                text
+            })
+            .collect()
+    }
 }
 
 fn choose(owner: HWND, current: &str, folders: bool) -> Option<String> {

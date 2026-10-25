@@ -409,6 +409,7 @@ fn wired(command: Command) -> bool {
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
             | Command::AppImportSchemes
+            | Command::AppImportItermColors
             | Command::TabProfiles
             | Command::AppNewWindow
             | Command::EditFind
@@ -2041,6 +2042,7 @@ impl App {
             Command::AppOpenSettingsFile => self.open_settings_file(),
             Command::AppReloadSettings => self.reload_settings(),
             Command::AppImportSchemes => self.import_schemes(),
+            Command::AppImportItermColors => self.import_itermcolors(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
                 if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
@@ -4126,6 +4128,21 @@ impl App {
             match settings::import_schemes(&mut self.settings, &text) {
                 Ok(added) => util::log(&format!("import schemes: {} from {}: {}", added.len(), path.display(), added.join(", "))),
                 Err(e) => util::log(&format!("import schemes: {}: {e}", path.display())),
+            }
+        }
+        self.apply_settings(&before);
+    }
+
+    /// Adds the schemes of the iTerm2 colour presets the user picks, each named after its file, and keeps them in the file.
+    fn import_itermcolors(&mut self) {
+        let files = crate::pick::color_presets(self.hwnd);
+        self.wake_after_dialog();
+        let before = self.settings.clone();
+        for path in files.iter().map(std::path::Path::new) {
+            let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+            let result = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| settings::import_itermcolors(&mut self.settings, &name, &text));
+            if let Err(e) = result {
+                util::log(&format!("import {}: {e}", path.display()));
             }
         }
         self.apply_settings(&before);

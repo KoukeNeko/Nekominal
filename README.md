@@ -92,7 +92,8 @@ allow. Large and multi-line pastes ask first.
 ### Looks
 
 - Mica, Mica Alt, acrylic or none, with an opacity of your choice.
-- Built-in colour schemes, your own in Windows Terminal's format, and an import of the schemes of your Windows Terminal.
+- Built-in colour schemes, your own in Windows Terminal's format, an import of the schemes of your Windows Terminal, and
+  of iTerm2 colour presets (`.itermcolors`), such as those of iTerm2-Color-Schemes.
 - Your fonts, line height, cursor shape and blink rate. The text keeps its contrast on every scheme.
 
 ### At home in Windows

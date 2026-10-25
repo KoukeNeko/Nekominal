@@ -89,6 +89,8 @@ pub enum Command {
     AppReloadSettings,
     /// Adds the colour schemes of Windows Terminal's settings that Nekominal has none of by name.
     AppImportSchemes,
+    /// Adds the schemes of iTerm2 colour presets (`.itermcolors`) the user picks.
+    AppImportItermColors,
     AppearanceBackdropNext,
     AppearanceOpacityUp,
     AppearanceOpacityDown,
@@ -174,6 +176,7 @@ impl Command {
         Command::AppOpenSettingsFile,
         Command::AppReloadSettings,
         Command::AppImportSchemes,
+        Command::AppImportItermColors,
         Command::AppearanceBackdropNext,
         Command::AppearanceOpacityUp,
         Command::AppearanceOpacityDown,
@@ -260,6 +263,7 @@ impl Command {
             Command::AppOpenSettingsFile => "app.openSettingsFile",
             Command::AppReloadSettings => "app.reloadSettings",
             Command::AppImportSchemes => "app.importSchemes",
+            Command::AppImportItermColors => "app.importItermColors",
             Command::AppearanceBackdropNext => "appearance.backdrop.next",
             Command::AppearanceOpacityUp => "appearance.opacity.up",
             Command::AppearanceOpacityDown => "appearance.opacity.down",
@@ -345,6 +349,7 @@ impl Command {
             Command::AppOpenSettingsFile => Text::AppOpenSettingsFile,
             Command::AppReloadSettings => Text::AppReloadSettings,
             Command::AppImportSchemes => Text::AppImportSchemes,
+            Command::AppImportItermColors => Text::AppImportItermColors,
             Command::AppearanceBackdropNext => Text::AppearanceBackdropNext,
             Command::AppearanceOpacityUp => Text::AppearanceOpacityUp,
             Command::AppearanceOpacityDown => Text::AppearanceOpacityDown,
@@ -429,6 +434,7 @@ impl Command {
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
             | Command::AppImportSchemes
+            | Command::AppImportItermColors
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown => &[],
@@ -615,9 +621,10 @@ mod tests {
             Command::EditCopyOutput => 60,
             Command::EditHints => 61,
             Command::AppImportSchemes => 62,
+            Command::AppImportItermColors => 63,
         }
     }
-    const VARIANTS: usize = 63;
+    const VARIANTS: usize = 64;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
