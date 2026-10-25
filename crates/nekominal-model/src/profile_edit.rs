@@ -71,21 +71,56 @@ impl Field {
     }
 }
 
-/// Words joined by spaces, a word with a space or a quote in it (or an empty one) in double quotes.
+/// Words joined by spaces, a word with a space or a quote in it (or an empty one) in double quotes. As on a Windows
+/// command line, a quote in a word is `\"` and the backslashes before a quote are doubled.
 pub fn join_words(words: &[String]) -> String {
     words
         .iter()
-        .map(|word| if word.is_empty() || word.contains([' ', '"']) { format!("\"{}\"", word.replace('"', "")) } else { word.clone() })
+        .map(|word| {
+            if !word.is_empty() && !word.contains([' ', '"']) {
+                return word.clone();
+            }
+            let (mut quoted, mut slashes) = (String::from('"'), 0);
+            for c in word.chars() {
+                if c == '"' {
+                    quoted.push_str(&"\\".repeat(slashes + 1));
+                }
+                slashes = if c == '\\' { slashes + 1 } else { 0 };
+                quoted.push(c);
+            }
+            // The closing quote must not be taken for a quote in the word.
+            quoted.push_str(&"\\".repeat(slashes));
+            quoted.push('"');
+            quoted
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-/// The words of a line split at spaces; double quotes keep spaces in a word.
+/// The words of a line split at spaces; double quotes keep spaces in a word, and `\"` is a quote in it.
 pub fn split_words(line: &str) -> Vec<String> {
-    let (mut words, mut word, mut quoted, mut started) = (Vec::new(), String::new(), false, false);
+    let (mut words, mut word, mut quoted, mut started, mut slashes) = (Vec::new(), String::new(), false, false, 0);
     for c in line.chars() {
+        if c == '\\' {
+            slashes += 1;
+            continue;
+        }
+        if c == '"' {
+            word.push_str(&"\\".repeat(slashes / 2));
+            started = true;
+            if slashes % 2 == 1 {
+                word.push('"');
+            } else {
+                quoted = !quoted;
+            }
+            slashes = 0;
+            continue;
+        }
+        if slashes > 0 {
+            word.push_str(&"\\".repeat(std::mem::take(&mut slashes)));
+            started = true;
+        }
         match c {
-            '"' => (quoted, started) = (!quoted, true),
             c if c.is_whitespace() && !quoted => {
                 if started {
                     words.push(std::mem::take(&mut word));
@@ -98,7 +133,8 @@ pub fn split_words(line: &str) -> Vec<String> {
             }
         }
     }
-    if started {
+    if slashes > 0 || started {
+        word.push_str(&"\\".repeat(slashes));
         words.push(word);
     }
     words
@@ -300,6 +336,13 @@ mod tests {
     fn words_split_at_spaces_and_quotes_keep_them_and_join_back() {
         assert_eq!(split_words(r#"-c  "echo hi" """#), ["-c", "echo hi", ""]);
         let words = split_words(r#"-NoLogo "C:\Program Files\x" """#);
+        assert_eq!(split_words(&join_words(&words)), words);
+    }
+
+    #[test]
+    fn quotes_in_a_word_are_kept_through_joining_and_splitting() {
+        let words: Vec<String> = ["-c", "echo \"a b\"", "", "C:\\my dir\\", "say \\\"hi\\\"", "C:\\x\\"].map(String::from).into();
+        assert_eq!(join_words(&words[..2]), r#"-c "echo \"a b\"""#);
         assert_eq!(split_words(&join_words(&words)), words);
     }
 
