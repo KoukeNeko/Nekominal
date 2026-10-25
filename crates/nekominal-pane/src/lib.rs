@@ -7,6 +7,7 @@
 //!   whatever render target the shell provides; usable headless.
 
 pub mod draw;
+pub mod hints;
 pub mod host;
 pub mod pointer;
 pub mod view;

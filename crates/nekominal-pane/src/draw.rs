@@ -32,6 +32,10 @@ pub struct PaneRenderer {
     prompt_lines: Vec<i32>,
     /// Where the output of each command that failed starts.
     failed_lines: Vec<i32>,
+    /// The labels of hint mode, at the cells they are drawn over: whole while they can still be picked, cut to what is
+    /// left to type, and gone when hint mode ends.
+    hint_labels: Vec<(usize, usize, String)>,
+    labelled: Vec<r::Cell>,
     find_lines: Vec<(i32, bool)>,
     marks: Vec<r::ScrollMark>,
 }
@@ -75,6 +79,8 @@ impl PaneRenderer {
             cursor_on: true,
             prompt_lines: Vec::new(),
             failed_lines: Vec::new(),
+            hint_labels: Vec::new(),
+            labelled: Vec::new(),
             find_lines: Vec::new(),
             marks: Vec::new(),
         })
@@ -200,6 +206,19 @@ impl PaneRenderer {
         ((col as u32 * m.width) as f32, (row as u32 * m.height) as f32, m.width as f32, m.height as f32)
     }
 
+    /// The hints on the screen as it is shown.
+    pub fn hints(&self) -> Vec<crate::hints::Hint> {
+        crate::hints::find(&self.snapshot)
+    }
+
+    /// The labels hint mode draws (row, column and what is left of the label to type); empty ends them.
+    pub fn set_hint_labels(&mut self, labels: Vec<(usize, usize, String)>) {
+        if labels != self.hint_labels {
+            self.hint_labels = labels;
+            self.force_draw = true;
+        }
+    }
+
     /// Snapshots the core when it changed and updates the renderer's instance buffers.
     pub fn prepare(&mut self, term: &FairMutex<TerminalCore>) -> Prepared {
         let dirty = {
@@ -229,10 +248,25 @@ impl PaneRenderer {
         self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.failed_lines, &self.find_lines) } else { Vec::new() };
         let themed = view::themed(&self.theme, &self.snapshot);
         self.renderer.set_theme(&if self.focused { themed } else { view::dimmed(&themed) });
+        // The labels of hint mode are drawn over a copy of the cells: the screen under them is left as it is.
+        let cells = if self.hint_labels.is_empty() {
+            &self.cells
+        } else {
+            self.labelled.clone_from(&self.cells);
+            let (fg, bg) = (self.theme.search_current_fg, self.theme.search_current_bg);
+            for (row, column, label) in &self.hint_labels {
+                for (i, ch) in label.chars().enumerate() {
+                    if let Some(cell) = self.labelled.get_mut(row * self.snapshot.columns + column + i).filter(|_| column + i < self.snapshot.columns) {
+                        *cell = r::Cell { ch, fg: r::Color::Rgb(fg.0, fg.1, fg.2), bg: r::Color::Rgb(bg.0, bg.1, bg.2), ..r::Cell::default() };
+                    }
+                }
+            }
+            &self.labelled
+        };
         let grid = r::GridView {
             cols: self.snapshot.columns,
             rows: self.snapshot.rows,
-            cells: &self.cells,
+            cells,
             cursor: view::cursor(&self.snapshot, self.focused, self.cursor_on),
             selection: &self.selection,
             highlights: &self.highlights,

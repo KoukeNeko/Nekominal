@@ -257,6 +257,9 @@ pub struct App {
     quake: bool,
     /// Points the font of this window's panes is larger (or smaller) than the settings say: Ctrl+= and Ctrl+-, not saved.
     zoom: f64,
+    /// Hint mode on a pane, and the letter it took, whose WM_CHAR must not reach the shell.
+    hints: Option<HintMode>,
+    eat_char: bool,
     /// The session file was written by a newer version: it is left as it is.
     newer_session: bool,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
@@ -357,6 +360,14 @@ fn post_gpu_lost(hwnd: HWND) {
     unsafe { let _ = PostMessageW(Some(hwnd), WM_GPU_LOST, WPARAM(0), LPARAM(0)); }
 }
 
+/// Hint mode: the hints of a pane and what of a label has been typed.
+struct HintMode {
+    tab: usize,
+    pane: PaneId,
+    hints: Vec<nekominal_pane::hints::Hint>,
+    typed: String,
+}
+
 /// A font size with the zoom of the window on it, kept in the range the settings allow.
 fn zoomed(size: f64, zoom: f64) -> f32 {
     (size + zoom).clamp(settings::FONT_SIZE_RANGE.0, settings::FONT_SIZE_RANGE.1) as f32
@@ -428,6 +439,7 @@ fn wired(command: Command) -> bool {
             | Command::PaneRestart
             | Command::EditSelectOutput
             | Command::EditCopyOutput
+            | Command::EditHints
             | Command::EditSuggestions
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
@@ -566,6 +578,8 @@ impl App {
             focus_mode: false,
             quake: false,
             zoom: 0.0,
+            hints: None,
+            eat_char: false,
             newer_session: false,
             blink_on: true,
             blink_armed: None,
@@ -1957,6 +1971,7 @@ impl App {
                 self.relayout();
             }
             Command::PaneRestart => self.restart_pane(),
+            Command::EditHints => self.start_hints(),
             Command::PaneSwap(direction) => {
                 if self.tabs.get_mut(self.selected).is_some_and(|tab| tab.swap_focused(direction)) {
                     self.relayout();
@@ -2096,6 +2111,9 @@ impl App {
         if self.mark.is_some() && self.mark_key(vk_code) {
             return true;
         }
+        if self.hints.is_some() && self.hint_key(vk_code) {
+            return true;
+        }
         let held = held();
         if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
             && let Some(command) = self.keymap.find(held, name)
@@ -2156,6 +2174,9 @@ impl App {
     pub fn on_char(&mut self, unit: u16) {
         if self.popup_keeps_owner_active() { self.popup_char(unit); return; }
         if unit < 0x20 || unit == 0x7F {
+            return;
+        }
+        if std::mem::take(&mut self.eat_char) {
             return;
         }
         if let Some(ch) = self.text.push(unit) {
@@ -4632,6 +4653,108 @@ impl App {
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), work.left, work.top, work.right - work.left, height, SWP_NOOWNERZORDER);
         }
         self.sync_size();
+    }
+
+    /// Puts a label on every URL, path and hash on the screen of the focused pane, or takes them off when they are on.
+    fn start_hints(&mut self) {
+        if self.hints.is_some() {
+            self.leave_hints();
+            return;
+        }
+        let Some(entry) = self.focused() else { return };
+        let found = entry.view.hints();
+        if found.is_empty() {
+            return;
+        }
+        self.hints = Some(HintMode { tab: self.selected, pane: entry.id, hints: found, typed: String::new() });
+        self.show_hint_labels();
+    }
+
+    /// Draws what is left to type of each label that still matches what was typed.
+    fn show_hint_labels(&mut self) {
+        let Some(mode) = &self.hints else { return };
+        let labels = mode
+            .hints
+            .iter()
+            .filter_map(|hint| hint.label.strip_prefix(mode.typed.as_str()).map(|rest| (hint.row, hint.column, rest.to_owned())))
+            .collect();
+        if let Some(entry) = self.tabs.get_mut(mode.tab).and_then(|tab| tab.entry_mut(mode.pane)) {
+            entry.view.set_hint_labels(labels);
+        }
+        self.redraw();
+    }
+
+    fn leave_hints(&mut self) {
+        if let Some(mode) = self.hints.take()
+            && let Some(entry) = self.tabs.get_mut(mode.tab).and_then(|tab| tab.entry_mut(mode.pane))
+        {
+            entry.view.set_hint_labels(Vec::new());
+        }
+        self.redraw();
+    }
+
+    /// A key in hint mode: the letters of a label pick it (copied; with Shift, opened), Backspace takes the last letter
+    /// back, Escape stops. A letter no label goes on with is ignored; any other key stops and goes on to the program.
+    fn hint_key(&mut self, vk_code: i32) -> bool {
+        if matches!(vk_code, 0x10 | 0x11 | 0x12 | 0x14 | 0x5B | 0x5C) {
+            return true;
+        }
+        let open = held().shift;
+        let Some(mode) = self.hints.as_mut() else { return false };
+        match vk_code {
+            0x1B => {
+                self.leave_hints();
+                return true;
+            }
+            0x08 => {
+                mode.typed.pop();
+                self.show_hint_labels();
+                return true;
+            }
+            0x41..=0x5A => {}
+            _ => {
+                self.leave_hints();
+                return false;
+            }
+        }
+        self.eat_char = true;
+        mode.typed.push(char::from(vk_code as u8 + 32));
+        let picked = mode.hints.iter().find(|hint| hint.label == mode.typed).cloned();
+        if let Some(hint) = picked {
+            self.leave_hints();
+            self.use_hint(&hint, open);
+        } else if mode.hints.iter().any(|hint| hint.label.starts_with(mode.typed.as_str())) {
+            self.show_hint_labels();
+        } else {
+            mode.typed.pop();
+        }
+        true
+    }
+
+    /// Copies a hint, or opens it: a URL and a file that is there, through the checks a link of the terminal passes. A
+    /// relative path is of the pane's folder; a hash is only copied.
+    fn use_hint(&mut self, hint: &nekominal_pane::hints::Hint, open: bool) {
+        use nekominal_pane::hints::HintKind;
+        if !open || hint.kind == HintKind::Hash {
+            clipboard::write_text(&hint.text);
+            return;
+        }
+        let uri = match hint.kind {
+            HintKind::Url => hint.text.clone(),
+            _ => {
+                let (path, _) = nekominal_pane::hints::split_position(&hint.text);
+                let folder = self.focused().and_then(|entry| entry.cwd.clone());
+                let whole = match folder {
+                    Some(folder) if std::path::Path::new(path).is_relative() => std::path::Path::new(&folder).join(path),
+                    _ => std::path::PathBuf::from(path),
+                };
+                logic::file_uri(&whole.to_string_lossy())
+            }
+        };
+        match nekominal_term::links::openable(&uri) {
+            Some(target) => open_link(&target),
+            None => util::log(&format!("hint not opened: {uri}")),
+        }
     }
 
     /// Starts selecting with the keyboard at the cursor of the focused pane, or stops when it is on.

@@ -106,6 +106,7 @@ texts! {
     EditCopyFormatted "edit.copyFormatted" "複製（含格式）" "Copy with formatting";
     EditSelectOutput "edit.selectOutput" "選取指令輸出" "Select command output";
     EditCopyOutput "edit.copyOutput" "複製指令輸出" "Copy command output";
+    EditHints "edit.hints" "提示選取（網址、路徑、雜湊）" "Hints (URLs, paths, hashes)";
     ViewAlwaysOnTop "view.alwaysOnTop" "視窗置頂" "Always on top";
     SettingsExplorerMenu "settings.explorerMenu" "在檔案總管的右鍵選單加入「在 Nekominal 開啟」" "Add “Open in Nekominal” to Explorer's menu";
     SettingsInheritEnvironment "settings.inheritEnvironment" "新分頁沿用 Nekominal 啟動時的環境變數" "New tabs inherit the starting environment";

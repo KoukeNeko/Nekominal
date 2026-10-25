@@ -47,6 +47,8 @@ pub enum Command {
     /// What the last command wrote, by the marks of the shell; again, the command before it.
     EditSelectOutput,
     EditCopyOutput,
+    /// Labels on the URLs, paths and hashes on screen: a label copies its text, the same in capitals opens it.
+    EditHints,
     /// Keeps the window over the others; hides the title bar and the sidebar; shows or hides the drop-down window.
     ViewAlwaysOnTop,
     ViewFocusMode,
@@ -136,6 +138,7 @@ impl Command {
         Command::EditCopyFormatted,
         Command::EditSelectOutput,
         Command::EditCopyOutput,
+        Command::EditHints,
         Command::ViewAlwaysOnTop,
         Command::ViewFocusMode,
         Command::ViewQuake,
@@ -220,6 +223,7 @@ impl Command {
             Command::EditCopyFormatted => "edit.copyFormatted",
             Command::EditSelectOutput => "edit.selectOutput",
             Command::EditCopyOutput => "edit.copyOutput",
+            Command::EditHints => "edit.hints",
             Command::ViewAlwaysOnTop => "view.alwaysOnTop",
             Command::ViewFocusMode => "view.focusMode",
             Command::ViewQuake => "view.quake",
@@ -303,6 +307,7 @@ impl Command {
             Command::EditCopyFormatted => Text::EditCopyFormatted,
             Command::EditSelectOutput => Text::EditSelectOutput,
             Command::EditCopyOutput => Text::EditCopyOutput,
+            Command::EditHints => Text::EditHints,
             Command::ViewAlwaysOnTop => Text::ViewAlwaysOnTop,
             Command::ViewFocusMode => Text::ViewFocusMode,
             Command::ViewQuake => Text::ViewQuake,
@@ -386,6 +391,7 @@ impl Command {
             Command::PaneResize(Direction::Down) => &["Alt+Shift+Down"],
             Command::PaneSwap(_) | Command::PaneToTab | Command::PaneBroadcast | Command::EditExport | Command::EditCopyFormatted | Command::EditSelectOutput | Command::EditCopyOutput => &[],
             Command::EditMarkMode => &["Ctrl+Shift+M"],
+            Command::EditHints => &["Ctrl+Shift+E"],
             Command::ViewAlwaysOnTop | Command::ViewFocusMode | Command::ViewQuake => &[],
             Command::EditSuggestions => &["Ctrl+Shift+H"],
             Command::EditSmartCopy => &["Ctrl+C"],
@@ -601,9 +607,10 @@ mod tests {
             Command::EditSuggestions => 58,
             Command::EditSelectOutput => 59,
             Command::EditCopyOutput => 60,
+            Command::EditHints => 61,
         }
     }
-    const VARIANTS: usize = 61;
+    const VARIANTS: usize = 62;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

@@ -1097,6 +1097,22 @@ pub fn tab_title(raw: &str, fallback: &str) -> String {
     if name.is_empty() { fallback.to_owned() } else { name.to_owned() }
 }
 
+/// The `file:///` URI of a Windows path, with what a URI cannot hold as it is escaped (a space, `%`, `#`, `?`).
+pub fn file_uri(path: &str) -> String {
+    let mut uri = String::from("file:///");
+    for c in path.chars() {
+        match c {
+            '\\' => uri.push('/'),
+            ' ' => uri.push_str("%20"),
+            '%' => uri.push_str("%25"),
+            '#' => uri.push_str("%23"),
+            '?' => uri.push_str("%3F"),
+            c => uri.push(c),
+        }
+    }
+    uri
+}
+
 /// Why a paste asks first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PasteWarning {
@@ -1290,6 +1306,18 @@ pub fn step_number(value: f64, steps: i32, range: Range) -> f64 {
 mod tests {
     use nekominal_model::layout::{Axis, Node, UNIT};
     use nekominal_model::settings::TabTitle;
+
+    #[test]
+    fn a_path_becomes_a_file_uri_the_link_checks_take() {
+        assert_eq!(file_uri(r"C:\My Files\a#1.txt"), "file:///C:/My%20Files/a%231.txt");
+        let dir = std::env::temp_dir().join("nekominal hint test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let opened = nekominal_term::links::openable(&file_uri(&file.to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(opened.is_some_and(|target| target.ends_with("notes.txt")), "a file that is there opens");
+    }
 
     use super::*;
 
