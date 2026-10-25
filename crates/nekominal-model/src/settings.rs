@@ -824,7 +824,9 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             problems.fail(&path, "program", Expected::Required);
             continue;
         }
-        let name = text(map, "name", if program.is_empty() { &given_id } else { &program }, &path, problems);
+        // An entry that only adjusts a found shell keeps its name empty unless it gives one: a name equal to the id is a
+        // rename like any other.
+        let name = text(map, "name", if program.is_empty() { "" } else { &program }, &path, problems);
         // What cannot be read is reported and the rest of the entry kept, so that the user sees it before a save drops it.
         let args = match map.get("args") {
             None => Vec::new(),

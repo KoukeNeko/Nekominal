@@ -148,7 +148,7 @@ pub fn merge(discovered: &[DiscoveredProfile], custom: &[CustomProfile]) -> Vec<
         // One that names none has nothing to run and is left out.
         if entry.program.is_empty() {
             if let Some(found) = profiles.iter_mut().find(|existing| !existing.custom && existing.id == entry.id) {
-                if entry.name != entry.id {
+                if !entry.name.is_empty() {
                     found.name = entry.name.clone();
                 }
                 found.cwd = entry.cwd.clone().or(found.cwd.take());
@@ -225,6 +225,12 @@ mod tests {
         assert!(merged[0].options.elevate, "it takes the options of the entry");
         let stray = CustomProfile { id: "nope".into(), name: "nope".into(), program: String::new(), args: vec![], cwd: None, options: Default::default() };
         assert!(merge(&[], &[stray]).is_empty(), "naming no profile, it has nothing to run");
+        // A name equal to the id is a rename like any other; an entry that gives none keeps the name found.
+        let to_id = CustomProfile { id: "pwsh".into(), name: "pwsh".into(), program: String::new(), args: vec![], cwd: None, options: Default::default() };
+        assert_eq!(merge(&[discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe")], &[to_id])[0].name, "pwsh");
+        let parsed = crate::settings::parse(Some(r#"{ "profiles": [ { "id": "pwsh", "cwd": "D:\\" } ] }"#)).settings;
+        let as_found = merge(&[discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe")], &[])[0].name.clone();
+        assert_eq!(merge(&[discovered("pwsh", "PowerShell", "pwsh", "pwsh.exe")], &parsed.profiles)[0].name, as_found);
     }
 
     fn custom(id: &str, program: &str) -> CustomProfile {
