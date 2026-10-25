@@ -8,6 +8,12 @@
 //! unless the user has a `claude` function of their own or the project's `.claude\settings*.json` sets a status line.
 //!
 //! It is wired into the PowerShell profiles by [`powershell_args`].
+//!
+//! cmd, Git Bash and the bash of WSL get the same marks from a script file this program writes ([`script_file`]): the
+//! user's own files are never edited, the way VS Code injects its integration. cmd runs [`CMD_SCRIPT`] with `/k`; bash
+//! starts with [`BASH_SCRIPT`] as its `--init-file`, which reads the user's login files first.
+
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
@@ -86,6 +92,159 @@ pub fn powershell_args(args: &[String]) -> Vec<String> {
 fn encode_command(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     STANDARD.encode(bytes)
+}
+
+/// cmd's prompt with the marks: `D` (cmd has no exit code to give), `A`, the directory, `$P$G`, `B`. Only cmd's default
+/// prompt is replaced: a `PROMPT` of the user's (set in the environment, the profile or AutoRun) stays. Quotes are taken
+/// out of `%PROMPT%` before the comparison so that no prompt can break the line. `claude` is a doskey macro that adds the
+/// settings of the window, while it names some.
+pub const CMD_SCRIPT: &str = r#"@if "%PROMPT:"=%"=="$P$G" prompt $e]133;D$e\$e]133;A$e\$e]9;9;$P$e\$P$G$e]133;B$e\
+@if defined NEKOMINAL_CLAUDE_SETTINGS doskey claude=claude --settings "%NEKOMINAL_CLAUDE_SETTINGS%" $*
+"#;
+
+/// Bash with the marks. Started with this file as `--init-file` instead of `--login`, it reads what a login shell reads
+/// first, then wraps the prompt: `PROMPT_COMMAND` writes `D;<status>` and the directory (as Windows sees it: `cygpath -w`
+/// in Git Bash, `wslpath -w` in WSL when the folder is on a Windows drive, else the Linux path), `PS1` gets `A` and `B`
+/// around it and `PS0` writes `C`. The user's own `PROMPT_COMMAND` (a string or an array) still runs, first, with the
+/// status of the command. In WSL the file is first read by `sh` (see [`wsl_args`]), which starts the user's shell: bash
+/// with this file, any other as a login shell.
+pub const BASH_SCRIPT: &str = r#"if [ -z "$BASH_VERSION" ]; then
+  unset IFS
+  __nk_shell=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)
+  __nk_shell=${__nk_shell:-${SHELL:-/bin/sh}}
+  case ${__nk_shell##*/} in
+    bash) exec "$__nk_shell" --init-file "$NEKOMINAL_BASH_INIT" -i ;;
+  esac
+  exec "$__nk_shell" -l
+fi
+declare -F __nk_precmd >/dev/null && return
+
+[ -r /etc/profile ] && . /etc/profile
+if [ -r ~/.bash_profile ]; then . ~/.bash_profile
+elif [ -r ~/.bash_login ]; then . ~/.bash_login
+elif [ -r ~/.profile ]; then . ~/.profile
+fi
+
+__nk_commands=("${PROMPT_COMMAND[@]}")
+unset PROMPT_COMMAND
+PROMPT_COMMAND=__nk_precmd
+type -P cygpath >/dev/null && __nk_cygpath=1
+
+__nk_set_status() { return "$1"; }
+__nk_dir() {
+  if [ -n "$__nk_cygpath" ]; then cygpath -w "$PWD"
+  elif [ -n "$WSL_DISTRO_NAME" ] && __nk_win=$(wslpath -w "$PWD" 2>/dev/null) && [[ $__nk_win == [A-Za-z]:* ]]; then printf '%s' "$__nk_win"
+  else printf '%s' "$PWD"
+  fi
+}
+__nk_precmd() {
+  local __nk_status=$? __nk_line
+  for __nk_line in "${__nk_commands[@]}"; do __nk_set_status "$__nk_status"; eval "$__nk_line"; done
+  if [ "$PWD" != "$__nk_pwd" ]; then __nk_pwd=$PWD; __nk_cwd=$(__nk_dir); fi
+  # A prompt command that sets PS1 again each time drops the marks: they are put back.
+  [[ $PS1 == *'133;A'* ]] || PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+  [[ $PS0 == *'133;C'* ]] || PS0='\e]133;C\a'"$PS0"
+  printf '\e]133;D;%s\a\e]9;9;"%s"\a' "$__nk_status" "$__nk_cwd"
+  return "$__nk_status"
+}
+
+if [ -n "$NEKOMINAL_CLAUDE_SETTINGS" ] && ! declare -F claude >/dev/null; then
+  claude() {
+    local settings=$NEKOMINAL_CLAUDE_SETTINGS
+    # Claude Code in WSL is a Linux program: its settings run the status line through interop.
+    [ -n "$WSL_DISTRO_NAME" ] && settings=${settings%.json}-wsl.json
+    # A project that sets a status line of its own keeps it: --settings would win over it.
+    if grep -qs '"statusLine"' .claude/settings*.json </dev/null; then command claude "$@"; else command claude --settings "$settings" "$@"; fi
+  }
+fi
+:
+"#;
+
+/// The variable that names [`BASH_SCRIPT`] in WSL, which translates it to the Linux path (`WSLENV` with `/p`).
+pub const BASH_INIT_VAR: &str = "NEKOMINAL_BASH_INIT";
+
+/// Writes `text` to `name` in the folder of the shell scripts (`%LOCALAPPDATA%\Nekominal\shell`), unless it is there
+/// already, and returns its path. Line ends are LF whatever the checkout made of this source: bash fails on a CR.
+pub fn script_file(name: &str, text: &str) -> Option<PathBuf> {
+    let file = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("shell").join(name);
+    let text = text.replace('\r', "");
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
+        std::fs::create_dir_all(file.parent()?).ok()?;
+        std::fs::write(&file, &text).ok()?;
+    }
+    Some(file)
+}
+
+/// cmd's `args` with `call <init>` run by `/k`: added after the profile's own `/k` command, or as a new `/k`. A profile
+/// that runs a command and exits (`/c`, `/r`) comes back unchanged, as does one whose switch is glued to its command.
+/// The banner of cmd is not shown with `/k`.
+pub fn cmd_args(args: &[String], init: &Path) -> Vec<String> {
+    let init = init.to_string_lossy().into_owned();
+    let mut all = args.to_vec();
+    for arg in args {
+        let lower = arg.to_ascii_lowercase();
+        if lower == "/k" {
+            all.extend(["&".to_owned(), "call".to_owned(), init]);
+            return all;
+        }
+        if lower.starts_with("/c") || lower.starts_with("/r") || lower.starts_with("/k") {
+            return all;
+        }
+    }
+    all.extend(["/k".to_owned(), "call".to_owned(), init]);
+    all
+}
+
+/// Git Bash's `args` replaced by `--init-file <init> -i`, which then reads the login files itself. Only an interactive
+/// login shell (`--login -i`, `-l`, `-li`) is changed: anything else (a command, a script, other options) runs as written.
+/// The path has forward slashes, which bash of MSYS takes as they are.
+pub fn bash_args(args: &[String], init: &Path) -> Vec<String> {
+    let known = ["--login", "-l", "-i", "--interactive", "-li", "-il"];
+    let login = args.iter().any(|arg| matches!(arg.as_str(), "--login" | "-l" | "-li" | "-il"));
+    if !login || !args.iter().all(|arg| known.contains(&arg.as_str())) {
+        return args.to_vec();
+    }
+    vec!["--init-file".to_owned(), init.to_string_lossy().replace('\\', "/"), "-i".to_owned()]
+}
+
+/// The options of `wsl.exe` that take a value and choose where and as whom the shell starts, not what it runs.
+const WSL_PLACE_OPTIONS: &[&str] = &["--distribution", "-d", "--cd", "--user", "-u", "--distribution-id"];
+
+/// Whether `wsl.exe` with `args` starts the default shell of the distribution, which the integration may replace.
+fn wsl_starts_default_shell(args: &[String]) -> bool {
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if !WSL_PLACE_OPTIONS.contains(&arg.as_str()) || rest.next().is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+/// WSL's `args` with `-e sh -c '. $NEKOMINAL_BASH_INIT'`: `sh` reads [`BASH_SCRIPT`], which starts the user's shell.
+/// `IFS` is empty so that a path with spaces stays one word, and the line holds no double quote, which `wsl.exe`
+/// would have to unescape. A profile that runs a command of its own comes back unchanged.
+pub fn wsl_args(args: &[String]) -> Vec<String> {
+    let mut all = args.to_vec();
+    if wsl_starts_default_shell(args) {
+        all.extend(["-e", "sh", "-c", "IFS=; . $NEKOMINAL_BASH_INIT"].map(str::to_owned));
+    }
+    all
+}
+
+/// The environment WSL needs for [`wsl_args`]: the script, and `WSLENV` naming it (as a path, into WSL only), the pane
+/// (both ways: Claude Code in WSL runs this program's status line through interop) and the settings of Claude Code (as a
+/// path), ahead of the user's `WSLENV`.
+pub fn wsl_env(init: &Path, wslenv: Option<&str>) -> BTreeMap<String, String> {
+    let ours = format!("NEKOMINAL_SESSION:NEKOMINAL_CLAUDE_SETTINGS/p:{BASH_INIT_VAR}/pu");
+    let wslenv = match wslenv.filter(|v| !v.is_empty()) {
+        Some(theirs) => format!("{ours}:{theirs}"),
+        None => ours,
+    };
+    BTreeMap::from([
+        (BASH_INIT_VAR.to_owned(), init.to_string_lossy().into_owned()),
+        ("WSLENV".to_owned(), wslenv),
+    ])
 }
 
 #[cfg(test)]
@@ -186,6 +345,96 @@ mod tests {
             !POWERSHELL_SCRIPT.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
             "the sequences are spelled out, not embedded"
         );
+    }
+
+    #[test]
+    fn cmd_runs_the_script_with_a_new_k_or_after_the_profile_s_own_k_command() {
+        let init = Path::new(r"C:\Users\John Doe\AppData\Local\Nekominal\shell\cmd.cmd");
+        let path = init.to_string_lossy().into_owned();
+        assert_eq!(cmd_args(&[], init), ["/k", "call", &path]);
+        assert_eq!(cmd_args(&strings(&["/d"]), init), ["/d", "/k", "call", &path]);
+        let developer = strings(&["/k", "call", r"C:\VS\VsDevCmd.bat", "-arch=x64"]);
+        assert_eq!(cmd_args(&developer, init), [&developer[..], &strings(&["&", "call", &path])].concat());
+        assert_eq!(&cmd_args(&strings(&["/K", "echo", "hi"]), init)[3..],["&", "call", &path]);
+        // A command that runs and exits, or a switch glued to its command, is left alone.
+        for own in [&["/c", "dir"][..], &["/C", "dir"], &["/r", "dir"], &["/kecho", "hi"], &["/d", "/c", "x"]] {
+            assert_eq!(cmd_args(&strings(own), init), strings(own), "{own:?}");
+        }
+    }
+
+    #[test]
+    fn the_cmd_script_keeps_a_prompt_of_the_user_s_own_and_has_no_exit_code_to_give() {
+        let prompt = CMD_SCRIPT.lines().next().unwrap();
+        assert!(prompt.starts_with(r#"@if "%PROMPT:"=%"=="$P$G" prompt "#), "only cmd's default prompt is replaced");
+        assert!(prompt.ends_with(r"$e]133;D$e\$e]133;A$e\$e]9;9;$P$e\$P$G$e]133;B$e\"), "{prompt}");
+        assert!(CMD_SCRIPT.contains(r#"doskey claude=claude --settings "%NEKOMINAL_CLAUDE_SETTINGS%" $*"#));
+        assert!(CMD_SCRIPT.lines().all(|line| line.starts_with('@')), "no line is echoed");
+    }
+
+    #[test]
+    fn git_bash_starts_with_the_init_file_only_as_an_interactive_login_shell() {
+        let init = Path::new(r"C:\Users\John Doe\AppData\Local\Nekominal\shell\bash.sh");
+        let expected = ["--init-file", "C:/Users/John Doe/AppData/Local/Nekominal/shell/bash.sh", "-i"];
+        for login in [&["--login", "-i"][..], &["-l"], &["-li"], &["-i", "--login"]] {
+            assert_eq!(bash_args(&strings(login), init), expected, "{login:?}");
+        }
+        for own in [&[][..], &["-i"], &["--login", "-c", "make"], &["-l", "script.sh"], &["--login", "--norc", "-i"], &["--rcfile", "x", "-i"]] {
+            assert_eq!(bash_args(&strings(own), init), strings(own), "{own:?}");
+        }
+    }
+
+    #[test]
+    fn wsl_reads_the_script_with_sh_only_when_it_starts_the_default_shell() {
+        let found = strings(&["--distribution", "Ubuntu 24.04", "--cd", "~"]);
+        let with = wsl_args(&found);
+        assert_eq!(&with[..4], &found[..]);
+        assert_eq!(&with[4..], ["-e", "sh", "-c", "IFS=; . $NEKOMINAL_BASH_INIT"]);
+        assert!(!with.iter().any(|arg| arg.contains('"')), "wsl.exe never has to unescape a quote");
+        assert_eq!(wsl_args(&strings(&["-d", "Debian", "-u", "root"])).len(), 8);
+        assert_eq!(wsl_args(&[]).len(), 4);
+        for own in [&["-d", "Ubuntu", "-e", "htop"][..], &["-d", "Ubuntu", "--", "ls"], &["--exec", "zsh"], &["-d"], &["--shell-type", "login"], &["ls"]] {
+            assert_eq!(wsl_args(&strings(own)), strings(own), "{own:?}");
+        }
+    }
+
+    #[test]
+    fn wsl_gets_the_script_and_the_pane_through_wslenv_ahead_of_the_user_s_own() {
+        let init = Path::new(r"C:\n\shell\bash.sh");
+        let env = wsl_env(init, None);
+        assert_eq!(env[BASH_INIT_VAR], r"C:\n\shell\bash.sh");
+        assert_eq!(env["WSLENV"], "NEKOMINAL_SESSION:NEKOMINAL_CLAUDE_SETTINGS/p:NEKOMINAL_BASH_INIT/pu");
+        assert_eq!(wsl_env(init, Some("")).get("WSLENV"), env.get("WSLENV"));
+        assert_eq!(wsl_env(init, Some("GOPATH/l:USERPROFILE/pu"))["WSLENV"], "NEKOMINAL_SESSION:NEKOMINAL_CLAUDE_SETTINGS/p:NEKOMINAL_BASH_INIT/pu:GOPATH/l:USERPROFILE/pu");
+    }
+
+    #[test]
+    fn the_bash_script_keeps_the_user_s_prompt_command_and_marks_every_part_of_a_command() {
+        for part in [
+            r#"__nk_commands=("${PROMPT_COMMAND[@]}")"#,
+            "unset PROMPT_COMMAND",
+            r#"__nk_set_status "$__nk_status"; eval "$__nk_line""#,
+            r#"PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'"#,
+            r#"PS0='\e]133;C\a'"$PS0""#,
+            r#"printf '\e]133;D;%s\a\e]9;9;"%s"\a' "$__nk_status" "$__nk_cwd""#,
+            r#"cygpath -w "$PWD""#,
+            r#"wslpath -w "$PWD""#,
+            r#"exec "$__nk_shell" --init-file "$NEKOMINAL_BASH_INIT" -i"#,
+        ] {
+            assert!(BASH_SCRIPT.contains(part), "{part}");
+        }
+        assert!(!BASH_SCRIPT.chars().any(|c| c == '\u{1b}' || c == '\u{7}'));
+        // The login files are read before the prompt is wrapped, so a PROMPT_COMMAND they set is the one kept.
+        assert!(BASH_SCRIPT.find(". ~/.bash_profile").unwrap() < BASH_SCRIPT.find("__nk_commands=").unwrap());
+    }
+
+    #[test]
+    fn a_script_file_is_written_once_with_lf_line_ends() {
+        let file = script_file("test-script.sh", "a\r\nb\n").expect("LOCALAPPDATA is set");
+        assert_eq!(std::fs::read(&file).unwrap(), b"a\nb\n");
+        let written = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert_eq!(script_file("test-script.sh", "a\nb\n"), Some(file.clone()));
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), written, "the same text is not written again");
+        std::fs::remove_file(file).unwrap();
     }
 
     fn find_program(names: &[&str]) -> Option<PathBuf> {

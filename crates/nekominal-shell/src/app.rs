@@ -777,6 +777,7 @@ impl App {
         // Which pane a program runs in, for the status line command of Claude Code, and the settings that make that command
         // this program, while the status bar is on and Claude Code has no status line of the user's own.
         env.extend(profile.options.env.clone());
+        env.extend(profiles::launch_env(profile, self.settings.shell_integration));
         env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
         if self.settings.status_bar.show && !self.claude.own_status_line && let Some(file) = agent::claude_settings_file() {
             env.insert(agent::CLAUDE_SETTINGS_VAR.to_owned(), file.to_string_lossy().into_owned());

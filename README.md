@@ -63,7 +63,7 @@ allow. Large and multi-line pastes ask first.
 
 ### Commands and their output
 
-- **Shell integration for PowerShell** marks every prompt, command and exit code (OSC 133) and the folder (OSC 9;9), with no
+- **Shell integration for PowerShell, cmd, Git Bash and WSL bash** marks every prompt, command and exit code (OSC 133) and the folder (OSC 9;9), with no
   change to your profile.
 - **Select or copy a command's output** from the palette; press again for the command before it. Failed commands get a red
   mark on the scrollbar, and Ctrl+Alt+Up / Down jumps between prompts.
@@ -174,7 +174,8 @@ Every command is in the palette, and the Shortcuts page of the settings rebinds 
 
 - Windows 11 (build 22621 or later for the backdrops), on x64 and ARM64.
 - Shells and agents through ConPTY, with the ConPTY that ships with each release.
-- PowerShell 7 and Windows PowerShell 5.1 get the shell integration; any other shell runs as it is.
+- PowerShell 7, Windows PowerShell 5.1, cmd, Git Bash and the bash of WSL get the shell integration (cmd gives no exit code);
+  any other shell runs as it is.
 
 ---
 
@@ -209,7 +210,7 @@ nekominal [-d <folder>] [-p <profile>] [-- <command> ...]
 ```
 
 `-p` takes a profile's id or name. In PowerShell, write `;` as `` `; `` so that PowerShell does not take it. A command after
-`--` runs as it is, without the shell integration; type `claude` in a PowerShell tab to give Claude Code the status line.
+`--` runs as it is, without the shell integration; type `claude` in a PowerShell, cmd, Git Bash or WSL bash tab to give Claude Code the status line.
 
 ### Build
 

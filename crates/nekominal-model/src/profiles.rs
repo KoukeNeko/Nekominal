@@ -1,5 +1,7 @@
 //! The profiles a new tab can open: the shells found on the machine plus the ones written in `settings.json`.
 
+use std::collections::BTreeMap;
+
 use crate::{settings::{CustomProfile, ProfileOptions}, shell_integration};
 
 /// Icon of a profile whose program is not one of the known shells.
@@ -184,16 +186,43 @@ pub fn resolve_default<'a>(profiles: &'a [Profile], default_id: &str) -> Option<
     find(profiles, default_id).or_else(|| profiles.first())
 }
 
-/// The arguments to start the profile with. A discovered PowerShell gets the prompt marks and working
-/// directory reports when `shell_integration` is on; custom profiles are launched exactly as written.
+/// The kind of shell integration the profile gets: a discovered shell whose program is still that shell. The program
+/// decides, not only the kind: a found PowerShell given another program (bash) keeps its kind for how its sessions
+/// behave, and must not get PowerShell's arguments. Custom profiles are launched exactly as written.
+fn integrated_kind(profile: &Profile, shell_integration: bool) -> Option<ProfileKind> {
+    let kind = profile.kind;
+    let integrated = matches!(kind, ProfileKind::PowerShell | ProfileKind::Cmd | ProfileKind::Bash | ProfileKind::Wsl);
+    (shell_integration && integrated && !profile.custom && kind_for_program(&profile.program) == kind).then_some(kind)
+}
+
+/// The arguments to start the profile with. A discovered PowerShell, cmd, Git Bash or WSL gets the prompt marks and
+/// working directory reports when `shell_integration` is on; one whose script cannot be written starts as it is.
 pub fn launch_args(profile: &Profile, shell_integration: bool) -> Vec<String> {
-    // The program decides, not only the kind: a found PowerShell given another program (bash) keeps its kind for how its
-    // sessions behave, and must not get PowerShell's arguments.
-    if shell_integration && profile.kind == ProfileKind::PowerShell && !profile.custom && kind_for_program(&profile.program) == ProfileKind::PowerShell {
-        shell_integration::powershell_args(&profile.args)
-    } else {
-        profile.args.clone()
+    let script = |name, text| shell_integration::script_file(name, text);
+    match integrated_kind(profile, shell_integration) {
+        Some(ProfileKind::PowerShell) => shell_integration::powershell_args(&profile.args),
+        Some(ProfileKind::Cmd) => match script("cmd.cmd", shell_integration::CMD_SCRIPT) {
+            Some(init) => shell_integration::cmd_args(&profile.args, &init),
+            None => profile.args.clone(),
+        },
+        Some(ProfileKind::Bash) => match script("bash.sh", shell_integration::BASH_SCRIPT) {
+            Some(init) => shell_integration::bash_args(&profile.args, &init),
+            None => profile.args.clone(),
+        },
+        Some(ProfileKind::Wsl) if script("bash.sh", shell_integration::BASH_SCRIPT).is_some() => shell_integration::wsl_args(&profile.args),
+        _ => profile.args.clone(),
     }
+}
+
+/// Variables the profile needs on top of the pane's for [`launch_args`]: WSL's script and `WSLENV`, which keeps the
+/// user's own (the profile's, else the one inherited).
+pub fn launch_env(profile: &Profile, shell_integration: bool) -> BTreeMap<String, String> {
+    if integrated_kind(profile, shell_integration) != Some(ProfileKind::Wsl) || shell_integration::wsl_args(&profile.args) == profile.args {
+        return BTreeMap::new();
+    }
+    let Some(init) = shell_integration::script_file("bash.sh", shell_integration::BASH_SCRIPT) else { return BTreeMap::new() };
+    let theirs = profile.options.env.get("WSLENV").cloned().or_else(|| std::env::var("WSLENV").ok());
+    shell_integration::wsl_env(&init, theirs.as_deref())
 }
 
 #[cfg(test)]
@@ -451,28 +480,42 @@ mod tests {
     }
 
     #[test]
-    fn only_a_discovered_powershell_gets_the_shell_integration() {
-        let merged = merge(&shells(), &[custom("mine", "pwsh.exe")]);
+    fn only_discovered_shells_get_the_shell_integration() {
+        let merged = merge(&shells(), &[custom("mine", "pwsh.exe"), custom("mybash", "bash.exe"), custom("mywsl", "wsl.exe")]);
         let pwsh = &merged[0];
         let with = launch_args(pwsh, true);
         assert_eq!(&with[..3], ["-NoLogo", "-NoExit", "-EncodedCommand"]);
         assert_eq!(with.len(), 4);
         assert_eq!(launch_args(pwsh, false), ["-NoLogo"]);
-        assert_eq!(
-            launch_args(&merged[1], true),
-            ["-NoLogo"],
-            "cmd has no integration"
-        );
-        assert_eq!(
-            launch_args(&merged[2], true),
-            ["-NoLogo"],
-            "wsl has no integration"
-        );
-        assert_eq!(
-            launch_args(&merged[3], true),
-            ["-x"],
-            "custom profiles run as written"
-        );
+        let cmd = launch_args(&merged[1], true);
+        assert_eq!(&cmd[..3], ["-NoLogo", "/k", "call"]);
+        assert!(cmd[3].ends_with("cmd.cmd"), "{cmd:?}");
+        assert_eq!(launch_args(&merged[1], false), ["-NoLogo"]);
+        assert_eq!(launch_args(&merged[2], true), ["-NoLogo"], "a wsl that does not start its default shell runs as written");
+        assert!(launch_env(&merged[2], true).is_empty());
+        for custom in &merged[3..] {
+            assert_eq!(launch_args(custom, true), ["-x"], "custom profiles run as written");
+            assert!(launch_env(custom, true).is_empty());
+        }
+    }
+
+    #[test]
+    fn git_bash_and_wsl_start_with_the_bash_script_and_wsl_gets_its_environment() {
+        let mut bash = discovered("git-bash", "bash", "git-bash", r"C:\Program Files\Git\bin\bash.exe");
+        bash.args = vec!["--login".into(), "-i".into()];
+        let mut wsl = discovered("wsl-Ubuntu", "wsl", "wsl", r"C:\Windows\System32\wsl.exe");
+        wsl.args = ["--distribution", "Ubuntu", "--cd", "~"].map(str::to_owned).to_vec();
+        let merged = merge(&[bash, wsl], &[]);
+        let args = launch_args(&merged[0], true);
+        assert_eq!((args[0].as_str(), args[2].as_str()), ("--init-file", "-i"));
+        assert!(args[1].ends_with("/shell/bash.sh") && !args[1].contains('\\'), "{args:?}");
+        assert_eq!(std::fs::read_to_string(&args[1]).unwrap(), shell_integration::BASH_SCRIPT.replace('\r', ""));
+        assert!(launch_env(&merged[0], true).is_empty(), "Git Bash needs no variable");
+        assert_eq!(&launch_args(&merged[1], true)[4..], ["-e", "sh", "-c", "IFS=; . $NEKOMINAL_BASH_INIT"]);
+        let env = launch_env(&merged[1], true);
+        assert!(env["NEKOMINAL_BASH_INIT"].ends_with(r"shell\bash.sh"));
+        assert!(env["WSLENV"].starts_with("NEKOMINAL_SESSION:NEKOMINAL_CLAUDE_SETTINGS/p:NEKOMINAL_BASH_INIT/pu"));
+        assert!(launch_env(&merged[1], false).is_empty());
     }
 
     #[test]

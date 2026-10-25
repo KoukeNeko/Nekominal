@@ -336,7 +336,7 @@ texts! {
     BellSoundAlways "bellSound.always" "一律" "Always";
     SettingsKitty "settings.kitty" "kitty 鍵盤協定" "kitty keyboard protocol";
     SettingsAgentEnvironment "settings.agentEnvironment" "代理程式環境變數" "Agent environment variables";
-    SettingsShellIntegration "settings.shellIntegration" "PowerShell 整合" "PowerShell integration";
+    SettingsShellIntegration "settings.shellIntegration" "Shell 整合" "Shell integration";
     SettingsOsc52 "settings.osc52" "OSC 52 剪貼簿" "OSC 52 clipboard";
     Osc52Write "osc52.write" "僅寫入" "Write only";
     Osc52ReadWrite "osc52.readWrite" "讀取與寫入" "Read and write";
