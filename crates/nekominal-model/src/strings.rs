@@ -259,6 +259,7 @@ texts! {
     CursorBar "cursor.bar" "直線" "Bar";
     CursorUnderline "cursor.underline" "底線" "Underline";
     SettingsCursorBlink "settings.cursorBlink" "游標閃爍" "Cursor blink";
+    SettingsCursorBlinkRate "settings.cursorBlinkRate" "游標閃爍間隔（毫秒）" "Cursor blink interval (ms)";
 
     SettingsScrollback "settings.scrollback" "捲動緩衝區行數" "Scrollback lines";
     SettingsDefaultProfile "settings.defaultProfile" "預設設定檔" "Default profile";
@@ -321,6 +322,9 @@ texts! {
     SettingsFile "settings.file" "設定 JSON" "Settings file";
     SettingsVersion "settings.version" "版本" "Version";
     SettingsAbout "settings.about" "關於" "About";
+    SettingsRepo "settings.repo" "原始碼" "Source code";
+    SettingsContributors "settings.contributors" "貢獻者" "Contributors";
+    CommonOpen "common.open" "開啟" "Open";
     UpdateCheck "update.check" "檢查更新" "Check for updates";
     UpdateChecking "update.checking" "正在檢查更新" "Checking for updates";
     UpdateLatest "update.latest" "已是最新版本" "Up to date";

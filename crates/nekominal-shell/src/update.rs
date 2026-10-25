@@ -1,10 +1,16 @@
 //! Whether a newer Nekominal is out: the version the Scoop bucket offers, read in the background with the `curl.exe`
-//! Windows ships, so the app takes no HTTP library for one request. And where a copy that Scoop installed lives.
+//! Windows ships, so the app takes no HTTP library for one request. Who has worked on it, as the build took it in. And
+//! where a copy that Scoop installed lives.
 
 use std::path::{Path, PathBuf};
 
 /// The manifest of the app in the bucket the release workflow writes.
 pub const MANIFEST: &str = "https://raw.githubusercontent.com/KoukeNeko/scoop-bucket/main/bucket/nekominal.json";
+/// Where the source is.
+pub const REPO: &str = "https://github.com/KoukeNeko/Nekominal";
+/// Who has worked on it: the logins of the contributors of the repository, without bots, most commits first. The release
+/// workflow writes the file from GitHub before it builds; a build elsewhere takes the copy in the repository.
+const CONTRIBUTORS: &str = include_str!("../contributors.json");
 /// The version of this build.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
@@ -35,18 +41,27 @@ pub fn version_of(manifest: &str) -> Option<String> {
     Some(value.get("version")?.as_str()?.to_owned())
 }
 
-/// Reads the manifest and says what it means for this build. Blocks for up to ten seconds: a thread of its own calls it.
-pub fn check() -> Check {
+/// The body at `url`, or nothing when it cannot be read. Blocks for up to ten seconds: a thread of its own calls it.
+fn fetch(url: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("curl.exe")
-        .args(["--silent", "--fail", "--location", "--max-time", "10", MANIFEST])
+        .args(["--silent", "--fail", "--location", "--max-time", "10", url])
         .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    let Some(latest) = output.ok().filter(|out| out.status.success()).and_then(|out| version_of(&String::from_utf8_lossy(&out.stdout))) else {
-        return Check::Failed;
-    };
+        .output()
+        .ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Reads the manifest and says what it means for this build.
+pub fn check() -> Check {
+    let Some(latest) = fetch(MANIFEST).as_deref().and_then(version_of) else { return Check::Failed };
     if newer(&latest, CURRENT) { Check::Newer(latest) } else { Check::Latest }
+}
+
+/// The people who have worked on the source, as the build took them in.
+pub fn contributors() -> Vec<String> {
+    serde_json::from_str(CONTRIBUTORS).unwrap_or_default()
 }
 
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
@@ -80,6 +95,8 @@ mod tests {
         assert_eq!(version_of(r#"{ "version": "0.0.13", "bin": "Nekominal.exe" }"#).as_deref(), Some("0.0.13"));
         assert_eq!(version_of("<html>404</html>"), None);
         assert_eq!(version_of(r#"{ "version": 13 }"#), None);
+        let people = contributors();
+        assert!(!people.is_empty() && people.iter().all(|login| !login.is_empty() && !login.contains(char::is_whitespace)), "the embedded list is logins: {people:?}");
         let scoop = Path::new(r"C:\Users\a\scoop\apps\nekominal\current\Nekominal.exe");
         assert_eq!(scoop_dir_of(scoop).as_deref(), Some(Path::new(r"C:\Users\a\scoop\apps\nekominal")));
         assert_eq!(scoop_dir_of(Path::new(r"D:\src\Nekominal\target\release\nekominal-next.exe")), None);

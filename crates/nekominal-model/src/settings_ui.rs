@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
+        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
         TabTitle, split_font_families,
     },
     strings::{Lang, Text},
@@ -119,6 +119,7 @@ impl Descriptor {
         match self.id {
             "tabs.sidebarOpen" => settings.tabs.layout.is_side(),
             "tabs.groupByState" => settings.tabs.layout == crate::settings::TabLayout::List,
+            "cursor.blinkRate" => settings.cursor.blink,
             _ => true,
         }
     }
@@ -222,6 +223,7 @@ const SCROLLBACK: Range = Range { min: 0.0, max: 1_000_000.0, step: 1000.0, larg
 /// The large paste warning in KiB, 0 (off) to the 100 MB the file accepts.
 const LARGE_PASTE: Range = Range { min: 0.0, max: 97_656.0, step: 1.0, large: 100.0 };
 const CLOSE_THRESHOLD: Range = Range { min: 1.0, max: 1000.0, step: 1.0, large: 5.0 };
+const BLINK_RATE: Range = Range { min: BLINK_RATE_RANGE.0, max: BLINK_RATE_RANGE.1, step: 50.0, large: 250.0 };
 
 /// Every row of the drawer, section by section, in the order the section shows them.
 pub const TABLE: &[Descriptor] = &[
@@ -329,6 +331,8 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
+    toggle!("cursor.blink", Appearance, SettingsCursorBlink, cursor.blink),
+    count!("cursor.blinkRate", Appearance, SettingsCursorBlinkRate, BLINK_RATE, cursor.blink_rate),
     Descriptor {
         id: "tabs.title.parts",
         section: Section::Appearance,
@@ -533,7 +537,6 @@ mod tests {
         ("keybindings", "the shortcuts page edits them"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
-        ("cursor.blink", "the terminals draw a steady cursor, so a row would change nothing"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
     ];
 

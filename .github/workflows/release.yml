@@ -50,6 +50,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Fetch ConPTY
         run: scripts\fetch-conpty.ps1
+      # The About page lists who worked on the app from this file, embedded in the build. A failed look keeps the copy in
+      # the repository: a release is not held up for it.
+      - name: Write the contributors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $logins = @(gh api "repos/$env:GITHUB_REPOSITORY/contributors" --paginate --jq '.[] | select(.type != "Bot") | .login')
+          if ($LASTEXITCODE -ne 0 -or $logins.Count -eq 0) {
+            Write-Output "::warning::the contributors could not be read; the copy in the repository is used"
+            exit 0
+          }
+          $json = ConvertTo-Json -InputObject $logins -Compress
+          [IO.File]::WriteAllText('crates\nekominal-shell\contributors.json', $json + "`n", (New-Object Text.UTF8Encoding $false))
+          Write-Output "contributors: $json"
       - name: Test
         run: >
           cargo test --locked

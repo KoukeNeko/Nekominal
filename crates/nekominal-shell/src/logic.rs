@@ -2510,13 +2510,13 @@ mod tests {
         assert_eq!((defaults.cursor_style.shape, defaults.cursor_style.blinking), (CursorShape::Block, true));
         assert_eq!((defaults.scrollback_lines, defaults.kitty_keyboard), (10_000, true));
         let mut settings = Settings::default();
-        settings.cursor = Cursor { style: CursorShapeSetting::Bar, blink: false };
+        settings.cursor = Cursor { style: CursorShapeSetting::Bar, blink: false, blink_rate: 530 };
         settings.scrollback = 250;
         settings.keyboard = Keyboard { kitty_protocol: false };
         let config = core_config(&settings);
         assert_eq!((config.cursor_style.shape, config.cursor_style.blinking), (CursorShape::Beam, false));
         assert_eq!((config.scrollback_lines, config.kitty_keyboard), (250, false));
-        assert_eq!(cursor_style_for(&Cursor { style: CursorShapeSetting::Underline, blink: true }).shape, CursorShape::Underline);
+        assert_eq!(cursor_style_for(&Cursor { style: CursorShapeSetting::Underline, blink: true, blink_rate: 530 }).shape, CursorShape::Underline);
     }
 
     #[test]

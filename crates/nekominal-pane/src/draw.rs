@@ -25,6 +25,8 @@ pub struct PaneRenderer {
     preedit_at: Option<r::Preedit>,
     force_draw: bool,
     focused: bool,
+    /// The cursor is in the "on" phase of its blink (or does not blink).
+    cursor_on: bool,
 }
 
 /// What `prepare` did, for logs and tests.
@@ -63,6 +65,7 @@ impl PaneRenderer {
             preedit_at: None,
             force_draw: true,
             focused: true,
+            cursor_on: true,
         })
     }
 
@@ -125,6 +128,14 @@ impl PaneRenderer {
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
         self.force_draw = true;
+    }
+
+    /// The phase of the blink of the cursor, driven by the window's timer: off hides the cursor until it is on again.
+    pub fn set_cursor_visible(&mut self, on: bool) {
+        if on != self.cursor_on {
+            self.cursor_on = on;
+            self.force_draw = true;
+        }
     }
 
     /// The link under the pointer is underlined; an empty list removes the underline.
@@ -192,7 +203,7 @@ impl PaneRenderer {
             cols: self.snapshot.columns,
             rows: self.snapshot.rows,
             cells: &self.cells,
-            cursor: view::cursor(&self.snapshot, self.focused, true),
+            cursor: view::cursor(&self.snapshot, self.focused, self.cursor_on),
             selection: &self.selection,
             highlights: &self.highlights,
             hover_link: &self.hover_link,

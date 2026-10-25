@@ -158,6 +158,9 @@ impl Font {
 pub struct Cursor {
     pub style: CursorStyle,
     pub blink: bool,
+    /// How long the cursor stays on, and then off, while it blinks, in milliseconds.
+    #[serde(rename = "blinkRate")]
+    pub blink_rate: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -395,6 +398,8 @@ pub const OPACITY_RANGE: (f64, f64) = (0.2, 1.0);
 pub const OPACITY_STEP: f64 = 0.05;
 /// Valid range of `font.size`, also the bounds of the temporary font zoom.
 pub const FONT_SIZE_RANGE: (f64, f64) = (6.0, 72.0);
+/// The blink of the cursor, each phase, in milliseconds: from quick to slow.
+pub const BLINK_RATE_RANGE: (f64, f64) = (200.0, 1500.0);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -517,7 +522,8 @@ impl Default for Settings {
                 weight: 400,
                 line_height: 1.1,
             },
-            cursor: Cursor { style: CursorStyle::Block, blink: true },
+            // The pace Windows gives a text caret by default.
+            cursor: Cursor { style: CursorStyle::Block, blink: true, blink_rate: 530 },
             appearance: Appearance { backdrop: Backdrop::Acrylic, opacity: 0.72, tab_bar_density: TabBarDensity::Comfortable },
             tabs: Tabs::default(),
             scrollback: 10_000,
@@ -899,6 +905,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 &mut problems,
             ),
             blink: boolean(&cursor, "blink", d.cursor.blink, "cursor", &mut problems),
+            blink_rate: number(&cursor, "blinkRate", f64::from(d.cursor.blink_rate), BLINK_RATE_RANGE, "cursor", &mut problems).round() as u32,
         },
         appearance: Appearance {
             backdrop: one_of(
@@ -1069,7 +1076,7 @@ mod tests {
         assert_eq!(s.theme, "Dracula");
         assert_eq!(s.font.size, 18.0);
         assert_eq!(s.font.family, Settings::default().font.family);
-        assert_eq!(s.cursor, Cursor { style: CursorStyle::Bar, blink: true });
+        assert_eq!(s.cursor, Cursor { style: CursorStyle::Bar, blink: true, blink_rate: 530 });
         assert_eq!(s.scrollback, 500);
     }
 
@@ -1282,6 +1289,17 @@ mod tests {
         rejected(r#""restoreSession": "yes""#);
         let written = round_trips(Settings { restore_session: true, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "restoreSession": true }));
+    }
+
+    #[test]
+    fn the_blink_rate_of_the_cursor_is_kept_in_its_range_and_written_back() {
+        assert_eq!(Settings::default().cursor.blink_rate, 530);
+        assert_eq!(parsed_ok(r#""cursor": { "blinkRate": 800 }"#).cursor.blink_rate, 800);
+        let quick = parsed(r#"{ "cursor": { "blinkRate": 5 } }"#);
+        assert_eq!(quick.settings.cursor.blink_rate, 530, "out of range falls back to the default, as every number of the file does");
+        assert_eq!(quick.problems.len(), 1, "and is reported");
+        let written = round_trips(Settings { cursor: Cursor { blink_rate: 900, ..Settings::default().cursor }, ..Settings::default() });
+        assert!(written.contains("\"blinkRate\": 900"), "{written}");
     }
 
     #[test]

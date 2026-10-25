@@ -112,6 +112,13 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
     }
 }
 
+/// Opens an address in the browser; what goes wrong goes to the log.
+fn open_link(uri: &str) {
+    if let Err(e) = open::shell_open(uri) {
+        util::log(&format!("open link: {e}"));
+    }
+}
+
 /// Whether Windows shows animations (Settings › Accessibility › Visual effects): with them off, the marks of the tabs stand
 /// still.
 fn animations_on() -> bool {
@@ -220,6 +227,9 @@ pub struct App {
     marks_epoch: Instant,
     /// Where the window was last, on the screen: a move takes the pop-up along by the difference.
     origin: Option<(i32, i32)>,
+    /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
+    blink_on: bool,
+    blink_armed: Option<u32>,
     /// What the last look for a newer version found, and whether the About page has not shown it yet: a thread fills it.
     update: Arc<std::sync::Mutex<(update::Check, bool)>>,
     /// Claude Code as the Agent page last found it.
@@ -473,6 +483,8 @@ impl App {
             animating: false,
             marks_epoch: Instant::now(),
             origin: None,
+            blink_on: true,
+            blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
             claude: agent::claude(),
             settings_readable,
@@ -866,6 +878,44 @@ impl App {
         self.redraw();
     }
 
+    /// Whether the cursor of the focused pane blinks now: the setting is on, the program did not ask for a steady one, and
+    /// the window has the keyboard (an inactive window keeps a steady, hollow cursor).
+    fn blink_wanted(&self) -> bool {
+        self.settings.cursor.blink
+            && self.active
+            && self.welcome.is_none()
+            && self.focused().is_some_and(|entry| {
+                let cursor = &entry.view.snapshot().cursor;
+                cursor.blinking && cursor.position.is_some()
+            })
+    }
+
+    /// The blink timer the window should run, when it differs from the one it runs: `Some(Some(ms))` starts it at that pace,
+    /// `Some(None)` stops it.
+    pub fn blink_timer(&mut self) -> Option<Option<u32>> {
+        let want = self.blink_wanted().then_some(self.settings.cursor.blink_rate);
+        (want != self.blink_armed).then(|| {
+            self.blink_armed = want;
+            want
+        })
+    }
+
+    /// A phase of the blink is over: the cursor goes off or comes back.
+    pub fn on_blink_tick(&mut self) {
+        self.blink_on = !self.blink_on;
+        self.redraw();
+    }
+
+    /// Typing shows the cursor and starts its blink over, so that it is never off under the keys.
+    fn show_cursor(&mut self) {
+        if !self.blink_on || self.blink_armed.is_some() {
+            self.blink_on = true;
+            // The timer is started again by the next frame, a whole phase from now.
+            self.blink_armed = None;
+            self.redraw();
+        }
+    }
+
     /// The window moved (dragged by its title bar, snapped, moved with the keyboard): the pop-up that is open moves with it,
     /// by as much, so that a menu stays hanging from its button and the find bar over its pane.
     pub fn on_move(&mut self) {
@@ -1237,6 +1287,15 @@ impl App {
             return Capture::None;
         }
         let hit = self.hit_test(x, y);
+        // The middle button closes the tab under it, on its release, as in a browser: on top and in the sidebar alike.
+        if button == MouseButton::Middle
+            && let Hit::Chip(i) | Hit::ChipClose(i) = hit
+        {
+            if !down {
+                self.request_close_tab(i);
+            }
+            return Capture::None;
+        }
         // A left press outside the panes, and its release, are for the chrome.
         if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
             if down {
@@ -1732,6 +1791,7 @@ impl App {
 
     /// A key went down. `true` when the window handled it (a shortcut, or the terminal encoded it).
     pub fn on_key_down(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
+        self.show_cursor();
         if self.popup_keeps_owner_active() {
             if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET { return false; }
             if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
@@ -1860,6 +1920,8 @@ impl App {
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
                     settings_page::Entry::Claude => ("Claude Code".to_owned(), settings_page::claude_note(&self.claude, &self.settings).get(lang).to_owned()),
                     settings_page::Entry::About => (format!("Nekominal {}", update::CURRENT), settings_page::update_note(&self.update_check(), lang)),
+                    settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
+                    settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
                 })
                 .collect(),
             focused: page.focus,
@@ -1903,12 +1965,18 @@ impl App {
         };
 
         let highlights = self.find_highlights();
+        let blinking = self.blink_wanted();
+        if !blinking {
+            self.blink_on = true;
+        }
+        let cursor_on = self.blink_on;
         let mut first = true;
         if let Some(tab) = self.tabs.get_mut(self.selected) {
             let focused = tab.focused;
             for id in tab.shown() {
                 let Some(entry) = tab.entry_mut(id) else { continue };
                 entry.view.set_highlights(if id == focused { highlights.clone() } else { Vec::new() });
+                entry.view.set_cursor_visible(id != focused || cursor_on);
                 entry.view.prepare(&entry.pane.term);
                 let rect = [entry.rect.x.max(0) as u32, entry.rect.y.max(0) as u32, entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32];
                 entry.view.draw_in(&view, rect, first);
@@ -3249,6 +3317,12 @@ impl App {
             Part::ResetKey(command) => self.change_bindings(|bindings| keybindings::reset(bindings, command)),
             Part::CheckUpdate => self.check_for_update(),
             Part::Update => self.update_and_restart(),
+            Part::OpenRepo => open_link(update::REPO),
+            Part::Contributor(i) => {
+                if let Some(login) = update::contributors().get(i) {
+                    open_link(&format!("https://github.com/{login}"));
+                }
+            }
         }
         self.page_redraw();
         capture
@@ -3293,11 +3367,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors => None,
         });
         match vk_code {
             VK_ESCAPE => {

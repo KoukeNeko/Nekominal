@@ -46,6 +46,8 @@ const DRAG_TIMER: usize = 1;
 const JOB_TIMER: usize = 2;
 /// Asks for the next frame of the marks of the tabs that move (a spinner, a pulse), while one is on show.
 const MARK_TIMER: usize = 3;
+/// Turns the cursor off and on, at the pace of the settings, while it blinks.
+const BLINK_TIMER: usize = 4;
 
 pub(crate) const WM_NEW_WINDOW: u32 = WM_APP + 2;
 /// Destroys the window from the message loop: the application asks for it from inside a handler, while it is borrowed, and
@@ -316,6 +318,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             } else {
                 unsafe { let _ = KillTimer(Some(hwnd), MARK_TIMER); }
             }
+            // The blink keeps its own pace: its timer changes only when the blink starts, stops or changes speed, not with
+            // every frame (which would keep putting it off).
+            match with_app(hwnd, |app| app.blink_timer()).flatten() {
+                Some(Some(ms)) => unsafe { SetTimer(Some(hwnd), BLINK_TIMER, ms, None); },
+                Some(None) => unsafe { let _ = KillTimer(Some(hwnd), BLINK_TIMER); },
+                None => {}
+            }
             raise_access_events(hwnd, App::access_update);
             LRESULT(0)
         }
@@ -401,6 +410,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_TIMER if wparam.0 == DRAG_TIMER => {
             with_app(hwnd, App::on_drag_tick);
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == BLINK_TIMER => {
+            with_app(hwnd, App::on_blink_tick);
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MARK_TIMER => {
