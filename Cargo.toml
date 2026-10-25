@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 # windows-core/windows-bindgen 0.100 declare rust-version 1.95.
 rust-version = "1.95"
