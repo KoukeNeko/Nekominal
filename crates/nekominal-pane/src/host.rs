@@ -314,8 +314,16 @@ impl Pane {
     /// Like [`Pane::spawn_with`], and `wake` is called from the reader thread after every frame of output and when
     /// the program ends, so a shell that draws on demand knows when there is something new to draw.
     pub fn spawn_woken(config: SpawnConfig, core: CoreConfig, wake: Wake) -> std::io::Result<Pane> {
+        Pane::spawn_prepared(config, core, wake, |_| {})
+    }
+
+    /// Like [`Pane::spawn_woken`], and `prepare` runs on the emulator before the program starts: what it feeds (the
+    /// text of a restored pane) is above anything the program writes, and never reaches the program.
+    pub fn spawn_prepared(config: SpawnConfig, core: CoreConfig, wake: Wake, prepare: impl FnOnce(&mut TerminalCore)) -> std::io::Result<Pane> {
         let (cols, rows) = (usize::from(config.cols), usize::from(config.rows));
-        let term = Arc::new(FairMutex::new(TerminalCore::new(cols, rows, core)));
+        let mut emulator = TerminalCore::new(cols, rows, core);
+        prepare(&mut emulator);
+        let term = Arc::new(FairMutex::new(emulator));
         let (ui_tx, ui_rx) = channel::<UiEvent>();
         let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
         let generation = Arc::new(AtomicU32::new(0));
