@@ -72,6 +72,10 @@ pub struct Tab {
     pub focused: PaneId,
     /// Only the focused pane is shown, over the whole area.
     pub zoomed: bool,
+    /// The name the user gave the tab, shown instead of what its program says; none for the automatic title.
+    pub name: Option<String>,
+    /// The colour the user gave the tab, an index into `logic::TAB_COLORS`.
+    pub color: Option<usize>,
     next: PaneId,
 }
 
@@ -79,7 +83,7 @@ impl Tab {
     /// A tab with one pane; its id is the first one this tab hands out.
     pub fn new(make: impl FnOnce(PaneId) -> Result<PaneEntry, String>) -> Result<Tab, String> {
         let entry = make(1)?;
-        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, next: 2 })
+        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, name: None, color: None, next: 2 })
     }
 
     /// A tab as a saved session had it: the layout with its ratios, a pane for every leaf (make starts it), the pane that
@@ -104,7 +108,7 @@ impl Tab {
         }
         let focused = if ids.contains(&active) { active } else { ids[0] };
         let next = ids.iter().max().map_or(1, |highest| highest + 1);
-        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, next })
+        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, next })
     }
 
     pub fn next_id(&mut self) -> PaneId {

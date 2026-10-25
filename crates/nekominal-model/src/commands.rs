@@ -51,6 +51,12 @@ pub enum Command {
     ViewSidebar,
     /// Closes the windows, has Scoop update the app and starts it again.
     AppUpdate,
+    /// Names the selected tab, gives it a colour, opens a copy of it, closes the others, closes those right of it.
+    TabRename,
+    TabColor,
+    TabDuplicate,
+    TabCloseOthers,
+    TabCloseRight,
     ViewZoomIn,
     ViewZoomOut,
     ViewZoomReset,
@@ -114,6 +120,11 @@ impl Command {
         Command::ViewFullscreen,
         Command::ViewSidebar,
         Command::AppUpdate,
+        Command::TabRename,
+        Command::TabColor,
+        Command::TabDuplicate,
+        Command::TabCloseOthers,
+        Command::TabCloseRight,
         Command::ViewZoomIn,
         Command::ViewZoomOut,
         Command::ViewZoomReset,
@@ -178,6 +189,11 @@ impl Command {
             Command::ViewFullscreen => "view.fullscreen",
             Command::ViewSidebar => "view.sidebar",
             Command::AppUpdate => "app.update",
+            Command::TabRename => "tab.rename",
+            Command::TabColor => "tab.color",
+            Command::TabDuplicate => "tab.duplicate",
+            Command::TabCloseOthers => "tab.closeOthers",
+            Command::TabCloseRight => "tab.closeRight",
             Command::ViewZoomIn => "view.zoomIn",
             Command::ViewZoomOut => "view.zoomOut",
             Command::ViewZoomReset => "view.zoomReset",
@@ -241,6 +257,11 @@ impl Command {
             Command::ViewFullscreen => Text::ViewFullscreen,
             Command::ViewSidebar => Text::ViewSidebar,
             Command::AppUpdate => Text::AppUpdate,
+            Command::TabRename => Text::TabRename,
+            Command::TabColor => Text::TabColor,
+            Command::TabDuplicate => Text::TabDuplicate,
+            Command::TabCloseOthers => Text::TabCloseOthers,
+            Command::TabCloseRight => Text::TabCloseRight,
             Command::ViewZoomIn => Text::ViewZoomIn,
             Command::ViewZoomOut => Text::ViewZoomOut,
             Command::ViewZoomReset => Text::ViewZoomReset,
@@ -312,6 +333,7 @@ impl Command {
             Command::ViewFullscreen => &["F11"],
             Command::ViewSidebar => &["Ctrl+Shift+B"],
             Command::AppUpdate => &[],
+            Command::TabRename | Command::TabColor | Command::TabDuplicate | Command::TabCloseOthers | Command::TabCloseRight => &[],
             Command::ViewZoomIn => &["Ctrl+="],
             Command::ViewZoomOut => &["Ctrl+-"],
             Command::ViewZoomReset => &["Ctrl+0"],
@@ -392,6 +414,11 @@ impl Command {
                 | Command::ViewFullscreen
                 | Command::ViewSidebar
                 | Command::AppUpdate
+                | Command::TabRename
+                | Command::TabColor
+                | Command::TabDuplicate
+                | Command::TabCloseOthers
+                | Command::TabCloseRight
                 | Command::AppPalette
                 | Command::AppNewWindow
                 | Command::AppSettings
@@ -489,9 +516,14 @@ mod tests {
             Command::AppNewWindow => 41,
             Command::ViewSidebar => 42,
             Command::AppUpdate => 43,
+            Command::TabRename => 44,
+            Command::TabColor => 45,
+            Command::TabDuplicate => 46,
+            Command::TabCloseOthers => 47,
+            Command::TabCloseRight => 48,
         }
     }
-    const VARIANTS: usize = 44;
+    const VARIANTS: usize = 49;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command
@@ -822,6 +854,11 @@ mod tests {
             | Command::ViewFullscreen
             | Command::ViewSidebar
             | Command::AppUpdate
+            | Command::TabRename
+            | Command::TabColor
+            | Command::TabDuplicate
+            | Command::TabCloseOthers
+            | Command::TabCloseRight
             | Command::AppPalette
             | Command::AppNewWindow
             | Command::AppSettings

@@ -94,6 +94,18 @@ texts! {
     ViewFullscreen "view.fullscreen" "全螢幕" "Full screen";
     ViewSidebar "view.sidebar" "切換側邊欄" "Toggle sidebar";
     AppUpdate "app.update" "更新並重新啟動" "Update and restart";
+    TabColor "tab.color" "分頁顏色" "Tab color";
+    TabRenameTo "tab.renameTo" "命名為「{0}」" "Name it “{0}”";
+    TabRenameAuto "tab.renameAuto" "使用自動標題" "Use the automatic title";
+    DialogCloseTabs "dialog.closeTabs" "關閉 {0} 個分頁？" "Close {0} tabs?";
+    ColorRed "color.red" "紅" "Red";
+    ColorOrange "color.orange" "橘" "Orange";
+    ColorYellow "color.yellow" "黃" "Yellow";
+    ColorGreen "color.green" "綠" "Green";
+    ColorTeal "color.teal" "青" "Teal";
+    ColorBlue "color.blue" "藍" "Blue";
+    ColorPurple "color.purple" "紫" "Purple";
+    ColorPink "color.pink" "粉紅" "Pink";
     ViewZoomIn "view.zoomIn" "放大字型" "Increase font size";
     ViewZoomOut "view.zoomOut" "縮小字型" "Decrease font size";
     ViewZoomReset "view.zoomReset" "重設字型大小" "Reset font size";

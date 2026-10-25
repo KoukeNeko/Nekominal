@@ -235,6 +235,8 @@ pub struct App {
     marks_epoch: Instant,
     /// Where the window was last, on the screen: a move takes the pop-up along by the difference.
     origin: Option<(i32, i32)>,
+    /// The line of the open palette is the new name of the tab with this uid, not a search of the commands.
+    renaming: Option<u64>,
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
@@ -322,6 +324,8 @@ enum Confirmation {
     Paste { tab: usize, pane: PaneId, text: String },
     ClosePane { tab: usize, pane: PaneId },
     CloseTab(usize),
+    /// The tabs with these uids, closed together.
+    CloseTabs(Vec<u64>),
     CloseWindow,
 }
 
@@ -363,6 +367,11 @@ fn wired(command: Command) -> bool {
             | Command::ViewFullscreen
             | Command::ViewSidebar
             | Command::AppUpdate
+            | Command::TabRename
+            | Command::TabColor
+            | Command::TabDuplicate
+            | Command::TabCloseOthers
+            | Command::TabCloseRight
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
             | Command::AppearanceOpacityDown
@@ -491,6 +500,7 @@ impl App {
             animating: false,
             marks_epoch: Instant::now(),
             origin: None,
+            renaming: None,
             blink_on: true,
             blink_armed: None,
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
@@ -1295,6 +1305,17 @@ impl App {
             return Capture::None;
         }
         let hit = self.hit_test(x, y);
+        // The right button on a tab opens its menu, as the right button in a pane opens the pane's; its release must not
+        // close the menu again.
+        if button == MouseButton::Right
+            && let Hit::Chip(i) | Hit::ChipClose(i) = hit
+        {
+            if down {
+                self.context_release = true;
+                self.open_tab_menu(i, x, y);
+            }
+            return Capture::None;
+        }
         // The middle button closes the tab under it, on its release, as in a browser: on top and in the sidebar alike.
         if button == MouseButton::Middle
             && let Hit::Chip(i) | Hit::ChipClose(i) = hit
@@ -1705,6 +1726,11 @@ impl App {
                 }
             }
             Command::AppUpdate => self.update_and_restart(),
+            Command::TabRename => self.open_rename(),
+            Command::TabColor => self.open_tab_colors(),
+            Command::TabDuplicate => self.duplicate_tab(),
+            Command::TabCloseOthers => self.request_close_tabs(logic::tabs_other_than(self.tabs.len(), self.selected)),
+            Command::TabCloseRight => self.request_close_tabs(logic::tabs_right_of(self.tabs.len(), self.selected)),
             Command::ViewSidebar => {
                 let before = self.settings.clone();
                 self.settings.tabs.sidebar_open = !self.settings.tabs.sidebar_open;
@@ -2375,8 +2401,16 @@ impl App {
             let title = if ordinal { (i + 1).to_string() } else { self.tab_label(i) };
             self.ui.text(x, chip.y + (chip.h - line) / 2.0, &title, TEXT_SIZE, color, false);
             self.ui.pop_clip();
-            if selected {
-                self.ui.rrect(Rect::new(chip.x + 2.0, chip.y + chip.h - 2.0, chip.w - 4.0, 2.0), 1.0, col(g.accent), None);
+            // The line under the tab: the accent under the selected one, or the colour the user gave the tab, fainter on
+            // the tabs that are not selected.
+            let tinted = self.tabs[i].color.and_then(|c| logic::TAB_COLORS.get(c)).map(|(_, (r, g, b))| (*r, *g, *b));
+            match (selected, tinted) {
+                (_, Some((r, gr, b))) => {
+                    let alpha = if selected { 255 } else { 150 };
+                    self.ui.rrect(Rect::new(chip.x + 2.0, chip.y + chip.h - 2.0, chip.w - 4.0, 2.0), 1.0, Color([r, gr, b, alpha]), None);
+                }
+                (true, None) => self.ui.rrect(Rect::new(chip.x + 2.0, chip.y + chip.h - 2.0, chip.w - 4.0, 2.0), 1.0, col(g.accent), None),
+                (false, None) => {}
             }
             if let Some(close) = close {
                 if self.hover == Hit::ChipClose(i) {
@@ -2441,6 +2475,11 @@ impl App {
                 widgets::plate(&mut self.ui, row, col(g.hover()));
             } else if hover {
                 widgets::plate(&mut self.ui, row, soft);
+            }
+            // The colour the user gave the tab: a bar at the left edge of its row.
+            if let Some((_, (r, gr, b))) = self.tabs[i].color.and_then(|c| logic::TAB_COLORS.get(c)) {
+                let bar = Rect::new(side.x + 2.0, row.y + 6.0, 3.0, (row.h - 12.0).max(4.0));
+                self.ui.rrect(bar, 1.5, Color([*r, *gr, *b, 255]), None);
             }
             if !list {
                 self.tab_icon(i, Rect::new(row.x + (row.w - 18.0) / 2.0, row.y + (row.h - 18.0) / 2.0, 18.0, 18.0), quiet);
@@ -3795,9 +3834,12 @@ impl App {
             self.find_search(&query);
             return;
         }
-        let rows = self.palette_rows(&query);
+        let rows = if self.renaming.is_some() { self.rename_rows(&query) } else { self.palette_rows(&query) };
         let Some(popup) = self.popup.as_mut() else { return };
         popup.set_rows(rows);
+        if self.renaming.is_some() {
+            popup.hover = Some(0);
+        }
         // SAFETY: invalidating our own window.
         unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
     }
@@ -3837,6 +3879,108 @@ impl App {
         }
     }
 
+    /// The rows under the line of a rename: name the tab after the line, or give it back its automatic title.
+    fn rename_rows(&self, query: &str) -> Vec<popup::Row> {
+        let lang = self.language();
+        let row = |label: String, action| popup::Row { label, hint: String::new(), action: Some(action), current: false, mark: None, program: None };
+        let mut rows = Vec::new();
+        if !query.trim().is_empty() {
+            rows.push(row(Text::TabRenameTo.format(lang, &[&query.trim()]), popup::Action::RenameTab));
+        }
+        rows.push(row(Text::TabRenameAuto.get(lang).to_owned(), popup::Action::AutoTitle));
+        rows
+    }
+
+    /// The palette as a line for the name of the selected tab, holding its name now, all of it selected.
+    fn open_rename(&mut self) {
+        let Some(uid) = self.tab().map(|tab| tab.uid) else { return };
+        let current = self.tab_label(self.selected);
+        let anchor = self.screen_point((self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale, (layout::TITLE_HEIGHT + 16.0) * self.scale);
+        self.open_popup(Vec::new(), popup::Kind::Palette, anchor);
+        let Some(popup) = self.popup.as_mut() else { return };
+        popup.query = Some(current.clone());
+        textfield::select_all(&current, &mut popup.cursor);
+        self.renaming = Some(uid);
+        self.query_changed();
+    }
+
+    /// The colours a tab can take, and none, the one it has marked.
+    fn open_tab_colors(&mut self) {
+        let lang = self.language();
+        let current = self.tab().and_then(|tab| tab.color);
+        let mut rows = vec![popup::Row { label: Text::BackdropNone.get(lang).to_owned(), hint: String::new(), action: Some(popup::Action::TabColor(None)), current: current.is_none(), mark: None, program: None }];
+        rows.extend(logic::TAB_COLORS.iter().enumerate().map(|(i, (name, rgb))| popup::Row {
+            label: name.get(lang).to_owned(),
+            hint: String::new(),
+            action: Some(popup::Action::TabColor(Some(i))),
+            current: current == Some(i),
+            mark: Some(logic::Mark::Badge { label: "", color: *rgb }),
+            program: None,
+        }));
+        let anchor = self.button_anchor(self.layout.chips.get(self.selected).copied().unwrap_or(self.layout.profiles));
+        self.open_popup(rows, popup::Kind::List, anchor);
+    }
+
+    /// The menu of a tab (its right button): what can be done to it.
+    fn open_tab_menu(&mut self, index: usize, x: i32, y: i32) {
+        self.select(index);
+        let lang = self.language();
+        let row = |command: Command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None, program: None };
+        let mut rows = vec![row(Command::TabRename), row(Command::TabColor), row(Command::TabDuplicate), popup::Row::separator()];
+        if self.tabs.len() > 1 {
+            rows.push(row(Command::TabCloseOthers));
+        }
+        if index + 1 < self.tabs.len() {
+            rows.push(row(Command::TabCloseRight));
+        }
+        rows.push(row(Command::TabClose));
+        let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
+        self.open_popup(rows, popup::Kind::List, anchor);
+    }
+
+    /// A new tab right after the selected one, running what its focused pane was started with, in the folder it is in.
+    fn duplicate_tab(&mut self) {
+        let Some(entry) = self.focused() else { return };
+        let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
+        let cwd = entry.cwd.clone();
+        let area = self.pane_area();
+        let size = (area.w.max(1) as u32, area.h.max(1) as u32);
+        match Tab::new(|id| self.make_entry_with(id, size, &profile, cwd.as_deref())) {
+            Ok(mut tab) => {
+                tab.color = self.tab().and_then(|t| t.color);
+                self.tabs.insert(self.selected + 1, tab);
+                self.selected += 1;
+                self.relayout();
+                self.sync_focus();
+                self.redraw();
+            }
+            Err(e) => util::log(&format!("duplicate tab: {e}")),
+        }
+    }
+
+    /// Closes the tabs at `indices` together, asking once when shells in them are busy.
+    fn request_close_tabs(&mut self, indices: Vec<usize>) {
+        if indices.is_empty() {
+            return;
+        }
+        let running = indices.iter().filter_map(|i| self.tabs.get(*i)).flat_map(|t| &t.panes).filter(|p| !p.exited && p.pane.is_busy()).count() as u32;
+        let uids: Vec<u64> = indices.iter().filter_map(|i| self.tabs.get(*i)).map(|t| t.uid).collect();
+        if self.settings.should_confirm_close(running) {
+            let title = Text::DialogCloseTabs.format(self.language(), &[&uids.len()]);
+            self.confirm(title, Text::CommonClose, Confirmation::CloseTabs(uids));
+        } else {
+            self.close_tabs(&uids);
+        }
+    }
+
+    fn close_tabs(&mut self, uids: &[u64]) {
+        for uid in uids {
+            if let Some(index) = self.tabs.iter().position(|tab| tab.uid == *uid) {
+                self.close_tab(index);
+            }
+        }
+    }
+
     /// Opens a list with its top right corner at the screen point `anchor`.
     fn open_popup(&mut self, rows: Vec<popup::Row>, kind: popup::Kind, anchor: (i32, i32)) {
         if self.popup.is_some() || self.popup_closed.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
@@ -3858,6 +4002,7 @@ impl App {
         let Some(popup) = self.popup.take() else { return };
         self.popup_from = None;
         self.confirmation = None;
+        self.renaming = None;
         self.text = Utf16Assembler::default();
         self.find = None;
         self.popup_closed = Some(Instant::now());
@@ -4006,6 +4151,8 @@ impl App {
     fn choose(&mut self, row: usize) {
         let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
         let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
+        // What the line of a rename held, and the tab it was for, before the pop-up goes.
+        let renamed = self.renaming.zip(self.popup.as_ref().and_then(|p| p.query.clone()));
         self.close_popup();
         // An explicit menu choice may open another popup; only outside dismissal needs the click debounce.
         self.popup_closed = None;
@@ -4018,6 +4165,7 @@ impl App {
                 }
                 Some(Confirmation::ClosePane { tab, pane }) => self.close_pane(tab, pane),
                 Some(Confirmation::CloseTab(tab)) => self.close_tab(tab),
+                Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
                 Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
                 None => {}
@@ -4028,6 +4176,21 @@ impl App {
             Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
             Some(popup::Action::ShowSetting(id)) => self.open_settings_page(Some(id)),
             Some(popup::Action::NewTab(index)) => self.new_tab_with(index),
+            Some(popup::Action::RenameTab | popup::Action::AutoTitle) => {
+                if let Some((uid, query)) = renamed
+                    && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.uid == uid)
+                {
+                    let name = query.trim();
+                    tab.name = (action == Some(popup::Action::RenameTab) && !name.is_empty()).then(|| name.to_owned());
+                    self.redraw();
+                }
+            }
+            Some(popup::Action::TabColor(color)) => {
+                if let Some(tab) = self.tabs.get_mut(self.selected) {
+                    tab.color = color;
+                    self.redraw();
+                }
+            }
             // SAFETY: posting to a window of this thread.
             Some(popup::Action::Window(command)) => unsafe { let _ = PostMessageW(Some(self.window_menu_for), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); },
             Some(popup::Action::ColorScheme(name)) => {
@@ -4051,6 +4214,8 @@ impl App {
                 panes: tab.panes.iter().map(|entry| (entry.id, PaneRecord { profile: entry.profile_id.clone(), cwd: entry.cwd.clone() })).collect(),
                 active: tab.focused,
                 zoomed: tab.zoomed.then_some(tab.focused),
+                name: tab.name.clone(),
+                color: tab.color,
             })
             .collect();
         let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
@@ -4083,7 +4248,8 @@ impl App {
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
                 self.make_entry_with(id, size, profile, pane.and_then(|pane| pane.cwd.as_deref()))
             });
-            if let Some(tab) = restored {
+            if let Some(mut tab) = restored {
+                (tab.name, tab.color) = (record.name.clone(), record.color.filter(|c| *c < logic::TAB_COLORS.len()));
                 self.tabs.push(tab);
             }
         }
@@ -4189,6 +4355,10 @@ impl App {
 
     /// What tab `i` shows: what the title format of the settings makes of the focused pane.
     fn tab_label(&self, i: usize) -> String {
+        // A name the user gave the tab wins over whatever its program says.
+        if let Some(name) = &self.tabs[i].name {
+            return name.clone();
+        }
         let lang = self.language();
         let untitled = Text::TabUntitled.get(lang);
         let Some(entry) = self.tabs[i].focused_entry() else { return untitled.to_owned() };

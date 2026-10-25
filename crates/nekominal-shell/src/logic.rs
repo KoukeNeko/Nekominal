@@ -442,6 +442,32 @@ pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
 /// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
 /// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
 /// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
+/// The colours a tab can be given, with their names: clear on the dark bar and on a light one alike.
+pub const TAB_COLORS: [(nekominal_model::strings::Text, (u8, u8, u8)); 8] = {
+    use nekominal_model::strings::Text;
+    [
+        (Text::ColorRed, (232, 93, 93)),
+        (Text::ColorOrange, (240, 140, 60)),
+        (Text::ColorYellow, (228, 192, 64)),
+        (Text::ColorGreen, (110, 190, 100)),
+        (Text::ColorTeal, (60, 180, 180)),
+        (Text::ColorBlue, (90, 140, 240)),
+        (Text::ColorPurple, (160, 110, 230)),
+        (Text::ColorPink, (230, 110, 170)),
+    ]
+};
+
+/// The tabs "close the other tabs" closes when tab `keep` of `count` stays: every other one, the last first, so that
+/// closing one does not move the places of those still to close.
+pub fn tabs_other_than(count: usize, keep: usize) -> Vec<usize> {
+    (0..count).rev().filter(|i| *i != keep).collect()
+}
+
+/// The tabs "close the tabs to the right" closes: those after tab `from`, the last first.
+pub fn tabs_right_of(count: usize, from: usize) -> Vec<usize> {
+    (from.saturating_add(1)..count).rev().collect()
+}
+
 pub fn tab_width(count: usize, available: f64, gap: f64) -> f64 {
     if count == 0 {
         return CHIP_MAX_WIDTH;
@@ -1229,6 +1255,31 @@ mod tests {
     use nekominal_model::settings::TabTitle;
 
     use super::*;
+
+    #[test]
+    fn closing_the_others_or_those_to_the_right_closes_the_last_first_and_keeps_the_one_asked_for() {
+        assert_eq!(tabs_other_than(4, 1), [3, 2, 0]);
+        assert_eq!(tabs_other_than(1, 0), Vec::<usize>::new(), "a lone tab has no others");
+        assert_eq!(tabs_right_of(4, 1), [3, 2]);
+        assert_eq!(tabs_right_of(4, 3), Vec::<usize>::new(), "nothing is right of the last tab");
+        // Closed in that order, each index is still the tab it named when the list was made.
+        let mut tabs = vec!["a", "b", "c", "d"];
+        for i in tabs_other_than(tabs.len(), 2) {
+            tabs.remove(i);
+        }
+        assert_eq!(tabs, ["c"]);
+    }
+
+    #[test]
+    fn the_tab_colours_have_names_of_their_own_and_differ() {
+        let mut names: Vec<_> = TAB_COLORS.iter().map(|(name, _)| name.id()).collect();
+        names.dedup();
+        assert_eq!(names.len(), TAB_COLORS.len());
+        let mut rgb: Vec<_> = TAB_COLORS.iter().map(|(_, rgb)| *rgb).collect();
+        rgb.sort_unstable();
+        rgb.dedup();
+        assert_eq!(rgb.len(), TAB_COLORS.len());
+    }
 
     fn paste_settings() -> PasteSettings {
         Settings::default().paste

@@ -44,6 +44,9 @@ pub struct TabRecord {
     pub panes: BTreeMap<PaneId, PaneRecord>,
     pub active: PaneId,
     pub zoomed: Option<PaneId>,
+    /// The name and the colour (an index of the colours of the tabs) the user gave the tab.
+    pub name: Option<String>,
+    pub color: Option<usize>,
 }
 
 /// A rectangle in screen pixels.
@@ -164,6 +167,12 @@ fn tab_to_value(tab: &TabRecord) -> Value {
     map.insert("active".into(), json!(position(tab.active).unwrap_or(0)));
     if let Some(index) = tab.zoomed.and_then(position) {
         map.insert("zoomed".into(), json!(index));
+    }
+    if let Some(name) = &tab.name {
+        map.insert("name".into(), json!(name));
+    }
+    if let Some(color) = tab.color {
+        map.insert("color".into(), json!(color));
     }
     map.insert("layout".into(), node_to_value(&tab.layout, &tab.panes));
     Value::Object(map)
@@ -364,11 +373,16 @@ fn read_tab(
     };
     let active = pick("active").unwrap_or(order[0]);
     let zoomed = pick("zoomed");
+    // What is not a name or a small number is left out: a tab without them is a plain tab.
+    let name = map.get("name").and_then(Value::as_str).map(str::to_owned).filter(|name| !name.trim().is_empty());
+    let color = map.get("color").and_then(Value::as_u64).filter(|c| *c < 64).map(|c| c as usize);
     Some(TabRecord {
         layout,
         panes: reader.panes,
         active,
         zoomed,
+        name,
+        color,
     })
 }
 
@@ -497,6 +511,8 @@ mod tests {
             ]),
             active: 3,
             zoomed: Some(11),
+            name: Some("build · 編譯".into()),
+            color: Some(2),
         }
     }
 
@@ -506,6 +522,8 @@ mod tests {
             panes: BTreeMap::from([(1, pane(profile, None))]),
             active: 1,
             zoomed: None,
+            name: None,
+            color: None,
         }
     }
 
@@ -611,6 +629,8 @@ mod tests {
                 "tabs": [{
                     "active": 1,
                     "zoomed": 2,
+                    "name": "build · 編譯",
+                    "color": 2,
                     "layout": {
                         "axis": "row", "ratio": 0.4,
                         "first": { "profile": "pwsh", "cwd": "C:\\a" },

@@ -64,6 +64,11 @@ pub enum Action {
     ColorScheme(&'static str),
     /// A command of the menu of the window (`SC_MINIMIZE`, `SC_CLOSE`…), for the window the menu was opened on.
     Window(u32),
+    /// Name the tab the line of the palette is for after what the line holds, or give it back its automatic title.
+    RenameTab,
+    AutoTitle,
+    /// Give the selected tab this colour of `logic::TAB_COLORS`, or none.
+    TabColor(Option<usize>),
 }
 
 /// One row: an action with its label and a hint at the right (a shortcut, a number), or a separator (no action).
