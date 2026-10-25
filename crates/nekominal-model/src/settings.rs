@@ -832,15 +832,38 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             continue;
         }
         let name = text(map, "name", if program.is_empty() { &given_id } else { &program }, &path, problems);
+        // What cannot be read is reported and the rest of the entry kept, so that the user sees it before a save drops it.
         let args = match map.get("args") {
-            Some(Value::Array(items)) => items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect(),
-            _ => Vec::new(),
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    let arg = v.as_str().map(str::to_owned);
+                    if arg.is_none() {
+                        problems.fail(&path, &format!("args[{i}]"), Expected::Text);
+                    }
+                    arg
+                })
+                .collect(),
+            Some(_) => {
+                problems.fail(&path, "args", Expected::Array);
+                Vec::new()
+            }
         };
         let cwd = text(map, "cwd", "", &path, problems);
         // An empty id could never be picked (the empty default profile means "the first one").
         let id = Some(given_id).filter(|id| !id.is_empty()).unwrap_or_else(|| format!("custom-{name}"));
         let env = match map.get("env") {
-            Some(Value::Object(vars)) => vars.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect(),
+            Some(Value::Object(vars)) => vars
+                .iter()
+                .filter_map(|(k, v)| {
+                    if !v.is_string() {
+                        problems.fail(&format!("{path}.env"), k, Expected::Text);
+                    }
+                    Some((k.clone(), v.as_str()?.to_owned()))
+                })
+                .collect(),
             Some(_) => {
                 problems.fail(&path, "env", Expected::Object);
                 BTreeMap::new()
@@ -848,7 +871,8 @@ fn read_profiles(source: &Map<String, Value>, problems: &mut Problems) -> Vec<Cu
             None => BTreeMap::new(),
         };
         let scheme = text(map, "colorScheme", "", &path, problems);
-        let font_size = map.get("fontSize").and_then(Value::as_f64).filter(|size| (FONT_SIZE_RANGE.0..=FONT_SIZE_RANGE.1).contains(size));
+        // NaN stands for a size that was reported: the profile then follows the window's.
+        let font_size = map.contains_key("fontSize").then(|| number(map, "fontSize", f64::NAN, FONT_SIZE_RANGE, &path, problems)).filter(|size| !size.is_nan());
         let elevate = boolean(map, "elevate", false, &path, problems);
         profiles.push(CustomProfile {
             id,
@@ -1366,11 +1390,11 @@ mod tests {
         ] }"#);
         let admin = &result.settings.profiles[0];
         assert_eq!(admin.options.env.get("LANG").map(String::as_str), Some("zh_TW"));
-        assert!(!admin.options.env.contains_key("BAD"), "a value that is not text is left out");
+        assert!(!admin.options.env.contains_key("BAD"), "a value that is not text is left out, reported");
         assert_eq!((admin.options.color_scheme.as_deref(), admin.options.font_size, admin.options.elevate), (Some("Nord"), Some(14.0), true));
         assert_eq!((result.settings.profiles[1].program.as_str(), result.settings.profiles[1].cwd.as_deref()), ("", Some("D:\\")), "an id alone adjusts a profile found on the machine");
         assert_eq!(result.settings.profiles.len(), 2, "no program and no id: nothing to run, reported");
-        assert_eq!(result.problems.len(), 1, "{:?}", result.problems);
+        assert_eq!(result.problems.len(), 2, "{:?}", result.problems);
         let written = round_trips(Settings { profiles: vec![admin.clone()], ..Settings::default() });
         let value: Value = serde_json::from_str(&written).unwrap();
         assert_eq!(value["profiles"][0]["colorScheme"], "Nord");
@@ -1615,6 +1639,17 @@ mod tests {
         let result = parsed(r#"{ "profiles": [ { "id": "", "name": "Node", "program": "node.exe" } ] }"#);
         assert!(result.problems.is_empty(), "{:?}", result.problems);
         assert_eq!(result.settings.profiles[0].id, "custom-Node");
+    }
+
+    #[test]
+    fn a_profile_value_that_cannot_be_read_is_reported_and_the_rest_of_the_entry_kept() {
+        let result = parsed(r#"{ "profiles": [ { "name": "Node", "program": "node.exe", "fontSize": 80, "env": { "N": 1, "A": "b" }, "args": [1, "x"] } ] }"#);
+        let keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["profiles[0].args[0]", "profiles[0].env.N", "profiles[0].fontSize"]);
+        let profile = &result.settings.profiles[0];
+        assert_eq!((&profile.args[..], profile.options.font_size), (&["x".to_owned()][..], None));
+        assert_eq!(profile.options.env.keys().collect::<Vec<_>>(), ["A"]);
+        assert_eq!(parsed(r#"{ "profiles": [ { "program": "x", "args": "-i" } ] }"#).problems[0].key, "profiles[0].args");
     }
 
     #[test]
