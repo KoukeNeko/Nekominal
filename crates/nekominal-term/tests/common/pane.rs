@@ -129,7 +129,7 @@ impl Pane {
         };
 
         let width_model = if graphemes { WidthModel::Graphemes } else { WidthModel::Wcswidth };
-        let config = SpawnConfig { program, args, cwd: None, env: BTreeMap::new(), cols, rows, width_model };
+        let config = SpawnConfig { program, args, cwd: None, env: BTreeMap::new(), cols, rows, width_model, inherit_environment: true };
         let sessions = Sessions::default();
         let (id, _pid) = sessions.spawn(&config, sink).expect("spawn session");
         let session = sessions.get(id).unwrap();

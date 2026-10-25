@@ -317,6 +317,7 @@ mod findings {
                 cols: 100,
                 rows: 30,
                 width_model: nekominal_pty::conpty::WidthModel::Wcswidth,
+                inherit_environment: true,
             };
             let (tx, rx) = channel();
             let sink: Sink = Box::new(move |event| tx.send(event).is_ok());
@@ -395,6 +396,7 @@ mod findings {
                 cols: 120,
                 rows: 30,
                 width_model: nekominal_pty::conpty::WidthModel::Wcswidth,
+                inherit_environment: true,
             };
             let (tx, rx) = channel();
             let sink: Sink = Box::new(move |event| tx.send(event).is_ok());

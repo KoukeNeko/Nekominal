@@ -301,7 +301,7 @@ impl Pane {
         env.insert("COLORTERM".to_owned(), "truecolor".to_owned());
         // Wcswidth (0x10) is the mode that agrees with alacritty_terminal's per-code-point width model
         // (emulator blueprint, section 11.5).
-        let config = SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Graphemes };
+        let config = SpawnConfig { program, args, cwd: None, env, cols, rows, width_model: WidthModel::Graphemes, inherit_environment: true };
         Pane::spawn_with(config, CoreConfig::default())
     }
 

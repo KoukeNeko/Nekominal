@@ -106,6 +106,7 @@ texts! {
     EditCopyFormatted "edit.copyFormatted" "複製（含格式）" "Copy with formatting";
     ViewAlwaysOnTop "view.alwaysOnTop" "視窗置頂" "Always on top";
     SettingsExplorerMenu "settings.explorerMenu" "在檔案總管的右鍵選單加入「在 Nekominal 開啟」" "Add “Open in Nekominal” to Explorer's menu";
+    SettingsInheritEnvironment "settings.inheritEnvironment" "新分頁沿用 Nekominal 啟動時的環境變數" "New tabs inherit the starting environment";
     ExplorerOpenHere "explorer.openHere" "在 Nekominal 開啟" "Open in Nekominal";
     ViewFocusMode "view.focusMode" "專注模式" "Focus mode";
     ViewQuake "view.quake" "下拉式視窗（Win+`）" "Drop-down window (Win+`)";

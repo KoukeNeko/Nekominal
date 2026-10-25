@@ -276,11 +276,16 @@ pub struct SpawnConfig {
     /// Working directory. A missing or invalid directory falls back to the home directory
     /// (see [`resolve_cwd`]).
     pub cwd: Option<PathBuf>,
-    /// Overrides applied on top of this process's environment.
+    /// Overrides applied on top of the base environment.
     pub env: BTreeMap<String, String>,
     pub cols: u16,
     pub rows: u16,
     pub width_model: WidthModel,
+    /// The base is this process's environment, as the program that started it left it. Otherwise it is the one Windows
+    /// gives a program started anew (the user's and the machine's variables, PATH as it is now), as Windows Terminal does:
+    /// what the starting program set for itself (a Claude Code session, PowerShell 7's module folders) stays out of the
+    /// session, and a variable changed since this process started is seen.
+    pub inherit_environment: bool,
 }
 
 pub struct Pty {
@@ -555,7 +560,7 @@ fn spawn_in_pseudoconsole(
         &config.program,
         &config.args,
     )));
-    let environment = build_environment_block(&config.env);
+    let environment = build_environment_block(&config.env, config.inherit_environment);
     let cwd = resolve_cwd(config.cwd.as_deref()).map(|dir| wide(dir.as_os_str()));
 
     // SAFETY: the attribute list buffer outlives every use of the pointer, and every pointer
@@ -665,11 +670,13 @@ fn quote_argument(arg: &str) -> String {
     quoted
 }
 
-/// Builds a UTF-16 environment block: inherited variables plus overrides, deduplicated
-/// case-insensitively and sorted as CreateProcess expects.
-pub fn build_environment_block(overrides: &BTreeMap<String, String>) -> Vec<u16> {
+/// Builds a UTF-16 environment block: the base (this process's variables when `inherit`, else the saved ones of
+/// [`saved_environment`], and this process's when those cannot be read) plus overrides, deduplicated case-insensitively
+/// and sorted as CreateProcess expects.
+pub fn build_environment_block(overrides: &BTreeMap<String, String>, inherit: bool) -> Vec<u16> {
     let mut merged: BTreeMap<String, (OsString, OsString)> = BTreeMap::new();
-    for (key, value) in std::env::vars_os() {
+    let base = if inherit { None } else { saved_environment() };
+    for (key, value) in base.unwrap_or_else(|| std::env::vars_os().collect()) {
         let folded = key.to_string_lossy().to_uppercase();
         // Hidden per-drive variables such as "=C:" start with '=' and must be kept.
         merged.insert(folded, (key, value));
@@ -692,6 +699,80 @@ pub fn build_environment_block(overrides: &BTreeMap<String, String>) -> Vec<u16>
         block.push(0);
     }
     block
+}
+
+/// The environment Windows gives a program started anew for this user (`CreateEnvironmentBlock` without inheriting):
+/// the machine's and the user's variables as the registry has them now, the volatile ones of the logon, PATH merged.
+pub fn saved_environment() -> Option<Vec<(OsString, OsString)>> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY};
+    use windows_sys::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token: HANDLE = null_mut();
+    // SAFETY: the token of this process, closed by `Handle`; the block is read up to its double NUL and freed.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_IMPERSONATE, &mut token) == 0 {
+            return None;
+        }
+        let token = Handle(token);
+        let mut block: *mut c_void = null_mut();
+        if CreateEnvironmentBlock(&mut block, token.0, 0) == 0 || block.is_null() {
+            return None;
+        }
+        let mut vars = Vec::new();
+        let mut at = block as *const u16;
+        loop {
+            let len = (0..).take_while(|&i| *at.add(i) != 0).count();
+            if len == 0 {
+                break;
+            }
+            let entry = OsString::from_wide(std::slice::from_raw_parts(at, len));
+            vars.extend(split_entry(&entry));
+            at = at.add(len + 1);
+        }
+        DestroyEnvironmentBlock(block);
+        Some(expand_references(vars))
+    }
+}
+
+/// The block expands a value before it holds every variable (`PSModulePath` names `%ProgramFiles%`, added after it), so
+/// the `%NAME%` left are expanded once more from the block itself; a name it does not hold stays as it is.
+fn expand_references(vars: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    let lookup: BTreeMap<String, String> = vars.iter().map(|(k, v)| (k.to_string_lossy().to_uppercase(), v.to_string_lossy().into_owned())).collect();
+    let expand = |value: &OsStr| -> OsString {
+        let text = value.to_string_lossy();
+        if !text.contains('%') {
+            return value.to_owned();
+        }
+        let mut out = String::new();
+        let mut rest = text.as_ref();
+        while let Some(start) = rest.find('%') {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 1..];
+            match after.find('%').and_then(|end| lookup.get(&after[..end].to_uppercase()).map(|v| (end, v))) {
+                Some((end, found)) if end > 0 => {
+                    out.push_str(found);
+                    rest = &after[end + 1..];
+                }
+                _ => {
+                    out.push('%');
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        out.into()
+    };
+    vars.iter().map(|(k, v)| (k.clone(), expand(v))).collect()
+}
+
+/// `NAME=value` as its name and value; the name may start with `=` (`=C:=C:\x`), so the split is at the first `=` after
+/// the first character.
+fn split_entry(entry: &OsStr) -> Option<(OsString, OsString)> {
+    use std::os::windows::ffi::OsStringExt;
+    let wide: Vec<u16> = entry.encode_wide().collect();
+    let eq = wide.iter().skip(1).position(|&c| c == b'=' as u16)? + 1;
+    Some((OsString::from_wide(&wide[..eq]), OsString::from_wide(&wide[eq + 1..])))
 }
 
 trait IntoWithContext {
@@ -738,11 +819,30 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_environment_is_the_saved_one_with_the_overrides_on_top() {
+        let saved = saved_environment().expect("Windows gives this user an environment");
+        let has = |name: &str| saved.iter().any(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case(name));
+        assert!(has("PATH") && has("USERPROFILE") && has("SystemRoot"), "the variables every program gets");
+        let mut overrides = BTreeMap::new();
+        overrides.insert("TERM".to_owned(), "xterm-256color".to_owned());
+        let text = String::from_utf16_lossy(&build_environment_block(&overrides, false));
+        assert!(text.split('\0').any(|entry| entry == "TERM=xterm-256color"));
+        assert!(text.split('\0').any(|entry| entry.to_ascii_uppercase().starts_with("PATH=")));
+        let split = |entry: &str| split_entry(OsStr::new(entry)).map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()));
+        assert_eq!(split("=C:=C:\\x"), Some(("=C:".into(), "C:\\x".into())), "a hidden per-drive variable keeps its leading =");
+        assert_eq!(split("A=b=c"), Some(("A".into(), "b=c".into())));
+        let vars = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (OsString::from(k), OsString::from(v))).collect::<Vec<_>>();
+        let expanded = expand_references(vars(&[("PSModulePath", r"%ProgramFiles%\M;%NOPE%;50%;%%"), ("ProgramFiles", r"C:\Program Files")]));
+        assert_eq!(expanded[0].1, OsString::from(r"C:\Program Files\M;%NOPE%;50%;%%"), "a name the block does not hold stays");
+        assert!(saved.iter().all(|(key, value)| !key.to_string_lossy().eq_ignore_ascii_case("PSModulePath") || !value.to_string_lossy().contains("%ProgramFiles%")));
+    }
+
+    #[test]
     fn environment_block_applies_overrides_case_insensitively() {
         let mut overrides = BTreeMap::new();
         overrides.insert("path".to_owned(), "C:\\only".to_owned());
         overrides.insert("NEKOMINAL_TEST".to_owned(), "1".to_owned());
-        let block = build_environment_block(&overrides);
+        let block = build_environment_block(&overrides, true);
         let text = String::from_utf16_lossy(&block);
         let entries: Vec<&str> = text.split('\0').filter(|e| !e.is_empty()).collect();
         assert!(entries.contains(&"path=C:\\only"));
@@ -761,7 +861,7 @@ mod tests {
     /// instead (see `profiles::inherited_no_color`).
     #[test]
     fn environment_block_keeps_every_inherited_variable() {
-        let text = String::from_utf16_lossy(&build_environment_block(&BTreeMap::new()));
+        let text = String::from_utf16_lossy(&build_environment_block(&BTreeMap::new(), true));
         let entries: Vec<&str> = text.split('\0').filter(|e| !e.is_empty()).collect();
         for (key, value) in std::env::vars_os() {
             let entry = format!("{}={}", key.to_string_lossy(), value.to_string_lossy());

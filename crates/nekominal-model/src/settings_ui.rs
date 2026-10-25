@@ -393,6 +393,7 @@ pub const TABLE: &[Descriptor] = &[
     count!("confirmCloseThreshold", Terminal, SettingsConfirmCloseThreshold, CLOSE_THRESHOLD, confirm_close_threshold),
     toggle!("restoreSession", Terminal, SettingsRestoreSession, restore_session),
     toggle!("explorerMenu", Advanced, SettingsExplorerMenu, explorer_menu),
+    toggle!("inheritEnvironment", Advanced, SettingsInheritEnvironment, inherit_environment),
     // Profiles
     Descriptor {
         id: "defaultProfile",
@@ -600,7 +601,7 @@ mod tests {
         let ids = |section| in_section(section).map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids(Section::Profiles), ["defaultProfile"]);
         assert_eq!(ids(Section::Keys), Vec::<&str>::new(), "the shortcuts page lists commands, not settings");
-        assert_eq!(ids(Section::Advanced), ["explorerMenu", "language"]);
+        assert_eq!(ids(Section::Advanced), ["explorerMenu", "inheritEnvironment", "language"]);
         assert_eq!(ids(Section::About), Vec::<&str>::new(), "the About page shows the version, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));

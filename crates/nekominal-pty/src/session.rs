@@ -284,6 +284,7 @@ mod tests {
             cols: 100,
             rows: 30,
             width_model: WidthModel::default(),
+            inherit_environment: true,
         }
     }
 

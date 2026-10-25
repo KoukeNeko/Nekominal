@@ -580,6 +580,7 @@ impl Probe {
             rows: options.rows,
             // Grapheme widths, as Pane::spawn uses: what the CLI counts and what the emulator's cluster layer does.
             width_model: WidthModel::Graphemes,
+            inherit_environment: true,
         };
         let sessions = Sessions::default();
         let spawned = env::with_process_environment(&config.env.clone(), || sessions.spawn(&config, sink));

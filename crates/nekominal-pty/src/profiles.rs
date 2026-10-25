@@ -78,6 +78,7 @@ impl Profile {
             cols,
             rows,
             width_model: WidthModel::default(),
+            inherit_environment: true,
         }
     }
 }
@@ -145,14 +146,6 @@ pub fn windows_powershell_module_path(value: &str) -> Option<String> {
         })
         .collect();
     (!kept.is_empty()).then(|| kept.join(";"))
-}
-
-/// A variable a Claude Code session gives the programs it starts (`CLAUDECODE=1`, its session id, its pipe and token,
-/// `CLAUDE_CODE_DISABLE_TERMINAL_TITLE`). Nekominal started from such a session must not pass them on: `claude` in a
-/// pane would think it runs inside that session, keep the tab's title, and hold another session's token.
-pub fn is_claude_session_variable(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    name == "CLAUDECODE" || name == "CLAUDE_PID" || ["CLAUDE_CODE_", "CLAUDE_AGENT_SDK_", "CLAUDE_PREVIEW_"].iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// Environment variable names are case-insensitive on Windows.
@@ -1022,16 +1015,6 @@ isPrerelease: 1
             Some(r"C:\Program Files\WindowsPowerShell\Modules;C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules;D:\mine;D:\PowerShell\Scripts")
         );
         assert_eq!(windows_powershell_module_path(r"C:\Program Files\PowerShell\7\Modules;"), None, "nothing left: no variable, the defaults");
-    }
-
-    #[test]
-    fn the_variables_of_a_claude_code_session_are_told_apart_from_the_users_own() {
-        for name in ["CLAUDECODE", "CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "claude_code_session_id", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_PID"] {
-            assert!(is_claude_session_variable(name), "{name}");
-        }
-        for name in ["CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "PATH", "CLAUDECODEX"] {
-            assert!(!is_claude_session_variable(name), "{name}");
-        }
     }
 
     #[test]

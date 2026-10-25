@@ -33,6 +33,7 @@ fn powershell_config(script: &str) -> SpawnConfig {
         cols: 80,
         rows: 24,
         width_model: WidthModel::Wcswidth,
+        inherit_environment: true,
     }
 }
 

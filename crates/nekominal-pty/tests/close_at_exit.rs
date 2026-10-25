@@ -67,6 +67,7 @@ fn child() -> ExitCode {
         cols: 80,
         rows: 24,
         width_model: WidthModel::default(),
+        inherit_environment: true,
     };
     let sink: Sink = Box::new(|event| matches!(event, Event::Data(_) | Event::Exit(_)));
     let sessions = Sessions::default();

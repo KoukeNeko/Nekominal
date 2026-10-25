@@ -526,6 +526,9 @@ pub struct Settings {
     pub restore_session: bool,
     /// Explorer's right-click menu of a folder has "Open in Nekominal".
     pub explorer_menu: bool,
+    /// A new pane takes the environment Nekominal was started with, rather than the one Windows gives a program started
+    /// anew (what Windows Terminal does by default, and its `compatibility.reloadEnvironmentVariables` turns off).
+    pub inherit_environment: bool,
     /// The welcome of the first start, where the layout is picked, was seen.
     pub welcomed: bool,
     /// Command id to shortcuts; an empty list unbinds a default.
@@ -573,6 +576,7 @@ impl Default for Settings {
             confirm_close_threshold: 1,
             restore_session: false,
             explorer_menu: false,
+            inherit_environment: false,
             welcomed: false,
             keybindings: BTreeMap::new(),
         }
@@ -1063,6 +1067,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         confirm_close_threshold: number(&root, "confirmCloseThreshold", d.confirm_close_threshold as f64, (1.0, 1000.0), "", &mut problems) as u32,
         restore_session: boolean(&root, "restoreSession", d.restore_session, "", &mut problems),
         explorer_menu: boolean(&root, "explorerMenu", d.explorer_menu, "", &mut problems),
+        inherit_environment: boolean(&root, "inheritEnvironment", d.inherit_environment, "", &mut problems),
         welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
         keybindings: read_keybindings(&root, &mut problems),
     };
@@ -1393,6 +1398,13 @@ mod tests {
         assert!(!Settings::default().explorer_menu);
         let written = round_trips(Settings { explorer_menu: true, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "explorerMenu": true }));
+    }
+
+    #[test]
+    fn a_pane_takes_a_fresh_environment_unless_asked_to_inherit() {
+        assert!(!Settings::default().inherit_environment);
+        let written = round_trips(Settings { inherit_environment: true, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "inheritEnvironment": true }));
     }
 
     #[test]

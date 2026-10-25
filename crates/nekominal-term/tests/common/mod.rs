@@ -91,6 +91,7 @@ impl Host {
             cols: options.cols,
             rows: options.rows,
             width_model: if options.graphemes { WidthModel::Graphemes } else { WidthModel::Wcswidth },
+            inherit_environment: true,
         };
         let (tx, rx) = channel();
         let sink: Sink = Box::new(move |event| tx.send(event).is_ok());

@@ -725,6 +725,7 @@ impl App {
             cols,
             rows,
             width_model: WidthModel::default(),
+            inherit_environment: self.settings.inherit_environment,
         }
     }
 
