@@ -8,6 +8,7 @@ mod app;
 mod cli;
 mod clipboard;
 mod design;
+mod editor;
 mod find;
 mod glass;
 mod gpu;

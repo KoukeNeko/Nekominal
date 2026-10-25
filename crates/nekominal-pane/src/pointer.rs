@@ -14,7 +14,7 @@ use nekominal_input::{
     CellPoint, InputModes, Mods, MouseAssembler, PointerEvent, PointerGrid, PointerKind, PointerOutcome,
     SelectionKind as Gesture, Side, cell_at,
 };
-use nekominal_term::{CellSide, SelectionKind, TerminalCore, alacritty_terminal::grid::Scroll};
+use nekominal_term::{CellSide, Link, SelectionKind, TerminalCore, alacritty_terminal::grid::Scroll};
 
 /// Most lines one [`Pointer::drag_scroll`] moves, however far outside the grid the pointer is.
 const MAX_DRAG_SCROLL: i32 = 4;
@@ -26,8 +26,9 @@ pub struct PointerEffects {
     pub reports: Vec<Vec<u8>>,
     /// A selection gesture ended with text selected: copy on select copies it now.
     pub selected: bool,
-    /// Ctrl+click on a link that may be opened, released in the cell it was pressed in: what to open (`Link::target`).
-    pub open_link: Option<String>,
+    /// Ctrl+click on a link that may be opened, released in the cell it was pressed in. What is opened is its checked
+    /// `target`; its `uri` is the text as written, which for a path holds the `:line:column` to go to.
+    pub open_link: Option<Link>,
 }
 
 fn kind_of(gesture: Gesture) -> SelectionKind {
@@ -86,8 +87,7 @@ impl Pointer {
                 PointerOutcome::Report(bytes) => effects.reports.push(bytes),
                 PointerOutcome::Scroll(lines) => core.scroll_display(Scroll::Delta(lines)),
                 PointerOutcome::OpenLink { col, row } => {
-                    // The checked target, not the address as written: for a file, the path that was checked.
-                    effects.open_link = core.link_at(usize::from(row), usize::from(col)).map(|link| link.target);
+                    effects.open_link = core.link_at(usize::from(row), usize::from(col));
                 }
                 PointerOutcome::SelectionStart { point, kind, extend } => {
                     let extended = extend && core.selection_active();
@@ -379,7 +379,7 @@ mod tests {
 
         ctrl(&mut rig, down, left(8, 0));
         let effects = ctrl(&mut rig, up, left(8, 0));
-        assert_eq!(effects.open_link.as_deref(), Some("https://a.b/x"));
+        assert_eq!(effects.open_link.map(|link| link.target).as_deref(), Some("https://a.b/x"));
         assert!(!effects.selected && rig.text().is_none(), "opening a link selects nothing");
 
         rig.clock += 2000;
@@ -397,7 +397,7 @@ mod tests {
         ctrl(&mut rig, down, left(8, 0));
         ctrl(&mut rig, PointerKind::Move, left(8, 0));
         let effects = ctrl(&mut rig, up, left(8, 0));
-        assert_eq!(effects.open_link.as_deref(), Some("https://a.b/x"));
+        assert_eq!(effects.open_link.map(|link| link.target).as_deref(), Some("https://a.b/x"));
 
         // Starting a drag on a link selects instead.
         rig.clock += 2000;
@@ -416,7 +416,24 @@ mod tests {
         let down = PointerKind::Press(MouseButton::Left);
         let up = PointerKind::Release(MouseButton::Left);
         rig.send(down, left(1, 0), Mods::CTRL);
-        assert_eq!(rig.send(up, left(1, 0), Mods::CTRL).open_link.as_deref(), Some(path));
+        assert_eq!(rig.send(up, left(1, 0), Mods::CTRL).open_link.map(|link| link.target).as_deref(), Some(path));
+    }
+
+    #[test]
+    fn ctrl_click_on_a_printed_path_with_its_line_opens_the_file_in_the_folder_the_shell_reported() {
+        let folder = env!("CARGO_MANIFEST_DIR");
+        let osc7 = format!("\x1b]7;file:///{}\x07", folder.replace('\\', "/").replace(' ', "%20"));
+        let mut rig = Rig::new(&format!("{osc7}at src\\pointer.rs:12:5. x\r\nsrc\\missing.rs:1"));
+        let down = PointerKind::Press(MouseButton::Left);
+        let up = PointerKind::Release(MouseButton::Left);
+        rig.send(down, left(5, 0), Mods::CTRL);
+        let link = rig.send(up, left(5, 0), Mods::CTRL).open_link.expect("the path is a link");
+        assert_eq!(link.uri, "src\\pointer.rs:12:5", "the text keeps its position and loses the full stop");
+        assert_eq!(link.target, std::fs::canonicalize(format!("{folder}\\src\\pointer.rs")).unwrap().to_str().unwrap().trim_start_matches(r"\\?\"));
+        rig.clock += 2000;
+        // The first line wraps at 20 columns: the second path is on the third row.
+        rig.send(down, left(2, 2), Mods::CTRL);
+        assert_eq!(rig.send(up, left(2, 2), Mods::CTRL).open_link, None, "a file that is not there is text");
     }
 
     #[test]

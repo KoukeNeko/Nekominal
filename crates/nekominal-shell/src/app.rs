@@ -1363,9 +1363,9 @@ impl App {
         if effects.selected && self.settings.copy_on_select {
             self.copy_selection();
         }
-        // What the link checks let through: the address, or the path of a file that is there.
-        if let Some(target) = effects.open_link {
-            open_link(&target);
+        // What the link checks let through: the address, or the path of a file that is there, at the line its text names.
+        if let Some(link) = effects.open_link {
+            crate::editor::open(&link.target, nekominal_term::links::position(&link.uri), &self.settings.editor);
         }
         self.redraw();
     }
@@ -4801,7 +4801,7 @@ impl App {
             }
         };
         match nekominal_term::links::openable(&uri) {
-            Some(target) => open_link(&target),
+            Some(target) => crate::editor::open(&target, nekominal_term::links::position(&hint.text), &self.settings.editor),
             None => util::log(&format!("hint not opened: {uri}")),
         }
     }

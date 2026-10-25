@@ -11,7 +11,7 @@ use crate::util::log;
 
 /// With this variable set (to anything) nothing is opened: the target is logged and the call succeeds. The GUI
 /// scenarios set it, so a click on a link can be checked without starting a browser.
-const NO_LAUNCH: &str = "NEKOMINAL_NO_LAUNCH";
+pub const NO_LAUNCH: &str = "NEKOMINAL_NO_LAUNCH";
 
 /// Opens `target` (a URL or a path) with its default program.
 pub fn shell_open(target: &str) -> Result<(), String> {

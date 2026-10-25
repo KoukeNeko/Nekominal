@@ -1113,20 +1113,7 @@ pub fn tab_title(raw: &str, fallback: &str) -> String {
 }
 
 /// The `file:///` URI of a Windows path, with what a URI cannot hold as it is escaped (a space, `%`, `#`, `?`).
-pub fn file_uri(path: &str) -> String {
-    let mut uri = String::from("file:///");
-    for c in path.chars() {
-        match c {
-            '\\' => uri.push('/'),
-            ' ' => uri.push_str("%20"),
-            '%' => uri.push_str("%25"),
-            '#' => uri.push_str("%23"),
-            '?' => uri.push_str("%3F"),
-            c => uri.push(c),
-        }
-    }
-    uri
-}
+pub use nekominal_term::links::file_uri;
 
 /// Why a paste asks first.
 #[derive(Clone, Debug, PartialEq, Eq)]

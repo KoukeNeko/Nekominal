@@ -1,7 +1,8 @@
 //! Hint mode: the URLs, file paths and git hashes on the screen of a pane, each with a short label the keyboard picks
 //! it by, as kitty's hints and WezTerm's quick select do. Pure: it reads a snapshot.
 
-use nekominal_term::{Snapshot, alacritty_terminal::term::cell::Flags};
+use nekominal_term::{Snapshot, alacritty_terminal::term::cell::Flags, links};
+pub use nekominal_term::links::split_position;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HintKind {
@@ -116,25 +117,8 @@ fn classify(token: &str) -> Option<(HintKind, usize)> {
     if hex && (7..=40).contains(&trimmed.len()) && trimmed.chars().any(|c| c.is_ascii_digit()) && trimmed.chars().any(|c| c.is_ascii_alphabetic()) {
         return Some((HintKind::Hash, length));
     }
-    let (path, _) = split_position(trimmed);
-    let bytes = path.as_bytes();
-    let rooted = (bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'))
-        || ["\\\\", "./", "../", ".\\", "..\\", "~/", "~\\"].iter().any(|start| path.starts_with(start));
-    let last = path.rsplit(['/', '\\']).next().unwrap_or_default();
-    let nested = path.contains(['/', '\\']) && last.contains('.') && !last.starts_with('.') && !last.ends_with('.');
-    ((rooted && path.len() > 3) || nested).then_some((HintKind::Path, length))
-}
-
-/// A path and the `:line` or `:line:column` after it (as `src/main.rs:12:5`), the position empty when there is none.
-pub fn split_position(text: &str) -> (&str, &str) {
-    let mut path = text;
-    for _ in 0..2 {
-        match path.rsplit_once(':') {
-            Some((before, number)) if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) && !before.is_empty() => path = before,
-            _ => break,
-        }
-    }
-    (path, &text[path.len()..])
+    // The rule of a path is the one Ctrl+click follows on plain text too.
+    links::looks_like_path(split_position(trimmed).0).then_some((HintKind::Path, length))
 }
 
 #[cfg(test)]
@@ -191,12 +175,5 @@ mod tests {
         assert_eq!(labels.len(), 30);
         assert!(labels.iter().all(|label| label.chars().count() == 2));
         assert!(labels.iter().all(|label| labels.iter().filter(|other| *other == label).count() == 1));
-    }
-
-    #[test]
-    fn the_position_after_a_path_is_split_from_it() {
-        assert_eq!(split_position("src/main.rs:12:5"), ("src/main.rs", ":12:5"));
-        assert_eq!(split_position("src/main.rs:12"), ("src/main.rs", ":12"));
-        assert_eq!(split_position("C:\\x.txt"), ("C:\\x.txt", ""));
     }
 }

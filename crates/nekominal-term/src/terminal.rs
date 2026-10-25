@@ -516,6 +516,8 @@ pub struct TerminalCore {
     outputs: Vec<Output>,
     /// The first bytes of a character whose last bytes the next `feed` brings (see `incomplete_utf8_tail`).
     utf8_tail: Vec<u8>,
+    /// The folder the shell last reported (OSC 7 or 9;9): where a relative path in the text is, for `link_at`.
+    folder: Option<String>,
 }
 
 /// How far the scrollback may overshoot its cap between two `enforce_scrollback` calls. One feed chunk adds
@@ -604,6 +606,7 @@ impl TerminalCore {
             prompts: Vec::new(),
             outputs: Vec::new(),
             utf8_tail: Vec::new(),
+            folder: None,
         }
     }
 
@@ -969,7 +972,10 @@ impl TerminalCore {
 
     fn handle_sniffed(&mut self, sniffed: Sniffed) {
         match sniffed {
-            Sniffed::Cwd(path) => self.events.push(CoreEvent::Cwd(path)),
+            Sniffed::Cwd(path) => {
+                self.folder = Some(path.clone());
+                self.events.push(CoreEvent::Cwd(path));
+            }
             Sniffed::Notification(n) => self.events.push(CoreEvent::Notification(n)),
             Sniffed::Progress(p) => self.events.push(CoreEvent::Progress(p)),
             Sniffed::PromptMark(mark) => {
@@ -1630,9 +1636,28 @@ impl TerminalCore {
             })
             .collect();
         let at = (here - first) as usize * columns + column;
-        let found = links::find_urls(&text).into_iter().find(|range| range.contains(&at))?;
+        let url = links::find_urls(&text).into_iter().find(|range| range.contains(&at));
+        let (found, target) = match url {
+            Some(found) => {
+                let target = links::openable(&text[found.clone()].iter().collect::<String>())?;
+                (found, target)
+            }
+            // A path a compiler printed (`src\main.rs:12:5`): a link when the file is there, a relative one in the folder the
+            // shell reported. The uri stays the text, position and all, for the editor to go to.
+            // shortcut: the check reads the disk on every pointer move over a path; cache it if a slow drive shows.
+            None => {
+                let found = links::find_paths(&text).into_iter().find(|range| range.contains(&at))?;
+                let written: String = text[found.clone()].iter().collect();
+                let path = std::path::Path::new(links::split_position(&written).0);
+                let whole = match &self.folder {
+                    _ if path.is_absolute() => path.to_path_buf(),
+                    Some(folder) => std::path::Path::new(folder).join(path),
+                    None => return None,
+                };
+                (found, links::openable(&links::file_uri(&whole.to_string_lossy()))?)
+            }
+        };
         let uri: String = text[found.clone()].iter().collect();
-        let target = links::openable(&uri)?;
         let spans = (0..rows)
             .filter_map(|r| {
                 let line = line_of(r).0;
