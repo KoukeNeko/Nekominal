@@ -850,5 +850,16 @@ fn build_overlay(m: &crate::fonts::CellMetrics, theme: &Theme, view: &GridView<'
         let ty = (sb.top * track_h).clamp(0.0, track_h - th);
         let a = if sb.hovered { 230 } else { 150 };
         out.push(RectInstance { rect: [x, ty, w, th], color: rgba(theme.scrollbar_thumb, a) });
+        // The marks over the thumb: a line across the track at each prompt, a shorter one, in the colour of the find,
+        // at each match.
+        for mark in view.marks {
+            let y = (mark.at.clamp(0.0, 1.0) * track_h).min(track_h - 2.0).round();
+            let (left, width, color) = match mark.kind {
+                crate::cell::MarkKind::Prompt => (x, w, rgba(theme.foreground, 170)),
+                crate::cell::MarkKind::Match => (x + w / 2.0, w / 2.0, rgba(theme.search_match_bg, 255)),
+                crate::cell::MarkKind::CurrentMatch => (x, w, rgba(theme.search_current_bg, 255)),
+            };
+            out.push(RectInstance { rect: [left, y, width, 2.0], color });
+        }
     }
 }

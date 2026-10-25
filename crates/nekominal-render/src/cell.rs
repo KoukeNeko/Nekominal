@@ -370,6 +370,21 @@ pub struct Scrollbar {
     pub hovered: bool,
 }
 
+/// What a mark on the scrollbar stands for: a prompt the shell marked, a match of the find bar, the match it is on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkKind {
+    Prompt,
+    Match,
+    CurrentMatch,
+}
+
+/// A mark on the track of the scrollbar, `at` that fraction (0..=1) of the whole buffer from its top.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ScrollMark {
+    pub at: f32,
+    pub kind: MarkKind,
+}
+
 pub struct GridView<'a> {
     pub cols: usize,
     pub rows: usize,
@@ -382,6 +397,8 @@ pub struct GridView<'a> {
     pub hover_link: &'a [RowSpan],
     pub preedit: Option<&'a Preedit>,
     pub scrollbar: Option<Scrollbar>,
+    /// Marks on the track of the scrollbar; drawn only with it.
+    pub marks: &'a [ScrollMark],
 }
 
 impl<'a> GridView<'a> {
@@ -396,6 +413,7 @@ impl<'a> GridView<'a> {
             hover_link: &[],
             preedit: None,
             scrollbar: None,
+            marks: &[],
         }
     }
 }

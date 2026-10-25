@@ -2133,6 +2133,8 @@ impl App {
         };
 
         let highlights = self.find_highlights();
+        // Every match of the find bar is a mark on the scrollbar of the pane it searches, the one it is on marked.
+        let find_lines: Vec<(i32, bool)> = self.find.as_ref().map(|find| find.matches.iter().enumerate().map(|(i, found)| (found.start.0, i == find.current)).collect()).unwrap_or_default();
         let blinking = self.blink_wanted();
         if !blinking {
             self.blink_on = true;
@@ -2144,6 +2146,7 @@ impl App {
             for id in tab.shown() {
                 let Some(entry) = tab.entry_mut(id) else { continue };
                 entry.view.set_highlights(if id == focused { highlights.clone() } else { Vec::new() });
+                entry.view.set_find_lines(if id == focused { find_lines.clone() } else { Vec::new() });
                 entry.view.set_cursor_visible(id != focused || cursor_on);
                 entry.view.prepare(&entry.pane.term);
                 let rect = [entry.rect.x.max(0) as u32, entry.rect.y.max(0) as u32, entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32];

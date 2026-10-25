@@ -27,6 +27,11 @@ pub struct PaneRenderer {
     focused: bool,
     /// The cursor is in the "on" phase of its blink (or does not blink).
     cursor_on: bool,
+    /// The lines of the prompts the shell marked, and of the matches of the find bar with the one it is on: the marks of
+    /// the scrollbar.
+    prompt_lines: Vec<i32>,
+    find_lines: Vec<(i32, bool)>,
+    marks: Vec<r::ScrollMark>,
 }
 
 /// What `prepare` did, for logs and tests.
@@ -66,6 +71,9 @@ impl PaneRenderer {
             force_draw: true,
             focused: true,
             cursor_on: true,
+            prompt_lines: Vec::new(),
+            find_lines: Vec::new(),
+            marks: Vec::new(),
         })
     }
 
@@ -130,6 +138,15 @@ impl PaneRenderer {
         self.force_draw = true;
     }
 
+    /// The lines of the matches of the find bar (grid lines, below 0 in the scrollback), the one it is on marked: they
+    /// show on the scrollbar.
+    pub fn set_find_lines(&mut self, lines: Vec<(i32, bool)>) {
+        if lines != self.find_lines {
+            self.find_lines = lines;
+            self.force_draw = true;
+        }
+    }
+
     /// The phase of the blink of the cursor, driven by the window's timer: off hides the cursor until it is on again.
     pub fn set_cursor_visible(&mut self, on: bool) {
         if on != self.cursor_on {
@@ -181,6 +198,7 @@ impl PaneRenderer {
             core.flush_expired_sync(Instant::now());
             if core.take_dirty() {
                 core.snapshot(&mut self.snapshot);
+                self.prompt_lines = core.prompt_lines();
                 true
             } else {
                 false
@@ -197,6 +215,8 @@ impl PaneRenderer {
             let (row, col) = term.lock().cursor_cell();
             r::Preedit { row: row as u16, col: col as u16, text: text.clone() }
         });
+        let scrollbar = view::scrollbar(&self.snapshot, !self.find_lines.is_empty());
+        self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.find_lines) } else { Vec::new() };
         let themed = view::themed(&self.theme, &self.snapshot);
         self.renderer.set_theme(&if self.focused { themed } else { view::dimmed(&themed) });
         let grid = r::GridView {
@@ -208,7 +228,8 @@ impl PaneRenderer {
             highlights: &self.highlights,
             hover_link: &self.hover_link,
             preedit: self.preedit_at.as_ref(),
-            scrollbar: None,
+            scrollbar,
+            marks: &self.marks,
         };
         let started = Instant::now();
         let stats = self.renderer.update_pane(&mut self.state, &grid);

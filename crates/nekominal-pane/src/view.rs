@@ -12,6 +12,28 @@ use nekominal_term::{
     alacritty_terminal::{term::cell::Flags, vte::ansi::CursorShape},
 };
 
+/// The scrollbar of a pane: only while the view is scrolled up from the bottom, or while the find bar has matches to
+/// mark, so that it never covers the last column at the prompt. None without a scrollback.
+pub fn scrollbar(snapshot: &Snapshot, finding: bool) -> Option<r::Scrollbar> {
+    let total = snapshot.history_size + snapshot.rows;
+    if snapshot.history_size == 0 || total == 0 || (snapshot.display_offset == 0 && !finding) {
+        return None;
+    }
+    let top = (snapshot.history_size - snapshot.display_offset.min(snapshot.history_size)) as f32 / total as f32;
+    Some(r::Scrollbar { top, height: snapshot.rows as f32 / total as f32, hovered: false })
+}
+
+/// The marks of the scrollbar: the prompts, then the matches of the find (the current one last, over the others), each
+/// at the place of its line in the whole buffer.
+pub fn scroll_marks(snapshot: &Snapshot, prompts: &[i32], matches: &[(i32, bool)]) -> Vec<r::ScrollMark> {
+    let total = (snapshot.history_size + snapshot.rows).max(1) as f32;
+    let at = |line: i32| (line + snapshot.history_size as i32) as f32 / total;
+    let mut marks: Vec<r::ScrollMark> = prompts.iter().map(|line| r::ScrollMark { at: at(*line), kind: r::MarkKind::Prompt }).collect();
+    marks.extend(matches.iter().filter(|(_, current)| !current).map(|(line, _)| r::ScrollMark { at: at(*line), kind: r::MarkKind::Match }));
+    marks.extend(matches.iter().filter(|(_, current)| *current).map(|(line, _)| r::ScrollMark { at: at(*line), kind: r::MarkKind::CurrentMatch }));
+    marks
+}
+
 fn color(c: CellColor) -> r::Color {
     match c {
         CellColor::Default => r::Color::Default,
@@ -170,6 +192,20 @@ mod tests {
     use nekominal_term::{CellSide, CoreConfig, SelectionKind, TerminalCore};
 
     use super::*;
+
+    #[test]
+    fn the_scrollbar_shows_while_scrolled_up_or_finding_and_marks_sit_where_their_lines_are() {
+        let snapshot = |history: usize, offset: usize| Snapshot { history_size: history, display_offset: offset, rows: 10, ..Snapshot::default() };
+        assert_eq!(scrollbar(&snapshot(0, 0), true), None, "no scrollback, no scrollbar");
+        assert_eq!(scrollbar(&snapshot(90, 0), false), None, "at the bottom and not finding: out of the way");
+        let up = scrollbar(&snapshot(90, 90), false).expect("scrolled to the top");
+        assert_eq!((up.top, up.height), (0.0, 0.1));
+        let bottom = scrollbar(&snapshot(90, 0), true).expect("the find has matches");
+        assert!((bottom.top - 0.9).abs() < 1e-6);
+        let marks = scroll_marks(&snapshot(90, 0), &[-90, 0], &[(-45, false), (5, true)]);
+        let places: Vec<(f32, r::MarkKind)> = marks.iter().map(|m| (m.at, m.kind)).collect();
+        assert_eq!(places, [(0.0, r::MarkKind::Prompt), (0.9, r::MarkKind::Prompt), (0.45, r::MarkKind::Match), (0.95, r::MarkKind::CurrentMatch)]);
+    }
 
     fn distance(a: r::Rgb, b: r::Rgb) -> i32 {
         (i32::from(a.0) - i32::from(b.0)).abs()
