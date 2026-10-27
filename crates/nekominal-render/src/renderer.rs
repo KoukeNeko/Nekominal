@@ -21,6 +21,7 @@ use crate::d3d::{Gpu, bind_textures, bind_uniforms, constant_buffer, set_shaders
 use crate::fonts::{CellMetrics, FontConfig, FontStack, Style, compute_metrics};
 use crate::gpu::{self, GlyphInstance, GrowBuffer, Pipelines, RectInstance, Uniforms};
 use crate::images::Layer;
+use crate::ligatures::LigatureCache;
 use crate::raster::{GlyphKind, RasterOptions, Rasterizer};
 
 #[derive(Clone)]
@@ -54,6 +55,9 @@ pub struct RendererConfig {
     /// GPU texture, plus the same again as CPU shadow copies. Panes that share a window should share one
     /// `Renderer` (it draws any number of `PaneState`s) instead of each owning an atlas.
     pub atlas_max: u32,
+    /// Shape runs of plain text with the font's `calt` and `liga` features (see `ligatures.rs`). Off: the cells are
+    /// drawn one by one, as before.
+    pub ligatures: bool,
 }
 
 impl Default for RendererConfig {
@@ -72,6 +76,7 @@ impl Default for RendererConfig {
             translucent_text_boost: 1.6,
             atlas_initial: 1024,
             atlas_max: 2048,
+            ligatures: false,
         }
     }
 }
@@ -250,6 +255,7 @@ pub struct Renderer {
     pub(crate) glyph_cache: FxHashMap<GlyphKey, CachedGlyph>,
     pub(crate) sprite_cache: FxHashMap<(SpriteKey, u32, u32), Option<CachedBitmap>>,
     pub(crate) cluster_cache: FxHashMap<ClusterKey, Arc<[PlacedGlyph]>>,
+    pub(crate) ligatures: LigatureCache,
     pub(crate) epoch: u64,
     pub(crate) gpu_gen: u64,
     pub(crate) lcd_supported: bool,
@@ -328,6 +334,7 @@ impl Renderer {
             glyph_cache: FxHashMap::default(),
             sprite_cache: FxHashMap::default(),
             cluster_cache: FxHashMap::default(),
+            ligatures: LigatureCache::default(),
             epoch: 0,
             gpu_gen: 0,
             lcd_supported,
@@ -424,6 +431,7 @@ impl Renderer {
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
+        self.ligatures.clear();
         self.atlas_gray.clear();
         self.atlas_rgba.clear();
         self.stats.atlas_clears += 1;
@@ -441,6 +449,7 @@ impl Renderer {
         self.sprite_cache.clear();
         self.cluster_cache.clear();
         self.image_pipeline = None;
+        self.ligatures.clear();
         self.gpu_gen += 1;
         self.epoch += 1;
         Ok(())

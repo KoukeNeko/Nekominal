@@ -7,4 +7,5 @@ mod common;
 mod cursor;
 mod golden;
 mod images;
+mod ligatures;
 mod translucent;

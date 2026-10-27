@@ -174,6 +174,10 @@ impl Renderer {
             if c.row as usize == r && c.visible && c.focused && c.shape == CursorShape::Block {
                 c.hash(&mut h);
             }
+            // Any cursor breaks a ligature under it (see `ligatures.rs`): moving it redraws the row.
+            if self.cfg.ligatures && c.row as usize == r {
+                c.col.hash(&mut h);
+            }
         }
         if let Some(p) = view.preedit
             && p.row as usize == r
@@ -222,6 +226,9 @@ impl Renderer {
 
         let cursor_here =
             view.cursor.filter(|c| c.row as usize == r && c.visible && c.focused && c.shape == CursorShape::Block);
+        // Shaped runs, in column order; `lig_at` is the first that may still hold the current cell.
+        let ligated = if self.cfg.ligatures { self.ligature_row(r, &cells, view)? } else { Vec::new() };
+        let mut lig_at = 0usize;
 
         let mut c = 0usize;
         while c < cells.len() {
@@ -318,7 +325,13 @@ impl Renderer {
             if !hidden && !blank {
                 let fg_px = rgba(fg, 255);
                 let style = style_of(cell.flags);
-                let placed = self.cluster_glyphs(cell.ch, zw, style, span as u8)?;
+                while lig_at < ligated.len() && ligated[lig_at].0.end <= c {
+                    lig_at += 1;
+                }
+                let placed = match ligated.get(lig_at) {
+                    Some((run, shaped)) if run.contains(&c) => shaped[c - run.start].clone(),
+                    _ => self.cluster_glyphs(cell.ch, zw, style, span as u8)?,
+                };
                 for g in placed.iter() {
                     let mut dst_y = y0 + g.dy;
                     let mut src_y = g.bitmap.src[1] as i32;

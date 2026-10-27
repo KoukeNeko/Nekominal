@@ -5,6 +5,7 @@
 //! * `contrast`  WCAG contrast math for `Theme::min_contrast`
 //! * `fonts`     font stack, fallback, cell metrics (DirectWrite discovery)
 //! * `raster`    swash rasterization (grayscale / LCD / color / synthetic styles)
+//! * `ligatures` runs of cells shaped with the font's `calt`/`liga` when ligatures are on
 //! * `sprites`   procedural box drawing, blocks, braille, Powerline, underlines
 //! * `atlas`     etagere-packed R8 + RGBA8 glyph atlases
 //! * `d3d`       the device and the small Direct3D 11 helpers
@@ -20,6 +21,7 @@ pub mod d3d;
 pub mod fonts;
 pub mod gpu;
 mod images;
+mod ligatures;
 #[cfg(windows)]
 pub mod locator;
 #[cfg(feature = "offscreen")]
