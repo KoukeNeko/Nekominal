@@ -338,6 +338,19 @@ mod tests {
     }
 
     #[test]
+    fn the_strip_and_the_icons_take_no_room_for_badges() {
+        for layout in [TabLayout::Top, TabLayout::Icons] {
+            let mode = Mode { layout, sidebar_open: true, admin: false };
+            let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
+            let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[20.0, 40.0, 20.0]);
+            assert_eq!(tall.chips, plain.chips, "{layout:?}");
+        }
+        let list = Mode { layout: TabLayout::List, sidebar_open: true, admin: false };
+        let short = Layout::new(1200.0, 720.0, 1, CAPTION, 0, list, 0.0, &[vec![0]], &[20.0, 40.0]);
+        assert_eq!(short.chips.len(), 1, "heights past the last tab are left");
+    }
+
+    #[test]
     fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
         for layout in [TabLayout::Top, TabLayout::List] {
             let plain = Mode { layout, sidebar_open: true, admin: false };

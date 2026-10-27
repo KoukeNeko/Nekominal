@@ -66,7 +66,8 @@ impl PullRequest {
 }
 
 /// Counts the entries of `statusCheckRollup`: check runs (a `status`, then a `conclusion` once completed) and commit
-/// statuses (a `state`).
+/// statuses (a `state`). As `gh pr checks` counts them: what is not a pass or a failure is pending, a check that went stale
+/// or a state GitHub adds later among them.
 fn checks(rollup: &[serde_json::Value]) -> Checks {
     let mut checks = Checks::default();
     for item in rollup {
@@ -78,8 +79,8 @@ fn checks(rollup: &[serde_json::Value]) -> Checks {
         };
         match verdict {
             "SUCCESS" | "NEUTRAL" | "SKIPPED" => checks.passing += 1,
-            "PENDING" | "EXPECTED" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "REQUESTED" => checks.pending += 1,
-            _ => checks.failing += 1,
+            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => checks.failing += 1,
+            _ => checks.pending += 1,
         }
     }
     checks
@@ -107,17 +108,13 @@ pub fn parse(json: &str) -> Option<PullRequest> {
 
 /// Asks gh in `repo` for the pull request of the branch checked out there. Blocks: called on a thread of its own.
 fn ask_gh(repo: &Path) -> Option<PullRequest> {
-    let output = Command::new("gh")
-        .args(["pr", "view", "--json", FIELDS])
-        .current_dir(repo)
-        .env("GH_PROMPT_DISABLED", "1")
-        .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    answer(Command::new("gh").args(["pr", "view", "--json", FIELDS]).current_dir(repo).env("GH_PROMPT_DISABLED", "1").stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW).output())
+}
+
+/// What a run of gh came to: a pull request only when gh ran, succeeded and printed one. Not installed, signed out, a
+/// remote that is not GitHub's and a branch without a pull request are all none.
+fn answer(output: std::io::Result<std::process::Output>) -> Option<PullRequest> {
+    let output = output.ok().filter(|output| output.status.success())?;
     parse(&String::from_utf8_lossy(&output.stdout))
 }
 
@@ -244,11 +241,126 @@ mod tests {
         assert_eq!(parse(&MERGED.replace("MERGED", "CLOSED")).unwrap().state, State::Closed);
     }
 
+    /// The rollup of a pull request with the one entry `entry`.
+    fn one(entry: &str) -> Checks {
+        parse(&format!(r#"{{"number":1,"state":"OPEN","url":"u","statusCheckRollup":[{entry}]}}"#)).unwrap().checks
+    }
+
+    #[test]
+    fn every_check_run_and_status_context_state_is_counted_as_gh_counts_it() {
+        let (pass, fail, wait) = (Checks { passing: 1, ..Checks::default() }, Checks { failing: 1, ..Checks::default() }, Checks { pending: 1, ..Checks::default() });
+        let run = |status: &str, conclusion: &str| one(&format!(r#"{{"__typename":"CheckRun","status":"{status}","conclusion":"{conclusion}"}}"#));
+        for conclusion in ["SUCCESS", "NEUTRAL", "SKIPPED"] {
+            assert_eq!(run("COMPLETED", conclusion), pass, "{conclusion}");
+        }
+        for conclusion in ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"] {
+            assert_eq!(run("COMPLETED", conclusion), fail, "{conclusion}");
+        }
+        // A check GitHub gave up on, and what it may add one day: not a red badge.
+        for conclusion in ["STALE", "", "SOMETHING_NEW"] {
+            assert_eq!(run("COMPLETED", conclusion), wait, "{conclusion:?}");
+        }
+        for status in ["QUEUED", "IN_PROGRESS", "PENDING", "REQUESTED", "WAITING", ""] {
+            assert_eq!(run(status, "SUCCESS"), wait, "{status:?}: what has not completed has no verdict yet");
+        }
+        assert_eq!(one(r#"{"__typename":"CheckRun","status":"COMPLETED","conclusion":null}"#), wait);
+        assert_eq!(one(r#"{"__typename":"CheckRun","status":null}"#), wait);
+
+        let context = |state: &str| one(&format!(r#"{{"__typename":"StatusContext","context":"ci","state":"{state}"}}"#));
+        assert_eq!(context("SUCCESS"), pass);
+        assert_eq!((context("FAILURE"), context("ERROR")), (fail, fail));
+        assert_eq!((context("PENDING"), context("EXPECTED"), context("NEW_STATE")), (wait, wait, wait));
+        assert_eq!(one(r#"{"__typename":"StatusContext","context":"ci"}"#), wait, "no state");
+        assert_eq!(one("{}"), wait, "an entry of neither kind");
+    }
+
     #[test]
     fn what_is_not_a_pull_request_is_none() {
         assert_eq!(parse(""), None);
         assert_eq!(parse("no pull requests found for branch \"main\""), None);
         assert_eq!(parse(r#"{"state":"OPEN","url":"x"}"#), None, "no number");
+    }
+
+    #[test]
+    fn missing_fields_and_nulls_read_as_nothing_or_as_defaults() {
+        // Only what a badge cannot do without: the number, the state and the address a click opens.
+        let bare = parse(r#"{"number":9,"state":"OPEN","url":"u"}"#).unwrap();
+        assert_eq!((bare.state, bare.checks, &bare.review, &bare.merge_state), (State::Open, Checks::default(), &None, &None));
+        let nulls = parse(r#"{"number":9,"state":"OPEN","url":"u","isDraft":null,"reviewDecision":null,"mergeStateStatus":null,"statusCheckRollup":null}"#).unwrap();
+        assert_eq!(nulls, bare);
+        assert_eq!(parse(r#"{"number":9,"state":"OPEN","url":"u","statusCheckRollup":{"nodes":[]}}"#).unwrap().checks, Checks::default(), "a rollup that is not a list");
+        assert_eq!(parse(r#"{"number":9,"state":"MERGED","isDraft":true,"url":"u"}"#).unwrap().state, State::Merged, "the state comes before the draft");
+        for bad in [
+            r#"{"number":"9","state":"OPEN","url":"u"}"#,
+            r#"{"number":-9,"state":"OPEN","url":"u"}"#,
+            r#"{"number":9.5,"state":"OPEN","url":"u"}"#,
+            r#"{"number":9,"state":null,"url":"u"}"#,
+            r#"{"number":9,"state":"","url":"u"}"#,
+            r#"{"number":9,"state":"OPEN","url":""}"#,
+            r#"{"number":9,"state":"OPEN"}"#,
+            r#"[{"number":9,"state":"OPEN","url":"u"}]"#,
+            "null",
+        ] {
+            assert_eq!(parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_state_reads_as_open() {
+        assert_eq!(parse(r#"{"number":9,"state":"LOCKED","url":"u"}"#).unwrap().state, State::Open);
+        assert_eq!(parse(r#"{"number":9,"state":"LOCKED","isDraft":true,"url":"u"}"#).unwrap().state, State::Draft);
+    }
+
+    #[test]
+    fn a_huge_rollup_is_counted_in_full() {
+        let entries: Vec<&str> = [r#"{"status":"COMPLETED","conclusion":"SUCCESS"}"#, r#"{"state":"FAILURE"}"#, r#"{"status":"QUEUED"}"#].into_iter().cycle().take(30_000).collect();
+        let json = format!(r#"{{"number":1,"state":"OPEN","url":"u","statusCheckRollup":[{}]}}"#, entries.join(","));
+        assert_eq!(parse(&json).unwrap().checks, Checks { pending: 10_000, passing: 10_000, failing: 10_000 });
+    }
+
+    #[test]
+    fn gh_missing_signed_out_or_outside_github_gives_no_pull_request() {
+        use std::{os::windows::process::ExitStatusExt, process::{ExitStatus, Output}};
+        let run = |code: u32, stdout: &str| Ok(Output { status: ExitStatus::from_raw(code), stdout: stdout.as_bytes().to_vec(), stderr: Vec::new() });
+        assert_eq!(answer(Err(std::io::ErrorKind::NotFound.into())), None, "gh is not installed");
+        // What gh says signed out, outside GitHub, and on a branch without one: on stderr, with exit status 1.
+        assert_eq!(answer(run(1, "")), None);
+        assert_eq!(answer(run(1, OPEN)), None, "a failed run is not believed");
+        assert_eq!(answer(run(0, "")), None);
+        assert_eq!(answer(run(0, OPEN)).map(|pr| pr.number), Some(12));
+    }
+
+    #[test]
+    fn an_answer_for_a_branch_no_tab_is_on_is_dropped_and_none_clears_what_was_known() {
+        let mut prs = PullRequests::default();
+        let (key, gone): (Key, Key) = ((PathBuf::from(r"C:\repo"), "main".into()), (PathBuf::from(r"C:\repo"), "old".into()));
+        let t0 = Instant::now();
+        assert!(prs.due(&key, t0) && prs.due(&gone, t0));
+        prs.retain(|k| *k == key);
+        prs.sender.send((gone.clone(), parse(OPEN))).unwrap();
+        assert!(!prs.collect(), "the tab moved on before gh answered");
+        assert!(!prs.entries.contains_key(&gone));
+
+        prs.sender.send((key.clone(), parse(OPEN))).unwrap();
+        assert!(prs.collect());
+        assert!(prs.due(&key, t0 + FRESH));
+        prs.sender.send((key.clone(), None)).unwrap();
+        assert!(prs.collect(), "the pull request went away");
+        assert_eq!(prs.entries[&key].found, None);
+        // A gh that never answers keeps the branch from being asked again: there is no timeout.
+        assert!(prs.due(&key, t0 + FRESH * 2));
+        assert!(!prs.due(&key, t0 + FRESH * 100));
+    }
+
+    #[test]
+    fn the_repository_of_a_worktree_is_its_own_folder() {
+        let root = std::env::temp_dir().join(format!("nekominal-repo-{}", crate::agent::new_session()));
+        let tree = root.join("app-fix");
+        std::fs::create_dir_all(tree.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(tree.join(".git"), "gitdir: ../.git/worktrees/app-fix\n").unwrap();
+        assert_eq!(repo_root(&tree.join("src")).as_deref(), Some(tree.as_path()), "the `.git` file of a worktree, not the folder above");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
