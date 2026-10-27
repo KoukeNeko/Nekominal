@@ -125,6 +125,11 @@ allow. Large and multi-line pastes ask first.
 - Built-in colour schemes, your own in Windows Terminal's format, an import of the schemes of your Windows Terminal, and
   of iTerm2 colour presets (`.itermcolors`), such as those of iTerm2-Color-Schemes.
 - Your fonts, line height, cursor shape and blink rate. The text keeps its contrast on every scheme.
+- Font ligatures (`=>`, `!=` as one glyph) with fonts that have them, such as Cascadia Code; off by default, in
+  Settings › Appearance. The cursor and a selection break them.
+- Inline images: Sixel and the kitty graphics protocol (PNG, raw pixels, compressed and chunked), so `chafa`, `timg`,
+  `yazi` and `kitty +kitten icat` show pictures. They scroll with the text, and a program can make the terminal hold only
+  so much.
 
 ### At home in Windows
 
@@ -149,8 +154,8 @@ allow. Large and multi-line pastes ask first.
 | Fresh environment for a new tab   |    ✅     |        ✅        |    —    |
 | Explorer menu, jump list          |    ✅     |        ✅        |   ⚠️    |
 | Custom colour schemes             |    ✅     |        ✅        |   ✅    |
-| Inline images (Sixel, kitty)      |    —      |        ⚠️        |   ✅    |
-| Font ligatures                    |    —      |        ✅        |   ✅    |
+| Inline images (Sixel, kitty)      |    ✅     |        ⚠️        |   ✅    |
+| Font ligatures                    |    ✅     |        ✅        |   ✅    |
 | Default terminal of Windows       |    —      |        ✅        |    —    |
 | macOS and Linux                   |    —      |        —         |   ✅    |
 

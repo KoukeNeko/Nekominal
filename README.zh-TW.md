@@ -116,6 +116,10 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - 內建色彩配置、Windows Terminal 格式的自訂配色、從 Windows Terminal 匯入配色，以及匯入 iTerm2 色彩配置檔（`.itermcolors`，
   例如 iTerm2-Color-Schemes 收錄的配色）。
 - 自選字型、行高、游標樣式與閃爍速度。文字在每種配色上都保有對比。
+- 字型連字（`=>`、`!=` 顯示為一個字形），需要有連字的字型，例如 Cascadia Code；預設關閉，在「設定 › 外觀」開啟。
+  游標與選取範圍會把連字拆開。
+- 內嵌圖片：Sixel 與 kitty 圖片協定（PNG、原始像素、壓縮與分段傳送），`chafa`、`timg`、`yazi` 與
+  `kitty +kitten icat` 都能顯示圖片。圖片會隨文字捲動，程式能讓終端機保存的圖片量有上限。
 
 ### 融入 Windows
 
@@ -139,8 +143,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | 新分頁使用全新的環境變數           |    ✅     |        ✅        |    —    |
 | 檔案總管選單、捷徑清單             |    ✅     |        ✅        |   ⚠️    |
 | 自訂色彩配置                       |    ✅     |        ✅        |   ✅    |
-| 內嵌圖片（Sixel、kitty）           |    —      |        ⚠️        |   ✅    |
-| 字型連字                           |    —      |        ✅        |   ✅    |
+| 內嵌圖片（Sixel、kitty）           |    ✅     |        ⚠️        |   ✅    |
+| 字型連字                           |    ✅     |        ✅        |   ✅    |
 | Windows 預設終端機                 |    —      |        ✅        |    —    |
 | macOS 與 Linux                     |    —      |        —         |   ✅    |
 
