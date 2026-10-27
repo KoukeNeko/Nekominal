@@ -36,7 +36,7 @@ pub const LIST_HEADING: f32 = 26.0;
 /// An icon of the column, and the space a row of the column takes.
 pub const ICON_CELL: f32 = 36.0;
 pub const ICON_ROW: f32 = 44.0;
-const SIDE_PAD: f32 = 8.0;
+pub const SIDE_PAD: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
@@ -45,6 +45,8 @@ pub enum Hit {
     Drag,
     Chip(usize),
     ChipClose(usize),
+    /// A badge of a tab (its pull request, a port it listens on), by its place in the list the window drew last.
+    Badge(usize),
     NewTab,
     Profiles,
     /// The position plate: opens the list of all tabs.
@@ -120,8 +122,9 @@ impl Layout {
     /// of the agent ask for, left of the menu. `groups` are the tabs in the order the sidebar lists them, by group (one
     /// group without a heading when the list is not grouped); the strip on top always has the tabs in their own order.
     /// When the chips at their narrowest do not all fit, the strip shows the ones that do, scrolled so that tab `selected`
-    /// is the last of them or earlier.
-    pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize, mode: Mode, right: f32, groups: &[Vec<usize>]) -> Layout {
+    /// is the last of them or earlier. `tall` is what each row of the list adds under its two lines (the lines of its
+    /// badges), by tab; a tab past its end adds nothing.
+    pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize, mode: Mode, right: f32, groups: &[Vec<usize>], tall: &[f32]) -> Layout {
         let menu = Rect::new((width - caption - BUTTON).max(0.0), 0.0, BUTTON, TITLE_HEIGHT);
         let caption_buttons = [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * caption / 3.0, 0.0, caption / 3.0, TITLE_HEIGHT));
         let shield = mode.admin.then(|| Rect::new(STRIP_LEFT, 0.0, SHIELD, TITLE_HEIGHT));
@@ -148,11 +151,11 @@ impl Layout {
                 }
                 for &i in group.iter().filter(|i| **i < tabs) {
                     chips[i] = if list {
-                        Rect::new(SIDE_PAD, y, SIDE_LIST - 2.0 * SIDE_PAD, LIST_ROW)
+                        Rect::new(SIDE_PAD, y, SIDE_LIST - 2.0 * SIDE_PAD, LIST_ROW + tall.get(i).copied().unwrap_or(0.0))
                     } else {
                         Rect::new((SIDE_ICONS - ICON_CELL) / 2.0, y + (ICON_ROW - ICON_CELL) / 2.0, ICON_CELL, ICON_CELL)
                     };
-                    y += if list { LIST_ROW + 2.0 } else { ICON_ROW };
+                    y += if list { chips[i].h + 2.0 } else { ICON_ROW };
                 }
             }
             // shortcut: the sidebar does not scroll; rows past its bottom are not shown (about 14 rows at 720 DIP).
@@ -184,10 +187,11 @@ impl Layout {
         !self.mode.layout.is_side() && (self.first..self.first + self.shown).contains(&i)
     }
 
-    /// The close button inside a chip or a row of the list, `None` when it is too narrow for one (a chip, an icon).
+    /// The close button inside a chip or a row of the list, `None` when it is too narrow for one (a chip, an icon). A row
+    /// with badges keeps it beside its two lines.
     pub fn close_button(chip: Rect) -> Option<Rect> {
         (chip.w >= CLOSE_FROM)
-            .then(|| Rect::new(chip.x + chip.w - 6.0 - CLOSE_SIZE, chip.y + (chip.h - CLOSE_SIZE) / 2.0, CLOSE_SIZE, CLOSE_SIZE))
+            .then(|| Rect::new(chip.x + chip.w - 6.0 - CLOSE_SIZE, chip.y + (chip.h.min(LIST_ROW) - CLOSE_SIZE) / 2.0, CLOSE_SIZE, CLOSE_SIZE))
     }
 
     pub fn hit(&self, x: f32, y: f32) -> Hit {
@@ -232,12 +236,12 @@ mod tests {
     const CAPTION: f32 = super::CAPTION;
 
     fn top(width: f32, tabs: usize, selected: usize) -> Layout {
-        Layout::new(width, 700.0, tabs, CAPTION, selected, Mode::TOP, 0.0, &[(0..tabs).collect()])
+        Layout::new(width, 700.0, tabs, CAPTION, selected, Mode::TOP, 0.0, &[(0..tabs).collect()], &[])
     }
 
     fn side(layout: TabLayout, open: bool, groups: &[Vec<usize>]) -> Layout {
         let tabs = groups.iter().map(Vec::len).sum();
-        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, sidebar_open: open, admin: false }, 200.0, groups)
+        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, sidebar_open: open, admin: false }, 200.0, groups, &[])
     }
 
     #[test]
@@ -302,7 +306,7 @@ mod tests {
 
     #[test]
     fn the_room_asked_for_at_the_right_of_the_bar_is_kept_free_of_tabs() {
-        let layout = Layout::new(1200.0, 700.0, 4, CAPTION, 0, Mode::TOP, 300.0, &[(0..4).collect()]);
+        let layout = Layout::new(1200.0, 700.0, 4, CAPTION, 0, Mode::TOP, 300.0, &[(0..4).collect()], &[]);
         assert_eq!(layout.right.x + layout.right.w, layout.menu.x);
         assert!(layout.profiles.x + BUTTON + DRAG_MIN <= layout.right.x + 0.01);
     }
@@ -323,12 +327,23 @@ mod tests {
     }
 
     #[test]
+    fn a_row_with_badges_is_taller_and_the_rows_under_it_move_down_by_as_much() {
+        let mode = Mode { layout: TabLayout::List, sidebar_open: true, admin: false };
+        let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
+        let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[0.0, 20.0]);
+        assert_eq!((tall.chips[0], tall.chips[1].h), (plain.chips[0], LIST_ROW + 20.0));
+        assert_eq!(tall.chips[2].y - plain.chips[2].y, 20.0);
+        assert_eq!(tall.hit(tall.chips[1].x + 4.0, tall.chips[1].y + LIST_ROW + 10.0), Hit::Chip(1), "the third line is the row's");
+        assert_eq!(Layout::close_button(tall.chips[1]).map(|c| c.y - tall.chips[1].y), Layout::close_button(plain.chips[1]).map(|c| c.y - plain.chips[1].y));
+    }
+
+    #[test]
     fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
         for layout in [TabLayout::Top, TabLayout::List] {
             let plain = Mode { layout, sidebar_open: true, admin: false };
             let admin = Mode { admin: true, ..plain };
-            let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]]);
-            let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]]);
+            let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]], &[]);
+            let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]], &[]);
             assert!(without.shield.is_none());
             let shield = with.shield.expect("the shield");
             assert_eq!((shield.x, shield.w), (STRIP_LEFT, SHIELD));

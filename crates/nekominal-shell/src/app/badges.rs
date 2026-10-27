@@ -1,8 +1,93 @@
-//! What the badges of a tab will show (nothing draws them yet): the pull request of the branch its folder is on
-//! (`github.rs`), and the TCP ports the programs of its panes listen on (`ports.rs`). Read with the job tick, once a second.
+//! The badges of a tab: the pull request of the branch its folder is on (`github.rs`), and the TCP ports the programs of
+//! its panes listen on (`ports.rs`). Read with the job tick, once a second. They are drawn as small pills on a third line
+//! of a row of the list, and for the selected tab in the title bar; a click opens the pull request or the port.
 
 use super::*;
 use crate::{agent, github, ports};
+
+/// The text size and the height of a badge: on a row of the list, and in the title bar.
+pub const SIDE: (f32, f32) = (10.5, 16.0);
+pub const BAR: (f32, f32) = (11.0, 18.0);
+/// What a line of badges adds to a row of the list.
+const LINE: f32 = SIDE.1 + 4.0;
+const GAP: f32 = 4.0;
+const ICON: f32 = 11.0;
+
+/// How a badge looks: a pull request by its state and its checks, or a port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Passing,
+    Failing,
+    Running,
+    /// Open without checks.
+    Open,
+    Draft,
+    Merged,
+    Closed,
+    Port,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chip {
+    pub look: Look,
+    pub text: String,
+    /// The failing checks, in a bubble after the number.
+    pub count: Option<u32>,
+    /// What a click opens.
+    pub url: String,
+}
+
+/// The badges of a pull request and of ports: the pull request first, then each port.
+pub fn chips(pr: Option<&github::PullRequest>, listening: &[u16]) -> Vec<Chip> {
+    let pr = pr.map(|pr| {
+        let checks = pr.checks;
+        let look = match pr.state {
+            github::State::Merged => Look::Merged,
+            github::State::Closed => Look::Closed,
+            github::State::Draft => Look::Draft,
+            github::State::Open if checks.failing > 0 => Look::Failing,
+            github::State::Open if checks.pending > 0 => Look::Running,
+            github::State::Open if checks.passing > 0 => Look::Passing,
+            github::State::Open => Look::Open,
+        };
+        Chip { look, text: format!("#{}", pr.number), count: (look == Look::Failing).then_some(checks.failing), url: pr.url.clone() }
+    });
+    let ports = listening.iter().map(|&port| Chip { look: Look::Port, text: port.to_string(), count: None, url: ports::url(port) });
+    pr.into_iter().chain(ports).collect()
+}
+
+/// The width of a badge, its text measured by `measure`: the mark, the text, and the bubble of the count.
+pub fn width(chip: &Chip, mut measure: impl FnMut(&str) -> f32) -> f32 {
+    let count = chip.count.map_or(0.0, |n| 4.0 + measure(&n.to_string()) + 8.0);
+    3.0 + ICON + 3.0 + measure(&chip.text) + count + 5.0
+}
+
+/// Where badges `widths` wide go in lines `room` wide, from the top left of their first line: one after the other, the next
+/// line when one does not fit; a badge wider than the room has a line of its own.
+pub fn place(widths: &[f32], room: f32) -> Vec<Rect> {
+    let (mut x, mut y) = (0.0, 0.0);
+    widths
+        .iter()
+        .map(|&w| {
+            if x > 0.0 && x + w > room {
+                (x, y) = (0.0, y + LINE);
+            }
+            let rect = Rect::new(x, y, w, SIDE.1);
+            x += w + GAP;
+            rect
+        })
+        .collect()
+}
+
+/// What placed badges add to a row: a line each, nothing without any.
+pub fn height(placed: &[Rect]) -> f32 {
+    placed.last().map_or(0.0, |last| last.y + LINE)
+}
+
+/// The badge under (`x`, `y`) among those drawn, by its place in `drawn`.
+pub fn at(drawn: &[(Rect, String)], x: f32, y: f32) -> Option<usize> {
+    drawn.iter().position(|(rect, _)| rect.contains(x, y))
+}
 
 #[derive(Default)]
 pub struct Badges {
@@ -19,6 +104,10 @@ impl Badges {
         let ports = self.ports.get(&uid).map(|ports| ports.iter().map(|p| format!(":{p}")).collect::<Vec<_>>().join(" "));
         let parts: Vec<String> = [self.pull_request.get(&uid).map(github::PullRequest::summary), ports].into_iter().flatten().collect();
         (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
+    }
+
+    pub fn chips(&self, uid: u64) -> Vec<Chip> {
+        chips(self.pull_request.get(&uid), self.ports.get(&uid).map_or(&[], Vec::as_slice))
     }
 }
 
@@ -64,6 +153,76 @@ impl App {
         badges.pull_request.retain(|uid, _| open(uid));
         changed
     }
+
+    /// The badges of tab `i` on its row of the list, placed from the left of the words of the row under its two lines.
+    fn row_badges(&mut self, i: usize) -> Vec<(Chip, Rect)> {
+        let chips = self.badges.chips(self.tabs[i].uid);
+        let widths: Vec<f32> = chips.iter().map(|chip| width(chip, |text| self.ui.measure(text, SIDE.0, false))).collect();
+        // The row less its padding, less the icon before the words (as `paint_sidebar` has them) and the right margin.
+        let room = layout::SIDE_LIST - 2.0 * layout::SIDE_PAD - (10.0 + TAB_ICON + 10.0) - 10.0;
+        chips.into_iter().zip(place(&widths, room)).collect()
+    }
+
+    /// What each row of the list adds for its badges, by tab; nothing but the list has them.
+    pub(super) fn badge_heights(&mut self) -> Vec<f32> {
+        if self.settings.tabs.layout != settings::TabLayout::List {
+            return Vec::new();
+        }
+        (0..self.tabs.len()).map(|i| height(&self.row_badges(i).into_iter().map(|(_, rect)| rect).collect::<Vec<_>>())).collect()
+    }
+
+    /// The badges of tab `i` on its row, the words of which start at `x`.
+    pub(super) fn paint_row_badges(&mut self, i: usize, row: Rect, x: f32) {
+        let top = row.y + layout::LIST_ROW - 3.0;
+        for (chip, rect) in self.row_badges(i) {
+            self.paint_badge(&chip, Rect::new(x + rect.x, top + rect.y, rect.w, rect.h), SIDE.0);
+        }
+    }
+
+    /// One badge in `rect`, its text `size` DIP: a pill of its colour with its mark and its text, the failing checks in a
+    /// bubble. It is kept for a click.
+    pub(super) fn paint_badge(&mut self, chip: &Chip, rect: Rect, size: f32) {
+        let g = self.glass;
+        let color = col(match chip.look {
+            Look::Passing | Look::Open => g.mark(g.success),
+            Look::Failing | Look::Closed => g.mark(g.danger),
+            Look::Running => g.mark(g.warning),
+            Look::Draft => g.text_secondary(),
+            Look::Merged => g.mark(g.magenta),
+            Look::Port => g.mark(g.cyan),
+        });
+        let tint = |alpha: u8| Color([color.0[0], color.0[1], color.0[2], alpha]);
+        let hover = self.hover == Hit::Badge(self.badge_hits.len());
+        self.ui.rrect(rect, rect.h / 2.0, tint(if hover { 64 } else { 36 }), None);
+        let mark = Rect::new(rect.x + 3.0, rect.y + (rect.h - ICON) / 2.0, ICON, ICON);
+        let (cx, cy, r) = (mark.x + ICON / 2.0, mark.y + ICON / 2.0, 3.2);
+        match chip.look {
+            Look::Running => {
+                // A ring of dashes: checks that still run.
+                for k in 0..8 {
+                    let angle = k as f32 * std::f32::consts::FRAC_PI_4;
+                    self.ui.rrect(Rect::new(cx + r * angle.cos() - 0.7, cy + r * angle.sin() - 0.7, 1.4, 1.4), 0.7, color, None);
+                }
+            }
+            Look::Open | Look::Draft | Look::Closed => {
+                self.ui.rrect(Rect::new(cx - r, cy - r, 2.0 * r, 2.0 * r), r, Color::TRANSPARENT, Some((color, 1.2)));
+            }
+            Look::Passing => self.icon_centered(mark, '\u{E73E}', 9.0, color),
+            Look::Failing => self.icon_centered(mark, '\u{E711}', 8.0, color),
+            Look::Merged => self.icon_centered(mark, '\u{E81C}', 9.0, color),
+            Look::Port => self.icon_centered(mark, '\u{E774}', 9.0, color),
+        }
+        let line = self.ui.line_height(size);
+        let x = mark.x + ICON + 3.0;
+        let x = x + self.ui.text(x, rect.y + (rect.h - line) / 2.0, &chip.text, size, color, false);
+        if let Some(n) = chip.count {
+            let n = n.to_string();
+            let bubble = Rect::new(x + 4.0, rect.y + 2.0, self.ui.measure(&n, size, false) + 8.0, rect.h - 4.0);
+            self.ui.rrect(bubble, bubble.h / 2.0, tint(77), None);
+            self.ui.text(bubble.x + 4.0, rect.y + (rect.h - line) / 2.0, &n, size, color, false);
+        }
+        self.badge_hits.push((rect, chip.url.clone()));
+    }
 }
 
 #[cfg(test)]
@@ -88,5 +247,61 @@ mod tests {
         let pr = github::parse(r#"{"number":4,"state":"MERGED","isDraft":false,"url":"u","statusCheckRollup":[]}"#).unwrap();
         badges.pull_request.insert(1, pr);
         assert_eq!(badges.text(1).as_deref(), Some("#4 merged \u{b7} :3000 :5173"));
+    }
+
+    fn pr(state: &str, draft: bool, rollup: &str) -> github::PullRequest {
+        github::parse(&format!(r#"{{"number":142,"state":"{state}","isDraft":{draft},"url":"https://github.com/o/r/pull/142","statusCheckRollup":[{rollup}]}}"#)).unwrap()
+    }
+
+    #[test]
+    fn a_pull_request_looks_like_its_checks_and_the_ports_follow_it() {
+        let (pass, fail, run) = (r#"{"state":"SUCCESS"}"#, r#"{"state":"FAILURE"}"#, r#"{"state":"PENDING"}"#);
+        let look = |pr: github::PullRequest| chips(Some(&pr), &[]).remove(0).look;
+        assert_eq!(look(pr("OPEN", false, pass)), Look::Passing);
+        assert_eq!(look(pr("OPEN", false, &format!("{pass},{run}"))), Look::Running);
+        assert_eq!(look(pr("OPEN", false, &format!("{run},{fail}"))), Look::Failing, "a failure wins over what still runs");
+        assert_eq!(look(pr("OPEN", false, "")), Look::Open);
+        assert_eq!(look(pr("OPEN", true, fail)), Look::Draft);
+        assert_eq!(look(pr("MERGED", false, fail)), Look::Merged);
+        assert_eq!(look(pr("CLOSED", false, "")), Look::Closed);
+
+        let failing = chips(Some(&pr("OPEN", false, &format!("{fail},{fail},{pass}"))), &[8080]);
+        assert_eq!((failing[0].text.as_str(), failing[0].count), ("#142", Some(2)));
+        assert_eq!(chips(Some(&pr("OPEN", false, pass)), &[])[0].count, None, "only failures are counted");
+        assert_eq!(failing[1], Chip { look: Look::Port, text: "8080".into(), count: None, url: ports::url(8080) });
+        assert_eq!(chips(None, &[3000, 5173]).iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["3000", "5173"]);
+        assert!(chips(None, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_badge_opens_its_pull_request_or_its_port() {
+        let drawn: Vec<(Rect, String)> = chips(Some(&pr("OPEN", false, "")), &[3000])
+            .into_iter()
+            .zip(place(&[40.0, 40.0], 200.0))
+            .map(|(chip, rect)| (rect, chip.url))
+            .collect();
+        assert_eq!(at(&drawn, 10.0, 8.0).map(|k| drawn[k].1.as_str()), Some("https://github.com/o/r/pull/142"));
+        assert_eq!(at(&drawn, 50.0, 8.0).map(|k| drawn[k].1.as_str()), Some("http://localhost:3000"));
+        assert_eq!(at(&drawn, 42.0, 8.0), None, "the gap between two badges");
+        assert_eq!(at(&drawn, 10.0, 30.0), None);
+    }
+
+    #[test]
+    fn badges_fill_a_line_then_wrap_and_add_a_line_each_to_the_row() {
+        let measure = |text: &str| 6.0 * text.chars().count() as f32;
+        let chip = chips(Some(&pr("OPEN", false, r#"{"state":"FAILURE"}"#)), &[]).remove(0);
+        assert_eq!(width(&chip, measure), 3.0 + ICON + 3.0 + 24.0 + (4.0 + 6.0 + 8.0) + 5.0, "the count has its bubble");
+        assert!(width(&Chip { count: None, ..chip.clone() }, measure) < width(&chip, measure));
+
+        assert_eq!(height(&place(&[], 150.0)), 0.0, "no badges, no third line");
+        let one = place(&[50.0, 50.0], 150.0);
+        assert_eq!(one.iter().map(|r| (r.x, r.y)).collect::<Vec<_>>(), [(0.0, 0.0), (54.0, 0.0)]);
+        assert_eq!(height(&one), LINE);
+        let two = place(&[50.0, 50.0, 50.0, 50.0], 150.0);
+        assert_eq!(two.iter().map(|r| (r.x, r.y)).collect::<Vec<_>>(), [(0.0, 0.0), (54.0, 0.0), (0.0, LINE), (54.0, LINE)]);
+        assert!(two.iter().all(|r| r.x + r.w <= 150.0 && r.h == SIDE.1));
+        assert_eq!(height(&two), 2.0 * LINE);
+        let wide = place(&[200.0, 30.0], 150.0);
+        assert_eq!((wide[0].x, wide[1].y), (0.0, LINE), "a badge wider than the row has a line of its own");
     }
 }

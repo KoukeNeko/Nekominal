@@ -120,6 +120,7 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
         Piece::Meter(_) => METER + 6.0 + ui.measure("100%", PIECE_SIZE, false),
         Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, PIECE_SIZE, false),
         Piece::Text(text) => ui.measure(text, PIECE_SIZE, false),
+        Piece::Badge(chip) => badges::width(chip, |text| ui.measure(text, badges::BAR.0, false)),
     }
 }
 
@@ -186,6 +187,8 @@ enum Piece {
     Meter(f32),
     Glyph(char, String),
     Text(String),
+    /// A badge of the selected tab (`app/badges.rs`).
+    Badge(badges::Chip),
 }
 
 pub struct App {
@@ -232,10 +235,13 @@ pub struct App {
     plate_rect: Option<Rect>,
     /// Where the count of the tabs that wait is drawn, when there is one: it goes to the next of them.
     waiting_rect: Option<Rect>,
-    /// The room the right of the title bar takes (the waiting count and the numbers of the agent), and the tabs of the
-    /// sidebar by group, as the layout was last made with them.
+    /// The badges drawn in the last frame, where and what a click on each opens.
+    badge_hits: Vec<(Rect, String)>,
+    /// The room the right of the title bar takes (the waiting count and the numbers of the agent), the tabs of the
+    /// sidebar by group, and what the badges add to each row of the list, as the layout was last made with them.
     right_width: f32,
     groups: Vec<Vec<usize>>,
+    badge_heights: Vec<f32>,
     /// The first start: the window shows the choice of the layout of the tabs over everything until it is made.
     welcome: Option<welcome::Welcome>,
     /// The frame being drawn has a mark that moves, and the time the marks count from. They move whatever Windows' "Animation
@@ -587,8 +593,10 @@ impl App {
             drag: None,
             plate_rect: None,
             waiting_rect: None,
+            badge_hits: Vec::new(),
             right_width: 0.0,
             groups: Vec::new(),
+            badge_heights: Vec::new(),
             welcome: None,
             animating: false,
             marks_epoch: Instant::now(),
@@ -618,7 +626,7 @@ impl App {
             window_title: String::new(),
             tabs: Vec::new(),
             selected: 0,
-            layout: Layout::new(1.0, 1.0, 0, 0.0, 0, layout::Mode::TOP, 0.0, &[]),
+            layout: Layout::new(1.0, 1.0, 0, 0.0, 0, layout::Mode::TOP, 0.0, &[], &[]),
             hover: Hit::None,
             pressed: Hit::None,
             buttons: [false; 3],
@@ -787,7 +795,7 @@ impl App {
     /// them.
     fn rebuild_layout(&mut self) {
         let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups);
+        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups, &self.badge_heights);
     }
 
     /// Pixels between the top of the window and the top of the panes.
@@ -1064,7 +1072,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -1407,6 +1415,9 @@ impl App {
         if self.waiting_rect.is_some_and(|rect| rect.contains(x, y)) {
             return Hit::Waiting;
         }
+        if let Some(k) = badges::at(&self.badge_hits, x, y) {
+            return Hit::Badge(k);
+        }
         self.layout.hit(x, y)
     }
 
@@ -1622,6 +1633,11 @@ impl App {
                     Hit::Plate => self.open_tab_list(),
                     Hit::Menu => self.open_menu(),
                     Hit::Waiting => self.run(Command::TabNextNeedsResponse),
+                    Hit::Badge(k) => {
+                        if let Some((_, url)) = self.badge_hits.get(k) {
+                            open_link(url);
+                        }
+                    }
                     Hit::Sidebar => self.run(Command::ViewSidebar),
                     _ => {}
                 }
@@ -2666,6 +2682,7 @@ impl App {
     /// Draws the bar, the sidebar and the dividers. True when the layout changed with what the bar says: the chips go to
     /// their new places in the frames after this one (a redraw asked for while painting would be cleared with the frame).
     fn paint_chrome(&mut self) -> bool {
+        self.badge_hits.clear();
         // Focus mode has no bar and no sidebar: the panes are all there is.
         if self.focus_mode {
             self.paint_dividers();
@@ -2693,9 +2710,10 @@ impl App {
         // not move from under it.
         let over_side = matches!(self.hover, Hit::Chip(_) | Hit::ChipClose(_) | Hit::Side);
         let groups = if over_side { self.groups.clone() } else { self.sidebar_groups() };
-        let relaid = right_width != self.right_width || groups != self.groups;
+        let heights = self.badge_heights();
+        let relaid = right_width != self.right_width || groups != self.groups || heights != self.badge_heights;
         if relaid {
-            (self.right_width, self.groups) = (right_width, groups);
+            (self.right_width, self.groups, self.badge_heights) = (right_width, groups, heights);
             self.rebuild_layout();
         }
 
@@ -2975,9 +2993,10 @@ impl App {
             self.ui.pop_clip();
             if let Some(place) = self.place_text(i) {
                 self.ui.push_clip(Rect::new(x, row.y, (row.x + row.w - 10.0 - x).max(0.0), row.h));
-                self.ui.text(x, row.y + row.h - 7.0 - small, &place, SMALL_SIZE, quiet, false);
+                self.ui.text(x, row.y + row.h.min(layout::LIST_ROW) - 7.0 - small, &place, SMALL_SIZE, quiet, false);
                 self.ui.pop_clip();
             }
+            self.paint_row_badges(i, row, x);
         }
         self.ui.pop_clip();
         if let Some((i, row)) = tip {
@@ -3139,6 +3158,10 @@ impl App {
         let show = &self.settings.status_bar;
         let mut pieces = Vec::new();
         let Some(entry) = self.focused().filter(|_| show.show) else { return pieces };
+        // The badges of the tab come first, with or without an agent.
+        if let Some(tab) = self.tabs.get(self.selected) {
+            pieces.extend(self.badges.chips(tab.uid).into_iter().map(Piece::Badge));
+        }
         // Where the pane is, as the settings choose it: the branch of its folder and the folder, the agent's own folder
         // first when it said one. With an agent they follow what it says; without one they are all there is.
         let place = |pieces: &mut Vec<Piece>| {
@@ -3218,6 +3241,11 @@ impl App {
             }
             Piece::Text(text) => {
                 self.ui.text(x, text_y, text, PIECE_SIZE, quiet, false);
+            }
+            Piece::Badge(chip) => {
+                let (size, h) = badges::BAR;
+                let w = badges::width(chip, |text| self.ui.measure(text, size, false));
+                self.paint_badge(chip, Rect::new(x, (bar - h) / 2.0, w, h), size);
             }
         }
     }

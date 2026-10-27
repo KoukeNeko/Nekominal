@@ -21,6 +21,9 @@ pub struct Glass {
     pub danger: Color,
     pub warning: Color,
     pub success: Color,
+    /// A merged pull request, and a port that listens.
+    pub magenta: Color,
+    pub cyan: Color,
 }
 
 /// ANSI palette slots of the scheme the chrome borrows from.
@@ -28,6 +31,8 @@ const ANSI_RED: usize = 1;
 const ANSI_GREEN: usize = 2;
 const ANSI_YELLOW: usize = 3;
 const ANSI_BLUE: usize = 4;
+const ANSI_MAGENTA: usize = 5;
+const ANSI_CYAN: usize = 6;
 
 fn with_alpha(color: Color, alpha: f32) -> Color {
     Color { a: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8, ..color }
@@ -43,6 +48,8 @@ impl Glass {
             danger: scheme.ansi[ANSI_RED],
             warning: scheme.ansi[ANSI_YELLOW],
             success: scheme.ansi[ANSI_GREEN],
+            magenta: scheme.ansi[ANSI_MAGENTA],
+            cyan: scheme.ansi[ANSI_CYAN],
         }
     }
 
