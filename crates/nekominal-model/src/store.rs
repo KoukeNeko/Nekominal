@@ -280,7 +280,7 @@ mod tests {
         let dir = temp_dir("temp-per-process");
         let path = dir.join("settings.json");
         // Another process in the middle of its save: its temp file is open and shares nothing.
-        let other = File::options().write(true).create(true).share_mode(0).open(dir.join("settings.json.4242.tmp")).unwrap();
+        let other = File::options().write(true).create(true).truncate(true).share_mode(0).open(dir.join("settings.json.4242.tmp")).unwrap();
         save(&path, "mine").unwrap();
         drop(other);
         assert_eq!(load(&path).unwrap().as_deref(), Some("mine"));
