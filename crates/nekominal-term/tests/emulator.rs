@@ -1197,6 +1197,19 @@ fn only_a_link_that_may_be_opened_is_a_link() {
 }
 
 #[test]
+fn a_printed_path_that_starts_with_a_dot_or_two_opens_from_the_folder_the_shell_reported() {
+    // `join` kept the dots, and the link checks refuse a name that is a dot, so these were never links.
+    let folder = concat!(env!("CARGO_MANIFEST_DIR"), "\\src");
+    let mut core = core(60, 3);
+    feed(&mut core, &format!("\x1b]7;file:///{}\x07.\\lib.rs ..\\Cargo.toml", folder.replace('\\', "/").replace(' ', "%20")));
+    let expected = |path: &str| std::fs::canonicalize(path).unwrap().to_str().unwrap().trim_start_matches(r"\\?\").to_owned();
+    let here = core.link_at(0, 2).expect("the file in the folder");
+    assert_eq!(here.target, expected(&format!("{folder}\\lib.rs")));
+    let above = core.link_at(0, 12).expect("the file one folder up");
+    assert_eq!(above.target, expected(concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml")));
+}
+
+#[test]
 fn a_url_in_the_text_is_a_link_without_the_punctuation_after_it() {
     let mut core = core(60, 3);
     feed(&mut core, "see https://example.com/path?q=1, and (http://a.b/c). end");

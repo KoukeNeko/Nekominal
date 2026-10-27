@@ -4991,6 +4991,9 @@ impl App {
                     Some(folder) if std::path::Path::new(path).is_relative() => std::path::Path::new(&folder).join(path),
                     _ => std::path::PathBuf::from(path),
                 };
+                // `.\x` and `..\x` keep their dots through `join`, and the link checks refuse a dot name. A path
+                // still relative (no folder known) is left alone: the app's own folder is not the shell's.
+                let whole = if whole.is_absolute() { std::path::absolute(&whole).unwrap_or(whole) } else { whole };
                 logic::file_uri(&whole.to_string_lossy())
             }
         };

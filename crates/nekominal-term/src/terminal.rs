@@ -1988,6 +1988,8 @@ impl TerminalCore {
                     Some(folder) => std::path::Path::new(folder).join(path),
                     None => return None,
                 };
+                // `.\x` and `..\x` keep their dots through `join`, and the link checks refuse a dot name.
+                let whole = std::path::absolute(&whole).unwrap_or(whole);
                 (found, links::openable(&links::file_uri(&whole.to_string_lossy()))?)
             }
         };
