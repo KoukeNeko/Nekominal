@@ -199,7 +199,7 @@ impl TerminalCore {
                 }
                 // Later chunks may carry only `m` and `q`.
                 let quiet = if command.quiet != 0 { command.quiet } else { first.quiet };
-                (Command { quiet, ..first }, buffer)
+                (Command { quiet, ..first }, std::borrow::Cow::Owned(buffer))
             }
             None if command.more && matches!(command.action, b't' | b'T' | b'q') => {
                 if data.len() <= MAX_TRANSFER {
@@ -207,7 +207,7 @@ impl TerminalCore {
                 }
                 return;
             }
-            None => (command, data.to_vec()),
+            None => (command, std::borrow::Cow::Borrowed(data)),
         };
         let mut id = command.id;
         let result = self.kitty_run(&command, &data, &mut id);
