@@ -142,4 +142,35 @@ mod tests {
         assert_eq!(effect(&yes, &triggers, &mut guard, now + Duration::from_millis(100)), Effect::Nothing, "too soon");
         assert_eq!(effect(&yes, &triggers, &mut guard, now + Duration::from_secs(3)), Effect::Send("y\r".into()));
     }
+
+    #[test]
+    fn all_rules_off_is_no_matcher_at_all() {
+        let mut off = triggers();
+        off.iter_mut().for_each(|rule| rule.enabled = false);
+        assert!(rules(&off).is_none(), "nothing to match costs nothing");
+    }
+
+    #[test]
+    fn a_rule_that_matches_what_it_sent_is_held_to_the_pane_limit() {
+        // The program echoes the answer and asks again at once, line after line, for a minute.
+        let (triggers, mut guard, now) = (triggers(), SendGuard::default(), Instant::now());
+        let yes = hit(1, r"\[y/N\]", &["[y/N]"]);
+        let sent = (0..600).filter(|k| effect(&yes, &triggers, &mut guard, now + Duration::from_millis(100 * k)) != Effect::Nothing).count();
+        assert_eq!(sent, nekominal_model::triggers::SEND_BURST);
+    }
+
+    #[test]
+    fn a_queued_hit_does_what_its_rule_does_now() {
+        let (mut triggers, mut guard, now) = (triggers(), SendGuard::default(), Instant::now());
+        let queued = hit(0, r"FAIL (\w+)", &["FAIL build", "build"]);
+        triggers[0].action = Action::Badge;
+        assert_eq!(effect(&queued, &triggers, &mut guard, now), Effect::Badge("fail".into()), "the pattern is the same: the rule as it is now");
+        // A hit is known by its rule's index and pattern: another rule of the same pattern that took the index acts.
+        triggers[0] = Trigger { name: "other".into(), pattern: r"FAIL (\w+)".into(), enabled: true, action: Action::Badge, program: None, instant: false };
+        assert_eq!(effect(&queued, &triggers, &mut guard, now), Effect::Badge("other".into()));
+        // A notification without the group it names says nothing there.
+        let notify = Trigger { action: Action::Notify { text: "[$2]".into() }, ..triggers[0].clone() };
+        triggers[0] = notify;
+        assert_eq!(effect(&queued, &triggers, &mut guard, now), Effect::Notify { title: "other".into(), body: "[]".into() });
+    }
 }
