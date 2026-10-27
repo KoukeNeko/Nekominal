@@ -717,10 +717,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         // Windows ends the process after a shutdown or a sign-out without destroying the windows: the session is written
         // here, once, by the first window told, as the last window closing would.
-        WM_ENDSESSION if wparam.0 != 0 => {
-            if !SESSION_ENDED.replace(true) {
-                with_app(hwnd, |app| app.save_session());
-            }
+        WM_ENDSESSION if wparam.0 != 0 && !SESSION_ENDED.replace(true) => {
+            with_app(hwnd, |app| app.save_session());
             LRESULT(0)
         }
         WM_DESTROY => {
