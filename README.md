@@ -56,6 +56,13 @@ allow. Large and multi-line pastes ask first.
 
 - **States you can see.** A tab at work spins, a tab that waits pulses, a failed one turns red. With the tabs in the sidebar,
   grouped by state: *waiting*, *working*, *done*, *other*. Ctrl+Shift+U goes to the next tab that waits.
+- **Three styles of sidebar.** *Activity* shows what each agent last said or the last command, with its context and cost;
+  *Agent cards* gives each tab a card with a preview, its model and its numbers; *By repository* puts the tabs under the
+  repository they are in, worktrees under their main folder, with what each repository cost.
+- **Pull requests and ports on the tabs.** A tab in a GitHub repository shows its PR and checks (passing, failing,
+  running, draft, merged), and every port its programs listen on. A click opens the PR or `localhost` (`gh` for the PR).
+- **Phone notifications.** What would raise a Windows notification can also go to an ntfy topic or any https webhook,
+  while you are away from the PC or always, for the events you pick.
 - **Claude Code in the title bar.** Nekominal hands Claude Code a status line of its own (only when you have none), and shows
   the model, the context meter, the cost and the time, with the branch and the folder.
 - **Codex, Gemini CLI and Aider too.** Typed in a PowerShell tab, each gets Nekominal as its hook for that run (never written
@@ -68,8 +75,12 @@ allow. Large and multi-line pastes ask first.
   repository (branch `fix/login` of `app` goes to `app-fix-login`) and opens a tab there named after the branch, so each
   agent has files of its own. The ignored files that a `.worktreeinclude` at the root names (one `.gitignore` pattern a
   line, such as `.env`) are copied into it, and the tab starts by running `.nekominal\setup.ps1` (or
-  `.nekominal\setup.cmd`) when the repository has one. "Remove this worktree" removes the worktree of the focused pane
-  and its branch if merged, and refuses for the main checkout or while it has changes not committed.
+  `.nekominal\setup.cmd`) when the repository has one. "Remove this worktree" shows what would be lost (changed files,
+  commits not pushed, whether it is merged) and lets you keep or delete the branch; it never forces, and never touches the
+  main checkout.
+- **Automation.** `nekominal cli` (`list`, `send-text`, `get-text`, `new-tab`, `split`, `focus`, `close`, `notify`,
+  `subscribe`) drives the running terminal over a named pipe only you can open, so scripts and agents can open panes and
+  read them.
 
 ### Commands and their output
 
@@ -84,6 +95,10 @@ allow. Large and multi-line pastes ask first.
 - **Keyboard selection (Ctrl+Shift+M)**, block selection with Alt+drag, copy with formatting (HTML), export of a whole pane
   to a file, find with case and regular expressions.
 - **Suggestions (Ctrl+Shift+H)** from your snippets and from PowerShell's history.
+- **Triggers.** Rules that watch the output: when a line matches, highlight it, notify, mark the tab, ring, or send a reply
+  (off until you allow it). Each rule is edited with a live match against the last lines of the current tab.
+- **Paste an image, drop files.** A pasted screenshot is saved and its path typed, so an agent can read it; files copied in
+  Explorer or dropped on a pane type their paths, in WSL form in a WSL tab.
 
 ### Tabs, panes and windows
 
@@ -127,6 +142,8 @@ allow. Large and multi-line pastes ask first.
 | Agent state on every tab          |    ✅     |        —         |    —    |
 | Claude Code status in the window  |    ✅     |        —         |    —    |
 | Tabs grouped by state             |    ✅     |        —         |    —    |
+| Pull requests and ports on tabs   |    ✅     |        —         |    —    |
+| Command-line control of a window  |    ✅     |        ⚠️        |   ✅    |
 | Select a command's output         |    ✅     |        ✅        |   ✅    |
 | Hints / quick select              |    ✅     |        —         |   ✅    |
 | Fresh environment for a new tab   |    ✅     |        ✅        |    —    |
@@ -137,7 +154,8 @@ allow. Large and multi-line pastes ask first.
 | Default terminal of Windows       |    —      |        ✅        |    —    |
 | macOS and Linux                   |    —      |        —         |   ✅    |
 
-⚠️ partly: Windows Terminal has Sixel but not the kitty protocol; WezTerm's installer adds an Explorer entry but no jump list.
+⚠️ partly: Windows Terminal has Sixel but not the kitty protocol, and `wt` opens tabs and panes but cannot read or type
+into them; WezTerm's installer adds an Explorer entry but no jump list.
 
 ## Getting started
 
@@ -157,8 +175,9 @@ allow. Large and multi-line pastes ask first.
 3. **Run an agent.** Type `claude` in a PowerShell tab. Its state shows on the tab, and the model, context and cost in the
    title bar.
 
-4. **Make it yours.** Ctrl+Shift+O opens the settings: profiles, schemes, fonts, shortcuts. Everything is also in
-   `%APPDATA%\Nekominal\settings.json`, which the settings open for you.
+4. **Make it yours.** Ctrl+Shift+O opens the settings in a tab: profiles, schemes, fonts, shortcuts, triggers, phone
+   notifications, the style of the sidebar. Everything is also in `%APPDATA%\Nekominal\settings.json`, which the settings
+   open for you.
 
 5. **Start it from anywhere.** Right-click a folder in Explorer, pick a profile from the taskbar button, or script it:
 

@@ -53,6 +53,13 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 
 - **看得見的狀態。** 工作中的分頁會轉圈、等你的分頁會閃動、失敗的會變紅。把分頁放在側邊欄並依狀態分組：
   **等待回應**、**工作中**、**已完成**、**其他**。Ctrl+Shift+U 跳到下一個等你的分頁。
+- **三種側邊欄樣式。** **活動清單** 顯示每個 agent 最後一句話或最後一個指令，以及 context 用量與費用；**Agent 卡片**
+  讓每個分頁有一張卡，含輸出預覽、模型與數字；**依專案分組** 把分頁收在所屬的儲存庫下，工作樹縮排在主資料夾下，並顯示
+  每個儲存庫的費用。
+- **分頁上的 PR 與連接埠。** 位於 GitHub 儲存庫的分頁會顯示它的 PR 與檢查狀態（通過、失敗、執行中、草稿、已合併），
+  以及程式正在監聽的連接埠。點一下即可開啟 PR 或 `localhost`（PR 需要 `gh`）。
+- **手機通知。** 原本會跳出 Windows 通知的事件，也可以在你不在電腦前（或一律）時傳到 ntfy 主題或任何 https webhook，
+  可以選擇要傳哪些事件。
 - **標題列上的 Claude Code。** 在你沒有自己的 status line 時，Nekominal 會交給 Claude Code 一個自己的 status line，
   並顯示模型、context 用量、費用與時間，還有分支與資料夾。
 - **Codex、Gemini CLI 與 Aider 也一樣。** 在 PowerShell 分頁輸入它們時，Nekominal 只在這次執行交給它們自己的 hook
@@ -64,8 +71,10 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - **在新的 git 工作樹開啟分頁。** 從命令選擇區輸入分支名稱，Nekominal 會在儲存庫旁邊執行 `git worktree add`
   （`app` 的分支 `fix/login` 放在 `app-fix-login`），並在那裡開一個以分支命名的分頁，讓每個 agent 各有自己的檔案。
   根目錄的 `.worktreeinclude`（每行一個 `.gitignore` 樣式，例如 `.env`）列出的被忽略檔案會複製過去；儲存庫有
-  `.nekominal\setup.ps1`（或 `.nekominal\setup.cmd`）時，分頁會先執行它。「移除這個 git 工作樹」會移除目前窗格的工作樹，
-  分支已合併就一併刪除；主要簽出或還有未提交的變更時會拒絕。
+  `.nekominal\setup.ps1`（或 `.nekominal\setup.cmd`）時，分頁會先執行它。「移除這個 git 工作樹」會列出會遺失的東西
+  （變更的檔案、未推送的提交、是否已合併），讓你選擇保留或刪除分支；絕不強制，也不會動到主要簽出。
+- **自動化。** `nekominal cli`（`list`、`send-text`、`get-text`、`new-tab`、`split`、`focus`、`close`、`notify`、
+  `subscribe`）透過只有你能開啟的 named pipe 操作執行中的終端機，讓腳本和 agent 能開窗格、讀取內容。
 
 ### 指令與它們的輸出
 
@@ -79,6 +88,10 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - **搜尋所有分頁（Ctrl+Shift+G）** 列出每個窗格中符合的結果與所在分頁的標題，按 Enter 就跳過去。
 - **鍵盤選取（Ctrl+Shift+M）**、Alt+拖曳區塊選取、含格式複製（HTML）、把整個窗格匯出成檔案、支援大小寫與規則運算式的搜尋。
 - **建議（Ctrl+Shift+H）**，來自你的片段與 PowerShell 的歷史紀錄。
+- **觸發規則。** 監看輸出的規則：某行符合時可以標示、通知、標記分頁、響鈴，或回覆文字（需要你允許才會開啟）。
+  每條規則編輯時都會即時比對目前分頁的最後幾行。
+- **貼上圖片、拖入檔案。** 貼上截圖會先存檔再輸入路徑，讓 agent 能讀取；在檔案總管複製或拖到窗格上的檔案會輸入路徑，
+  WSL 分頁則使用 WSL 格式。
 
 ### 分頁、窗格與視窗
 
@@ -119,6 +132,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | 每個分頁的 agent 狀態              |    ✅     |        —         |    —    |
 | 視窗中的 Claude Code 狀態          |    ✅     |        —         |    —    |
 | 依狀態分組分頁                     |    ✅     |        —         |    —    |
+| 分頁上的 PR 與連接埠               |    ✅     |        —         |    —    |
+| 以命令列操作視窗                   |    ✅     |        ⚠️        |   ✅    |
 | 選取指令輸出                       |    ✅     |        ✅        |   ✅    |
 | 提示選取／quick select             |    ✅     |        —         |   ✅    |
 | 新分頁使用全新的環境變數           |    ✅     |        ✅        |    —    |
@@ -129,7 +144,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 | Windows 預設終端機                 |    —      |        ✅        |    —    |
 | macOS 與 Linux                     |    —      |        —         |   ✅    |
 
-⚠️ 部分支援：Windows Terminal 支援 Sixel 但不支援 kitty 協定；WezTerm 的安裝程式會加入檔案總管選單，但沒有捷徑清單。
+⚠️ 部分支援：Windows Terminal 支援 Sixel 但不支援 kitty 協定，`wt` 能開分頁與窗格但不能讀取或輸入內容；WezTerm 的
+安裝程式會加入檔案總管選單，但沒有捷徑清單。
 
 ## 開始使用
 
@@ -147,8 +163,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 
 3. **執行 agent。** 在 PowerShell 分頁輸入 `claude`。它的狀態會顯示在分頁上，模型、context 與費用則顯示在標題列。
 
-4. **調成你要的樣子。** Ctrl+Shift+O 開啟設定：設定檔、配色、字型、快速鍵。所有設定也都在
-   `%APPDATA%\Nekominal\settings.json`，設定視窗可以直接幫你開啟它。
+4. **調成你要的樣子。** Ctrl+Shift+O 在分頁中開啟設定：設定檔、配色、字型、快速鍵、觸發規則、手機通知、側邊欄樣式。
+   所有設定也都在 `%APPDATA%\Nekominal\settings.json`，設定頁可以直接幫你開啟它。
 
 5. **從任何地方啟動。** 在檔案總管對資料夾按右鍵、從工作列按鈕選設定檔，或寫成指令：
 
