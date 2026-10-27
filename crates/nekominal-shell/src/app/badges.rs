@@ -156,14 +156,15 @@ fn set<T: PartialEq + std::fmt::Debug>(map: &mut HashMap<u64, T>, uid: u64, valu
 
 impl App {
     /// Reads the badges of every tab again; true when one changed.
-    pub(super) fn refresh_badges(&mut self) -> bool {
+    /// `processes` is the look at the processes of the system the tick took, which finds what a Store shell starts.
+    pub(super) fn refresh_badges(&mut self, processes: &[(u32, u32, String)]) -> bool {
         let (badges, now) = (&mut self.badges, Instant::now());
         let listeners = ports::listeners();
         badges.prs.collect();
         let mut changed = false;
         let mut keys = Vec::new();
         for tab in &self.tabs {
-            let pids: Vec<u32> = tab.panes.iter().flat_map(|entry| entry.pane.job_process_ids()).collect();
+            let pids: Vec<u32> = tab.panes.iter().flat_map(|entry| nekominal_pty::conpty::with_descendants(entry.pane.job_process_ids(), processes)).collect();
             let found = ports::ports_of(&listeners, &pids);
             changed |= set(&mut badges.ports, tab.uid, (!found.is_empty()).then_some(found), "ports");
             // The repository `refresh_usage` found this tick (git_branch reads only local disks: gh never runs for a share).

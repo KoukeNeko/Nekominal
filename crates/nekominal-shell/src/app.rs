@@ -1878,7 +1878,7 @@ impl App {
             }
         }
         changed |= self.refresh_usage();
-        changed |= self.refresh_badges();
+        changed |= self.refresh_badges(&processes);
         if changed {
             self.redraw();
         }

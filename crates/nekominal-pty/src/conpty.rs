@@ -424,9 +424,9 @@ impl Pty {
 
     /// `job` from a list of the processes of the system (`process_names`) taken once for every session looked at
     /// together: a snapshot of the system per session would be the dear part.
-    pub fn job_with(&self, names: &[(u32, String)]) -> Option<Job> {
-        let name_of = |pid: u32| names.iter().find(|(id, _)| *id == pid).map(|(_, name)| name.clone());
-        let pids = self.job_process_ids();
+    pub fn job_with(&self, names: &[(u32, u32, String)]) -> Option<Job> {
+        let name_of = |pid: u32| names.iter().find(|(id, _, _)| *id == pid).map(|(_, _, name)| name.clone());
+        let pids = with_descendants(self.job_process_ids(), names);
         // The child is in its job while it lives: an empty list is a query that failed, not a shell alone at its prompt.
         if pids.is_empty() {
             return None;
@@ -828,6 +828,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn what_a_shell_starts_outside_its_job_is_found_by_its_parents() {
+        // Ids no process has: their start times read as 0 alike, so only the tree decides.
+        let p = |pid: u32, ppid: u32| (pid, ppid, format!("p{pid}"));
+        let system = [p(4_000_001, 1), p(4_000_002, 4_000_001), p(4_000_003, 4_000_002), p(4_000_004, 9), p(4_000_005, 4_000_005)];
+        let mut found = with_descendants(vec![4_000_001], &system);
+        found.sort_unstable();
+        assert_eq!(found, [4_000_001, 4_000_002, 4_000_003], "children and grandchildren, not a stranger");
+        assert!(with_descendants(Vec::new(), &system).is_empty(), "a job that could not be read stays unread");
+        let cycle = [p(4_000_011, 4_000_012), p(4_000_012, 4_000_011)];
+        assert_eq!(with_descendants(vec![4_000_011], &cycle).len(), 2, "a loop of parents ends");
+    }
+
+    #[test]
     fn plain_arguments_are_not_quoted() {
         assert_eq!(quote_argument("-NoLogo"), "-NoLogo");
     }
@@ -1041,8 +1054,9 @@ mod tests {
     }
 }
 
-/// The name of the program of every process of the system, with its id. None when the system cannot be read.
-pub fn process_names() -> Option<Vec<(u32, String)>> {
+/// Every process of the system: its id, the id of the process that started it, and the name of its program. None when
+/// the system cannot be read.
+pub fn process_names() -> Option<Vec<(u32, u32, String)>> {
     // SAFETY: the snapshot is owned and closed by `Handle`; the entry is initialised with its size as the calls ask.
     unsafe {
         let snapshot = Handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
@@ -1055,11 +1069,33 @@ pub fn process_names() -> Option<Vec<(u32, String)>> {
         let mut more = Process32FirstW(snapshot.0, &mut entry);
         while more != 0 {
             let len = entry.szExeFile.iter().position(|&unit| unit == 0).unwrap_or(entry.szExeFile.len());
-            names.push((entry.th32ProcessID, String::from_utf16_lossy(&entry.szExeFile[..len])));
+            names.push((entry.th32ProcessID, entry.th32ParentProcessID, String::from_utf16_lossy(&entry.szExeFile[..len])));
             more = Process32NextW(snapshot.0, &mut entry);
         }
         Some(names)
     }
+}
+
+/// `pids` and every process started under them, from the processes of the system (`process_names`). A shell installed
+/// from the Store is a packaged app, and what it starts runs outside the job of the session: only by its parents is it
+/// found. A child counts only when it started after its parent, so that a parent's id taken again by a later process
+/// brings in nothing.
+pub fn with_descendants(mut pids: Vec<u32>, processes: &[(u32, u32, String)]) -> Vec<u32> {
+    if pids.is_empty() {
+        return pids;
+    }
+    let mut at = 0;
+    while at < pids.len() {
+        let parent = pids[at];
+        let born = start_time(parent);
+        for (pid, _, _) in processes.iter().filter(|(pid, ppid, _)| *ppid == parent && *pid != parent) {
+            if !pids.contains(pid) && start_time(*pid) >= born {
+                pids.push(*pid);
+            }
+        }
+        at += 1;
+    }
+    pids
 }
 
 /// A program a session runs: its file name, and its whole path when the process lets it be read (the icon comes from it).
