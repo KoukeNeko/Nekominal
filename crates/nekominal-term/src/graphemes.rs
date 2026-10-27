@@ -23,9 +23,43 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 pub struct Clusters<'a, T> {
     pub term: &'a mut Term<T>,
     pub cluster: &'a mut String,
+    /// Where text was written or erased, while there are pictures text can erase (Sixels) or clear (`ED 2`).
+    pub touched: Option<&'a mut Touched>,
+}
+
+/// The cells a stretch of output wrote or erased.
+#[derive(Default)]
+pub struct Touched {
+    /// Row (the history size plus the grid line at the time, which later scrolling does not change: a `LineId::index`
+    /// less the lines trimmed) and columns `start..end`.
+    pub cells: Vec<(i64, usize, usize)>,
+    /// Rows `ED 2` blanked (counted the same way): every picture on them goes, not only Sixels.
+    pub cleared: Vec<i64>,
 }
 
 impl<T: EventListener> Clusters<'_, T> {
+    /// Records that columns `start..end` of grid line `line` were written.
+    fn touch(&mut self, line: i32, start: usize, end: usize) {
+        let row = self.term.history_size() as i64 + i64::from(line);
+        let Some(touched) = self.touched.as_deref_mut() else { return };
+        match touched.cells.last_mut() {
+            Some(last) if last.0 == row && last.2 == start => last.2 = end,
+            _ => touched.cells.push((row, start, end)),
+        }
+    }
+
+    /// Records whole rows from grid line `from` to the bottom of the screen.
+    fn touch_below(&mut self, from: i32) {
+        for line in from..self.term.screen_lines() as i32 {
+            self.touch(line, 0, usize::MAX);
+        }
+    }
+
+    fn cursor(&self) -> (i32, usize) {
+        let point = self.term.grid().cursor.point;
+        (point.line.0, point.column.0)
+    }
+
     /// Adds `c` to the cell the cluster is in, widening it when the cluster became wide. False when that cell is
     /// not there any more (the program moved or wrote elsewhere in between).
     fn join(&mut self, c: char, joined: &str) -> bool {
@@ -102,7 +136,89 @@ impl<T: EventListener> Handler for Clusters<'_, T> {
         if c.width().is_some_and(|w| w > 0) {
             self.cluster.push(c);
         }
+        if self.touched.is_some() {
+            let (mut line, mut column) = self.cursor();
+            if self.term.grid().cursor.input_needs_wrap {
+                (line, column) = (line + 1, 0);
+            }
+            self.touch(line, column, column + c.width().unwrap_or(1).max(1));
+        }
         self.term.input(c);
+    }
+
+    fn erase_chars(&mut self, count: usize) {
+        let (line, column) = self.cursor();
+        self.touch(line, column, column.saturating_add(count));
+        self.cluster.clear();
+        self.term.erase_chars(count);
+    }
+
+    fn delete_chars(&mut self, count: usize) {
+        let (line, column) = self.cursor();
+        self.touch(line, column, usize::MAX);
+        self.cluster.clear();
+        self.term.delete_chars(count);
+    }
+
+    fn insert_blank(&mut self, count: usize) {
+        let (line, column) = self.cursor();
+        self.touch(line, column, usize::MAX);
+        self.cluster.clear();
+        self.term.insert_blank(count);
+    }
+
+    fn clear_line(&mut self, mode: LineClearMode) {
+        let (line, column) = self.cursor();
+        match mode {
+            LineClearMode::Right => self.touch(line, column, usize::MAX),
+            LineClearMode::Left => self.touch(line, 0, column + 1),
+            LineClearMode::All => self.touch(line, 0, usize::MAX),
+        }
+        self.cluster.clear();
+        self.term.clear_line(mode);
+    }
+
+    /// `ED 2` on the primary screen moves the screen into the scrollback down to its last text, pictures with it, and
+    /// blanks the rows under that in place; the alternate screen is blanked whole.
+    fn clear_screen(&mut self, mode: ClearMode) {
+        let (line, column) = self.cursor();
+        if matches!(mode, ClearMode::All) {
+            let history = self.term.history_size() as i64;
+            self.cluster.clear();
+            self.term.clear_screen(mode);
+            let scrolled = self.term.history_size() as i64 - history;
+            if let Some(touched) = self.touched.as_deref_mut() {
+                touched.cleared.extend((scrolled..self.term.screen_lines() as i64).map(|line| history + line));
+            }
+            return;
+        }
+        match mode {
+            ClearMode::Below => {
+                self.touch(line, column, usize::MAX);
+                self.touch_below(line + 1);
+            }
+            ClearMode::Above => {
+                for above in 0..line {
+                    self.touch(above, 0, usize::MAX);
+                }
+                self.touch(line, 0, column + 1);
+            }
+            _ => {}
+        }
+        self.cluster.clear();
+        self.term.clear_screen(mode);
+    }
+
+    fn delete_lines(&mut self, count: usize) {
+        self.touch_below(self.cursor().0);
+        self.cluster.clear();
+        self.term.delete_lines(count);
+    }
+
+    fn insert_blank_lines(&mut self, count: usize) {
+        self.touch_below(self.cursor().0);
+        self.cluster.clear();
+        self.term.insert_blank_lines(count);
     }
 
     forward! {
@@ -112,7 +228,6 @@ impl<T: EventListener> Handler for Clusters<'_, T> {
         goto(a: i32, b: usize);
         goto_line(a: i32);
         goto_col(a: usize);
-        insert_blank(a: usize);
         move_up(a: usize);
         move_down(a: usize);
         identify_terminal(a: Option<char>);
@@ -131,16 +246,10 @@ impl<T: EventListener> Handler for Clusters<'_, T> {
         set_horizontal_tabstop();
         scroll_up(a: usize);
         scroll_down(a: usize);
-        insert_blank_lines(a: usize);
-        delete_lines(a: usize);
-        erase_chars(a: usize);
-        delete_chars(a: usize);
         move_backward_tabs(a: u16);
         move_forward_tabs(a: u16);
         save_cursor_position();
         restore_cursor_position();
-        clear_line(a: LineClearMode);
-        clear_screen(a: ClearMode);
         clear_tabs(a: TabulationClearMode);
         set_tabs(a: u16);
         reset_state();

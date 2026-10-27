@@ -9,19 +9,35 @@
 //!   ordering against the emulator (queries that need a reply, OSC 133 marks). The caller feeds the
 //!   emulator the same prefix, collects its replies, then the sniffer's, and continues. That keeps
 //!   replies in stream order (e.g. `CSI ? u` answered before the `CSI c` that follows it).
+//! * A Sixel string is decoded while it streams through `put` (`sixel`). APC strings, which vte reads and drops,
+//!   are cut out of the stream beside it (`Apc`): the kitty graphics protocol travels in them.
 
 use alacritty_terminal::vte::{Params, Parser, Perform};
+use memchr::{memchr, memchr3};
 
 use crate::agent_status::{parse_report, Report, MAX_SEQUENCE_LENGTH};
+use crate::kitty::MAX_TRANSFER;
 use crate::osc::{
     parse_osc133, parse_osc7, parse_osc777, parse_osc9, strip_control, Notification, Osc9,
     Progress, PromptMark,
 };
+use crate::sixel::{default_palette, SixelDecoder, SixelImage};
 
+/// A graphics feature a program asked for that the terminal answers with an error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsupported {
-    /// `DCS ... q` (sixel). The emulator swallows the whole string; nothing is drawn.
-    Sixel,
+    /// kitty graphics animation (`a=f`, `a=a`, `a=c`).
+    KittyAnimation,
+    /// kitty graphics Unicode placeholders (`U=1`).
+    KittyPlaceholder,
+}
+
+/// A Sixel mode alacritty_terminal does not know: DECSET 80 (DECSDM, Sixel display mode: pictures go to the top left
+/// and nothing scrolls) and 8452 (the cursor ends right of a picture instead of below it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SixelMode {
+    Display,
+    CursorRight,
 }
 
 /// A mouse reporting mode alacritty_terminal ignores: DECSET 9 (X10 reporting), 1015 (urxvt encoding) and
@@ -81,7 +97,16 @@ pub enum Sniffed {
     SoftReset,
     /// `CSI 3 J`: the scrollback is cleared.
     ClearScrollback,
-    Unsupported(Unsupported),
+    /// A Sixel picture (`DCS P1 ; P2 ; P3 q ... ST`), decoded; it goes at the cursor.
+    Sixel(SixelImage),
+    /// `CSI ? 80|8452 h/l`.
+    SixelMode(SixelMode, bool),
+    /// An APC string that starts with `G`: a kitty graphics command, without the `G`.
+    KittyGraphics(Vec<u8>),
+    /// `CSI ? Pi ; Pa ; Pv S` (XTSMGRAPHICS): a query of the colour registers (`Pi` 1) or the Sixel geometry (2).
+    GraphicsAttributes { item: u16, action: u16 },
+    /// `CSI 16 t`: the size of a cell in pixels.
+    CellSizeQuery,
 }
 
 impl Sniffed {
@@ -97,6 +122,10 @@ impl Sniffed {
                 | Sniffed::XtgettcapQuery
                 | Sniffed::MouseModeQuery(_)
                 | Sniffed::SoftReset
+                | Sniffed::Sixel(_)
+                | Sniffed::KittyGraphics(_)
+                | Sniffed::GraphicsAttributes { .. }
+                | Sniffed::CellSizeQuery
         )
     }
 }
@@ -105,6 +134,11 @@ impl Sniffed {
 struct Collector {
     events: Vec<Sniffed>,
     stop: bool,
+    /// The Sixel string being read.
+    sixel: Option<SixelDecoder>,
+    /// DECRST 1070: the colour registers are shared, and a picture starts with the ones the last one left.
+    shared_registers: bool,
+    shared_palette: Option<Vec<[u8; 4]>>,
 }
 
 impl Collector {
@@ -201,9 +235,23 @@ impl Perform for Collector {
                         self.push(Sniffed::MouseExtension(extension, on));
                     } else if matches!(mode, 1000 | 1002 | 1003) {
                         self.push(Sniffed::MouseTracking);
+                    } else if mode == 80 {
+                        self.push(Sniffed::SixelMode(SixelMode::Display, on));
+                    } else if mode == 8452 {
+                        self.push(Sniffed::SixelMode(SixelMode::CursorRight, on));
+                    } else if mode == 1070 {
+                        // Set: every picture has registers of its own (xterm's default).
+                        self.shared_registers = !on;
+                        self.shared_palette = None;
                     }
                 }
             }
+            ('S', [b'?']) => {
+                let mut values = params.iter().map(|p| p.first().copied().unwrap_or(0));
+                let (item, action) = (values.next().unwrap_or(0), values.next().unwrap_or(0));
+                self.push(Sniffed::GraphicsAttributes { item, action });
+            }
+            ('t', []) if first_param(params) == Some(16) => self.push(Sniffed::CellSizeQuery),
             // DECRQM for a mouse mode alacritty_terminal does not know.
             ('p', [b'?', b'$']) => {
                 if let Some(extension) = first_param(params).and_then(MouseExtension::from_mode) {
@@ -222,19 +270,41 @@ impl Perform for Collector {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
         if !ignore && intermediates.is_empty() && byte == b'c' {
+            self.shared_registers = false;
+            self.shared_palette = None;
             self.push(Sniffed::FullReset);
         }
     }
 
-    fn hook(&mut self, _params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+    fn hook(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
         if ignore {
             return;
         }
         match (intermediates, action) {
-            ([], 'q') => self.push(Sniffed::Unsupported(Unsupported::Sixel)),
+            ([], 'q') => {
+                let p2 = params.iter().nth(1).and_then(|p| p.first().copied()).unwrap_or(0);
+                let palette = self.shared_palette.take().filter(|_| self.shared_registers).unwrap_or_else(default_palette);
+                self.sixel = Some(SixelDecoder::new(p2, palette));
+            }
             ([b'$'], 'q') => self.push(Sniffed::DecrqssQuery),
             ([b'+'], 'q') => self.push(Sniffed::XtgettcapQuery),
             _ => {}
+        }
+    }
+
+    fn put(&mut self, byte: u8) {
+        if let Some(decoder) = &mut self.sixel {
+            decoder.put(byte);
+        }
+    }
+
+    fn unhook(&mut self) {
+        let Some(decoder) = self.sixel.take() else { return };
+        if self.shared_registers {
+            self.shared_palette = Some(decoder.palette().to_vec());
+        }
+        if let Some(image) = decoder.finish() {
+            self.push(Sniffed::Sixel(image));
         }
     }
 
@@ -243,9 +313,95 @@ impl Perform for Collector {
     }
 }
 
+const ESC: u8 = 0x1b;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApcState {
+    Ground,
+    Escape,
+    String,
+}
+
+/// Finds APC strings (`ESC _ ... ESC \`) the way vte does: ESC starts an escape anywhere, `_` after it opens the string,
+/// and the next ESC (the ST), CAN or SUB ends it. vte has no callback for them, so their bytes are collected here.
+struct Apc {
+    state: ApcState,
+    payload: Vec<u8>,
+    /// The string is a kitty graphics command (it starts with `G`) that is still under `MAX_TRANSFER`.
+    keep: bool,
+}
+
+impl Apc {
+    /// Runs the state machine over `bytes` until an APC string ends: returns the index just past the byte that ended it
+    /// and whether it was ESC (a string that CAN or SUB cut short is dropped), or None when none ended. `collect` gets
+    /// the bytes of the open string.
+    fn scan(state: &mut ApcState, bytes: &[u8], mut collect: impl FnMut(&[u8])) -> Option<(usize, bool)> {
+        let mut i = 0;
+        while i < bytes.len() {
+            match *state {
+                ApcState::Ground => {
+                    i += memchr(ESC, &bytes[i..])? + 1;
+                    *state = ApcState::Escape;
+                }
+                ApcState::Escape => {
+                    *state = match bytes[i] {
+                        b'_' => ApcState::String,
+                        ESC => ApcState::Escape,
+                        _ => ApcState::Ground,
+                    };
+                    i += 1;
+                }
+                ApcState::String => {
+                    let rest = &bytes[i..];
+                    let Some(at) = memchr3(ESC, 0x18, 0x1a, rest) else {
+                        collect(rest);
+                        return None;
+                    };
+                    collect(&rest[..at]);
+                    let complete = rest[at] == ESC;
+                    *state = if complete { ApcState::Escape } else { ApcState::Ground };
+                    return Some((i + at + 1, complete));
+                }
+            }
+        }
+        None
+    }
+
+    /// Where the next APC string in `bytes` ends (see `scan`), without moving.
+    fn end_in(&self, bytes: &[u8]) -> Option<usize> {
+        let mut state = self.state;
+        Self::scan(&mut state, bytes, |_| {}).map(|(end, _)| end)
+    }
+
+    /// Moves over `bytes`, which end no later than the first APC string that ends in them; returns the kitty command
+    /// that string carried, if it ended there.
+    fn advance(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        // Outside a string the payload is empty and `keep` set: a string that ends resets both.
+        let Self { state, payload, keep } = self;
+        let (_, complete) = Self::scan(state, bytes, |chunk| {
+            if payload.is_empty() && chunk.first().is_some_and(|byte| *byte != b'G') {
+                *keep = false;
+            }
+            if *keep && payload.len() + chunk.len() <= MAX_TRANSFER + 1 {
+                payload.extend_from_slice(chunk);
+            } else {
+                *keep = false;
+                payload.clear();
+            }
+        })?;
+        let mut command = std::mem::take(payload);
+        let kept = std::mem::replace(keep, true);
+        (complete && kept && command.first() == Some(&b'G')).then(|| {
+            command.remove(0);
+            command
+        })
+    }
+}
+
 pub struct Sniffer {
     parser: Parser,
     collector: Collector,
+    apc: Apc,
 }
 
 impl Default for Sniffer {
@@ -256,14 +412,24 @@ impl Default for Sniffer {
 
 impl Sniffer {
     pub fn new() -> Self {
-        Self { parser: Parser::new(), collector: Collector::default() }
+        Self {
+            parser: Parser::new(),
+            collector: Collector::default(),
+            apc: Apc { state: ApcState::Ground, payload: Vec::new(), keep: true },
+        }
     }
 
     /// Parses `bytes` until the end or until just after a sequence that needs ordering against the
     /// emulator. Returns the number of bytes consumed; call again with the remainder.
     pub fn advance(&mut self, bytes: &[u8]) -> usize {
         self.collector.stop = false;
-        self.parser.advance_until_terminated(&mut self.collector, bytes)
+        // An APC string that ends in `bytes` ends the segment, so the command it carries comes in stream order.
+        let end = self.apc.end_in(bytes).unwrap_or(bytes.len());
+        let consumed = self.parser.advance_until_terminated(&mut self.collector, &bytes[..end]);
+        if let Some(command) = self.apc.advance(&bytes[..consumed]) {
+            self.collector.push(Sniffed::KittyGraphics(command));
+        }
+        consumed
     }
 
     /// Takes the events produced since the last call.
@@ -363,9 +529,63 @@ mod tests {
         assert!(sniff(b"\x1b[>1q").is_empty());
         assert_eq!(sniff(b"\x1bP$qm\x1b\\"), vec![Sniffed::DecrqssQuery]);
         assert_eq!(sniff(b"\x1bP+q544e\x1b\\"), vec![Sniffed::XtgettcapQuery]);
-        assert_eq!(sniff(b"\x1bP0;0;0q\"1;1;4;4#0;2;0;0;0~-\x1b\\"), vec![Sniffed::Unsupported(Unsupported::Sixel)]);
+        let events = sniff(b"\x1bP0;0;0q\"1;1;4;4#0;2;0;0;0~-\x1b\\");
+        let [Sniffed::Sixel(image)] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!((image.width, image.height, image.transparent_background), (4, 6, false));
         assert_eq!(sniff(b"\x1b[?996n"), vec![Sniffed::ColorSchemeQuery]);
         assert!(sniff(b"\x1b[?6n").is_empty());
+    }
+
+    #[test]
+    fn graphics_queries_and_sixel_modes() {
+        assert_eq!(sniff(b"\x1b[?1;1;0S"), vec![Sniffed::GraphicsAttributes { item: 1, action: 1 }]);
+        assert_eq!(sniff(b"\x1b[?2;4S"), vec![Sniffed::GraphicsAttributes { item: 2, action: 4 }]);
+        assert!(sniff(b"\x1b[2S").is_empty(), "scroll up is the emulator's");
+        assert_eq!(sniff(b"\x1b[16t"), vec![Sniffed::CellSizeQuery]);
+        assert!(sniff(b"\x1b[14t\x1b[18t").is_empty(), "alacritty answers those");
+        assert_eq!(
+            sniff(b"\x1b[?80;8452h\x1b[?80l"),
+            vec![
+                Sniffed::SixelMode(SixelMode::Display, true),
+                Sniffed::SixelMode(SixelMode::CursorRight, true),
+                Sniffed::SixelMode(SixelMode::Display, false)
+            ]
+        );
+    }
+
+    #[test]
+    fn shared_colour_registers_carry_over_to_the_next_picture_only_after_decrst_1070() {
+        let red_then_reuse = |mode: &[u8]| {
+            let mut stream = mode.to_vec();
+            stream.extend_from_slice(b"\x1bP;1q#3;2;100;0;0#3@\x1b\\\x1bP;1q#3@\x1b\\");
+            sniff(&stream)
+                .into_iter()
+                .filter_map(|event| if let Sniffed::Sixel(image) = event { Some(image.pixels[..4].to_vec()) } else { None })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(red_then_reuse(b"\x1b[?1070l")[1], [255, 0, 0, 255]);
+        assert_ne!(red_then_reuse(b"")[1], [255, 0, 0, 255], "private registers start from the VT340 colours");
+    }
+
+    #[test]
+    fn kitty_commands_are_cut_out_of_apc_strings_and_other_apc_strings_are_dropped() {
+        assert_eq!(sniff(b"a\x1b_Ga=q,i=1;AAAA\x1b\\b"), vec![Sniffed::KittyGraphics(b"a=q,i=1;AAAA".to_vec())]);
+        assert!(sniff(b"\x1b_Xsomething else\x1b\\").is_empty());
+        assert!(sniff(b"\x1b_Ga=q\x18").is_empty(), "CAN cuts the string short");
+        assert!(sniff(b"\x1b]2;title\x1b_\x1b\\").is_empty(), "an empty APC after an OSC ends it");
+        let mut sniffer = Sniffer::new();
+        let data = b"x\x1b_Gi=3\x1b\\yz";
+        let consumed = sniffer.advance(data);
+        assert_eq!(&data[..consumed], b"x\x1b_Gi=3\x1b", "the segment ends with the string, at its ST");
+        assert_eq!(sniffer.drain(), vec![Sniffed::KittyGraphics(b"i=3".to_vec())]);
+    }
+
+    #[test]
+    fn an_apc_string_over_the_transfer_limit_is_dropped_and_the_next_one_works() {
+        let mut stream = b"\x1b_Gi=1;".to_vec();
+        stream.extend(std::iter::repeat_n(b'A', MAX_TRANSFER + 8));
+        stream.extend_from_slice(b"\x1b\\\x1b_Gi=2\x1b\\");
+        assert_eq!(sniff(&stream), vec![Sniffed::KittyGraphics(b"i=2".to_vec())]);
     }
 
     #[test]
@@ -442,8 +662,9 @@ mod tests {
         stream.extend_from_slice("\x1b]9;你好,通知\x07".as_bytes());
         stream.extend_from_slice(b"\x1b]133;D;0\x07\x1b]7501;?\x07");
         stream.extend_from_slice(b"\x1b[?9;1016h\x1b[?1016$p\x1b[!p\x1b[3J\x1b[?1000l");
+        stream.extend_from_slice(b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\\x1bPq#1;2;100;0;0!3~-@\x1b\\\x1b_Gi=9\x1b\\");
         let whole = sniff(&stream);
-        assert_eq!(whole.len(), 14);
+        assert_eq!(whole.len(), 17);
 
         // every possible single split point, and byte-at-a-time
         for split in 0..=stream.len() {

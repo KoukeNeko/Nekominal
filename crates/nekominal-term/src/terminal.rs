@@ -24,14 +24,21 @@ use alacritty_terminal::{
 
 use crate::{
     agent_status::{AgentRecord, AgentStatus, Report},
-    graphemes::Clusters,
+    graphemes::{Clusters, Touched},
     guard::StringGuard,
+    images::{ImageStore, SnapImage},
     links::{self, Link},
     osc::{is_control_or_bidi, strip_control, Notification, Progress, PromptMark},
-    sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported},
+    sniffer::{MouseExtension, SixelMode, Sniffed, Sniffer, Unsupported},
     theme::Palette,
     triggers::{GridLine, TriggerHit, Triggers, MAX_LINE_CHARS},
 };
+
+mod graphics;
+
+/// A DA1 reply that says what the terminal draws: a VT220 (62) with Sixel graphics (4) and ANSI colour (22). Programs
+/// that draw pictures (chafa, timg, yazi, lsix) look for the 4. The shell sets it as `CoreConfig::da1_reply`.
+pub const DA1_WITH_SIXEL: &str = "\x1b[?62;4;22c";
 
 /// Dimensions for `Term::new` / `Term::resize`. Only `columns` and `screen_lines` are read by them;
 /// `total_lines` is for the trait.
@@ -398,6 +405,8 @@ pub struct Snapshot {
     pub sticky_header: Vec<SnapCell>,
     /// The cells of the viewport that triggers highlight.
     pub trigger_marks: Vec<TriggerMark>,
+    /// The pictures (Sixel, kitty graphics) that reach into the viewport, oldest first.
+    pub images: Vec<SnapImage>,
 }
 
 /// Cells of one viewport row a trigger highlights: `start..end` columns, drawn on `color`.
@@ -425,6 +434,7 @@ impl Default for Snapshot {
             top_line: None,
             sticky_header: Vec::new(),
             trigger_marks: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -567,6 +577,15 @@ pub struct TerminalCore {
     trigger_program: Option<String>,
     /// What the highlight rules marked, by line, oldest first: (line, columns, colour).
     trigger_marks: std::collections::VecDeque<(LineId, usize, usize, (u8, u8, u8))>,
+    /// The pictures and where they are (see `graphics`).
+    images: ImageStore,
+    /// Whether the alternate screen was active when the emulator last ran: a switch clears its pictures.
+    images_alt: bool,
+    /// The first command of a chunked kitty transmission and the base64 so far.
+    kitty_loading: Option<(crate::kitty::Command, Vec<u8>)>,
+    /// DECSET 80 (Sixel display mode) and 8452 (cursor right of a Sixel).
+    sixel_display: bool,
+    sixel_cursor_right: bool,
 }
 
 /// The highlights of triggers kept at most: the oldest goes past it.
@@ -665,6 +684,11 @@ impl TerminalCore {
             trigger_instant: None,
             trigger_program: None,
             trigger_marks: Default::default(),
+            images: ImageStore::default(),
+            images_alt: false,
+            kitty_loading: None,
+            sixel_display: false,
+            sixel_cursor_right: false,
         }
     }
 
@@ -737,22 +761,31 @@ impl TerminalCore {
 
     /// Runs `bytes` through the emulator, containing upstream panics.
     fn advance_emulator(&mut self, bytes: &[u8]) {
+        // Where text lands is recorded only while there are pictures it can erase.
+        let mut touched = Touched::default();
+        let watch = self.images.has_placements();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.processor.advance(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster }, bytes)
+            let touched = watch.then_some(&mut touched);
+            self.processor.advance(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster, touched }, bytes)
         }));
         if let Err(payload) = outcome {
             self.recover_from_panic(payload);
         }
+        self.images_after_emulator(&touched);
     }
 
     /// Applies the bytes a synchronized update buffered, as `advance_emulator` applies the rest.
     fn stop_sync(&mut self) {
+        let mut touched = Touched::default();
+        let watch = self.images.has_placements();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.processor.stop_sync(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster })
+            let touched = watch.then_some(&mut touched);
+            self.processor.stop_sync(&mut Clusters { term: &mut self.term, cluster: &mut self.cluster, touched })
         }));
         if let Err(payload) = outcome {
             self.recover_from_panic(payload);
         }
+        self.images_after_emulator(&touched);
     }
 
     // --- scrollback and line identity ----------------------------------------------------------
@@ -779,6 +812,10 @@ impl TerminalCore {
             self.prompts.drain(..trimmed);
             // An output whose last line is gone is gone; one whose first line is gone keeps what is left of it.
             self.outputs.retain(|output| output.end.is_none_or(|end| end.index >= self.line_base));
+            if self.images.trim(self.line_base) {
+                self.images.sweep();
+                self.dirty = true;
+            }
         }
         if self.history_limit != limit {
             self.term.grid_mut().update_history(limit);
@@ -795,6 +832,9 @@ impl TerminalCore {
         self.trigger_next = None;
         self.trigger_instant = None;
         self.trigger_marks.clear();
+        // The pictures of the primary screen were on the lines that went. Not swept here: a reflow puts them back
+        // (`resize`); the next picture or erase sweeps the ones nothing shows.
+        self.dirty |= self.images.clear_screen(false);
         self.events.push(CoreEvent::LineIdsReset);
     }
 
@@ -1252,6 +1292,9 @@ impl TerminalCore {
             Sniffed::FullReset => {
                 self.win32_input_mode = false;
                 self.mouse_extensions = MouseExtensions::default();
+                self.images.clear();
+                self.kitty_loading = None;
+                (self.sixel_display, self.sixel_cursor_right) = (false, false);
                 self.reset_line_ids();
                 if self.agent.clear() {
                     self.events.push(CoreEvent::AgentRecordsDropped);
@@ -1283,7 +1326,12 @@ impl TerminalCore {
                 self.win32_input_mode = on;
                 self.events.push(CoreEvent::Win32InputMode(on));
             }
-            Sniffed::Unsupported(feature) => self.events.push(CoreEvent::Unsupported(feature)),
+            Sniffed::Sixel(image) => self.place_sixel(image),
+            Sniffed::SixelMode(SixelMode::Display, on) => self.sixel_display = on,
+            Sniffed::SixelMode(SixelMode::CursorRight, on) => self.sixel_cursor_right = on,
+            Sniffed::KittyGraphics(command) => self.kitty_graphics(&command),
+            Sniffed::GraphicsAttributes { item, action } => self.graphics_attributes(item, action),
+            Sniffed::CellSizeQuery => self.cell_size_report(),
         }
     }
 
@@ -1316,6 +1364,7 @@ impl TerminalCore {
         let old_columns = self.term.columns();
         let target = TermDims::new(columns, rows);
         let narrower = target.columns < old_columns;
+        let pictures = if target.columns != old_columns { self.images_before_reflow() } else { Vec::new() };
         if narrower && self.term.mode().contains(TermMode::ALT_SCREEN) {
             self.resize_hidden_primary(target);
         } else {
@@ -1330,6 +1379,7 @@ impl TerminalCore {
             // number of lines at the new width.
             self.reset_line_ids();
             self.history_cap = Self::scrollback_limit_for(&self.config, self.term.columns());
+            self.images_after_reflow(pictures);
         }
         // Fewer rows push lines into the scrollback, and a new cap needs a new grid limit.
         self.enforce_scrollback();
@@ -1648,6 +1698,9 @@ impl TerminalCore {
                 (row < rows).then_some(TriggerMark { row, start: start.min(columns), end: end.min(columns), color })
             }));
         }
+        out.images.clear();
+        let alt = mode.contains(TermMode::ALT_SCREEN);
+        self.images.visible(out.top_line, alt, rows, &mut out.images);
         out.sticky_header.clear();
         if let Some(line) = self.sticky_prompt() {
             let row = &self.term.grid()[Line(line)];

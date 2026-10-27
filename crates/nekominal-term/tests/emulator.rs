@@ -1633,13 +1633,14 @@ fn agent_reports_flow_through_core_and_child_exit_drops_active_ones() {
 }
 
 #[test]
-fn sixel_and_kitty_graphics_are_swallowed() {
+fn sixel_and_kitty_payloads_never_reach_the_grid_as_text() {
     let mut core = core(40, 4);
-    feed(&mut core, "a\x1bP0;0;0q\"1;1;4;4#0;2;0;0;0~-~\x1b\\b\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\c");
-    assert_eq!(snap(&mut core).text(), "abc", "neither payload reaches the grid");
-    let events = core.take_events();
-    assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], CoreEvent::Unsupported(Unsupported::Sixel)));
+    feed(&mut core, "a\x1bP0;0;0q\"1;1;4;4#0;2;0;0;0~-~\x1b\\b\x1b_Ga=T,f=24,s=1,v=1,C=1;AAAA\x1b\\c");
+    let snapshot = snap(&mut core);
+    assert_eq!(snapshot.row_text(0), "a", "the Sixel moved the cursor below itself, to the column it started at");
+    assert_eq!(snapshot.row_text(1), " bc", "C=1 leaves the cursor where the kitty picture went");
+    assert_eq!(snapshot.images.len(), 2);
+    assert!(core.take_events().iter().all(|e| !matches!(e, CoreEvent::Unsupported(Unsupported::KittyAnimation))));
 }
 
 #[test]
