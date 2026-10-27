@@ -809,6 +809,8 @@ pub enum Expected {
     /// The whole file is not JSON; this is what the parser said.
     Parsable(String),
     JsonObject,
+    /// An address the push can be sent to (`check_push_url`).
+    PushUrl,
 }
 
 impl Expected {
@@ -840,6 +842,7 @@ impl Expected {
             Expected::MostChars(most) => Text::ProblemMostChars.format(lang, &[most]),
             Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
             Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),
+            Expected::PushUrl => Text::PushBadUrl.get(lang).to_owned(),
         }
     }
 }
@@ -1337,7 +1340,13 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 let push = section(&notifications, "push", "notifications", &mut problems);
                 let (p, path) = (&d.notifications.push, "notifications.push");
                 Push {
-                    url: text(&push, "url", &p.url, path, &mut problems),
+                    url: match text(&push, "url", &p.url, path, &mut problems).trim() {
+                        url if url.is_empty() || check_push_url(url).is_ok() => url.to_owned(),
+                        _ => {
+                            problems.fail(path, "url", Expected::PushUrl);
+                            p.url.clone()
+                        }
+                    },
                     kind: one_of(&push, "kind", &[("ntfy", PushKind::Ntfy), ("webhook", PushKind::Webhook)], p.kind, path, &mut problems),
                     token: text(&push, "token", &p.token, path, &mut problems),
                     when: one_of(&push, "when", &[("always", PushWhen::Always), ("away", PushWhen::Away)], p.when, path, &mut problems),
@@ -2039,6 +2048,77 @@ mod tests {
         assert!(check_push_url("https://").is_err());
         assert!(check_push_url("https://ntfy.sh/a b").is_err());
         assert!(check_push_url("ntfy.sh/mytopic").is_err());
+    }
+
+    #[test]
+    fn a_push_url_in_the_file_the_sender_would_refuse_is_reported_and_left_off() {
+        // Taken as it is, each push would fail at send time with only a line in the log to say so.
+        for bad in ["http://ntfy.sh/cat", "ntfy.sh/cat", "https://"] {
+            let result = parsed(&format!(r#"{{ "notifications": {{ "push": {{ "url": "{bad}" }} }} }}"#));
+            assert_eq!(result.settings.notifications.push.url, "", "{bad}");
+            assert_eq!(result.problems, [Problem::new("notifications.push.url", Expected::PushUrl)], "{bad}");
+        }
+        assert_eq!(parsed_ok(r#""notifications": { "push": { "url": " https://ntfy.sh/cat " } }"#).notifications.push.url, "https://ntfy.sh/cat", "spaces around it are trimmed, as the field does");
+        assert_eq!(parsed_ok(r#""notifications": { "push": { "url": "" } }"#).notifications.push.url, "", "empty is off, not a problem");
+    }
+
+    #[test]
+    fn a_push_url_is_judged_by_its_real_host_whatever_its_spelling() {
+        for ok in [
+            "HTTP://LOCALHOST/hook",
+            "http://127.0.0.1:65535/",
+            "http://[::1]/",
+            "http://user:pw@localhost:8080/x",
+            "https://通知.example/x",
+            &format!("https://ntfy.sh/{}", "a".repeat(4000)),
+        ] {
+            assert!(check_push_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "http://evil.com#@localhost/",
+            "http://evil.com?@localhost/",
+            "http://localhost:80@evil.com/",
+            "http://127.0.0.1.nip.io/",
+            "http://127.0.0.2/",
+            "http://0.0.0.0/",
+            "http://[::1/",
+            "http://通知.example/x",
+            "https://:443/",
+            "https://user@/x",
+            "https://ntfy.sh/x ",
+            " https://ntfy.sh/x",
+            "https://ntfy.sh/\u{a0}x",
+            "https://ntfy.sh/x\n",
+            "javascript://localhost/",
+        ] {
+            assert!(check_push_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn every_field_of_the_push_survives_a_round_trip_through_the_file() {
+        let push = Push {
+            url: "https://hooks.example.com/a?b=\"c\"&d=通知".into(),
+            kind: PushKind::Webhook,
+            token: "tk \"quoted\" \\ 😀".into(),
+            when: PushWhen::Always,
+            events: vec![PushEvent::Failed, PushEvent::LongCommand, PushEvent::Message],
+        };
+        round_trips(Settings { notifications: Notifications { push, ..Settings::default().notifications }, ..Settings::default() });
+        let none = Push { events: vec![], ..Push::default() };
+        round_trips(Settings { notifications: Notifications { push: none, ..Settings::default().notifications }, ..Settings::default() });
+    }
+
+    #[test]
+    fn a_push_value_of_the_wrong_type_is_reported_and_its_default_kept() {
+        let result = parsed(r#"{ "notifications": { "push": { "url": 5, "token": true, "kind": 1, "when": null, "events": [1] } } }"#);
+        assert_eq!(result.settings.notifications.push, Push::default());
+        let mut keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["notifications.push.events", "notifications.push.kind", "notifications.push.token", "notifications.push.url", "notifications.push.when"]);
+        let result = parsed(r#"{ "notifications": { "push": "https://ntfy.sh/cat" } }"#);
+        assert_eq!((result.settings.notifications.push, result.problems.len()), (Push::default(), 1), "the push is an object, not its address");
     }
 
     #[test]

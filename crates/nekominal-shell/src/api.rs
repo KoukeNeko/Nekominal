@@ -383,15 +383,22 @@ fn serve_client(pipe: &File, handler: &Handler) {
     let mut reader = BufReader::new(pipe);
     let mut writer = pipe;
     loop {
-        let mut line = String::new();
-        match reader.by_ref().take(MAX_LINE).read_line(&mut line) {
+        let mut bytes = Vec::new();
+        match reader.by_ref().take(MAX_LINE).read_until(b'\n', &mut bytes) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE {
+        if !bytes.ends_with(b"\n") && bytes.len() as u64 >= MAX_LINE {
             let _ = writeln!(writer, "{}", reply(&Value::Null, &Err(format!("a request is at most {MAX_LINE} bytes"))));
             return;
         }
+        // A line that is not UTF-8 is answered like any other bad line; the client stays.
+        let Ok(line) = String::from_utf8(bytes) else {
+            if writeln!(writer, "{}", reply(&Value::Null, &Err("not UTF-8".to_owned()))).is_err() {
+                return;
+            }
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -535,6 +542,11 @@ pub fn pane_environment(pane: &str) -> Vec<(String, String)> {
 /// Opens the pipe `name`, waiting a little while every instance is taken (the server makes the next one right away).
 pub fn connect(name: &str) -> std::io::Result<File> {
     const ERROR_PIPE_BUSY: i32 = 231;
+    // Only a pipe of this computer: any other name (a broken instance file, a slip in --pipe) would open that file and
+    // write the request into it.
+    if !name.get(..9).is_some_and(|start| start.eq_ignore_ascii_case(r"\\.\pipe\")) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, r"not the name of a pipe (\\.\pipe\…)"));
+    }
     for _ in 0..100 {
         match std::fs::OpenOptions::new().read(true).write(true).open(name) {
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => std::thread::sleep(Duration::from_millis(20)),
@@ -550,8 +562,13 @@ pub fn connect_default() -> Result<File, String> {
     if let Some(name) = std::env::var(PIPE_VAR).ok().filter(|name| !name.is_empty()) {
         return connect(&name).map_err(|e| format!("{name}: {e}"));
     }
-    let dir = instances_dir().ok_or("LOCALAPPDATA is not set")?;
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
+    connect_newest(&instances_dir().ok_or("LOCALAPPDATA is not set")?)
+}
+
+/// The newest instance whose file in `dir` names a pipe that opens; the files of instances that are gone, or that name
+/// no pipe, are removed on the way.
+fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .map(|entries| entries.flatten().filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path()))).collect())
         .unwrap_or_default();
     found.sort_by(|a, b| b.0.cmp(&a.0));
@@ -559,7 +576,7 @@ pub fn connect_default() -> Result<File, String> {
         let Ok(name) = std::fs::read_to_string(&file) else { continue };
         match connect(name.trim()) {
             Ok(pipe) => return Ok(pipe),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput) => {
                 let _ = std::fs::remove_file(&file);
             }
             Err(_) => {}
@@ -672,6 +689,161 @@ mod tests {
         assert_eq!(dacl.matches('(').count(), 1, "one entry: {made}");
         assert!(dacl.starts_with("P(A;;") && dacl.ends_with(&format!(";;;{sid})")), "{made}");
         assert!(Descriptor::new("not sddl").is_err());
+    }
+
+    #[test]
+    fn what_a_request_does_not_need_is_ignored_and_null_is_missing() {
+        assert_eq!(parsed(r#"{"cmd":"focus","pane":"1-1","extra":[1,2],"text":5}"#), Ok(Request::Focus { pane: "1-1".into() }), "members of other commands are ignored");
+        assert_eq!(parsed(r#"{"cmd":"get-text","pane":"1-1","lines":null}"#), Ok(Request::GetText { pane: "1-1".into(), lines: None }));
+        assert_eq!(parsed(r#"{"cmd":"notify","title":"T","body":null,"pane":"2-1"}"#), Ok(Request::Notify { title: "T".into(), body: String::new(), pane: Some("2-1".into()) }));
+        assert_eq!(parsed(r#"{"cmd":"new-tab","command":[]}"#), Ok(Request::NewTab { profile: None, cwd: None, command: vec![] }));
+        assert_eq!(parsed(r#"{"cmd":"send-text","pane":"1-1","text":" "}"#), Ok(Request::SendText { pane: "1-1".into(), text: " ".into() }), "a space is text");
+        assert_eq!(parsed(r#"{"cmd":"list","cmd":"close","pane":"1-1"}"#), Ok(Request::Close { pane: "1-1".into() }), "of a member given twice, the last counts");
+        assert_eq!(parsed(" {\"cmd\":\"list\"}\r\n"), Ok(Request::List), "spaces and CR LF around the object");
+        let (id, _) = parse(r#"{"id":{"n":[1,"a"]},"cmd":"list"}"#);
+        assert_eq!(id, json!({ "n": [1, "a"] }), "an id is any JSON, given back as it was");
+    }
+
+    #[test]
+    fn a_member_of_the_wrong_type_or_value_is_named() {
+        assert_eq!(parsed(r#"{"cmd":7}"#).unwrap_err(), r#""cmd" must be a string"#);
+        assert_eq!(parsed(r#"{"cmd":"get-text","pane":"1-1","lines":2.5}"#).unwrap_err(), r#""lines" must be a whole number above 0"#);
+        assert_eq!(parsed(r#"{"cmd":"get-text","pane":"1-1","lines":"20"}"#).unwrap_err(), r#""lines" must be a whole number above 0"#);
+        assert_eq!(parsed(r#"{"cmd":"get-text","pane":"1-1","lines":18446744073709551615}"#), Ok(Request::GetText { pane: "1-1".into(), lines: Some(usize::MAX) }), "more lines than there are is all of them");
+        assert_eq!(parsed(r#"{"cmd":"set-title","pane":"1-1"}"#).unwrap_err(), r#""title" is missing"#);
+        assert_eq!(parsed(r#"{"cmd":"notify","body":"b"}"#).unwrap_err(), r#""title" is missing"#);
+        assert_eq!(parsed(r#"{"cmd":"notify","title":"T","pane":3}"#).unwrap_err(), r#""pane" must be a string"#);
+        assert_eq!(parsed(r#"{"cmd":"split","pane":"1-1","direction":1}"#).unwrap_err(), r#""direction" must be a string"#);
+        assert_eq!(parsed(r#"{"cmd":"new-tab","cwd":["D:\\"]}"#).unwrap_err(), r#""cwd" must be a string"#);
+        assert_eq!(parsed(r#"{"cmd":"subscribe","events":"output"}"#).unwrap_err(), r#""events" must be an array of names"#);
+        assert_eq!(parsed(r#"{"cmd":"subscribe","events":[1]}"#).unwrap_err().split(';').next(), Some("unknown event 1"));
+        assert!(parsed("").unwrap_err().starts_with("not JSON"));
+        assert!(parsed("\u{feff}{\"cmd\":\"list\"}").unwrap_err().starts_with("not JSON"), "a byte order mark is not JSON");
+        assert_eq!(parsed("null").unwrap_err(), "a request is a JSON object");
+    }
+
+    /// A server of a pipe of its own, answering `list` and echoing the rest as an error.
+    fn served() -> String {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let name = format!(r"\\.\pipe\nekominal-test-{}-n{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let handler: Handler = Arc::new(|request| match request {
+            Request::List => Ok(json!("listed")),
+            other => Err(format!("echo: {other:?}")),
+        });
+        serve(&name, Descriptor::new(&sddl(&user_sid().unwrap())).unwrap(), handler).expect("served");
+        name
+    }
+
+    #[test]
+    fn lines_are_answered_however_the_writes_cut_them() {
+        let pipe = connect(&served()).unwrap();
+        let mut lines = BufReader::new(&pipe).lines();
+        // Two requests in one write, with empty lines and CR LF between them.
+        (&pipe).write_all(b"{\"id\":1,\"cmd\":\"list\"}\r\n\n   \r\n{\"id\":2,\"cmd\":\"list\"}\n").unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"id":1,"ok":true,"result":"listed"}"#);
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"id":2,"ok":true,"result":"listed"}"#, "the empty lines between are not answered");
+        // One request cut across writes, with a pause inside a character of two bytes.
+        let line = "{\"id\":3,\"cmd\":\"set-title\",\"pane\":\"1-1\",\"title\":\"é\"}\n".as_bytes();
+        let cut = line.iter().position(|b| *b == 0xC3).unwrap() + 1;
+        (&pipe).write_all(&line[..cut]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        (&pipe).write_all(&line[cut..]).unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"error":"echo: SetTitle { pane: \"1-1\", title: \"é\" }","id":3,"ok":false}"#);
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_is_answered_and_the_client_stays() {
+        let pipe = connect(&served()).unwrap();
+        let mut lines = BufReader::new(&pipe).lines();
+        (&pipe).write_all(b"{\"id\":1,\"cmd\":\"set-title\",\"pane\":\"1-1\",\"title\":\"\xff\xfe\"}\n").unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"error":"not UTF-8","id":null,"ok":false}"#);
+        writeln!(&pipe, r#"{{"id":2,"cmd":"list"}}"#).unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"id":2,"ok":true,"result":"listed"}"#);
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_is_refused_and_the_client_let_go() {
+        let pipe = connect(&served()).unwrap();
+        // Past the limit with no line break: the rest after the limit fits the pipe's buffer, so the write ends. (Writing
+        // from a second thread would not do: on a handle without overlapped I/O, the read waits behind the write.)
+        (&pipe).write_all(&vec![b'x'; MAX_LINE as usize + 1024]).unwrap();
+        let mut lines = BufReader::new(&pipe).lines();
+        assert_eq!(lines.next().unwrap().unwrap(), format!(r#"{{"error":"a request is at most {MAX_LINE} bytes","id":null,"ok":false}}"#));
+        assert!(lines.next().is_none_or(|line| line.is_err()), "and the pipe is closed");
+    }
+
+    #[test]
+    fn the_cli_finds_the_newest_live_instance_and_clears_files_that_name_none() {
+        let dir = std::env::temp_dir().join(format!("nekominal-api-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = |file: &str, text: &str, age: u64| {
+            std::fs::write(dir.join(file), text).unwrap();
+            let when = std::time::SystemTime::now() - Duration::from_secs(age);
+            std::fs::File::options().write(true).open(dir.join(file)).unwrap().set_modified(when).unwrap();
+        };
+        // A file of the user's that a broken instance file names: it must not be opened for writing.
+        let victim = dir.with_extension("victim.txt");
+        std::fs::write(&victim, "keep me").unwrap();
+        at("1", &format!(r"\\.\pipe\nekominal-test-{}-crashed", std::process::id()), 10);
+        at("2", &victim.display().to_string(), 5);
+        at("3", "", 1);
+        at("4", "\u{feff}garbage \0 \u{1}", 0);
+        assert_eq!(connect_newest(&dir).unwrap_err(), "no running Nekominal was found");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(left.is_empty(), "the files that name no live pipe are gone: {left:?}");
+        // A live instance older than a crashed one is still found.
+        at("5", &format!("{}\r\n", served()), 20);
+        at("6", &format!(r"\\.\pipe\nekominal-test-{}-crashed", std::process::id()), 0);
+        let pipe = connect_newest(&dir).expect("the live one");
+        writeln!(&pipe, r#"{{"cmd":"list"}}"#).unwrap();
+        assert!(BufReader::new(&pipe).lines().next().unwrap().unwrap().contains("listed"));
+        assert!(!dir.join("6").exists() && dir.join("5").exists());
+        assert!(connect(victim.to_str().unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidInput), "--pipe with a path is refused too");
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&victim).unwrap();
+    }
+
+    #[test]
+    fn many_clients_at_once_each_get_their_own_answers() {
+        let name = served();
+        let clients: Vec<_> = (0..8)
+            .map(|client| {
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    let pipe = connect(&name).unwrap();
+                    let mut lines = BufReader::new(&pipe).lines();
+                    for n in 0..25 {
+                        writeln!(&pipe, r#"{{"id":"{client}-{n}","cmd":"list"}}"#).unwrap();
+                        assert_eq!(lines.next().unwrap().unwrap(), format!(r#"{{"id":"{client}-{n}","ok":true,"result":"listed"}}"#));
+                    }
+                })
+            })
+            .collect();
+        for client in clients {
+            client.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn the_cli_exits_0_when_answered_ok_1_when_refused_and_2_when_it_could_not_ask() {
+        let name = served();
+        assert_eq!(run_cli(Some(&name), &json!({ "cmd": "list" })), 0);
+        assert_eq!(run_cli(Some(&name), &json!({ "cmd": "focus", "pane": "1-1" })), 1);
+        assert_eq!(run_cli(Some(&name), &json!({ "cmd": "nonsense" })), 1, "what the instance refuses is its answer");
+        assert_eq!(run_cli(Some(r"\\.\pipe\nekominal-test-nobody-here"), &json!({ "cmd": "list" })), 2);
+        // An instance that goes without an answer.
+        let gone = format!(r"\\.\pipe\nekominal-test-{}-gone", std::process::id());
+        let pipe = instance(&gone, &Descriptor::new(&sddl(&user_sid().unwrap())).unwrap(), true).unwrap();
+        let server = std::thread::spawn(move || {
+            // SAFETY: the handle of the File, a pipe instance in blocking mode.
+            let _ = unsafe { ConnectNamedPipe(HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(&pipe)), None) };
+            let mut line = String::new();
+            let _ = BufReader::new(&pipe).read_line(&mut line);
+        });
+        assert_eq!(run_cli(Some(&gone), &json!({ "cmd": "list" })), 2);
+        server.join().unwrap();
     }
 
     #[test]
