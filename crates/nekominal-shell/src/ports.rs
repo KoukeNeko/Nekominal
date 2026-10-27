@@ -129,6 +129,56 @@ mod tests {
     }
 
     #[test]
+    fn the_port_is_the_low_two_bytes_in_network_order_whatever_the_high_ones() {
+        assert_eq!(port(raw_port(8080)), 8080);
+        assert_eq!((port(raw_port(1)), port(raw_port(65535)), port(raw_port(0x1234))), (1, 65535, 0x1234));
+        // The API leaves the high bytes of the DWORD undefined.
+        assert_eq!(port(0xDEAD_0000 | raw_port(8080)), 8080);
+    }
+
+    /// An IPv6 row of `MIB_TCP6ROW_OWNER_PID` listening on `p` for `pid`.
+    fn row_v6(buf: &mut Vec<u8>, pid: u32, p: u16) {
+        buf.extend([0u8; 16]);
+        word(buf, 0);
+        word(buf, raw_port(p));
+        buf.extend([0xFFu8; 16]);
+        for value in [7, raw_port(9999), 2, pid] {
+            word(buf, value);
+        }
+    }
+
+    #[test]
+    fn an_ipv6_table_of_several_rows_and_a_short_buffer() {
+        let mut buf = Vec::new();
+        word(&mut buf, 3);
+        for (pid, p) in [(1, 443), (2, 5173), (3, 8080)] {
+            row_v6(&mut buf, pid, p);
+        }
+        assert_eq!(parse(&buf, true), [(1, 443), (2, 5173), (3, 8080)], "the remote port and address are not taken");
+        assert_eq!(parse(&buf[..4 + 2 * ROW_V6 + 10], true), [(1, 443), (2, 5173)], "a count larger than the buffer");
+        assert!(parse(&[3, 0], true).is_empty(), "not even a count");
+    }
+
+    #[test]
+    fn many_ports_come_back_sorted_once_each() {
+        let all: Vec<Listener> = (0..5000u32).map(|i| (100 + i % 3, 60000 - (i % 2000) as u16)).collect();
+        let ports = ports_of(&all, &[100, 101]);
+        assert_eq!(ports.len(), 2000);
+        assert!(ports.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    /// The port is ephemeral (`:0` lets Windows pick one): those count like any other.
+    #[test]
+    fn a_port_this_process_listens_on_over_ipv6_is_found() {
+        let Ok(server) = std::net::TcpListener::bind("[::1]:0") else {
+            eprintln!("no IPv6 loopback: skipped");
+            return;
+        };
+        let port = server.local_addr().unwrap().port();
+        assert!(ports_of(&listeners(), &[std::process::id()]).contains(&port));
+    }
+
+    #[test]
     fn a_port_this_process_listens_on_is_found() {
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = server.local_addr().unwrap().port();
