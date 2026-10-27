@@ -168,7 +168,7 @@ impl App {
             changed |= set(&mut badges.ports, tab.uid, (!found.is_empty()).then_some(found), "ports");
             // git_branch reads only local disks: gh never runs for a share.
             let key = tab.focused_entry().and_then(|entry| {
-                let dir = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone())?;
+                let dir = super::work_folder(entry.usage.as_ref(), entry.cwd.as_ref())?;
                 let dir = std::path::Path::new(&dir);
                 let branch = agent::git_branch(dir)?;
                 Some((github::repo_root(dir)?, branch))

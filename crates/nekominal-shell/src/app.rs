@@ -144,8 +144,9 @@ fn open_link(uri: &str) {
     }
 }
 
-/// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese).
-fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32) -> Vec<String> {
+/// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese). At most
+/// `max_lines` of them: the rest of a long text is not measured at all.
+fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32, max_lines: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for ch in text.chars() {
@@ -160,6 +161,9 @@ fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32) -> Vec<String> {
             None => String::new(),
         };
         lines.push(std::mem::take(&mut line));
+        if lines.len() == max_lines {
+            return lines;
+        }
         line = rest;
         if ch != ' ' {
             line.push(ch);
@@ -169,6 +173,22 @@ fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32) -> Vec<String> {
         lines.push(line);
     }
     lines
+}
+
+/// The fill of a meter of the context, `share` of it used: the accent, amber past 70 %, red past 90 %.
+fn meter_color(g: Glass, share: f64) -> Color {
+    col(if share > 90.0 { g.mark(g.danger) } else if share > 70.0 { g.mark(g.warning) } else { g.accent })
+}
+
+/// The plate under the pointer on a row that is not selected: the hover colour at half its alpha.
+fn soft_hover(g: Glass) -> Color {
+    let h = col(g.hover());
+    Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2])
+}
+
+/// The folder a pane works in: the one its agent said it works in, else the one its shell reported.
+fn work_folder(usage: Option<&agent::Usage>, cwd: Option<&String>) -> Option<String> {
+    usage.and_then(|u| u.cwd.clone()).or_else(|| cwd.cloned())
 }
 
 /// The word for what a tab is doing, none for a tab at rest.
@@ -1859,7 +1879,7 @@ impl App {
                 changed |= usage != entry.usage;
                 entry.usage = usage;
             }
-            let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
+            let folder = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
             let branch = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
             if branch != entry.branch {
                 entry.branch = branch;
@@ -2573,7 +2593,7 @@ impl App {
         let accent = col(g.accent);
         let area = self.page_area();
         self.ui.fill(area, Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
-        let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
+        let soft = soft_hover(g);
         let background = Color([g.background.r, g.background.g, g.background.b, 255]);
         // Owned, as painting a tile borrows the whole app.
         let schemes: Vec<themes::Scheme> = themes::theme_names(&self.settings.schemes).map(|name| themes::find(&self.settings.schemes, name).clone()).collect();
@@ -2768,7 +2788,7 @@ impl App {
     /// the folder already (the default) has the program instead of the folder repeated.
     fn place_text(&self, i: usize) -> Option<String> {
         let entry = self.tabs.get(i)?.focused_entry()?;
-        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone())?;
+        let folder = work_folder(entry.usage.as_ref(), entry.cwd.as_ref())?;
         let home = std::env::var("USERPROFILE").ok();
         let mut folder = logic::folder_label(&folder, home.as_deref());
         if folder == self.tab_label(i)
@@ -3024,7 +3044,7 @@ impl App {
         let lang = self.language();
         let list = self.settings.tabs.layout == settings::TabLayout::List;
         let quiet = col(g.text_secondary());
-        let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
+        let soft = soft_hover(g);
         self.ui.push_clip(side);
         let names = [Text::GroupWaiting, Text::AgentWorking, Text::AgentDone, Text::GroupOther];
         let small = self.ui.line_height(SMALL_SIZE);
@@ -3180,7 +3200,7 @@ impl App {
             self.ui.text(pick.x + 24.0, name_y + (20.0 - line) / 2.0, name.get(lang), 14.0, text, true);
             let note = if side { Text::WelcomeSideNote } else { Text::WelcomeTopNote };
             let small = self.ui.line_height(SMALL_SIZE + 1.0);
-            for (n, line) in wrap(&mut self.ui, note.get(lang), SMALL_SIZE + 1.0, card.w - 2.0 * pad - 4.0).iter().enumerate() {
+            for (n, line) in wrap(&mut self.ui, note.get(lang), SMALL_SIZE + 1.0, card.w - 2.0 * pad - 4.0, usize::MAX).iter().enumerate() {
                 self.ui.text(card.x + pad + 2.0, name_y + 26.0 + n as f32 * (small + 2.0), line, SMALL_SIZE + 1.0, quiet, false);
             }
         }
@@ -3301,7 +3321,7 @@ impl App {
             if let Some(branch) = entry.branch.clone().filter(|_| show.branch) {
                 pieces.push(Piece::Glyph('\u{E81C}', branch));
             }
-            let cwd = entry.usage.as_ref().and_then(|usage| usage.cwd.clone()).or_else(|| entry.cwd.clone());
+            let cwd = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
             if let Some(cwd) = cwd.filter(|_| show.folder) {
                 let home = std::env::var("USERPROFILE").ok();
                 pieces.push(Piece::Glyph('\u{E8B7}', logic::folder_label(&cwd, home.as_deref())));
@@ -3340,9 +3360,7 @@ impl App {
                 pieces.push(Piece::Text(format!("${cost:.2}")));
             }
             if let Some(ms) = usage.duration_ms.filter(|_| show.time) {
-                let s = ms / 1000;
-                let time = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) };
-                pieces.push(Piece::Text(time));
+                pieces.push(Piece::Text(agents_panel::clock(ms)));
             }
         }
         place(&mut pieces);
@@ -3362,7 +3380,7 @@ impl App {
             }
             Piece::Meter(share) => {
                 let track = Rect::new(x, (bar - 3.0) / 2.0, METER, 3.0);
-                let fill = col(if *share > 90.0 { g.mark(g.danger) } else if *share > 70.0 { g.mark(g.warning) } else { g.accent });
+                let fill = meter_color(g, f64::from(*share));
                 self.ui.rrect(track, 1.5, col(g.divider()), None);
                 self.ui.rrect(Rect::new(track.x, track.y, METER * (share / 100.0).clamp(0.0, 1.0), 3.0), 1.5, fill, None);
                 self.ui.text(x + METER + 6.0, text_y, &format!("{share:.0}%"), PIECE_SIZE, quiet, false);

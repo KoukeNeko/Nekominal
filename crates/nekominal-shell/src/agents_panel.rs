@@ -40,7 +40,7 @@ pub struct Seen {
 }
 
 /// `ms` as the bar shows a time: `m:ss`, or `h:mm:ss` from an hour.
-fn clock(ms: u64) -> String {
+pub(super) fn clock(ms: u64) -> String {
     let s = ms / 1000;
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
@@ -99,7 +99,7 @@ impl App {
                     .or(usage.is_some().then_some("claude"))
                     .map_or_else(|| "Agent".to_owned(), hooks::agent_name);
                 let signal = logic::PaneSignal { agent: record, progress: entry.progress, attention: entry.attention, note: entry.note.clone() };
-                let cwd = usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
+                let cwd = super::work_folder(usage.as_ref(), entry.cwd.as_ref());
                 seen.push(Seen {
                     window: self.hwnd.0 as isize,
                     tab: tab.uid,

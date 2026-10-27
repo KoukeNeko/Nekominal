@@ -91,7 +91,7 @@ impl App {
         let small = self.ui.line_height(SMALL_SIZE - 1.0);
         self.ui.text(right - w, y - small / 2.0, &text, SMALL_SIZE - 1.0, col(g.text_secondary()), false);
         let track = Rect::new(x, y - 1.5, (right - w - 8.0 - x).max(0.0), 3.0);
-        let fill = col(if share > 90.0 { g.mark(g.danger) } else if share > 70.0 { g.mark(g.warning) } else { g.accent });
+        let fill = meter_color(g, share);
         self.ui.rrect(track, 1.5, col(g.divider()), None);
         self.ui.rrect(Rect::new(track.x, track.y, track.w * (share as f32 / 100.0).clamp(0.0, 1.0), 3.0), 1.5, fill, None);
     }
@@ -132,7 +132,7 @@ impl App {
         let g = self.glass;
         let lang = self.language();
         let state = self.tabs[i].status().state;
-        let fill = if selected || hover { col(g.hover()) } else { { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) } };
+        let fill = if selected || hover { col(g.hover()) } else { soft_hover(g) };
         let edge = if selected { (col(g.accent), 1.0) } else { (col(g.divider()), 1.0) };
         self.ui.rrect(row, 8.0, fill, Some(edge));
         self.tab_color_bar(i, side, row);
@@ -181,7 +181,7 @@ impl App {
             let color = self.activity_color(state);
             let color = if color == quiet { col(g.text()) } else { color };
             self.ui.push_clip(rect);
-            for (n, text) in wrap(&mut self.ui, &text, SMALL_SIZE, rect.w - 16.0).iter().take(2).enumerate() {
+            for (n, text) in wrap(&mut self.ui, &text, SMALL_SIZE, rect.w - 16.0, 2).iter().enumerate() {
                 self.ui.text(rect.x + 8.0, rect.y + 4.0 + n as f32 * (small + 1.0), text, SMALL_SIZE, color, false);
             }
             self.ui.pop_clip();
@@ -189,7 +189,7 @@ impl App {
         if let (Some(at), Some(usage)) = (foot, usage) {
             let y = row.y + at + FOOT / 2.0;
             let tiny = self.ui.line_height(SMALL_SIZE - 1.0);
-            let words = [usage.model.clone(), usage.duration_ms.map(|ms| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60))].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
+            let words = [usage.model.clone(), usage.duration_ms.map(agents_panel::clock)].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
             let w = self.ui.measure(&words, SMALL_SIZE - 1.0, false);
             self.ui.text(inner.x, y - tiny / 2.0, &words, SMALL_SIZE - 1.0, quiet, false);
             match usage.context {
@@ -216,8 +216,7 @@ impl App {
         if selected {
             widgets::plate(&mut self.ui, row, col(g.hover()));
         } else if hover {
-            let h = col(g.hover());
-            widgets::plate(&mut self.ui, row, Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]));
+            widgets::plate(&mut self.ui, row, soft_hover(g));
         }
         self.tab_color_bar(i, side, row);
         let quiet = col(g.text_secondary());
@@ -253,7 +252,7 @@ impl App {
             }
             if let Some(share) = usage.context {
                 let track = Rect::new(right - 20.0, mid - 1.5, 20.0, 3.0);
-                let fill = col(if share > 90.0 { g.mark(g.danger) } else if share > 70.0 { g.mark(g.warning) } else { g.accent });
+                let fill = meter_color(g, share);
                 self.ui.rrect(track, 1.5, col(g.divider()), None);
                 self.ui.rrect(Rect::new(track.x, track.y, 20.0 * (share as f32 / 100.0).clamp(0.0, 1.0), 3.0), 1.5, fill, None);
                 right = track.x - 6.0;
