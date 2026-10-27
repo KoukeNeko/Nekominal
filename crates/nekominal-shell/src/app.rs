@@ -2330,6 +2330,7 @@ impl App {
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
                     settings_page::Entry::NewProfile => (Text::ProfileNew.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::Heading(text) => (text.get(lang).to_owned(), String::new()),
                     settings_page::Entry::Layouts => (Text::SettingsLayouts.get(lang).to_owned(), page.layouts.join(", ")),
                     settings_page::Entry::Snippets => (Text::SettingsSnippets.get(lang).to_owned(), self.settings.snippets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                     settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
@@ -3911,11 +3912,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
         });
         let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::NewProfile => Some(Part::NewProfile),

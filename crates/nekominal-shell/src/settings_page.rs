@@ -261,6 +261,8 @@ pub struct Item {
 /// A row on show.
 #[derive(Clone, Copy, Debug)]
 pub enum Entry {
+    /// The heading of a section of the page, over the rows that follow it (`settings_ui::heading_before`).
+    Heading(Text),
     Setting(&'static Descriptor),
     Key(Command),
     /// Claude Code: where it is and whether its status line goes to the status bar.
@@ -284,6 +286,7 @@ pub enum Entry {
 impl Entry {
     pub fn section(&self) -> Section {
         match self {
+            Entry::Heading(text) => settings_ui::heading_section(*text),
             Entry::Setting(row) => row.section,
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
@@ -407,7 +410,9 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Sche
         let about = if section == Section::About { vec![Entry::About, Entry::Repo, Entry::Contributors] } else { Vec::new() };
         let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
         let snippets = (section == Section::Terminal).then_some(Entry::Snippets);
-        agents.into_iter().chain(about).chain(settings_ui::in_section(section).map(Entry::Setting)).chain(new_profile).chain(snippets).collect()
+        // A row that starts a section of the page comes under its heading.
+        let rows = settings_ui::in_section(section).flat_map(|row| settings_ui::heading_before(row.id).map(Entry::Heading).into_iter().chain([Entry::Setting(row)]));
+        agents.into_iter().chain(about).chain(rows).chain(new_profile).chain(snippets).collect()
     }
 }
 
@@ -521,6 +526,76 @@ fn label(text: impl Into<String>, size: f32, tone: Tone, bold: bool, align: Alig
     Visual::Label { text: text.into(), size, tone, bold, align }
 }
 
+// --- the parts every page is made of: a section's heading, and items, each a plate with its label at the left and its
+// controls placed from the right end inward. A page that draws a row draws it with these, so every row looks the same.
+
+/// The heading of a section of a page, over its items; its height.
+fn section_heading(items: &mut Vec<Item>, x: f32, y: f32, width: f32, text: &str) -> f32 {
+    item(items, Rect::new(x + INNER, y + 12.0, (width - 2.0 * INNER).max(0.0), HEADING - 12.0), None, label(text, 12.0, Tone::Quiet, true, Align::Left), true);
+    HEADING
+}
+
+/// The plate of an item, taking the presses of `part` anywhere on it (a toggle), or none.
+fn row_plate(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, focus: bool) {
+    item(items, rect, part, Visual::Plate(Fill::Row { focus }), true);
+}
+
+/// The label of an item at the left of its first line, `room` wide, with what it is for under it in smaller words.
+fn row_label(items: &mut Vec<Item>, rect: Rect, room: f32, text: &str, note: Option<&str>, tone: Tone) {
+    let line = ROW - ROW_GAP;
+    match note {
+        Some(note) => {
+            item(items, Rect::new(rect.x + INNER, rect.y + 5.0, room, line / 2.0), None, label(text, 13.0, tone, false, Align::Left), true);
+            item(items, Rect::new(rect.x + INNER, rect.y + line / 2.0 - 1.0, room, line / 2.0), None, label(note, 12.0, Tone::Quiet, false, Align::Left), true);
+        }
+        None => item(items, Rect::new(rect.x + INNER, rect.y, room, line), None, label(text, 13.0, tone, false, Align::Left), true),
+    }
+}
+
+/// A button with words; `primary` for the one a row stands for (update).
+fn text_button(items: &mut Vec<Item>, rect: Rect, part: Part, text: &str, primary: bool, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: primary, hover: hover == Some(part) }), true);
+    item(items, rect, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+}
+
+/// An option of a choice: the chosen one stands out, the others are quiet.
+fn option_button(items: &mut Vec<Item>, rect: Rect, part: Part, text: &str, chosen: bool, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: chosen, hover: hover == Some(part) }), true);
+    item(items, rect, None, label(text, 13.0, if chosen { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+}
+
+/// A square button with a glyph: add, delete, open, put back.
+fn glyph_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+    item(items, rect, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Quiet }, true);
+}
+
+/// Places the controls of an item's line from its right end inward, a gap between each.
+struct Controls {
+    /// Where the next control ends.
+    right: f32,
+    /// The top of a control of the usual height, centred on the line.
+    mid: f32,
+}
+
+impl Controls {
+    fn new(rect: Rect) -> Self {
+        Controls { right: rect.x + rect.w - INNER, mid: rect.y + (ROW - ROW_GAP - CONTROL) / 2.0 }
+    }
+
+    /// The rectangle of the next control, `width` wide and `height` high, centred on the line.
+    fn take(&mut self, width: f32, height: f32) -> Rect {
+        let rect = Rect::new(self.right - width, self.mid + (CONTROL - height) / 2.0, width, height);
+        self.right = rect.x - GAP;
+        rect
+    }
+
+    /// A button with words, as wide as they are.
+    fn button(&mut self, measure: &mut dyn FnMut(&str, f32, bool) -> f32, text: &str) -> Rect {
+        self.take(measure(text, 13.0, false) + 28.0, CONTROL)
+    }
+}
+
 pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) -> f32) -> Frame {
     let lang = view.lang;
     let Rect { x: ox, y: oy, w: width, h: height } = view.area;
@@ -571,8 +646,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     if !searching && Section::ALL.get(page.section) == Some(&Section::Keys) && !view.settings.keybindings.is_empty() {
         let text = Text::KeysResetAll.get(lang);
         let button = Rect::new(x0 + content_width - INNER - measure(text, 13.0, false) - 28.0, oy + 18.0, measure(text, 13.0, false) + 28.0, CONTROL);
-        item(&mut items, button, Some(Part::ResetKeys), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::ResetKeys) }), false);
-        item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), false);
+        text_button(&mut items, button, Part::ResetKeys, text, false, hover);
+        // The title does not scroll: neither does the button beside it.
+        for fixed in items.iter_mut().rev().take(2) {
+            fixed.scrolls = false;
+        }
     }
     let top = oy + CONTENT_TOP;
     let viewport = Rect::new(page_x, top, (width - nav.w).max(0.0), (oy + height - top).max(0.0));
@@ -589,17 +667,17 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
         // What a search finds comes by section, under the name of each.
         if searching && last_section != Some(entry.section()) {
             last_section = Some(entry.section());
-            item(&mut items, Rect::new(x0 + INNER, y + 8.0, (content_width - 2.0 * INNER).max(0.0), HEADING - 8.0), None, label(entry.section().text().get(lang), 12.0, Tone::Quiet, true, Align::Left), true);
-            y += HEADING;
+            y += section_heading(&mut items, x0, y, content_width, entry.section().text().get(lang));
         }
         let start = y;
         match *entry {
+            Entry::Heading(text) => y += section_heading(&mut items, x0, y, content_width, text.get(lang)),
             Entry::Key(command) => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 let capturing = page.capturing == Some(command);
-                item(&mut items, rect, Some(Part::Binding(command)), Visual::Plate(Fill::Row { focus: focus || capturing }), true);
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, (rect.w - 2.0 * INNER) / 2.0, rect.h), None, label(command.label(lang), 13.0, Tone::Text, false, Align::Left), true);
-                let mut right = rect.x + rect.w - INNER;
+                row_plate(&mut items, rect, Some(Part::Binding(command)), focus || capturing);
+                row_label(&mut items, rect, (rect.w - 2.0 * INNER) / 2.0, &command.label(lang), None, Tone::Text);
+                let mut controls = Controls::new(rect);
                 if capturing {
                     let text = if page.reserved.is_some() { Text::KeyReserved } else { Text::KeysPress };
                     item(&mut items, Rect::new(rect.x + rect.w / 2.0, rect.y, rect.w / 2.0 - INNER, rect.h), None, label(text.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
@@ -610,23 +688,15 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 // Each shortcut is a button that records the chord taking its place; the add button records one more.
                 for (index, shortcut) in view.keymap.shortcuts(command).iter().enumerate().rev() {
                     let text = shortcut.to_string();
-                    let chip = Rect::new(right - measure(&text, 12.0, false) - 20.0, rect.y + (rect.h - 24.0) / 2.0, measure(&text, 12.0, false) + 20.0, 24.0);
+                    let chip = controls.take(measure(&text, 12.0, false) + 20.0, 24.0);
                     let part = Part::Chip(command, index);
                     item(&mut items, chip, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
                     item(&mut items, chip, None, label(text, 12.0, Tone::Quiet, false, Align::Center), true);
-                    right = chip.x - GAP;
                 }
-                let add = Rect::new(right - RESET, rect.y + (rect.h - RESET) / 2.0, RESET, RESET);
-                let part = Part::AddKey(command);
-                item(&mut items, add, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                item(&mut items, add, None, Visual::Glyph { ch: '\u{E710}', size: 11.0, tone: Tone::Quiet }, true);
-                right = add.x - GAP;
+                glyph_button(&mut items, controls.take(RESET, RESET), Part::AddKey(command), '\u{E710}', hover);
                 // The reset button left of the shortcuts it puts back.
                 if nekominal_model::keybindings::is_modified(&view.settings.keybindings, command) {
-                    let reset = Rect::new(right - RESET, rect.y + (rect.h - RESET) / 2.0, RESET, RESET);
-                    let part = Part::ResetKey(command);
-                    item(&mut items, reset, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                    item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                    glyph_button(&mut items, controls.take(RESET, RESET), Part::ResetKey(command), '\u{E777}', hover);
                 }
                 y += ROW;
             }
@@ -666,14 +736,12 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 if newer && view.scoop {
                     let text = Text::AppUpdate.get(lang);
                     let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
-                    item(&mut items, button, Some(Part::Update), Visual::Plate(Fill::Button { selected: true, hover: hover == Some(Part::Update) }), true);
-                    item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                    text_button(&mut items, button, Part::Update, text, true, hover);
                     at = button.x + button.w + GAP;
                 }
                 let text = Text::UpdateCheck.get(lang);
                 let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
-                item(&mut items, button, Some(Part::CheckUpdate), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::CheckUpdate) }), true);
-                item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                text_button(&mut items, button, Part::CheckUpdate, text, false, hover);
                 if newer && !view.scoop {
                     let x = button.x + button.w + 12.0;
                     item(&mut items, Rect::new(x, buttons_y, (rect.x + rect.w - INNER - x).max(0.0), CONTROL), None, label(Text::UpdateNotScoop.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
@@ -682,12 +750,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::Repo => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, (rect.w - 2.0 * INNER) / 3.0, rect.h), None, label(Text::SettingsRepo.get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                row_plate(&mut items, rect, None, focus);
+                row_label(&mut items, rect, (rect.w - 2.0 * INNER) / 3.0, Text::SettingsRepo.get(lang), None, Tone::Text);
                 let text = Text::CommonOpen.get(lang);
-                let button = Rect::new(rect.x + rect.w - INNER - measure(text, 13.0, false) - 28.0, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 28.0, CONTROL);
-                item(&mut items, button, Some(Part::OpenRepo), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::OpenRepo) }), true);
-                item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                let button = Controls::new(rect).button(measure, text);
+                text_button(&mut items, button, Part::OpenRepo, text, false, hover);
                 let address = crate::update::REPO.trim_start_matches("https://");
                 let left = rect.x + INNER + (rect.w - 2.0 * INNER) / 3.0;
                 item(&mut items, Rect::new(left, rect.y, (button.x - GAP - 8.0 - left).max(0.0), rect.h), None, label(address, 12.0, Tone::Quiet, false, Align::Right), true);
@@ -701,24 +768,22 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let lines = places.iter().map(|(line, _)| *line + 1).max().unwrap_or(0);
                 let height = ROW + (lines as f32 * (CONTROL + GAP) - GAP).max(0.0) + if lines > 0 { GRID_BOTTOM } else { 0.0 };
                 let rect = Rect::new(x0, y, content_width, height - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, rect.w - 2.0 * INNER, ROW - ROW_GAP), None, label(Text::SettingsContributors.get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                row_plate(&mut items, rect, None, focus);
+                row_label(&mut items, rect, rect.w - 2.0 * INNER, Text::SettingsContributors.get(lang), None, Tone::Text);
                 for (i, (login, (line, offset))) in people.iter().zip(&places).enumerate() {
                     let chip = Rect::new(rect.x + INNER + offset, rect.y + ROW + *line as f32 * (CONTROL + GAP), widths[i], CONTROL);
-                    let part = Part::Contributor(i);
-                    item(&mut items, chip, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                    item(&mut items, chip, None, label(login.as_str(), 13.0, Tone::Text, false, Align::Center), true);
+                    text_button(&mut items, chip, Part::Contributor(i), login, false, hover);
                 }
                 y += height;
             }
             Entry::Snippets => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, None, focus);
                 let right = rect.x + rect.w - INNER;
                 let room = (right - x0 - INNER).max(0.0);
                 let text = Text::SnippetsAdd.get(lang);
-                let add = Rect::new(right - measure(text, 13.0, false) - 40.0, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, (add.x - GAP - rect.x - INNER).max(0.0), rect.h), None, label(Text::SettingsSnippets.get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let add = Controls::new(rect).take(measure(text, 13.0, false) + 40.0, CONTROL);
+                row_label(&mut items, rect, (add.x - GAP - rect.x - INNER).max(0.0), Text::SettingsSnippets.get(lang), None, Tone::Text);
                 icon_button(&mut items, add, Part::SnippetAdd, '\u{E710}', text, hover);
                 // A line a snippet: its name, what it types and the button that deletes it; then the one being added.
                 let mut line_y = y + ROW - ROW_GAP;
@@ -738,10 +803,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         text_field(&mut items, rect, part, editing, page.edit_cursor, shown, placeholder);
                     }
                     if i < count {
-                        let delete = Rect::new(right - CONTROL, line_y, CONTROL, CONTROL);
-                        let part = Part::SnippetDelete(i);
-                        item(&mut items, delete, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                        item(&mut items, delete, None, Visual::Glyph { ch: '\u{E711}', size: 10.0, tone: Tone::Quiet }, true);
+                        glyph_button(&mut items, Rect::new(right - CONTROL, line_y, CONTROL, CONTROL), Part::SnippetDelete(i), '\u{E711}', hover);
                     }
                     line_y += CONTROL + GAP;
                 }
@@ -749,11 +811,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::Layouts => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, None, focus);
                 let right = rect.x + rect.w - INNER;
                 let text = Text::AppSaveLayout.get(lang);
-                let save = Rect::new(right - measure(text, 13.0, false) - 40.0, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, (save.x - GAP - rect.x - INNER).max(0.0), rect.h), None, label(Text::SettingsLayouts.get(lang), 13.0, Tone::Text, false, Align::Left), true);
+                let save = Controls::new(rect).take(measure(text, 13.0, false) + 40.0, CONTROL);
+                row_label(&mut items, rect, (save.x - GAP - rect.x - INNER).max(0.0), Text::SettingsLayouts.get(lang), None, Tone::Text);
                 icon_button(&mut items, save, Part::LayoutSave, '\u{E74E}', text, hover);
                 // A line a layout: its name (pressed, it is renamed), the buttons that open it here and delete it; then the
                 // one being saved.
@@ -767,10 +829,8 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     let editing = page.editing.as_ref().filter(|(id, _)| page.env_row == i && *id == LAYOUT_NAME_ID).map(|(_, text)| text.clone());
                     text_field(&mut items, name_rect, Part::LayoutName(i), editing, page.edit_cursor, name, Text::ProfileName.get(lang));
                     if i < count {
-                        for (part, rect, glyph) in [(Part::LayoutOpen(i), open, '\u{E8A7}'), (Part::LayoutDelete(i), Rect::new(right - CONTROL, line_y, CONTROL, CONTROL), '\u{E74D}')] {
-                            item(&mut items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                            item(&mut items, rect, None, Visual::Glyph { ch: glyph, size: 11.0, tone: Tone::Quiet }, true);
-                        }
+                        glyph_button(&mut items, open, Part::LayoutOpen(i), '\u{E8A7}', hover);
+                        glyph_button(&mut items, Rect::new(right - CONTROL, line_y, CONTROL, CONTROL), Part::LayoutDelete(i), '\u{E74D}', hover);
                     }
                     line_y += CONTROL + GAP;
                 }
@@ -778,7 +838,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::NewProfile => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, None, focus);
                 let text = Text::ProfileNew.get(lang);
                 let button = Rect::new(rect.x + INNER, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
                 icon_button(&mut items, button, Part::NewProfile, '\u{E710}', text, hover);
@@ -786,26 +846,23 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::ProfileHeader => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
-                let mid = rect.y + (rect.h - CONTROL) / 2.0;
+                row_plate(&mut items, rect, None, focus);
+                let mut controls = Controls::new(rect);
                 let text = Text::ProfileBack.get(lang);
-                let back = Rect::new(rect.x + INNER, mid, measure(text, 13.0, false) + 40.0, CONTROL);
+                let back = Rect::new(rect.x + INNER, controls.mid, measure(text, 13.0, false) + 40.0, CONTROL);
                 icon_button(&mut items, back, Part::ProfileBack, '\u{E72B}', text, hover);
                 let profile = edited(page, view);
-                let mut right = rect.x + rect.w - INNER;
                 // A profile written in the settings is deleted; the entry of a shell found on the machine is taken out, which
                 // puts it back as found. A shell nothing changes has neither.
                 if let Some(profile) = profile.filter(|p| profile_edit::has_entry(view.settings, &p.id)) {
                     let action = if view.found.iter().any(|f| f.id == profile.id) { Text::ProfileRestore } else { Text::ProfileDelete };
                     let text = action.get(lang);
-                    let button = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
-                    item(&mut items, button, Some(Part::DeleteProfile), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::DeleteProfile) }), true);
-                    item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
-                    right = button.x - GAP;
+                    let button = controls.button(measure, text);
+                    text_button(&mut items, button, Part::DeleteProfile, text, false, hover);
                 }
                 let name_x = back.x + back.w + 2.0 * GAP;
                 let name = profile.map_or(String::new(), |p| p.name.clone());
-                item(&mut items, Rect::new(name_x, rect.y, (right - name_x).max(0.0), rect.h), None, label(name, 13.0, Tone::Text, true, Align::Left), true);
+                item(&mut items, Rect::new(name_x, rect.y, (controls.right - name_x).max(0.0), rect.h), None, label(name, 13.0, Tone::Text, true, Align::Left), true);
                 y += ROW;
             }
             Entry::ProfileField(field) => {
@@ -831,9 +888,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         let current = profile.and_then(|p| p.options.color_scheme.as_deref());
                         let text = Text::ProfileSameAsWindow.get(lang);
                         let same = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
-                        let same_part = Part::ProfileScheme(None);
-                        item(&mut items, same, Some(same_part), Visual::Plate(Fill::Button { selected: current.is_none(), hover: hover == Some(same_part) }), true);
-                        item(&mut items, same, None, label(text, 13.0, if current.is_none() { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                        option_button(&mut items, same, Part::ProfileScheme(None), text, current.is_none(), hover);
                         let columns = (((room + TILE_GAP) / (TILE.0 + TILE_GAP)).floor() as usize).max(1);
                         let tile_w = ((room - TILE_GAP * (columns - 1) as f32) / columns as f32).max(0.0);
                         for (i, name) in theme_names.iter().enumerate() {
@@ -858,8 +913,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         item(&mut items, value_box, None, label(format!("{size:.0}"), 13.0, if own.is_some() { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
                         if own.is_some() {
                             let reset = Rect::new(minus.x - GAP - RESET, y + (ROW - ROW_GAP - RESET) / 2.0, RESET, RESET);
-                            item(&mut items, reset, Some(Part::ProfileFontReset), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(Part::ProfileFontReset) }), true);
-                            item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                            glyph_button(&mut items, reset, Part::ProfileFontReset, '\u{E777}', hover);
                         } else {
                             let x = x0 + INNER + room / 3.0;
                             item(&mut items, Rect::new(x, y, (minus.x - GAP - x).max(0.0), ROW - ROW_GAP), None, label(Text::ProfileSameAsWindow.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
@@ -885,9 +939,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                                 let editing = page.editing.as_ref().filter(|(edit_id, _)| this_row && *edit_id == id).map(|(_, text)| text.clone());
                                 text_field(&mut items, rect, cell_part, editing, page.edit_cursor, shown, placeholder);
                             }
-                            let delete_part = Part::EnvDelete(i);
-                            item(&mut items, delete, Some(delete_part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(delete_part) }), true);
-                            item(&mut items, delete, None, Visual::Glyph { ch: '\u{E711}', size: 10.0, tone: Tone::Quiet }, true);
+                            glyph_button(&mut items, delete, Part::EnvDelete(i), '\u{E711}', hover);
                             line_y += CONTROL + GAP;
                             if let Some(error) = error_of(profile_edit::ENV_KEY_ID).filter(|_| this_row) {
                                 item(&mut items, Rect::new(key_rect.x, line_y - GAP + 2.0, room, 18.0), None, label(error, 12.0, Tone::Error, false, Align::Left), true);
@@ -903,9 +955,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         if field.browses() {
                             let text = Text::ProfileBrowse.get(lang);
                             let browse = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
-                            let browse_part = Part::Browse(field);
-                            item(&mut items, browse, Some(browse_part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(browse_part) }), true);
-                            item(&mut items, browse, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                            text_button(&mut items, browse, Part::Browse(field), text, false, hover);
                             field_right = browse.x - GAP;
                         }
                         let left = x0 + INNER + room / 3.0 + GAP;
@@ -978,9 +1028,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                                 Some((line, offset)) => Rect::new(rect.x + INNER + offset, mid + *line as f32 * (CONTROL + GAP), w, CONTROL),
                                 None => Rect::new(at - w, mid, w, CONTROL),
                             };
-                            let part = Part::Option(id, i);
-                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: i == chosen, hover: hover == Some(part) }), true);
-                            item(&mut items, button, None, label(text, 13.0, if i == chosen { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                            option_button(&mut items, button, Part::Option(id, i), text, i == chosen, hover);
                             at = button.x - GAP;
                         }
                         control_left = at + GAP;
@@ -1000,10 +1048,8 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
                         let value_box = Rect::new(plus.x - 72.0, mid, 72.0, CONTROL);
                         let minus = Rect::new(value_box.x - CONTROL, mid, CONTROL, CONTROL);
-                        for (button, part, ch) in [(minus, Part::Minus(id), '\u{E738}'), (plus, Part::Plus(id), '\u{E710}')] {
-                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                            item(&mut items, button, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
-                        }
+                        glyph_button(&mut items, minus, Part::Minus(id), '\u{E738}', hover);
+                        glyph_button(&mut items, plus, Part::Plus(id), '\u{E710}', hover);
                         item(&mut items, value_box, None, label(number_text(range, n), 13.0, Tone::Text, false, Align::Center), true);
                         control_left = minus.x;
                         y += ROW + drop;
@@ -1049,9 +1095,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             item(&mut items, tile, Some(part), Visual::Tile { scheme: i, selected: *name == current, hover: hovered }, true);
                             // A scheme of the user's own (imported or written) can go again; the built-in ones cannot.
                             if hovered && view.settings.schemes.iter().any(|scheme| scheme.name == *name) {
-                                let button = Rect::new(tile.x + tile.w - RESET - 6.0, tile.y + 6.0, RESET, RESET);
-                                item(&mut items, button, Some(delete), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(delete) }), true);
-                                item(&mut items, button, None, Visual::Glyph { ch: '\u{E74D}', size: 11.0, tone: Tone::Quiet }, true);
+                                glyph_button(&mut items, Rect::new(tile.x + tile.w - RESET - 6.0, tile.y + 6.0, RESET, RESET), delete, '\u{E74D}', hover);
                             }
                         }
                         y += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP) - TILE_GAP + 12.0;
@@ -1060,8 +1104,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         for (part, text) in [(Part::ImportSchemes, Text::AppImportSchemes), (Part::ImportItermColors, Text::AppImportItermColors)] {
                             let text = text.get(lang);
                             let button = Rect::new(at, y, measure(text, 13.0, false) + 28.0, CONTROL);
-                            item(&mut items, button, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                            item(&mut items, button, None, label(text, 13.0, Tone::Text, false, Align::Center), true);
+                            text_button(&mut items, button, part, text, false, hover);
                             at = button.x + button.w + GAP;
                         }
                         y += CONTROL + GRID_BOTTOM;
@@ -1082,9 +1125,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             let edit = Rect::new(line.x + line.w - INNER - CONTROL, line.y + (line.h - CONTROL) / 2.0, CONTROL, CONTROL);
                             item(&mut items, Rect::new(name_x, line.y, (edit.x - GAP - name_x).max(0.0), line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
                             // Its editor, pressed over the row that makes it the default.
-                            let part = Part::EditProfile(i);
-                            item(&mut items, edit, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                            item(&mut items, edit, None, Visual::Glyph { ch: '\u{E70F}', size: 11.0, tone: Tone::Quiet }, true);
+                            glyph_button(&mut items, edit, Part::EditProfile(i), '\u{E70F}', hover);
                             y += RADIO_ROW;
                         }
                     }
@@ -1094,9 +1135,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     let beside = !stacked && control_width > 0.0;
                     let x = if beside { control_left - GAP - RESET } else { right - RESET };
                     let reset = Rect::new(x, rect.y + (ROW - ROW_GAP - RESET) / 2.0, RESET, RESET);
-                    let part = Part::Reset(id);
-                    item(&mut items, reset, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                    item(&mut items, reset, None, Visual::Glyph { ch: '\u{E777}', size: 11.0, tone: Tone::Quiet }, true);
+                    glyph_button(&mut items, reset, Part::Reset(id), '\u{E777}', hover);
                 }
             }
         }
@@ -1142,9 +1181,21 @@ mod tests {
                 Section::Profiles => 2,
                 _ => 0,
             };
-            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own };
+            // And a heading over each row that starts a section of the page.
+            let headings = settings_ui::in_section(*section).filter(|row| settings_ui::heading_before(row.id).is_some()).count();
+            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own + headings };
             assert_eq!(shown, expected, "{section:?}");
         }
+    }
+
+    #[test]
+    fn a_heading_stands_over_the_row_that_starts_its_section_and_takes_no_presses() {
+        let terminal = Section::ALL.iter().position(|s| *s == Section::Terminal).unwrap();
+        let frame = frame(&Page { section: terminal, ..Page::default() }, &Settings::default());
+        let at = frame.entries.iter().position(|e| matches!(e, Entry::Heading(_))).expect("the Terminal page has a heading");
+        assert!(matches!(frame.entries[at + 1], Entry::Setting(row) if row.id == "notifications.toast"));
+        let heading = frame.rows[at];
+        assert!(frame.items.iter().filter(|item| item.part.is_some()).all(|item| !heading.contains(item.rect.x + 1.0, item.rect.y + 1.0) || item.rect.y >= heading.y + heading.h));
     }
 
     #[test]

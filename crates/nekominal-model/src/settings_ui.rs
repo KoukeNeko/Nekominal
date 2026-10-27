@@ -502,6 +502,19 @@ impl Row {
     }
 }
 
+/// The headings that split a page into sections, each over the row with this id and the rows after it on its page.
+const HEADINGS: &[(&str, Text)] = &[("notifications.toast", Text::SettingsNotificationsHeading)];
+
+/// The heading that starts a section of its page at the row with this id, if one does.
+pub fn heading_before(id: &str) -> Option<Text> {
+    HEADINGS.iter().find(|(first, _)| *first == id).map(|(_, text)| *text)
+}
+
+/// The page a heading is on: the page of the row it stands over.
+pub fn heading_section(text: Text) -> Section {
+    HEADINGS.iter().find(|(_, heading)| *heading == text).and_then(|(first, _)| find(first)).map_or(Section::Terminal, |row| row.section)
+}
+
 /// The rows of the shortcuts page: every command, in the order of the palette, the ones it leaves out (the copy that
 /// leaves the key to the program, the numbered tabs, the profiles menu) included: each has a shortcut to change.
 pub fn key_rows() -> impl Iterator<Item = Command> {
