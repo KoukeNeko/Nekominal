@@ -73,7 +73,6 @@ pub fn ports_of(listeners: &[Listener], pids: &[u32]) -> Vec<u16> {
 }
 
 /// What opens a port in the browser.
-#[allow(dead_code, reason = "for the badge, which is not drawn yet")]
 pub fn url(port: u16) -> String {
     format!("http://localhost:{port}")
 }

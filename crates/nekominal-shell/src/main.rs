@@ -19,7 +19,6 @@ mod hooks;
 mod icons;
 mod integration;
 mod layout;
-#[allow(dead_code)]
 mod logic;
 mod mark;
 mod motion;

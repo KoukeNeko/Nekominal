@@ -1394,11 +1394,7 @@ impl App {
         let tabs: Vec<logic::TabAttention> = self
             .tabs
             .iter()
-            .enumerate()
-            .map(|(i, tab)| {
-                let status = tab.status();
-                logic::TabAttention { state: status.state, unread: status.attention.is_some(), selected: i == self.selected, waiting: logic::is_urgent(status.state) }
-            })
+            .map(|tab| logic::TabAttention { waiting: logic::is_urgent(tab.status().state) })
             .collect();
         let title = logic::window_title("Nekominal", logic::waiting_count(&tabs), self.active);
         if title != self.window_title {

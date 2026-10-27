@@ -2,13 +2,11 @@
 //! terminal setup (OSC 52 policy, when a paste asks first). Kept apart from the WinUI code so they can be tested
 //! without a window.
 
-use nekominal_model::commands::Command;
 use nekominal_model::layout::{Axis, Rect, Splitter};
 use nekominal_model::settings::{
-    Cursor, CursorStyle as CursorShapeSetting, OPACITY_RANGE, Osc52Policy, PasteSettings, Settings, TITLE_SEPARATOR,
-    TitlePart, TitleSlot,
+    Cursor, CursorStyle as CursorShapeSetting, Osc52Policy, PasteSettings, Settings, TITLE_SEPARATOR, TitlePart,
+    TitleSlot,
 };
-use nekominal_model::settings_ui::Range;
 use nekominal_term::CoreConfig;
 use nekominal_term::agent_status::{AgentRecord, AgentState};
 use nekominal_term::alacritty_terminal::term::Osc52;
@@ -170,13 +168,6 @@ pub struct TabStatus {
     pub message: Option<String>,
 }
 
-/// The pane wants an answer or a look: a bell, a notification or a failed exit that nobody has seen, or an agent
-/// that waits for an answer or failed. A pane in the tab that is not the focused one then gets a warning line.
-pub fn needs_response(pane: &PaneSignal) -> bool {
-    pane.attention.is_some()
-        || pane.agent.as_ref().is_some_and(|r| matches!(r.state, AgentState::Blocked | AgentState::Error))
-}
-
 /// A bell or a notification ranks above nothing and below every agent state.
 const ATTENTION_RANK: u8 = 1;
 
@@ -233,20 +224,6 @@ pub fn tab_status(panes: &[PaneSignal]) -> TabStatus {
     best.map(|(_, status)| status).unwrap_or_default()
 }
 
-/// What the panes hidden by a zoom ask for: the status of those that wait for the user (`needs_response`), or `None`
-/// when nothing is zoomed or none of the hidden panes waits. `zoomed` is the index in `panes` of the zoomed pane, which
-/// is on screen and needs no such mark. The corner label of the zoomed pane shows it.
-pub fn hidden_alert(panes: &[PaneSignal], zoomed: Option<usize>) -> Option<TabStatus> {
-    let zoomed = zoomed?;
-    let waiting: Vec<PaneSignal> = panes
-        .iter()
-        .enumerate()
-        .filter(|(index, pane)| *index != zoomed && needs_response(pane))
-        .map(|(_, pane)| pane.clone())
-        .collect();
-    (!waiting.is_empty()).then(|| tab_status(&waiting))
-}
-
 /// How much a state needs the user, higher first. It is `tab_status`'s order, which is `AgentState::urgency` doubled
 /// so that a bell or a notification fits between idle and done; the list of tabs sorts by it.
 pub fn state_rank(state: TabState) -> u8 {
@@ -267,99 +244,11 @@ pub fn is_urgent(state: TabState) -> bool {
     matches!(state, TabState::Blocked | TabState::Error)
 }
 
-/// What a window-level alert (an announcement to assistive technology, a flash of the taskbar button) is raised for.
-/// A bell is not one: it has its own settings (`bell_effects`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AlertKind {
-    Blocked,
-    Error,
-    Notification,
-}
-
-pub fn alert_kind(status: &TabStatus) -> Option<AlertKind> {
-    match status.state {
-        TabState::Blocked => Some(AlertKind::Blocked),
-        TabState::Error => Some(AlertKind::Error),
-        TabState::Attention if status.attention == Some(Attention::Notification) => Some(AlertKind::Notification),
-        _ => None,
-    }
-}
-
-/// What a tab asks of the user at one moment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Need {
-    /// A pane of the tab waits for the user (`needs_response`).
-    pub waiting: bool,
-    /// The reason, when it is one a window-level alert is raised for.
-    pub alert: Option<AlertKind>,
-}
-
-impl Need {
-    pub fn of(panes: &[PaneSignal], status: &TabStatus) -> Need {
-        Need { waiting: panes.iter().any(needs_response), alert: alert_kind(status) }
-    }
-}
-
-/// How many alerts may be outstanding at once: a third tab that needs a response while two alerts are still waiting
-/// for the user gets its mark, its unread flag and its place in the counts, but no announcement and no flash.
-pub const MAX_ALERTS: usize = 2;
-
-/// What the user has been shown of the response a tab needs. The flag is separate from the status the chip draws, which
-/// is read live from the panes: it says only that the response has not been looked at.
-#[derive(Clone, Debug, Default)]
-pub struct Watch {
-    need: Need,
-    unread: bool,
-    alerted: bool,
-}
-
-impl Watch {
-    /// A response nobody has looked at yet: it began while the tab was out of sight (another tab was selected, or the
-    /// window was not active), and neither viewing the tab nor the end of the need has come since.
-    pub fn unread(&self) -> bool {
-        self.unread
-    }
-
-    /// A window-level alert was raised for it and is still outstanding.
-    pub fn alerted(&self) -> bool {
-        self.alerted
-    }
-
-    /// The tab asks for `now`. `watched` is whether the user is looking at it: it is the selected tab of the active
-    /// window. `other_alerts` is how many other tabs have an alert that is still outstanding. Returns the alert to
-    /// raise, if this is the moment for one.
-    ///
-    /// A need that begins (or turns into a more urgent kind) while the tab is out of sight is unread. Watching the
-    /// tab, or the need ending, clears it; the tab being left again afterwards does not bring it back.
-    pub fn observe(&mut self, now: Need, watched: bool, other_alerts: usize) -> Option<AlertKind> {
-        let before = std::mem::replace(&mut self.need, now);
-        if !now.waiting || watched {
-            self.unread = false;
-            self.alerted = false;
-            return None;
-        }
-        let fresh = !before.waiting || (now.alert.is_some() && now.alert != before.alert);
-        self.unread |= fresh;
-        let raise = if fresh && other_alerts < MAX_ALERTS { now.alert } else { None };
-        self.alerted |= raise.is_some();
-        raise
-    }
-}
-
-/// A tab as the counts of the position plate and of the window title see it.
+/// A tab as the count in the window title sees it.
 #[derive(Clone, Copy, Debug)]
 pub struct TabAttention {
-    pub state: TabState,
-    pub unread: bool,
-    pub selected: bool,
     /// A pane of the tab waits for the user.
     pub waiting: bool,
-}
-
-/// The `!N` of the position plate: the tabs that are not selected, are blocked or failed, and have a response that
-/// nobody has looked at.
-pub fn plate_count(tabs: &[TabAttention]) -> usize {
-    tabs.iter().filter(|tab| tab.unread && !tab.selected && is_urgent(tab.state)).count()
 }
 
 /// How many tabs wait for the user now, seen or not: the count in the title of a window that is not active.
@@ -392,71 +281,11 @@ pub fn next_waiting(waiting: &[bool], selected: usize) -> Option<usize> {
     (1..count).map(|step| (selected + step) % count).find(|index| waiting[*index])
 }
 
-/// Where the pane that waits for the user is among the panes of its tab, as (position, count) one-based; the first
-/// such pane in `waiting` (the panes in the order of the layout). Nothing for a tab with a single pane.
-pub fn waiting_pane(waiting: &[bool]) -> Option<(usize, usize)> {
-    if waiting.len() < 2 {
-        return None;
-    }
-    waiting.iter().position(|pane| *pane).map(|index| (index + 1, waiting.len()))
-}
-
-/// The heading of a group of rows in the list of every tab: the state its tabs are in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Heading {
-    pub state: TabState,
-    /// Told apart for a state of `Attention` only: a notification and a bell are two groups.
-    pub attention: Option<Attention>,
-}
-
-/// The order of the rows of the list of every tab, as (index of the tab in strip order, heading it opens). While some
-/// tab is unread (`any_unread`) the rows are grouped by state, the most urgent group first (`state_rank`), each group in
-/// strip order, and the first row of a group carries its heading. Otherwise the rows keep the strip order and have
-/// none. `tabs` are the state and the attention of every tab in strip order.
-pub fn list_order(tabs: &[(TabState, Option<Attention>)], any_unread: bool) -> Vec<(usize, Option<Heading>)> {
-    if !any_unread {
-        return (0..tabs.len()).map(|index| (index, None)).collect();
-    }
-    let heading = |index: usize| {
-        let (state, attention) = tabs[index];
-        Heading { state, attention: if state == TabState::Attention { attention } else { None } }
-    };
-    let kind_order = |heading: Heading| match heading.attention {
-        Some(Attention::Notification) => 0,
-        Some(_) => 1,
-        None => 2,
-    };
-    let mut order: Vec<usize> = (0..tabs.len()).collect();
-    order.sort_by_key(|index| (std::cmp::Reverse(state_rank(tabs[*index].0)), kind_order(heading(*index)), *index));
-    let mut previous = None;
-    order
-        .into_iter()
-        .map(|index| {
-            let current = heading(index);
-            let opens = previous != Some(current);
-            previous = Some(current);
-            (index, opens.then_some(current))
-        })
-        .collect()
-}
-
 /// No chip is narrower than this, in DIP.
 pub const CHIP_MIN_WIDTH: f64 = 48.0;
 /// No chip is wider than this.
 pub const CHIP_MAX_WIDTH: f64 = 216.0;
-/// A chip narrower than this shows its number instead of its title.
-pub const ORDINAL_BELOW: f64 = 64.0;
-/// Below this strip width the position plate shows only the total.
-pub const PLATE_TOTAL_ONLY_BELOW: f64 = 300.0;
-/// Room kept around a chip that is scrolled into view.
-pub const REVEAL_MARGIN: f64 = 12.0;
-/// Width of what covers a cut edge of the strip: the block that counts the hidden chips (32) and its fade (16).
-pub const COUNT_BLOCK_WIDTH: f64 = 48.0;
 
-/// The width of every chip of the strip, for `count` tabs in a strip `available` DIP wide with `gap` between chips: an
-/// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
-/// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
-/// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
 /// The commands of a PowerShell history file (PSReadLine's `ConsoleHost_history.txt`), the latest first, each once, at
 /// most `limit` of them. The lines that go on a command (it ends with a backtick) are joined to it.
 pub fn recent_commands(history: &str, limit: usize) -> Vec<String> {
@@ -520,6 +349,10 @@ pub fn tabs_right_of(count: usize, from: usize) -> Vec<usize> {
     (from.saturating_add(1)..count).rev().collect()
 }
 
+/// The width of every chip of the strip, for `count` tabs in a strip `available` DIP wide with `gap` between chips: an
+/// equal share of the strip, kept between [`CHIP_MIN_WIDTH`] and [`CHIP_MAX_WIDTH`]. Only these two numbers decide it.
+/// Which tab is selected and what the titles say do not, so nothing in the strip moves when a tab is selected or a
+/// program retitles one. Once the floor is reached the chips together are wider than the strip, and it scrolls.
 pub fn tab_width(count: usize, available: f64, gap: f64) -> f64 {
     if count == 0 {
         return CHIP_MAX_WIDTH;
@@ -571,242 +404,6 @@ pub fn profile_mark(icon: &str) -> Mark {
     }
 }
 
-/// Whether a chip of this width shows its number instead of its title.
-pub fn shows_ordinal(width: f64) -> bool {
-    width < ORDINAL_BELOW
-}
-
-/// Width of the whole strip: the chips, the gaps between them and `padding` on both sides.
-pub fn strip_extent(widths: &[f64], gap: f64, padding: f64) -> f64 {
-    widths.iter().sum::<f64>() + gap * widths.len().saturating_sub(1) as f64 + padding
-}
-
-/// How many chips lie completely outside the visible part of the strip, to the left and to the right. A chip that
-/// shows even partly counts as visible, so hidden plus visible chips are all of them.
-pub fn hidden_counts(widths: &[f64], gap: f64, padding: f64, offset: f64, viewport: f64) -> (usize, usize) {
-    let (mut left, mut right) = (0, 0);
-    let mut edge = padding / 2.0;
-    for width in widths {
-        if edge + width <= offset {
-            left += 1;
-        } else if edge >= offset + viewport {
-            right += 1;
-        }
-        edge += width + gap;
-    }
-    (left, right)
-}
-
-/// The scroll offset that shows the chip at `left` (strip coordinates) of `width`, with `margin` around it. An
-/// edge with chips behind it is covered by a count block of `block` DIP, so the margin starts behind the block. The
-/// offset stays as it is when the chip is already in view.
-pub fn reveal_offset(
-    (left, width): (f64, f64),
-    offset: f64,
-    viewport: f64,
-    extent: f64,
-    margin: f64,
-    block: f64,
-) -> f64 {
-    let max_offset = (extent - viewport).max(0.0);
-    let offset = offset.clamp(0.0, max_offset);
-    let inset_left = margin + if offset > 0.0 { block } else { 0.0 };
-    let inset_right = margin + if offset < max_offset { block } else { 0.0 };
-    if left < offset + inset_left {
-        let target = left - margin - block;
-        return if target <= 0.0 { 0.0 } else { target.min(max_offset) };
-    }
-    if left + width > offset + viewport - inset_right {
-        let target = left + width + margin + block - viewport;
-        return if target >= max_offset { max_offset } else { target.max(0.0) };
-    }
-    offset
-}
-
-/// What the position plate says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Plate {
-    /// `current / total`, both one-based.
-    Position { current: usize, total: usize },
-    /// A narrow strip keeps only the count.
-    Total(usize),
-}
-
-/// The plate for `total` tabs with the zero-based `selected` one: none for a single tab, the total alone when the
-/// strip is narrower than [`PLATE_TOTAL_ONLY_BELOW`] or the bar is in its narrow tier (the room the plate would
-/// take is what the window cannot spare).
-pub fn plate(selected: usize, total: usize, strip_width: f64, tier: BarTier) -> Option<Plate> {
-    if total < 2 {
-        None
-    } else if strip_width < PLATE_TOTAL_ONLY_BELOW || tier == BarTier::Narrow {
-        Some(Plate::Total(total))
-    } else {
-        Some(Plate::Position { current: selected + 1, total })
-    }
-}
-
-/// Which of the controls on the right of the top bar the width of the window leaves room for. The new-tab and
-/// profile buttons on the left never fold, and the menu button on the right never does either.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum BarTier {
-    /// Only the menu button: the rest is in the menu.
-    Narrow,
-    /// The palette and the menu button.
-    Medium,
-    /// The split pair, the palette and the menu button.
-    Wide,
-}
-
-/// From this window width (DIP) the bar is in the medium tier, and from [`WIDE_FROM`] in the wide one.
-pub const MEDIUM_FROM: f64 = 800.0;
-pub const WIDE_FROM: f64 = 1200.0;
-/// A window that gets narrower keeps its tier for this much below the width a tier starts at, so dragging an edge
-/// across a boundary does not flicker.
-pub const TIER_HYSTERESIS: f64 = 24.0;
-
-/// The commands the right-hand group of the bar can show, with the tier from which each shows. This is the order of
-/// `nekominal_model::menu::TOOLBAR` (a test keeps them one list); the split pair folds together, before the palette.
-pub const TOOLBAR_TIERS: [(Command, BarTier); 3] = [
-    (Command::PaneSplitRight, BarTier::Wide),
-    (Command::PaneSplitDown, BarTier::Wide),
-    (Command::AppPalette, BarTier::Medium),
-];
-
-impl BarTier {
-    /// The width from which the tier starts when the window grows.
-    fn starts_at(self) -> f64 {
-        match self {
-            BarTier::Narrow => 0.0,
-            BarTier::Medium => MEDIUM_FROM,
-            BarTier::Wide => WIDE_FROM,
-        }
-    }
-
-    /// The tier of a window `width` DIP wide that had `previous`. A window that grows takes the tier of its width at
-    /// once; one that shrinks keeps `previous` until it is [`TIER_HYSTERESIS`] below where that tier starts.
-    pub fn at(width: f64, previous: Option<BarTier>) -> BarTier {
-        let mut tier = BarTier::Narrow;
-        for candidate in [BarTier::Medium, BarTier::Wide] {
-            let held = previous.is_some_and(|previous| previous >= candidate)
-                && width + TIER_HYSTERESIS >= candidate.starts_at();
-            if width >= candidate.starts_at() || held {
-                tier = candidate;
-            }
-        }
-        tier
-    }
-
-    /// Whether the right-hand group of the bar shows `command` in this tier.
-    pub fn shows(self, command: Command) -> bool {
-        TOOLBAR_TIERS.iter().any(|(shown, from)| *shown == command && self >= *from)
-    }
-
-    /// The divider between the split pair and the rest of the group shows when both are there.
-    pub fn shows_divider(self) -> bool {
-        self == BarTier::Wide
-    }
-
-    /// How many controls the right-hand group has, the menu button included.
-    pub fn control_count(self) -> usize {
-        1 + TOOLBAR_TIERS.iter().filter(|(command, _)| self.shows(*command)).count()
-    }
-}
-
-/// Width of a tool button of the bar, of the padding of the group around them and of the divider with its margins, in
-/// DIP (`resources.xaml`, `shell.xaml`; a test keeps them in step).
-pub const TOOL_BUTTON_WIDTH: f64 = 32.0;
-pub const CLUSTER_PADDING: f64 = 4.0;
-pub const DIVIDER_WIDTH: f64 = 7.0;
-
-/// The width of the group on the right of the bar in a tier.
-pub fn cluster_width(tier: BarTier) -> f64 {
-    CLUSTER_PADDING
-        + TOOL_BUTTON_WIDTH * tier.control_count() as f64
-        + if tier.shows_divider() { DIVIDER_WIDTH } else { 0.0 }
-}
-
-/// The smallest the drag area of the window gets, however narrow the window.
-pub const MIN_DRAG_WIDTH: f64 = 48.0;
-
-/// What the bar spends on neither the strip, the position plate, the caption buttons nor the group on the right: the
-/// app mark and its margins (12 + 22 + 8), the margin and the new-tab and profile buttons (4 + 32 + 22), the margins
-/// of the group on the right (8 + 8) and the smallest drag area (`shell.xaml`; a test keeps them in step).
-pub const BAR_FIXED_WIDTH: f64 = 12.0 + 22.0 + 8.0 + 4.0 + 32.0 + 22.0 + 8.0 + 8.0 + MIN_DRAG_WIDTH;
-
-/// The smallest the strip gets, however narrow the window.
-pub const STRIP_MIN_WIDTH: f64 = 120.0;
-
-/// The width the strip and the position plate may share on a bar `bar_width` wide whose caption buttons (and the room
-/// the system keeps on the left) take `insets`.
-pub fn strip_budget(bar_width: f64, insets: f64, tier: BarTier) -> f64 {
-    (bar_width - insets - cluster_width(tier) - BAR_FIXED_WIDTH).max(STRIP_MIN_WIDTH)
-}
-
-/// Tabs in most-recently-used order, and the walk through that order while the keys of next/previous tab are
-/// held: every press steps through the order as it was before the first press, and the tab shown when the keys
-/// come up becomes the most recent.
-#[derive(Debug)]
-pub struct Mru<T> {
-    order: Vec<T>,
-    walk: Option<(Vec<T>, usize)>,
-}
-
-impl<T: Copy + PartialEq> Default for Mru<T> {
-    fn default() -> Self {
-        Mru { order: Vec::new(), walk: None }
-    }
-}
-
-impl<T: Copy + PartialEq> Mru<T> {
-    /// `tab` was selected some other way than by the keys: it becomes the most recent and any walk ends.
-    pub fn touch(&mut self, tab: T) {
-        self.order.retain(|other| *other != tab);
-        self.order.insert(0, tab);
-        self.walk = None;
-    }
-
-    /// A closed tab leaves the order; the walk ends.
-    pub fn remove(&mut self, tab: T) {
-        self.order.retain(|other| *other != tab);
-        self.walk = None;
-    }
-
-    pub fn most_recent(&self) -> Option<T> {
-        self.order.first().copied()
-    }
-
-    /// `closed` was closed while `selected` (if any) was the tab shown. It leaves the order, and the tab to show
-    /// next is returned: the selected one stays, and closing the selected one hands over to the tab used most
-    /// recently before it, not to a neighbour.
-    pub fn close(&mut self, closed: T, selected: Option<T>) -> Option<T> {
-        self.remove(closed);
-        if selected == Some(closed) { self.most_recent() } else { selected }
-    }
-
-    /// One press of next (`step` 1) or previous (`step` -1): the tab to show, or `None` with fewer than two tabs.
-    pub fn step(&mut self, step: isize) -> Option<T> {
-        if self.order.len() < 2 {
-            return None;
-        }
-        let (snapshot, position) = self.walk.get_or_insert_with(|| (self.order.clone(), 0));
-        let count = snapshot.len() as isize;
-        *position = (*position as isize + step).rem_euclid(count) as usize;
-        Some(snapshot[*position])
-    }
-
-    /// The keys came up: the tab shown last becomes the most recent.
-    pub fn commit(&mut self) {
-        if let Some((snapshot, position)) = self.walk.take() {
-            self.touch(snapshot[position]);
-        }
-    }
-
-    #[cfg(test)]
-    pub fn is_walking(&self) -> bool {
-        self.walk.is_some()
-    }
-}
-
 /// The last segment of a working directory as a tab shows it: `~` for the home folder, the drive (`C:`) for the
 /// root of a drive, `/` for the root of a POSIX path (a WSL shell reports those), otherwise the folder name, cleaned
 /// like any title (a shell reports whatever the path holds).
@@ -833,54 +430,11 @@ pub fn clean_title(raw: &str) -> String {
     clean_text(raw, MAX_TITLE_CHARS)
 }
 
-/// The most characters of a working directory a tooltip shows: the whole of any path Windows allows.
-pub const MAX_PATH_CHARS: usize = 520;
-
 /// [`clean_title`] with a limit of its own.
 pub fn clean_text(raw: &str, max: usize) -> String {
     let kept: String =
         raw.chars().filter(|c| !is_control_or_bidi(*c)).skip_while(|c| c.is_whitespace()).take(max).collect();
     kept.trim_end().to_owned()
-}
-
-/// The parts of a line of a tooltip that have something to say, joined by [`TITLE_SEPARATOR`]; none when none has.
-pub fn tip_line(parts: &[Option<&str>]) -> Option<String> {
-    let said: Vec<&str> = parts.iter().flatten().copied().filter(|part| !part.is_empty()).collect();
-    (!said.is_empty()).then(|| said.join(TITLE_SEPARATOR))
-}
-
-/// The tooltip of a chip, in at most four lines, each of them left out when it has nothing to say: the whole title (the
-/// chip cuts it short), the state when the tab is not at rest, the whole working directory, and the profile with the
-/// panes. The command line is not in it: its arguments may hold secrets.
-pub fn tab_tooltip(title: &str, state: Option<String>, cwd: Option<&str>, place: Option<String>) -> String {
-    [Some(title.to_owned()), state, cwd.map(str::to_owned), place]
-        .into_iter()
-        .flatten()
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The width of the zone at each end of the strip in which a dragged chip makes the strip scroll, in DIP.
-pub const DRAG_EDGE: f64 = 24.0;
-/// How fast the strip scrolls (DIP a second) at the inner border of that zone, and at the edge of the viewer or
-/// beyond it.
-pub const DRAG_SCROLL_SLOW: f64 = 200.0;
-pub const DRAG_SCROLL_FAST: f64 = 900.0;
-
-/// The scroll speed (DIP a second; negative toward the start of the strip, zero in the middle) for a dragged chip whose
-/// pointer is `x` DIP from the left edge of a viewer `viewport` DIP wide. It grows with the depth in the zone, so the
-/// strip starts at once and the user can slow it by moving back.
-pub fn drag_scroll_speed(x: f64, viewport: f64) -> f64 {
-    let ramp =
-        |depth: f64| DRAG_SCROLL_SLOW + (DRAG_SCROLL_FAST - DRAG_SCROLL_SLOW) * (depth / DRAG_EDGE).clamp(0.0, 1.0);
-    if x < DRAG_EDGE && x <= viewport / 2.0 {
-        -ramp(DRAG_EDGE - x)
-    } else if x > viewport - DRAG_EDGE {
-        ramp(x - (viewport - DRAG_EDGE))
-    } else {
-        0.0
-    }
 }
 
 /// The last segment of a working directory and the one before it as `parent/last`, for the tabs whose last
@@ -938,29 +492,6 @@ impl TitleParts {
     }
 }
 
-/// What the agent of a pane called its session and itself, kept after its record is gone. Seeing a finished agent
-/// dismisses its record, and a tab must not change its name for that; the label ends with the agent, when the shell
-/// is at its prompt again or the pane restarts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AgentLabel {
-    /// The session title of the last report that had one, cleaned like any title.
-    pub title: Option<String>,
-    /// The app id of the last report that had one.
-    pub app: Option<String>,
-}
-
-impl AgentLabel {
-    /// A report was set: what it names replaces the old name; what it leaves out keeps it.
-    pub fn remember(&mut self, record: &AgentRecord) {
-        if let Some(title) = record.title.as_deref().map(clean_title).filter(|title| !title.is_empty()) {
-            self.title = Some(title);
-        }
-        if let Some(app) = &record.app {
-            self.app = Some(app.clone());
-        }
-    }
-}
-
 /// What a part of the title says about a tab: nothing (an empty text) when it has nothing to say.
 fn part_text(part: TitlePart, parts: &TitleParts, with_parent: bool) -> String {
     match part {
@@ -1009,84 +540,6 @@ pub fn default_title(parts: &TitleParts, format: &[TitleSlot], with_parent: bool
         (parts.untitled.clone(), TitleSource::Untitled)
     } else {
         (title, TitleSource::Parts { folder })
-    }
-}
-
-/// For every tab whose title says its folder (`Some(title)`), whether another such tab has the same title, so it needs
-/// the parent folder to be told apart. Titles compare without case.
-pub fn colliding_folders(labels: &[Option<String>]) -> Vec<bool> {
-    labels
-        .iter()
-        .map(|label| {
-            label.as_deref().is_some_and(|label| {
-                labels.iter().flatten().filter(|other| other.eq_ignore_ascii_case(label)).count() > 1
-            })
-        })
-        .collect()
-}
-
-/// The entries of a list for which `add` put a row into it, in order. `add` leaves the list as it was when it
-/// returns false, so the row at an index of the list is always the row of the entry at that index: what Enter picks
-/// is what the row says, however many rows could not be built.
-pub fn keep_built<T>(entries: Vec<T>, mut add: impl FnMut(&T) -> bool) -> Vec<T> {
-    entries.into_iter().filter(|entry| add(entry)).collect()
-}
-
-/// The background opacity the sliders and commands asked for, kept until the next frame: a drag raises many value
-/// changes per frame and only the last of them is worth applying.
-#[derive(Debug, Default)]
-pub struct PendingOpacity(Option<f64>);
-
-impl PendingOpacity {
-    /// Records a request, rounded to a whole percent and kept inside the valid range.
-    pub fn request(&mut self, opacity: f64) {
-        self.0 = Some(((opacity * 100.0).round() / 100.0).clamp(OPACITY_RANGE.0, OPACITY_RANGE.1));
-    }
-
-    /// What the controls show: the latest request, or `applied` when nothing waits.
-    pub fn latest(&self, applied: f64) -> f64 {
-        self.0.unwrap_or(applied)
-    }
-
-    /// The opacity to apply in this frame: the request, unless it is what `applied` already is.
-    pub fn take(&mut self, applied: f64) -> Option<f64> {
-        self.0.take().filter(|opacity| (opacity - applied).abs() > 0.001)
-    }
-}
-
-/// Whether the opacity of the background could be put in effect. A failure while the slider moves is only logged (the
-/// next change applies again); one that is still there when the slider has rested (the settings are about to be
-/// written) is shown in the row of the opacity, until the next change.
-#[derive(Debug, Default)]
-pub struct OpacityApply {
-    failed: bool,
-    settled: bool,
-}
-
-impl OpacityApply {
-    /// The latest opacity is in effect.
-    pub fn applied(&mut self) {
-        *self = OpacityApply::default();
-    }
-
-    /// Applying the latest opacity failed.
-    pub fn failed(&mut self) {
-        *self = OpacityApply { failed: true, settled: false };
-    }
-
-    /// The slider (or a command) asked for another opacity: whatever the row said is out of date.
-    pub fn requested(&mut self) {
-        self.settled = false;
-    }
-
-    /// The slider has rested: a failure that is still there is now worth saying.
-    pub fn rested(&mut self) {
-        self.settled = self.failed;
-    }
-
-    /// The row of the opacity says `Not applied` instead of the percent.
-    pub fn shows_label(&self) -> bool {
-        self.failed && self.settled
     }
 }
 
@@ -1221,94 +674,6 @@ pub fn effects(before: &Settings, now: &Settings) -> Effects {
         sticky_header: before.sticky_header != now.sticky_header,
         titles: before.tabs != now.tabs,
     }
-}
-
-/// Width of the drawer, the narrowest it gets and the space between it and the edges of the window, in DIP.
-pub const DRAWER_WIDTH: f64 = 480.0;
-pub const DRAWER_MIN_WIDTH: f64 = 320.0;
-pub const DRAWER_MARGIN: f64 = 8.0;
-
-/// The width of the drawer in a body of `body_width` DIP: 480, less when the window is narrower than that plus its
-/// margins, never under 320.
-pub fn drawer_width(body_width: f64) -> f64 {
-    (body_width - 2.0 * DRAWER_MARGIN).clamp(DRAWER_MIN_WIDTH, DRAWER_WIDTH)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arrow {
-    Left,
-    Right,
-    Up,
-    Down,
-    Home,
-    End,
-}
-
-/// The item a navigation key moves to, from `current` among `count` items laid out `columns` to a row (a row of
-/// choices is `columns == count`, a list is 1). `None` when the key leads nowhere: the first item and Left, the last
-/// row and Down.
-pub fn roving_target(current: usize, count: usize, columns: usize, key: Arrow) -> Option<usize> {
-    if count == 0 {
-        return None;
-    }
-    let columns = columns.clamp(1, count);
-    let target = match key {
-        Arrow::Left => current.checked_sub(1)?,
-        Arrow::Right => current + 1,
-        Arrow::Up => current.checked_sub(columns)?,
-        Arrow::Down => current + columns,
-        Arrow::Home => 0,
-        Arrow::End => count - 1,
-    };
-    (target < count && target != current).then_some(target)
-}
-
-/// Which colour scheme tile the user points at: the one under the pointer or the one with the keyboard focus,
-/// whichever of the two happened last. The scheme is previewed while there is one and put back when there is none.
-#[derive(Debug, Default)]
-pub struct Peek {
-    hover: Option<usize>,
-    focus: Option<usize>,
-    hover_latest: bool,
-}
-
-impl Peek {
-    pub fn hovered(&mut self, tile: Option<usize>) {
-        self.hover = tile;
-        self.hover_latest |= tile.is_some();
-    }
-
-    pub fn focused(&mut self, tile: Option<usize>) {
-        self.focus = tile;
-        if tile.is_some() {
-            self.hover_latest = false;
-        }
-    }
-
-    pub fn tile(&self) -> Option<usize> {
-        if self.hover_latest { self.hover.or(self.focus) } else { self.focus.or(self.hover) }
-    }
-
-    pub fn clear(&mut self) {
-        *self = Peek::default();
-    }
-}
-
-/// A number as a row shows it: whole numbers without a fraction, the others with at most two decimals.
-pub fn number_text(value: f64) -> String {
-    let rounded = (value * 100.0).round() / 100.0;
-    if rounded.fract() == 0.0 { format!("{rounded:.0}") } else { format!("{rounded:.2}").trim_end_matches('0').to_owned() }
-}
-
-/// The number typed into a field; `None` when the text is not one.
-pub fn parse_number(text: &str) -> Option<f64> {
-    text.trim().parse::<f64>().ok().filter(|n| n.is_finite())
-}
-
-/// `value` moved by `steps` steps of `range`, kept inside it and free of floating point drift.
-pub fn step_number(value: f64, steps: i32, range: Range) -> f64 {
-    let moved = ((value + f64::from(steps) * range.step) * 1e6).round() / 1e6;
-    moved.clamp(range.min, range.max)
 }
 
 #[cfg(test)]
@@ -1530,61 +895,6 @@ mod tests {
             assert!(with_new <= width + 1e-9, "{width} became {with_new}");
         }
     }
-    #[test]
-    fn the_tooltip_has_four_lines_at_most_and_leaves_out_the_ones_with_nothing_to_say() {
-        let full = tab_tooltip(
-            "build the thing",
-            tip_line(&[Some("Waiting for input"), Some("40%"), Some("Allow edit?")]),
-            Some(r"C:\work\nekominal"),
-            tip_line(&[Some("PowerShell"), Some("3 panes"), Some("Zoomed")]),
-        );
-        assert_eq!(
-            full.lines().collect::<Vec<_>>(),
-            [
-                "build the thing",
-                "Waiting for input · 40% · Allow edit?",
-                r"C:\work\nekominal",
-                "PowerShell · 3 panes · Zoomed"
-            ]
-        );
-        // A tab at rest has no state line, and a tab that never reported a folder has no folder line.
-        assert_eq!(tab_tooltip("t", None, None, tip_line(&[Some("PowerShell"), None, None])), "t\nPowerShell");
-        assert_eq!(tab_tooltip("t", None, Some(""), None), "t");
-        assert_eq!(tip_line(&[None, Some(""), None]), None);
-        assert_eq!(tip_line(&[Some("a"), None, Some("b")]).as_deref(), Some("a · b"));
-        // What a program sent never adds a line: a break in it is cleaned out before it gets here.
-        let sent = clean_text("C:\\a\nb\u{202e}\r\nc", MAX_PATH_CHARS);
-        assert_eq!(tab_tooltip("t", None, Some(&sent), None).lines().count(), 2);
-        assert_eq!(clean_text(&"x".repeat(2000), MAX_PATH_CHARS).chars().count(), MAX_PATH_CHARS);
-        assert_eq!(clean_title("  a\u{7}b "), clean_text("  a\u{7}b ", MAX_TITLE_CHARS));
-    }
-
-    #[test]
-    fn a_dragged_chip_scrolls_the_strip_from_the_edge_zones_and_only_there() {
-        let viewport = 440.0;
-        // Nothing in the middle, and not on the very border of a zone.
-        for x in [DRAG_EDGE, 100.0, 220.0, viewport - DRAG_EDGE] {
-            assert_eq!(drag_scroll_speed(x, viewport), 0.0, "{x}");
-        }
-        // Toward the start at the left, toward the end at the right, as soon as the pointer is in the zone.
-        assert!(drag_scroll_speed(DRAG_EDGE - 0.1, viewport) <= -DRAG_SCROLL_SLOW);
-        assert!(drag_scroll_speed(viewport - DRAG_EDGE + 0.1, viewport) >= DRAG_SCROLL_SLOW);
-        // Faster the deeper, and as fast as it gets at the edge and beyond; the two ends are alike.
-        assert!(drag_scroll_speed(2.0, viewport) < drag_scroll_speed(14.0, viewport));
-        assert_eq!(drag_scroll_speed(0.0, viewport), -DRAG_SCROLL_FAST);
-        assert_eq!(drag_scroll_speed(-300.0, viewport), -DRAG_SCROLL_FAST);
-        assert_eq!(drag_scroll_speed(viewport, viewport), DRAG_SCROLL_FAST);
-        assert_eq!(drag_scroll_speed(viewport + 300.0, viewport), DRAG_SCROLL_FAST);
-        for x in [0.0, 5.0, 12.0, 23.0] {
-            assert_eq!(drag_scroll_speed(x, viewport), -drag_scroll_speed(viewport - x, viewport), "{x}");
-        }
-        // A viewer too narrow for two zones scrolls toward the nearer end.
-        assert!(drag_scroll_speed(10.0, 40.0) < 0.0 && drag_scroll_speed(30.0, 40.0) > 0.0);
-        // The strip crosses 22 chips of 52 DIP in under two seconds at the edge, and in under six at the border of
-        // the zone: the drag of the study (tab 3 to the 25th place among 30) fits its three seconds.
-        let distance = 22.0 * (CHIP_MIN_WIDTH + 4.0);
-        assert!(distance / DRAG_SCROLL_FAST < 2.0 && distance / DRAG_SCROLL_SLOW < 6.0);
-    }
     fn agent(state: AgentState) -> PaneSignal {
         let record =
             AgentRecord { id: String::new(), state, kind: None, progress: None, app: None, title: None, message: None };
@@ -1674,39 +984,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_needs_a_response_for_a_bell_a_notification_an_exit_or_an_agent_that_waits_or_failed() {
-        assert!(!needs_response(&PaneSignal::default()));
-        for kind in [Attention::Bell, Attention::Notification, Attention::Exit] {
-            assert!(needs_response(&PaneSignal { attention: Some(kind), ..PaneSignal::default() }), "{kind:?}");
-        }
-        assert!(needs_response(&agent(AgentState::Blocked)));
-        assert!(needs_response(&agent(AgentState::Error)));
-        for state in [AgentState::Working, AgentState::Done, AgentState::Idle] {
-            assert!(!needs_response(&agent(state)), "{state:?}");
-        }
-        assert!(!needs_response(&PaneSignal { progress: Some(Reported::Percent(10)), ..PaneSignal::default() }));
-    }
-
-    #[test]
-    fn a_zoom_warns_about_the_hidden_panes_that_wait_and_only_those() {
-        let bell = PaneSignal { attention: Some(Attention::Bell), ..PaneSignal::default() };
-        let quiet = PaneSignal::default();
-        // Nothing is zoomed: the warning lines of the panes say it, not the label.
-        assert_eq!(hidden_alert(&[quiet.clone(), bell.clone()], None), None);
-        // The pane that rang is hidden: the label warns with the state of a bell.
-        let alert = hidden_alert(&[quiet.clone(), bell.clone(), quiet.clone()], Some(0)).expect("a hidden pane rang");
-        assert_eq!((alert.state, alert.attention), (TabState::Attention, Some(Attention::Bell)));
-        // The pane that rang is the zoomed one: it is on screen, nothing is hidden from the user.
-        assert_eq!(hidden_alert(&[quiet.clone(), bell.clone()], Some(1)), None);
-        // A hidden pane that only works, or finished, does not wait for anybody.
-        assert_eq!(hidden_alert(&[quiet.clone(), agent(AgentState::Working), agent(AgentState::Done)], Some(0)), None);
-        // Of several that wait the most urgent state shows: a blocked agent over a bell.
-        let both = hidden_alert(&[quiet.clone(), bell, agent(AgentState::Blocked)], Some(0)).expect("two wait");
-        assert_eq!(both.state, TabState::Blocked);
-        assert_eq!(hidden_alert(&[], Some(0)), None);
-    }
-
-    #[test]
     fn an_agent_record_that_says_idle_shows_nothing() {
         assert_eq!(tab_status(&[agent(AgentState::Idle)]), TabStatus::default());
     }
@@ -1741,124 +1018,11 @@ mod tests {
         assert!(state_rank(TabState::Working) > state_rank(TabState::Done));
     }
 
-    fn waiting(alert: Option<AlertKind>) -> Need {
-        Need { waiting: true, alert }
-    }
-
-    const QUIET: Need = Need { waiting: false, alert: None };
-
     #[test]
-    fn a_response_that_begins_out_of_sight_is_unread_and_raises_one_alert() {
-        let mut watch = Watch::default();
-        assert_eq!(watch.observe(QUIET, false, 0), None);
-        assert!(!watch.unread() && !watch.alerted());
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
-        assert!(watch.unread() && watch.alerted());
-        // The same need seen again raises nothing more and stays unread.
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
-        assert!(watch.unread());
-        // A tab that is selected in the active window is watched: viewing it clears the flag and frees the alert.
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), true, 0), None);
-        assert!(!watch.unread() && !watch.alerted());
-    }
-
-    #[test]
-    fn leaving_a_tab_whose_response_was_seen_does_not_make_it_unread_again() {
-        let mut watch = Watch::default();
-        watch.observe(waiting(Some(AlertKind::Blocked)), false, 0);
-        watch.observe(waiting(Some(AlertKind::Blocked)), true, 0);
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
-        assert!(!watch.unread(), "it still waits, but the user has seen it");
-        // A new need after the old one ended is unread again.
-        watch.observe(QUIET, false, 0);
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
-        assert!(watch.unread());
-    }
-
-    #[test]
-    fn the_need_ending_clears_the_flag_without_anybody_looking() {
-        let mut watch = Watch::default();
-        watch.observe(waiting(Some(AlertKind::Error)), false, 0);
-        assert!(watch.unread());
-        watch.observe(QUIET, false, 0);
-        assert!(!watch.unread() && !watch.alerted());
-    }
-
-    #[test]
-    fn a_more_urgent_kind_is_a_new_need_and_a_bell_is_unread_without_an_alert() {
-        let mut watch = Watch::default();
-        // A bell: unread, but it has its own settings and raises no alert here.
-        assert_eq!(watch.observe(waiting(None), false, 0), None);
-        assert!(watch.unread() && !watch.alerted());
-        // The same tab then blocks: that raises one.
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), false, 0), Some(AlertKind::Blocked));
-        // Blocked turning into an error is announced again; an error staying one is not.
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Error)), false, 0), Some(AlertKind::Error));
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Error)), false, 0), None);
-    }
-
-    #[test]
-    fn at_most_two_alerts_are_outstanding_and_the_third_tab_is_unread_all_the_same() {
-        let mut third = Watch::default();
-        assert_eq!(third.observe(waiting(Some(AlertKind::Blocked)), false, MAX_ALERTS), None);
-        assert!(third.unread(), "it counts for the plate and the list");
-        assert!(!third.alerted(), "but it holds no alert");
-        // A slot freed later does not announce what was already waiting.
-        assert_eq!(third.observe(waiting(Some(AlertKind::Blocked)), false, 0), None);
-        let mut second = Watch::default();
-        assert_eq!(second.observe(waiting(Some(AlertKind::Blocked)), false, MAX_ALERTS - 1), Some(AlertKind::Blocked));
-    }
-
-    #[test]
-    fn a_need_in_the_window_the_user_is_looking_at_raises_nothing() {
-        let mut watch = Watch::default();
-        assert_eq!(watch.observe(waiting(Some(AlertKind::Blocked)), true, 0), None);
-        assert!(!watch.unread() && !watch.alerted());
-    }
-
-    #[test]
-    fn alerts_are_raised_for_blocked_failed_and_notified_tabs_but_not_for_a_bell() {
-        let of = |panes: &[PaneSignal]| alert_kind(&tab_status(panes));
-        assert_eq!(of(&[agent(AgentState::Blocked)]), Some(AlertKind::Blocked));
-        assert_eq!(of(&[agent(AgentState::Error)]), Some(AlertKind::Error));
-        let exit = PaneSignal { attention: Some(Attention::Exit), ..PaneSignal::default() };
-        assert_eq!(of(&[exit]), Some(AlertKind::Error));
-        let note = PaneSignal { attention: Some(Attention::Notification), ..PaneSignal::default() };
-        assert_eq!(of(&[note]), Some(AlertKind::Notification));
-        let bell = PaneSignal { attention: Some(Attention::Bell), ..PaneSignal::default() };
-        assert_eq!(of(&[bell.clone()]), None);
-        assert_eq!(of(&[agent(AgentState::Working), agent(AgentState::Done)]), None);
-        // A tab needs a response for a bell, though.
-        let status = tab_status(&[bell.clone()]);
-        assert_eq!(Need::of(&[bell], &status), Need { waiting: true, alert: None });
-        assert_eq!(Need::of(&[agent(AgentState::Working)], &TabStatus::default()), QUIET);
-    }
-
-    fn attention(state: TabState, unread: bool, selected: bool) -> TabAttention {
-        TabAttention {
-            state,
-            unread,
-            selected,
-            waiting: matches!(state, TabState::Blocked | TabState::Error | TabState::Attention),
-        }
-    }
-
-    #[test]
-    fn the_plate_counts_unread_blocked_and_failed_tabs_that_are_not_selected() {
-        let tabs = [
-            attention(TabState::Blocked, true, false),
-            attention(TabState::Error, true, false),
-            attention(TabState::Blocked, true, true),
-            attention(TabState::Blocked, false, false),
-            attention(TabState::Attention, true, false),
-            attention(TabState::Done, true, false),
-            attention(TabState::Working, true, false),
-            attention(TabState::Idle, false, false),
-        ];
-        assert_eq!(plate_count(&tabs), 2, "a blocked one that is selected, seen, a bell and the rest are not counted");
-        assert_eq!(plate_count(&[]), 0);
-        // The window title counts everything that waits, the selected tab and the seen ones included.
-        assert_eq!(waiting_count(&tabs), 5);
+    fn the_window_title_counts_every_tab_that_waits_the_selected_and_the_seen_ones_included() {
+        let tabs = [true, true, false, true, false].map(|waiting| TabAttention { waiting });
+        assert_eq!(waiting_count(&tabs), 3);
+        assert_eq!(waiting_count(&[]), 0);
     }
 
     #[test]
@@ -1894,55 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_that_waits_is_named_by_its_place_among_several() {
-        assert_eq!(waiting_pane(&[]), None);
-        assert_eq!(waiting_pane(&[true]), None, "a single pane needs no place");
-        assert_eq!(waiting_pane(&[false, true, false]), Some((2, 3)));
-        assert_eq!(waiting_pane(&[true, true]), Some((1, 2)), "the first of those that wait");
-        assert_eq!(waiting_pane(&[false, false]), None);
-    }
-
-    #[test]
-    fn the_list_groups_tabs_by_state_most_urgent_first_when_one_is_unread_and_keeps_the_strip_order_otherwise() {
-        let tabs = [
-            (TabState::Idle, None),
-            (TabState::Done, None),
-            (TabState::Blocked, None),
-            (TabState::Working, None),
-            (TabState::Error, None),
-            (TabState::Blocked, None),
-            (TabState::Attention, Some(Attention::Bell)),
-            (TabState::Attention, Some(Attention::Notification)),
-        ];
-        let plain = list_order(&tabs, false);
-        assert_eq!(plain.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 7]);
-        assert!(plain.iter().all(|(_, heading)| heading.is_none()));
-
-        let grouped = list_order(&tabs, true);
-        let order: Vec<usize> = grouped.iter().map(|(index, _)| *index).collect();
-        // Blocked (2, 5), error (4), working (3), done (1), a notification (7), a bell (6), the rest (0).
-        assert_eq!(order, [2, 5, 4, 3, 1, 7, 6, 0]);
-        let headings: Vec<(usize, TabState)> =
-            grouped.iter().filter_map(|(index, heading)| heading.map(|heading| (*index, heading.state))).collect();
-        assert_eq!(
-            headings,
-            [
-                (2, TabState::Blocked),
-                (4, TabState::Error),
-                (3, TabState::Working),
-                (1, TabState::Done),
-                (7, TabState::Attention),
-                (6, TabState::Attention),
-                (0, TabState::Idle)
-            ]
-        );
-        let notification = grouped[5].1.unwrap();
-        assert_eq!(notification.attention, Some(Attention::Notification));
-        assert_eq!(grouped[6].1.unwrap().attention, Some(Attention::Bell));
-        assert_eq!(list_order(&[], true), Vec::new());
-    }
-
-    #[test]
     fn a_tab_shows_the_icon_of_the_program_it_runs_whatever_the_case_or_the_extension() {
         assert_eq!(job_icon("vim.exe"), job_icon("NVIM.EXE"));
         assert_eq!(job_icon("ssh.exe"), '\u{E774}');
@@ -1964,276 +1079,6 @@ mod tests {
         }
         assert_eq!(profile_mark("terminal"), profile_mark("something else"), "a profile nobody knows is generic");
         assert!(!marks.contains(&profile_mark("terminal")), "a known profile is not the generic one");
-    }
-
-    #[test]
-    fn a_chip_narrower_than_64_dip_shows_its_number() {
-        assert!(shows_ordinal(48.0) && shows_ordinal(63.9));
-        assert!(!shows_ordinal(64.0) && !shows_ordinal(216.0));
-    }
-
-    #[test]
-    fn hidden_and_visible_chips_add_up_to_all_of_them() {
-        let widths = [100.0; 12];
-        let extent = strip_extent(&widths, GAP, 4.0);
-        assert_eq!(extent, 12.0 * 100.0 + 11.0 * GAP + 4.0);
-        let viewport = 500.0;
-        for offset in [0.0, 1.0, 104.0, 300.0, 520.0, extent - viewport] {
-            let (left, right) = hidden_counts(&widths, GAP, 4.0, offset, viewport);
-            let visible = widths
-                .iter()
-                .enumerate()
-                .filter(|(i, w)| {
-                    let edge = 2.0 + *i as f64 * (100.0 + GAP);
-                    edge + **w > offset && edge < offset + viewport
-                })
-                .count();
-            assert_eq!(left + visible + right, widths.len(), "offset {offset}");
-        }
-        assert_eq!(hidden_counts(&widths, GAP, 4.0, 0.0, viewport), (0, 7));
-        assert_eq!(hidden_counts(&widths, GAP, 4.0, extent - viewport, viewport), (7, 0));
-        // A chip cut by the edge still shows.
-        assert_eq!(hidden_counts(&widths, GAP, 4.0, 50.0, viewport).0, 0);
-    }
-
-    #[test]
-    fn revealing_a_chip_leaves_a_margin_and_makes_room_for_the_count_blocks() {
-        let (viewport, extent) = (500.0, 1304.0);
-        let reveal =
-            |left, offset| reveal_offset((left, 100.0), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
-        // Already in view: nothing moves.
-        assert_eq!(reveal(200.0, 0.0), 0.0);
-        assert_eq!(reveal(300.0, 100.0), 100.0);
-        // The first chip of the strip stays flush at the left edge.
-        assert_eq!(reveal(2.0, 300.0), 0.0);
-        // A chip to the right scrolls in with the margin and the block behind it.
-        assert_eq!(reveal(600.0, 0.0), 600.0 + 100.0 + REVEAL_MARGIN + COUNT_BLOCK_WIDTH - 500.0);
-        // The last chip scrolls to the end, with the margin only.
-        assert_eq!(reveal(1202.0, 0.0), extent - viewport);
-        // A chip to the left of the view scrolls in from the left.
-        assert_eq!(reveal(300.0, 700.0), 300.0 - REVEAL_MARGIN - COUNT_BLOCK_WIDTH);
-        // A strip that fits has nothing to scroll.
-        assert_eq!(reveal_offset((300.0, 100.0), 0.0, 500.0, 400.0, REVEAL_MARGIN, COUNT_BLOCK_WIDTH), 0.0);
-    }
-
-    #[test]
-    fn a_revealed_chip_is_in_view_inside_its_margins_for_any_strip() {
-        let mut random = Lcg(11);
-        for _ in 0..3000 {
-            let count = 2 + random.below(40);
-            let widths: Vec<f64> = (0..count).map(|_| random.between(CHIP_MIN_WIDTH, CHIP_MAX_WIDTH)).collect();
-            let extent = strip_extent(&widths, GAP, 4.0);
-            // Wide enough for the widest chip between two count blocks and their margins.
-            let viewport = random.between(400.0, 900.0);
-            let index = random.below(count);
-            let left = 2.0 + widths[..index].iter().sum::<f64>() + GAP * index as f64;
-            let offset = random.between(0.0, (extent - viewport).max(0.0) + 50.0);
-            let at = reveal_offset((left, widths[index]), offset, viewport, extent, REVEAL_MARGIN, COUNT_BLOCK_WIDTH);
-            assert!(at >= 0.0 && at <= (extent - viewport).max(0.0) + 1e-9, "offset {at}");
-            assert!(left >= at - 1e-9 && left + widths[index] <= at + viewport + 1e-9, "the chip is cut off");
-            if extent > viewport {
-                // Every scroll position has the chip clear of the blocks, unless it sits at an end of the strip.
-                let margin_left = if at > 0.0 { REVEAL_MARGIN + COUNT_BLOCK_WIDTH } else { 0.0 };
-                assert!(left >= at + margin_left - 1e-9 || index == 0, "left margin at {at}");
-                let at_end = at + viewport >= extent - 1e-9;
-                let margin_right = if at_end { 0.0 } else { REVEAL_MARGIN + COUNT_BLOCK_WIDTH };
-                assert!(
-                    left + widths[index] <= at + viewport - margin_right + 1e-9 || index == count - 1,
-                    "right margin"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_plate_is_hidden_for_one_tab_and_total_only_on_a_narrow_strip_or_in_the_narrow_tier() {
-        use BarTier::*;
-        assert_eq!(plate(0, 0, 800.0, Wide), None);
-        assert_eq!(plate(0, 1, 800.0, Wide), None);
-        assert_eq!(plate(2, 12, 800.0, Wide), Some(Plate::Position { current: 3, total: 12 }));
-        assert_eq!(plate(1, 2, 300.0, Medium), Some(Plate::Position { current: 2, total: 2 }));
-        assert_eq!(plate(2, 12, 299.9, Medium), Some(Plate::Total(12)));
-        // The narrow tier says the total whatever the strip: the bar has no room for more.
-        assert_eq!(plate(2, 12, 455.0, Narrow), Some(Plate::Total(12)));
-        assert_eq!(plate(0, 1, 455.0, Narrow), None);
-    }
-
-    #[test]
-    fn the_bar_shows_four_two_or_one_control_on_the_right_at_the_widths_of_the_spec() {
-        for (width, controls) in [(1440.0, 4), (1200.0, 4), (1199.0, 2), (1000.0, 2), (800.0, 2), (799.0, 1), (700.0, 1), (500.0, 1)] {
-            assert_eq!(BarTier::at(width, None).control_count(), controls, "{width} DIP");
-        }
-        use BarTier::*;
-        assert_eq!(BarTier::at(1440.0, None), Wide);
-        assert_eq!(BarTier::at(1000.0, None), Medium);
-        assert_eq!(BarTier::at(700.0, None), Narrow);
-        // What each tier shows, and the divider only where the split pair and the rest are both there.
-        let shown = |tier: BarTier| TOOLBAR_TIERS.iter().filter(|(c, _)| tier.shows(*c)).map(|(c, _)| c.id()).collect::<Vec<_>>();
-        assert_eq!(shown(Wide), ["pane.splitRight", "pane.splitDown", "app.palette"]);
-        assert_eq!(shown(Medium), ["app.palette"]);
-        assert_eq!(shown(Narrow), Vec::<&str>::new());
-        assert!(Wide.shows_divider() && !Medium.shows_divider() && !Narrow.shows_divider());
-        assert!(!Wide.shows(Command::EditFind) && !Wide.shows(Command::AppSettings), "find and settings have no button");
-    }
-
-    #[test]
-    fn the_tiers_of_the_bar_are_the_toolbar_of_the_model_in_its_order() {
-        let commands: Vec<Command> = TOOLBAR_TIERS.iter().map(|(command, _)| *command).collect();
-        assert_eq!(commands, nekominal_model::menu::TOOLBAR);
-        // The split pair folds together, and before the palette.
-        assert_eq!(TOOLBAR_TIERS[0].1, TOOLBAR_TIERS[1].1);
-        assert!(TOOLBAR_TIERS[0].1 > TOOLBAR_TIERS[2].1);
-    }
-
-    #[test]
-    fn a_tier_boundary_never_goes_the_wrong_way_and_a_shrinking_window_keeps_its_tier_for_24_dip() {
-        // Growing: every width gets the tier it starts at, at once, and a wider window never has less.
-        let mut previous = None;
-        let mut last = BarTier::Narrow;
-        for tenth in 0..=30_000 {
-            let width = f64::from(tenth) / 10.0;
-            let tier = BarTier::at(width, previous);
-            assert!(tier >= last, "{width} DIP has {tier:?} after {last:?}");
-            assert_eq!(tier, BarTier::at(width, None), "growing needs no memory: {width}");
-            (previous, last) = (Some(tier), tier);
-        }
-        // Shrinking: a narrower window never has more, and a tier is kept until 24 DIP below where it starts.
-        let mut previous = Some(BarTier::Wide);
-        let mut last = BarTier::Wide;
-        let mut switches = Vec::new();
-        for tenth in (0..=30_000).rev() {
-            let width = f64::from(tenth) / 10.0;
-            let tier = BarTier::at(width, previous);
-            assert!(tier <= last, "{width} DIP has {tier:?} after {last:?}");
-            if tier != last {
-                switches.push((width, tier));
-            }
-            (previous, last) = (Some(tier), tier);
-        }
-        assert_eq!(switches, [(1175.9, BarTier::Medium), (775.9, BarTier::Narrow)]);
-        // The edges of the margin, from either side.
-        assert_eq!(BarTier::at(1176.0, Some(BarTier::Wide)), BarTier::Wide);
-        assert_eq!(BarTier::at(1175.9, Some(BarTier::Wide)), BarTier::Medium);
-        assert_eq!(BarTier::at(1199.9, Some(BarTier::Medium)), BarTier::Medium, "growing waits for the boundary");
-        assert_eq!(BarTier::at(1200.0, Some(BarTier::Medium)), BarTier::Wide);
-        assert_eq!(BarTier::at(776.0, Some(BarTier::Medium)), BarTier::Medium);
-        assert_eq!(BarTier::at(775.9, Some(BarTier::Medium)), BarTier::Narrow);
-        assert_eq!(BarTier::at(790.0, Some(BarTier::Narrow)), BarTier::Narrow, "a window that grew from narrow has no margin");
-        // A jump over a whole tier lands in the tier of its width, held at most one margin.
-        assert_eq!(BarTier::at(700.0, Some(BarTier::Wide)), BarTier::Narrow);
-        assert_eq!(BarTier::at(790.0, Some(BarTier::Wide)), BarTier::Medium);
-    }
-
-    #[test]
-    fn the_group_on_the_right_gets_narrower_with_every_tier() {
-        use BarTier::*;
-        assert!(cluster_width(Wide) > cluster_width(Medium) && cluster_width(Medium) > cluster_width(Narrow));
-        // 4 padding, 32 per control, and the divider of the wide tier with its margins.
-        assert_eq!((cluster_width(Wide), cluster_width(Medium), cluster_width(Narrow)), (139.0, 68.0, 36.0));
-    }
-
-    #[test]
-    fn at_500_dip_the_narrow_bar_leaves_the_strip_its_minimum_and_a_plate_and_the_drag_area_theirs() {
-        // 138 DIP of caption buttons. What is left for the strip and the plate: the window minus the caption buttons,
-        // the single control on the right and everything else that is fixed (including the smallest drag area).
-        let budget = strip_budget(500.0, 138.0, BarTier::at(500.0, None));
-        assert_eq!(budget, 500.0 - 138.0 - 36.0 - BAR_FIXED_WIDTH);
-        // The plate of the narrow tier is the total in a button of the minimum width (32) with a 4 DIP margin.
-        assert!(budget >= STRIP_MIN_WIDTH + 36.0 + 4.0, "{budget}");
-        // The more room, the more strip; and never less than the minimum.
-        assert!(strip_budget(1000.0, 138.0, BarTier::Medium) > strip_budget(900.0, 138.0, BarTier::Medium));
-        assert_eq!(strip_budget(100.0, 138.0, BarTier::Narrow), STRIP_MIN_WIDTH);
-        // A wider tier takes room from the strip at the same width.
-        assert!(strip_budget(1300.0, 138.0, BarTier::Medium) > strip_budget(1300.0, 138.0, BarTier::Wide));
-    }
-
-    #[test]
-    fn next_tab_walks_the_most_recently_used_order_while_the_keys_are_held() {
-        let mut mru = Mru::default();
-        for tab in ['a', 'b', 'c'] {
-            mru.touch(tab);
-        }
-        // Select A, B, C in turn: the order is C, B, A. One tap goes to B.
-        assert_eq!(mru.step(1), Some('b'));
-        mru.commit();
-        assert!(!mru.is_walking());
-        // Held: two more presses go to C and then A, and A is the most recent when the keys come up.
-        assert_eq!(mru.step(1), Some('c'));
-        assert_eq!(mru.step(1), Some('a'));
-        mru.commit();
-        assert_eq!(mru.most_recent(), Some('a'));
-        // The order after that: A, B, C (B was used after C).
-        assert_eq!(mru.step(1), Some('b'));
-        assert_eq!(mru.step(1), Some('c'));
-        assert_eq!(mru.step(1), Some('a'), "the walk wraps around");
-        mru.commit();
-        assert_eq!(mru.most_recent(), Some('a'));
-    }
-
-    #[test]
-    fn previous_tab_walks_backwards_and_a_tap_toggles_between_two_tabs() {
-        let mut mru = Mru::default();
-        for tab in [1, 2, 3, 4] {
-            mru.touch(tab);
-        }
-        assert_eq!(mru.step(-1), Some(1), "previous starts from the least recently used");
-        mru.commit();
-        assert_eq!(mru.most_recent(), Some(1));
-        // Tapping twice with the keys released between returns to where it began.
-        let mut pair = Mru::default();
-        pair.touch('x');
-        pair.touch('y');
-        assert_eq!(pair.step(1), Some('x'));
-        pair.commit();
-        assert_eq!(pair.step(1), Some('y'));
-        pair.commit();
-        assert_eq!(pair.most_recent(), Some('y'));
-    }
-
-    #[test]
-    fn selecting_a_tab_another_way_ends_the_walk_and_a_closed_tab_leaves_the_order() {
-        let mut mru = Mru::default();
-        for tab in [1, 2, 3] {
-            mru.touch(tab);
-        }
-        assert_eq!(mru.step(1), Some(2));
-        mru.touch(1);
-        assert!(!mru.is_walking());
-        assert_eq!(mru.most_recent(), Some(1));
-        // Closing the most recent tab leaves the one used before it.
-        mru.remove(1);
-        assert_eq!(mru.most_recent(), Some(3));
-        mru.remove(2);
-        mru.remove(3);
-        assert_eq!(mru.most_recent(), None);
-        assert_eq!(mru.step(1), None);
-        let mut single = Mru::default();
-        single.touch(9);
-        assert_eq!(single.step(1), None, "nothing to walk to");
-    }
-
-    #[test]
-    fn closing_the_selected_tab_shows_the_one_used_before_it_and_closing_another_keeps_the_selection() {
-        // Four tabs in strip order a b c d, used in the order a, d, b, c, d, b: b is selected, d was used before it.
-        let used = || {
-            let mut mru = Mru::default();
-            for tab in ['a', 'd', 'b', 'c', 'd', 'b'] {
-                mru.touch(tab);
-            }
-            mru
-        };
-        let mut mru = used();
-        // Closing the selected tab hands over to the one used before it, not to its neighbour in the strip (c).
-        let mut closing = used();
-        assert_eq!(closing.close('b', Some('b')), Some('d'));
-        assert_eq!(closing.most_recent(), Some('d'));
-        // Closing a tab that is not selected leaves the selection and takes the closed one out of the order.
-        assert_eq!(mru.close('c', Some('b')), Some('b'));
-        assert_eq!(mru.close('a', Some('b')), Some('b'));
-        assert_eq!(mru.close('b', Some('b')), Some('d'), "c and a are gone: d is the last one used before b");
-        assert_eq!(mru.close('d', Some('d')), None, "the last tab leaves nothing to show");
-        // A tab that was never selected is not an error, and no selection stays none.
-        assert_eq!(Mru::<char>::default().close('x', None), None);
     }
 
     #[test]
@@ -2322,10 +1167,6 @@ mod tests {
             default_title(&p, &format(&["title|folder"]), true),
             ("build".to_owned(), TitleSource::Parts { folder: false })
         );
-        // Tabs whose whole titles are the same are told apart, those that only share a folder are not.
-        let same = ["api · build".to_owned(), "api · build".to_owned(), "api · logs".to_owned()];
-        let labels: Vec<Option<String>> = same.iter().cloned().map(Some).collect();
-        assert_eq!(colliding_folders(&labels), [true, true, false]);
     }
 
     #[test]
@@ -2396,30 +1237,6 @@ mod tests {
     }
 
     #[test]
-    fn the_label_of_an_agent_outlives_its_record_and_follows_the_latest_report() {
-        let report = |title: Option<&str>, app: Option<&str>| AgentRecord {
-            id: String::new(),
-            state: AgentState::Done,
-            kind: None,
-            progress: None,
-            app: app.map(Into::into),
-            title: title.map(Into::into),
-            message: None,
-        };
-        let mut label = AgentLabel::default();
-        label.remember(&report(Some("Fix the build"), Some("claude")));
-        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Fix the build"), Some("claude")));
-        // A report that names neither leaves both: the record that carried them may be gone by now.
-        label.remember(&report(None, None));
-        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Fix the build"), Some("claude")));
-        label.remember(&report(Some("  Write\u{202e}the docs "), None));
-        assert_eq!((label.title.as_deref(), label.app.as_deref()), (Some("Writethe docs"), Some("claude")));
-        // A title of nothing visible is no title.
-        label.remember(&report(Some("\u{7}  "), None));
-        assert_eq!(label.title.as_deref(), Some("Writethe docs"));
-    }
-
-    #[test]
     fn a_title_is_cut_between_characters_at_a_fixed_length_whatever_its_size() {
         let cjk = "終".repeat(500);
         let cut = clean_title(&cjk);
@@ -2473,109 +1290,6 @@ mod tests {
         assert_eq!(titled(&at(r"C:\"), true).0, "C:");
         assert_eq!(titled(&at("/"), true).0, "/");
         assert_eq!(titled(&at("/usr"), true).0, "usr");
-    }
-
-    #[test]
-    fn five_tabs_in_different_folders_have_five_names_and_the_same_name_gets_a_parent() {
-        let folders = [r"C:\Users\me", r"C:\work\api", r"C:\work\web", r"D:\other", r"C:\Users\me\src\api"];
-        let names: Vec<String> = folders.iter().map(|f| titled(&parts("pwsh", Some(f)), false).0).collect();
-        assert_eq!(names, ["~", "api", "web", "other", "api"]);
-        let labels: Vec<Option<String>> = names.iter().cloned().map(Some).collect();
-        let collide = colliding_folders(&labels);
-        assert_eq!(collide, [false, true, false, false, true]);
-        let told_apart: Vec<String> = folders
-            .iter()
-            .zip(&collide)
-            .map(|(f, with_parent)| titled(&parts("pwsh", Some(f)), *with_parent).0)
-            .collect();
-        assert_eq!(told_apart, ["~", "work/api", "web", "other", "src/api"]);
-        // Tabs that are not named after a folder never collide, and the comparison ignores case.
-        assert_eq!(
-            colliding_folders(&[None, Some("Api".into()), None, Some("api".into())]),
-            [false, true, false, true]
-        );
-        assert_eq!(colliding_folders(&[]), Vec::<bool>::new());
-    }
-
-    #[test]
-    fn a_row_that_cannot_be_built_leaves_the_rows_and_the_entries_of_a_list_in_step() {
-        let entries = vec!["build", "{0}", "logs", "bad\u{fffe}", "claude"];
-        let mut rows: Vec<String> = Vec::new();
-        let kept = keep_built(entries, |entry| {
-            if entry.starts_with('{') || entry.contains('\u{fffe}') {
-                return false;
-            }
-            rows.push(format!("row of {entry}"));
-            true
-        });
-        assert_eq!(kept, ["build", "logs", "claude"]);
-        assert_eq!(rows.len(), kept.len());
-        for (row, entry) in rows.iter().zip(&kept) {
-            assert_eq!(*row, format!("row of {entry}"), "the row at an index is the one of the entry at that index");
-        }
-        assert_eq!(keep_built(vec![1, 2, 3], |_| true), [1, 2, 3]);
-        assert_eq!(keep_built(Vec::<u8>::new(), |_| false), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn many_opacity_requests_in_a_frame_become_one_apply_of_the_last() {
-        let mut pending = PendingOpacity::default();
-        assert_eq!(pending.take(0.72), None, "nothing was asked for");
-        for percent in 20..=100 {
-            pending.request(f64::from(percent) / 100.0);
-        }
-        pending.request(0.5);
-        assert_eq!(pending.latest(0.72), 0.5);
-        assert_eq!(pending.take(0.72), Some(0.5));
-        assert_eq!(pending.take(0.72), None, "a request is applied once");
-        assert_eq!(pending.latest(0.72), 0.72);
-    }
-
-    #[test]
-    fn an_opacity_request_equal_to_the_applied_one_applies_nothing() {
-        let mut pending = PendingOpacity::default();
-        pending.request(0.72);
-        assert_eq!(pending.take(0.72), None);
-        // The slider's own echo of a value it was given arrives as the same request.
-        pending.request(72.0 / 100.0);
-        assert_eq!(pending.take(0.72), None);
-    }
-
-    #[test]
-    fn a_failed_opacity_is_said_in_its_row_only_once_the_slider_has_rested_and_until_the_next_change() {
-        let mut state = OpacityApply::default();
-        assert!(!state.shows_label(), "nothing failed");
-        // While the slider moves a failure is only logged.
-        state.failed();
-        assert!(!state.shows_label());
-        state.requested();
-        state.failed();
-        assert!(!state.shows_label(), "still moving");
-        // The slider rests with the last apply failed: the row says so.
-        state.rested();
-        assert!(state.shows_label());
-        // Resting again changes nothing, and so does a request that has not been applied yet.
-        state.rested();
-        assert!(state.shows_label());
-        state.requested();
-        assert!(!state.shows_label(), "moving again hides it");
-        // A request that applies puts the percent back for good; resting then has nothing to say.
-        state.applied();
-        state.rested();
-        assert!(!state.shows_label());
-        // A slider that rested without a failure says nothing either.
-        let mut fine = OpacityApply::default();
-        fine.rested();
-        assert!(!fine.shows_label());
-    }
-
-    #[test]
-    fn opacity_requests_are_whole_percent_inside_the_valid_range() {
-        let mut pending = PendingOpacity::default();
-        for (asked, applied) in [(0.724, 0.72), (0.726, 0.73), (7.0, 1.0), (0.0, 0.2), (-3.0, 0.2)] {
-            pending.request(asked);
-            assert_eq!(pending.take(0.9), Some(applied), "asked for {asked}");
-        }
     }
 
     #[test]
@@ -2670,91 +1384,5 @@ mod tests {
         assert_eq!((config.cursor_style.shape, config.cursor_style.blinking), (CursorShape::Beam, false));
         assert_eq!((config.scrollback_lines, config.kitty_keyboard), (250, false));
         assert_eq!(cursor_style_for(&Cursor { style: CursorShapeSetting::Underline, blink: true, blink_rate: 530 }).shape, CursorShape::Underline);
-    }
-
-    #[test]
-    fn the_drawer_is_480_wide_and_gives_way_to_a_narrow_window_down_to_320() {
-        assert_eq!(drawer_width(1440.0), 480.0);
-        assert_eq!(drawer_width(1000.0), 480.0);
-        assert_eq!(drawer_width(700.0), 480.0);
-        assert_eq!(drawer_width(496.0), 480.0, "480 plus both margins fits exactly");
-        assert_eq!(drawer_width(495.0), 479.0);
-        assert_eq!(drawer_width(400.0), 384.0);
-        assert_eq!(drawer_width(336.0), 320.0);
-        assert_eq!(drawer_width(200.0), 320.0, "never narrower than 320");
-        assert_eq!(drawer_width(0.0), 320.0, "before the first layout");
-        for width in (0..2000).step_by(7) {
-            let drawer = drawer_width(f64::from(width));
-            assert!((DRAWER_MIN_WIDTH..=DRAWER_WIDTH).contains(&drawer));
-            assert!(drawer + 2.0 * DRAWER_MARGIN <= f64::from(width) || drawer == DRAWER_MIN_WIDTH, "{width}");
-        }
-    }
-
-    #[test]
-    fn navigation_keys_move_through_a_row_a_list_and_a_grid() {
-        use Arrow::*;
-        // A row of four choices: sideways only, and the ends stay put.
-        assert_eq!(roving_target(0, 4, 4, Right), Some(1));
-        assert_eq!(roving_target(3, 4, 4, Right), None);
-        assert_eq!(roving_target(0, 4, 4, Left), None);
-        assert_eq!(roving_target(2, 4, 4, Left), Some(1));
-        assert_eq!(roving_target(1, 4, 4, Down), None);
-        assert_eq!(roving_target(1, 4, 4, Up), None);
-        assert_eq!(roving_target(2, 4, 4, Home), Some(0));
-        assert_eq!(roving_target(0, 4, 4, End), Some(3));
-        assert_eq!(roving_target(0, 4, 4, Home), None, "already there");
-        // A list: up and down.
-        assert_eq!(roving_target(1, 3, 1, Down), Some(2));
-        assert_eq!(roving_target(1, 3, 1, Up), Some(0));
-        assert_eq!(roving_target(2, 3, 1, Down), None);
-        // Ten colour tiles in five columns: Down from Tokyo Night (0) is Nord (5).
-        assert_eq!(roving_target(0, 10, 5, Down), Some(5));
-        assert_eq!(roving_target(5, 10, 5, Up), Some(0));
-        assert_eq!(roving_target(7, 10, 5, Down), None);
-        assert_eq!(roving_target(4, 10, 5, Right), Some(5), "the end of a row continues in the next");
-        assert_eq!(roving_target(0, 0, 5, Right), None);
-        assert_eq!(roving_target(0, 1, 5, Down), None, "fewer items than columns");
-    }
-
-    #[test]
-    fn the_peek_follows_whichever_of_pointer_and_focus_moved_last() {
-        let mut peek = Peek::default();
-        assert_eq!(peek.tile(), None);
-        peek.focused(Some(2));
-        assert_eq!(peek.tile(), Some(2));
-        peek.hovered(Some(5));
-        assert_eq!(peek.tile(), Some(5), "the pointer moved last");
-        peek.focused(Some(3));
-        assert_eq!(peek.tile(), Some(3), "now the keyboard did");
-        peek.focused(None);
-        assert_eq!(peek.tile(), Some(5), "the pointer is still on a tile");
-        peek.hovered(None);
-        assert_eq!(peek.tile(), None, "left the grid: the committed scheme is put back");
-        peek.hovered(Some(1));
-        peek.clear();
-        assert_eq!(peek.tile(), None);
-    }
-
-    #[test]
-    fn numbers_are_shown_short_typed_loosely_and_stepped_without_drift() {
-        assert_eq!(number_text(14.0), "14");
-        assert_eq!(number_text(1.1), "1.1");
-        assert_eq!(number_text(1.05), "1.05");
-        assert_eq!(number_text(1.1500000000000001), "1.15");
-        assert_eq!(number_text(10000.0), "10000");
-        assert_eq!(parse_number(" 16 "), Some(16.0));
-        assert_eq!(parse_number("1.25"), Some(1.25));
-        for text in ["", "x", "1e999", "NaN", "inf", "1,5"] {
-            assert_eq!(parse_number(text), None, "{text:?}");
-        }
-        let line_height = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
-        assert_eq!(step_number(1.1, 1, line_height), 1.15);
-        assert_eq!(step_number(1.1, -2, line_height), 1.0);
-        assert_eq!(step_number(1.95, 3, line_height), 2.0, "stays inside the range");
-        let mut value = 1.0;
-        for _ in 0..20 {
-            value = step_number(value, 1, line_height);
-        }
-        assert_eq!(value, 2.0, "twenty steps of 0.05 land on 2 exactly");
     }
 }
