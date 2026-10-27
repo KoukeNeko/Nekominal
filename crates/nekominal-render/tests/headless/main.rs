@@ -6,4 +6,5 @@ mod colors;
 mod common;
 mod cursor;
 mod golden;
+mod images;
 mod translucent;

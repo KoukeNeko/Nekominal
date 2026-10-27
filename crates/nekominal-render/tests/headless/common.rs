@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use nekominal_render::fonts::FontConfig;
 use nekominal_render::offscreen::{AdapterKind, Gpu, OffscreenTarget, create_gpu, write_png};
 use nekominal_render::{
-    Cell, CellFlags, CursorView, GridView, Highlight, PaneDraw, PaneState, Preedit, Renderer, RendererConfig, RowSpan,
+    Cell, CellFlags, CursorView, GridView, Highlight, ImageView, PaneDraw, PaneState, Preedit, Renderer, RendererConfig, RowSpan,
     Theme, UpdateStats,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -82,6 +82,7 @@ pub struct Scene {
     pub highlights: Vec<Highlight>,
     pub cursor: Option<CursorView>,
     pub preedit: Option<Preedit>,
+    pub images: Vec<ImageView>,
 }
 
 impl Scene {
@@ -94,6 +95,7 @@ impl Scene {
             highlights: Vec::new(),
             cursor: None,
             preedit: None,
+            images: Vec::new(),
         }
     }
 
@@ -200,6 +202,7 @@ pub fn update(renderer: &mut Renderer, pane: &mut PaneState, scene: &Scene) -> U
             scrollbar: None,
             marks: &[],
             sticky_header: false,
+            images: &scene.images,
         },
     )
 }

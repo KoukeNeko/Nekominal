@@ -9,6 +9,7 @@
 //! * `atlas`     etagere-packed R8 + RGBA8 glyph atlases
 //! * `d3d`       the device and the small Direct3D 11 helpers
 //! * `gpu`       instance structs, uniforms, pipelines
+//! * `images`    pictures over the grid (Sixel, kitty graphics): textures and their quads
 //! * `renderer`  public `Renderer` / `PaneState` API; `rows` implements the update path
 //! * `offscreen` headless target, adapter selection and PNG output for tests (cargo feature `offscreen`)
 
@@ -18,6 +19,7 @@ pub mod contrast;
 pub mod d3d;
 pub mod fonts;
 pub mod gpu;
+mod images;
 #[cfg(windows)]
 pub mod locator;
 #[cfg(feature = "offscreen")]
@@ -28,4 +30,5 @@ mod rows;
 pub mod sprites;
 
 pub use cell::*;
+pub use images::ImageView;
 pub use renderer::{PaneDraw, PaneState, Renderer, RendererConfig, UpdateStats};

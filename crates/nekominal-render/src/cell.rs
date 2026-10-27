@@ -404,6 +404,8 @@ pub struct GridView<'a> {
     /// The top row is a header pinned over the grid (sticky scroll): a thin line along its bottom edge parts it from
     /// the rows under it.
     pub sticky_header: bool,
+    /// Pictures placed on the grid (Sixel, kitty graphics), oldest first.
+    pub images: &'a [crate::images::ImageView],
 }
 
 impl<'a> GridView<'a> {
@@ -420,6 +422,7 @@ impl<'a> GridView<'a> {
             scrollbar: None,
             marks: &[],
             sticky_header: false,
+            images: &[],
         }
     }
 }

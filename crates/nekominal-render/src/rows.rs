@@ -45,6 +45,7 @@ impl Renderer {
             match self.update_pane_inner(pane, view) {
                 Ok(mut s) => {
                     s.atlas_restarts = restarts;
+                    s.overlay_changed |= self.update_images(pane, view);
                     return s;
                 }
                 Err(AtlasFull) => {

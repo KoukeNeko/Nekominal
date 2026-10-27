@@ -20,6 +20,7 @@ use crate::cell::{CellFlags, Theme};
 use crate::d3d::{Gpu, bind_textures, bind_uniforms, constant_buffer, set_shaders, write_buffer};
 use crate::fonts::{CellMetrics, FontConfig, FontStack, Style, compute_metrics};
 use crate::gpu::{self, GlyphInstance, GrowBuffer, Pipelines, RectInstance, Uniforms};
+use crate::images::Layer;
 use crate::raster::{GlyphKind, RasterOptions, Rasterizer};
 
 #[derive(Clone)]
@@ -193,6 +194,7 @@ pub struct PaneState {
     pub(crate) overlay_prev: Vec<RectInstance>,
     pub(crate) gpu: Option<PaneGpu>,
     pub(crate) scratch: Vec<u8>,
+    pub(crate) images: crate::images::PaneImages,
 }
 
 impl Default for PaneState {
@@ -214,6 +216,7 @@ impl PaneState {
             overlay_prev: Vec::new(),
             gpu: None,
             scratch: Vec::new(),
+            images: Default::default(),
         }
     }
 
@@ -250,6 +253,8 @@ pub struct Renderer {
     pub(crate) epoch: u64,
     pub(crate) gpu_gen: u64,
     pub(crate) lcd_supported: bool,
+    /// The picture pipeline, made when the first picture shows up.
+    pub(crate) image_pipeline: Option<crate::images::ImagePipeline>,
     pub stats: RendererStats,
     pub init_timings: Vec<(&'static str, std::time::Duration)>,
 }
@@ -326,6 +331,7 @@ impl Renderer {
             epoch: 0,
             gpu_gen: 0,
             lcd_supported,
+            image_pipeline: None,
             stats: RendererStats::default(),
             init_timings,
             cfg,
@@ -434,6 +440,7 @@ impl Renderer {
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
+        self.image_pipeline = None;
         self.gpu_gen += 1;
         self.epoch += 1;
         Ok(())
@@ -520,7 +527,11 @@ impl Renderer {
             pipes.states.set_blend(gpu, false);
             set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
             gpu.draw_instances(&pane.pane_bg.buffer, pane.pane_bg.stride, 1);
+            if self.draw_images(p.pane, Layer::UnderBackgrounds) {
+                set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            }
             pane.bg.draw(gpu);
+            self.draw_images(p.pane, Layer::UnderText);
 
             set_shaders(gpu, &pipes.glyph_layout, &pipes.glyph_vs, &pipes.glyph_ps);
             pane.glyphs.draw(gpu);
@@ -533,6 +544,9 @@ impl Renderer {
 
             set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
             pane.deco.draw(gpu);
+            if self.draw_images(p.pane, Layer::OverText) {
+                set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            }
             pane.overlay.draw(gpu);
         }
     }
