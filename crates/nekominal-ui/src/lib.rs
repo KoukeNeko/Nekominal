@@ -382,15 +382,23 @@ impl Ui {
         self.run(Some("Segoe Fluent Icons"), x, y, &ch.to_string(), size, color, false)
     }
 
+    /// Draws `text` in Cascadia Mono (a path, a file name), each character it lacks in the UI font; returns its width.
+    pub fn mono(&mut self, x: f32, y: f32, text: &str, size: f32, color: Color) -> f32 {
+        self.run(Some("Cascadia Mono"), x, y, text, size, color, false)
+    }
+
     fn run(&mut self, family: Option<&str>, x: f32, y: f32, text: &str, size: f32, color: Color, bold: bool) -> f32 {
         let s = self.scale;
         let px = size * s;
         let baseline = (y * s + self.primary_metrics(px).0).round() as i32;
         let family_choice = family.and_then(|f| self.fonts.family_choice(f, Style::REGULAR));
+        // Only the icons are fitted to the pixel grid (see `glyph`).
+        let hint = family == Some("Segoe Fluent Icons");
         let mut pen = x * s;
         for ch in text.chars().filter(|c| !c.is_control()) {
-            let Some(choice) = family_choice.or_else(|| self.choice_for(ch, bold)) else { continue };
-            let cached = self.glyph(choice, ch, px, family.is_some());
+            let own = family_choice.filter(|c| self.fonts.face(c.face).glyph(ch) != 0);
+            let Some(choice) = own.or_else(|| self.choice_for(ch, bold)) else { continue };
+            let cached = self.glyph(choice, ch, px, hint && own.is_some());
             if let Some(b) = cached.bitmap {
                 let index = self.glyphs.len() as u32;
                 self.glyphs.push(GlyphInstance {
