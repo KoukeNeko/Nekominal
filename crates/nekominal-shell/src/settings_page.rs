@@ -396,6 +396,23 @@ impl Entry {
     }
 }
 
+/// What Enter presses on a row that is not a setting or a command: the button the row stands for, if it has one.
+pub fn enter_part(entry: &Entry) -> Option<Part> {
+    match entry {
+        Entry::NewProfile => Some(Part::NewProfile),
+        Entry::Snippets => Some(Part::SnippetAdd),
+        Entry::Layouts => Some(Part::LayoutSave),
+        Entry::ProfileHeader => Some(Part::ProfileBack),
+        // The variables: add one. The schemes and the font size are many buttons, none of which is the row's.
+        Entry::ProfileField(Field::Env) => Some(Part::EnvAdd),
+        Entry::ProfileField(Field::Scheme | Field::FontSize) => None,
+        Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
+        Entry::PushTest => Some(Part::PushTest),
+        Entry::Trigger(i) => Some(Part::TriggerOpen(*i)),
+        _ => None,
+    }
+}
+
 /// What the About page says of the look for a newer version.
 pub fn update_note(check: &crate::update::Check, lang: Lang) -> String {
     use crate::update::Check;
@@ -2066,6 +2083,46 @@ mod tests {
         assert!(matches!(frame.entries[..], [.., Entry::Trigger(3), Entry::TriggerPresets]));
         assert!(parts(&frame).contains(&Part::TriggerPattern(3)));
         assert_eq!(trigger_at(&settings, 3).pattern, "", "it is in the settings once its pattern is given");
+    }
+
+    /// Every page in a state that shows its rows that are buttons: rules, snippets, layouts, the editor of a profile.
+    fn every_page(settings: &Settings, width: f32, sample: &[String], build_page: &mut dyn FnMut(&Page, &View)) {
+        use nekominal_model::profiles::ProfileKind;
+        let keymap = keymap();
+        let profiles = [Profile { id: "mine".into(), name: "mine".into(), kind: ProfileKind::Other, icon: "terminal", program: "x.exe".into(), args: Vec::new(), cwd: None, custom: true, options: Default::default() }];
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None], claude: &CLAUDE, push_test: None, sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+        let layouts = vec!["work".to_owned()];
+        for section in 0..Section::ALL.len() {
+            build_page(&Page { section, layouts: layouts.clone(), ..Page::default() }, &view);
+        }
+        build_page(&Page { section: section_of(Section::Profiles), profile: Some("mine".into()), ..Page::default() }, &view);
+        for open in 0..settings.triggers.len() {
+            build_page(&Page { section: section_of(Section::Triggers), trigger: Some(open), ..Page::default() }, &view);
+        }
+    }
+
+    fn full_settings() -> Settings {
+        let mut settings = rules();
+        settings.triggers.push(Trigger { name: "ding".into(), pattern: "ding".into(), enabled: true, action: Action::Bell, program: None, instant: false });
+        settings.snippets.push(nekominal_model::settings::Snippet { name: "build".into(), input: "cargo build\r".into() });
+        settings.notifications.push.token = "tk_0123456789abcdefa91c".into();
+        settings
+    }
+
+    #[test]
+    fn enter_on_a_row_presses_a_button_that_is_on_it() {
+        let settings = full_settings();
+        let mut checked = 0;
+        every_page(&settings, 1100.0, &[], &mut |page, view| {
+            let frame = build(page, view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            for (entry, row) in frame.entries.iter().zip(&frame.rows) {
+                let Some(part) = enter_part(entry) else { continue };
+                let on_row = frame.items.iter().any(|item| item.part == Some(part) && row.contains(item.rect.x + 1.0, item.rect.y + 1.0));
+                assert!(on_row, "Enter on {entry:?} presses {part:?}, which is not on its row");
+                checked += 1;
+            }
+        });
+        assert!(checked >= 8, "the rows that are buttons were on the pages: {checked}");
     }
 
     #[test]

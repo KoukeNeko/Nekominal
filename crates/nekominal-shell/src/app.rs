@@ -3934,6 +3934,14 @@ impl App {
             self.page_commit_edit();
         }
         let Some(part) = part else { return Capture::None };
+        let capture = self.press_page_part(part, x);
+        self.page_redraw();
+        capture
+    }
+
+    /// What a press on `part` does, from the pointer (at `x`, for a slider) or from Enter on the row it stands for: one
+    /// match over every part, so that no button is pressed by the one and not by the other.
+    fn press_page_part(&mut self, part: Part, x: f32) -> Capture {
         let mut capture = Capture::None;
         match part {
             Part::Nav(i) => {
@@ -4038,7 +4046,6 @@ impl App {
             | Part::TriggerColor(..)
             | Part::TriggerPreset(_) => self.press_trigger_part(part),
         }
-        self.page_redraw();
         capture
     }
 
@@ -4088,16 +4095,7 @@ impl App {
             settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         // What Enter presses on a row that is not a setting or a command: the button it stands for.
-        let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
-            settings_page::Entry::NewProfile => Some(Part::NewProfile),
-            settings_page::Entry::Snippets => Some(Part::SnippetAdd),
-            settings_page::Entry::Layouts => Some(Part::LayoutSave),
-            settings_page::Entry::ProfileHeader => Some(Part::ProfileBack),
-            settings_page::Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
-            settings_page::Entry::PushTest => Some(Part::PushTest),
-            settings_page::Entry::Trigger(i) => Some(Part::TriggerOpen(*i)),
-            _ => None,
-        });
+        let focused_part = focus.and_then(|i| frame.entries.get(i)).and_then(settings_page::enter_part);
         match vk_code {
             // Out of the editor of a profile, back to the list.
             VK_ESCAPE if page.query.is_empty() && page.profile.is_some() => self.show_profile(None),
@@ -4133,12 +4131,11 @@ impl App {
                     self.record_key(command, settings_page::KeySlot::First);
                 }
             }
-            VK_RETURN if !repeat && focused_profile_part.is_some() => match focused_profile_part {
-                Some(Part::PushTest) => self.send_test_push(),
-                Some(part @ Part::TriggerOpen(_)) => self.press_trigger_part(part),
-                Some(part) => self.press_profile_part(part),
-                None => {}
-            },
+            VK_RETURN if !repeat && focused_part.is_some() => {
+                if let Some(part) = focused_part {
+                    self.press_page_part(part, 0.0);
+                }
+            }
             VK_RETURN if !repeat => {
                 let Some(row) = focused_row else { return true };
                 if matches!(row.control, Control::Text | Control::Secret) {
