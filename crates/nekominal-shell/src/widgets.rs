@@ -42,6 +42,11 @@ impl State {
     }
 }
 
+/// The height of an item on a plate of its own, wherever one is listed (a row of the settings, a profile, an option of a
+/// dialog), the gap under it included, and that gap: one size across the app.
+pub const ITEM: f32 = 48.0;
+pub const ITEM_GAP: f32 = 4.0;
+
 /// A plain rounded plate of one colour.
 pub fn plate(ui: &mut Ui, rect: Rect, fill: Color) {
     ui.rrect(rect, RADIUS, fill, None);

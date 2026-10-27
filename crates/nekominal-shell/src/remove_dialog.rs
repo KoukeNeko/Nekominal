@@ -200,10 +200,11 @@ pub fn place(ui: &mut Ui, dialog: &Dialog) -> Layout {
         }
     }
     y += 8.0;
-    let height = 18.0 + text + small;
+    // An option is an item of the app's one size.
+    let height = crate::widgets::ITEM - crate::widgets::ITEM_GAP;
     let choices = [0, 1].map(|_| {
         let rect = Rect::new(PAD, y, DIALOG_WIDTH - 2.0 * PAD, height);
-        y += height + 6.0;
+        y += crate::widgets::ITEM;
         rect
     });
     let buttons = y + 10.0;

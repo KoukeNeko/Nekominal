@@ -45,8 +45,8 @@ const LAYOUT_RATIO: f32 = 0.6;
 /// the ends of the hairlines between the rows, left and right.
 const INNER: f32 = MARGIN;
 /// The items of a section are plates of their own with a gap between them (the approved page section design).
-const ROW: f32 = 48.0;
-const ROW_GAP: f32 = 4.0;
+const ROW: f32 = crate::widgets::ITEM;
+const ROW_GAP: f32 = crate::widgets::ITEM_GAP;
 /// Below a grid (the colour schemes, the layouts) before the next row, as much as above the text of a row.
 const GRID_BOTTOM: f32 = INNER;
 const CONTROL: f32 = 28.0;
@@ -56,15 +56,9 @@ const FIELD_WIDTH: f32 = 280.0;
 const WIDE_FIELD: f32 = 320.0;
 const TILE: (f32, f32) = (148.0, 64.0);
 const TILE_GAP: f32 = 2.0 * GAP;
-const RADIO_ROW: f32 = 40.0;
 /// The reset button of a row, and the room the label leaves for it.
 const RESET: f32 = 24.0;
 const RESET_ROOM: f32 = RESET + GAP;
-/// The row of an agent on the Agent page: its logo, its name and version, and a line that says how it is connected.
-const CLAUDE_ROW: f32 = 64.0;
-/// The row of the app on the About page: its logo, its name and version, what the look for a newer one found, and the
-/// buttons under them.
-const ABOUT_ROW: f32 = 108.0;
 /// How much taller a row is when its control goes under its label.
 const STACK: f32 = 48.0;
 
@@ -734,6 +728,14 @@ fn stepper(items: &mut Vec<Item>, controls: &mut Controls, (minus, plus): (Part,
     rect
 }
 
+/// The icon of a program at the left of a row; the rest of the row, for its label.
+fn row_mark(items: &mut Vec<Item>, rect: Rect, path: Option<std::path::PathBuf>, mark: Mark) -> Rect {
+    let size = 28.0;
+    item(items, Rect::new(rect.x + INNER, rect.y + (rect.h - size) / 2.0, size, size), None, Visual::Program { path, mark }, true);
+    let shift = size + 2.0 * MARK_GAP;
+    Rect::new(rect.x + shift, rect.y, (rect.w - shift).max(0.0), rect.h)
+}
+
 /// A shortcut as a small chip of its own: pressed, it waits for the chord that takes its place.
 fn chip_button(items: &mut Vec<Item>, rect: Rect, part: Part, text: &str, hover: Option<Part>) {
     item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
@@ -1075,51 +1077,39 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::Claude => {
                 let claude = view.claude;
-                let rect = Rect::new(x0, y, content_width, CLAUDE_ROW - ROW_GAP);
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 row_plate(&mut items, rect, None, focus);
-                let mark = Rect::new(rect.x + INNER, rect.y + (rect.h - 28.0) / 2.0, 28.0, 28.0);
-                item(&mut items, mark, None, Visual::Program { path: claude.exe.clone(), mark: Mark::Badge { label: "C", color: (217, 119, 87) } }, true);
-                let text_x = mark.x + 28.0 + 2.0 * MARK_GAP;
-                let room = (rect.x + rect.w - INNER - text_x).max(0.0);
+                let text = row_mark(&mut items, rect, claude.exe.clone(), Mark::Badge { label: "C", color: (217, 119, 87) });
                 let title = match &claude.version {
                     Some(version) => format!("Claude Code  {version}"),
                     None => "Claude Code".to_owned(),
                 };
-                item(&mut items, Rect::new(text_x, rect.y + 8.0, room, 22.0), None, label(title, 13.0, Tone::Text, true, Align::Left), true);
-                let note = claude_note(claude, view.settings);
-                item(&mut items, Rect::new(text_x, rect.y + rect.h - 30.0, room, 22.0), None, label(note.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
-                y += CLAUDE_ROW;
+                row_label(&mut items, text, text.w - 2.0 * INNER, &title, Some(claude_note(claude, view.settings).get(lang)), Tone::Text);
+                y += ROW;
             }
             Entry::About => {
                 use crate::update::Check;
-                let rect = Rect::new(x0, y, content_width, ABOUT_ROW - ROW_GAP);
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 row_plate(&mut items, rect, None, focus);
-                let mark = Rect::new(rect.x + INNER, rect.y + 16.0, 36.0, 36.0);
-                item(&mut items, mark, None, Visual::Program { path: std::env::current_exe().ok(), mark: Mark::Badge { label: "N", color: (122, 162, 247) } }, true);
-                let text_x = mark.x + 36.0 + 2.0 * MARK_GAP;
-                let room = (rect.x + rect.w - INNER - text_x).max(0.0);
-                let title = format!("Nekominal  {}", crate::update::CURRENT);
-                item(&mut items, Rect::new(text_x, rect.y + 12.0, room, 24.0), None, label(title, 15.0, Tone::Text, true, Align::Left), true);
+                // The buttons at the right: look again, and update when a newer version is out and Scoop can put it in.
                 let newer = matches!(view.update, Check::Newer(_));
-                let tone = if newer { Tone::Text } else { Tone::Quiet };
-                item(&mut items, Rect::new(text_x, rect.y + 36.0, room, 20.0), None, label(update_note(&view.update, lang), 12.0, tone, false, Align::Left), true);
-                // The buttons: update when a newer version is out and Scoop can put it in, and look again.
-                let mut at = text_x;
-                let buttons_y = rect.y + 66.0;
+                let mut controls = Controls::new(rect);
+                let check = Text::UpdateCheck.get(lang);
+                let check_rect = controls.button(measure, check);
+                // Placed from the right, drawn from the left: the update comes first to the keyboard and to a screen reader.
                 if newer && view.scoop {
-                    let text = Text::AppUpdate.get(lang);
-                    let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
-                    text_button(&mut items, button, Part::Update, text, true, hover);
-                    at = button.x + button.w + GAP;
+                    let update = Text::AppUpdate.get(lang);
+                    let update_rect = controls.button(measure, update);
+                    text_button(&mut items, update_rect, Part::Update, update, true, hover);
                 }
-                let text = Text::UpdateCheck.get(lang);
-                let button = Rect::new(at, buttons_y, measure(text, 13.0, false) + 28.0, CONTROL);
-                text_button(&mut items, button, Part::CheckUpdate, text, false, hover);
-                if newer && !view.scoop {
-                    let x = button.x + button.w + 12.0;
-                    item(&mut items, Rect::new(x, buttons_y, (rect.x + rect.w - INNER - x).max(0.0), CONTROL), None, label(Text::UpdateNotScoop.get(lang), 12.0, Tone::Quiet, false, Align::Left), true);
-                }
-                y += ABOUT_ROW;
+                text_button(&mut items, check_rect, Part::CheckUpdate, check, false, hover);
+                let text = row_mark(&mut items, rect, std::env::current_exe().ok(), Mark::Badge { label: "N", color: (122, 162, 247) });
+                let room = (controls.right - text.x - INNER).max(0.0);
+                let title = format!("Nekominal  {}", crate::update::CURRENT);
+                // A newer version Scoop did not install says so after what the look found.
+                let note = if newer && !view.scoop { format!("{} · {}", update_note(&view.update, lang), Text::UpdateNotScoop.get(lang)) } else { update_note(&view.update, lang) };
+                row_label(&mut items, text, room, &title, Some(&note), Tone::Text);
+                y += ROW;
             }
             Entry::Repo => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
@@ -1503,7 +1493,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         y += ROW;
                         let chosen = view.profiles.iter().position(|p| p.id == current).unwrap_or(0);
                         for (i, profile) in view.profiles.iter().enumerate() {
-                            let line = Rect::new(x0, y, content_width, RADIO_ROW - ROW_GAP);
+                            let line = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                             let part = Part::Profile(i);
                             row_plate(&mut items, line, Some(part), false);
                             let radio = Rect::new(line.x + INNER, line.y + (line.h - 16.0) / 2.0, 16.0, 16.0);
@@ -1516,7 +1506,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             item(&mut items, Rect::new(name_x, line.y, (edit.x - GAP - name_x).max(0.0), line.h), None, label(profile.name.as_str(), 13.0, Tone::Text, false, Align::Left), true);
                             // Its editor, pressed over the row that makes it the default.
                             glyph_button(&mut items, edit, Part::EditProfile(i), '\u{E70F}', hover);
-                            y += RADIO_ROW;
+                            y += ROW;
                         }
                     }
                     _ => y += ROW,
@@ -1750,7 +1740,7 @@ mod tests {
         assert_eq!(all.iter().filter(|p| matches!(p, Part::Contributor(_))).count(), people, "a chip for each contributor");
         let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), false);
         assert_eq!(elsewhere, [Part::CheckUpdate], "a copy Scoop did not install is not updated by it");
-        assert!(texts.iter().any(|t| t == Text::UpdateNotScoop.get(Lang::EnUs)));
+        assert!(texts.iter().any(|t| t.contains(Text::UpdateNotScoop.get(Lang::EnUs))), "said in the note of the row");
     }
 
     #[test]
@@ -2338,6 +2328,29 @@ mod tests {
         let plate = frame.rows[3];
         let shown = frame.items.iter().any(|item| matches!(&item.visual, Visual::Label { text, bold: true, .. } if *text == trigger_title(&adding, Lang::EnUs)) && plate.contains(item.rect.x + 1.0, item.rect.y + 1.0));
         assert!(shown, "its plate says the same");
+    }
+
+    #[test]
+    fn every_item_of_every_page_is_one_size_and_only_items_of_several_lines_are_taller() {
+        use nekominal_model::profiles::ProfileKind;
+        let profile = |id: &str| Profile { id: id.into(), name: id.into(), kind: ProfileKind::Other, icon: "pwsh", program: String::new(), args: Vec::new(), cwd: None, custom: false, options: Default::default() };
+        let profiles = [profile("a"), profile("b")];
+        let settings = Settings::default();
+        let keymap = keymap();
+        let one = ROW - ROW_GAP;
+        for section in 0..Section::ALL.len() {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1100.0, 4000.0) };
+            let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            for item in frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))) {
+                // No item is shorter than one line (the profiles were); a taller one holds more lines.
+                assert!(item.rect.h >= one, "{:?}: a plate {} high, shorter than an item", Section::ALL[section], item.rect.h);
+            }
+            // The profiles, Claude Code and the app are items of one line, not of sizes of their own.
+            let singles = frame.entries.iter().zip(&frame.rows).filter(|(entry, _)| matches!(entry, Entry::Claude | Entry::About | Entry::Repo | Entry::NewProfile));
+            for (entry, row) in singles {
+                assert_eq!(row.h, ROW, "{entry:?}");
+            }
+        }
     }
 
     #[test]
