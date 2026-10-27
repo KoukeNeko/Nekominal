@@ -34,13 +34,16 @@ use windows::{
         Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, HWND, LPARAM, LRESULT, LocalFree, WPARAM},
         Security::{
             Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
-            GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+            GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
         },
         Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAGS_AND_ATTRIBUTES, PIPE_ACCESS_DUPLEX},
         System::{
             LibraryLoader::GetModuleHandleW,
-            Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT},
-            Threading::{GetCurrentProcess, OpenProcessToken},
+            Pipes::{
+                ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+                PIPE_WAIT,
+            },
+            Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION},
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, HWND_MESSAGE, KillTimer, PostMessageW, RegisterClassW, SetTimer, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
@@ -499,7 +502,15 @@ impl Drop for Running {
 
 /// Starts the API, from the UI thread before its first window, so that the first panes get its variables. What fails
 /// goes to the log, and the terminal works without it.
+///
+/// Not in an elevated process: the pipe is open to the user, and any program of the user, elevated or not, could then
+/// type into an administrator's shell, which is what UAC is there to stop. (A High mandatory label on the pipe would
+/// keep them out too, but nothing of the user's could use it then; an elevated window simply has no API.)
 pub fn start() -> Running {
+    if crate::app::elevated() {
+        crate::util::log("api: not started, the process is elevated");
+        return Running(None);
+    }
     match try_start() {
         Ok(file) => Running(file),
         Err(e) => {
@@ -572,10 +583,14 @@ fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
         .map(|entries| entries.flatten().filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path()))).collect())
         .unwrap_or_default();
     found.sort_by(|a, b| b.0.cmp(&a.0));
+    // SAFETY: the pseudo handle of this process, which needs no closing.
+    let self_elevated = elevated_process(unsafe { GetCurrentProcess() }) == Some(true);
     for (_, file) in found {
         let Ok(name) = std::fs::read_to_string(&file) else { continue };
         match connect(name.trim()) {
-            Ok(pipe) => return Ok(pipe),
+            // An elevated instance of an older version still serves: a program that is not elevated must not drive it.
+            Ok(pipe) if !server_elevated(&pipe) || self_elevated => return Ok(pipe),
+            Ok(_) => {}
             Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput) => {
                 let _ = std::fs::remove_file(&file);
             }
@@ -583,6 +598,36 @@ fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
         }
     }
     Err("no running Nekominal was found".to_owned())
+}
+
+/// Whether the token of `process` is elevated; None when it cannot be asked.
+fn elevated_process(process: HANDLE) -> Option<bool> {
+    // SAFETY: the token is closed below; TOKEN_ELEVATION is as large as the size given.
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut size = 0u32;
+        let asked = GetTokenInformation(token, TokenElevation, Some((&raw mut elevation).cast()), size_of::<TOKEN_ELEVATION>() as u32, &mut size);
+        let _ = CloseHandle(token);
+        asked.ok().map(|_| elevation.TokenIsElevated != 0)
+    }
+}
+
+/// Whether the process that serves `pipe` is elevated, or cannot be asked (a program that is not elevated is refused the
+/// token of one that is): either way not one to send requests to from a program that is not.
+fn server_elevated(pipe: &File) -> bool {
+    let mut pid = 0u32;
+    // SAFETY: the handle of the File, a client end of a pipe; the process handle is closed below.
+    unsafe {
+        if GetNamedPipeServerProcessId(HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(pipe)), &mut pid).is_err() {
+            return true;
+        }
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return true };
+        let elevated = elevated_process(process);
+        let _ = CloseHandle(process);
+        elevated != Some(false)
+    }
 }
 
 /// Sends one request and prints every line that comes back: one answer, or for `subscribe` the answer and then the events
@@ -804,6 +849,15 @@ mod tests {
         assert!(connect(victim.to_str().unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidInput), "--pipe with a path is refused too");
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_file(&victim).unwrap();
+    }
+
+    #[test]
+    fn the_elevation_of_a_pipes_server_is_read_from_its_process_token() {
+        // The server is this process: as elevated as the test runs, and asked without fail.
+        // SAFETY: the pseudo handle of this process.
+        let this = elevated_process(unsafe { GetCurrentProcess() });
+        assert!(this.is_some(), "a process can read its own token");
+        assert_eq!(server_elevated(&connect(&served()).unwrap()), this == Some(true));
     }
 
     #[test]

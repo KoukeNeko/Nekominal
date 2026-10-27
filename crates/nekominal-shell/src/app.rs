@@ -128,7 +128,7 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
 
 /// Whether this process runs as administrator (elevated by UAC): its shells do too, which the shield in the bar says.
 /// Asked once; elevation does not change while a process runs.
-fn elevated() -> bool {
+pub(crate) fn elevated() -> bool {
     static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // SAFETY: a plain query of the token of this process.
     *ELEVATED.get_or_init(|| unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() })
