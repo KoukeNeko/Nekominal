@@ -133,6 +133,15 @@ pub fn close_all_windows() {
     }
 }
 
+/// Every window, the one in front first, for the automation API (`api.rs`), which borrows each only as `with_app` does.
+pub(crate) fn apps() -> Vec<(HWND, Rc<RefCell<App>>)> {
+    // SAFETY: a plain query.
+    let front = unsafe { GetForegroundWindow() }.0 as isize;
+    let mut apps: Vec<(isize, Rc<RefCell<App>>)> = APPS.with(|apps| apps.borrow().iter().map(|(key, app)| (*key, app.clone())).collect());
+    apps.sort_by_key(|(key, _)| (*key != front, *key));
+    apps.into_iter().map(|(key, app)| (HWND(key as *mut _), app)).collect()
+}
+
 /// Runs `f` on the application unless it is not there yet or already busy (a message sent from inside a handler).
 fn with_app<T>(hwnd: HWND, f: impl FnOnce(&mut App) -> T) -> Option<T> {
     let app = APPS.with(|apps| {
@@ -1148,6 +1157,8 @@ pub fn run() -> Result<(), String> {
             ..Default::default()
         };
         RegisterClassW(&class);
+        // Before the first window, whose panes get its variables; its file goes when this returns.
+        let _api = crate::app::load_settings().0.api.enabled.then(crate::api::start);
         create_window(None, None, true)?;
 
         let mut message = MSG::default();

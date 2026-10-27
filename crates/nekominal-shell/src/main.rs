@@ -4,6 +4,7 @@
 
 mod access;
 mod agent;
+mod api;
 mod app;
 mod buffers;
 mod cli;

@@ -61,6 +61,7 @@ use crate::{
     util,
 };
 
+pub(crate) mod automation;
 mod notifications;
 mod workspace;
 
@@ -465,7 +466,7 @@ pub mod agents_panel;
 
 /// The settings of the file, and whether it could be read: missing or empty is fine (the defaults), but text that is not
 /// JSON, or not UTF-8, is a file the user is in the middle of editing, which a save must not replace with the defaults.
-fn load_settings() -> (Settings, bool) {
+pub(crate) fn load_settings() -> (Settings, bool) {
     let loaded = store::settings_path().map(|path| store::load(&path)).transpose();
     let (text, readable) = match loaded {
         Ok(text) => (text.flatten(), true),
@@ -799,6 +800,7 @@ impl App {
         env.extend(profile.options.env.clone());
         env.extend(profiles::launch_env(profile, self.settings.shell_integration));
         env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
+        env.extend(crate::api::pane_environment(session));
         if self.settings.status_bar.show && !self.claude.own_status_line && let Some(file) = agent::claude_settings_file() {
             env.insert(agent::CLAUDE_SETTINGS_VAR.to_owned(), file.to_string_lossy().into_owned());
         }
@@ -1253,6 +1255,7 @@ impl App {
         }
         // The find bar searches the focused pane: only its output can change the matches.
         let focused_woke = self.focused().is_some_and(|entry| entry.wake.pending.load(Ordering::Acquire));
+        self.api_observe();
         for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
             entry.wake.pending.store(false, Ordering::Release);
         }
@@ -1304,6 +1307,7 @@ impl App {
                             entry.note = Some(note);
                         }
                         UiEvent::PromptMark(mark) => {
+                            Self::api_mark(entry, mark);
                             let pane = &entry.pane;
                             self.notifier.on_mark(uid, entry.id, mark, Instant::now(), self.settings.notifications.long_command, || pane.term.lock().last_command_line());
                         }
