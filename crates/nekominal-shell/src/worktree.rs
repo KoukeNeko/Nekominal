@@ -316,7 +316,8 @@ pub fn remove(status: &Status, force: bool, delete_branch: bool) -> Result<Optio
         let _ = std::fs::remove_dir(&status.path);
     }
     match &status.branch {
-        Some(branch) if delete_branch => Ok(git(&root, ["branch", if force { "-D" } else { "-d" }, branch]).err()),
+        // Without the advice git writes after "not fully merged", which would be the last line, the one told.
+        Some(branch) if delete_branch => Ok(git(&root, ["-c", "advice.forceDeleteBranch=false", "branch", if force { "-D" } else { "-d" }, branch]).err()),
         _ => Ok(None),
     }
 }
@@ -489,8 +490,9 @@ mod tests {
         commit(&made, "work");
         let ahead = inspect(&made).unwrap();
         assert_eq!((ahead.unpushed, ahead.merged), (Some(2), Some(false)));
-        let kept = remove(&ahead, false, true).unwrap();
-        assert!(kept.is_some(), "-d keeps a branch not merged");
+        let kept = remove(&ahead, false, true).unwrap().expect("-d keeps a branch not merged");
+        // What git said of the branch, in whatever language, not the advice it adds after it.
+        assert!(kept.contains("agent/two") && !kept.contains("advice."), "{kept}");
         assert!(!made.exists());
         assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/two"]).is_ok());
 

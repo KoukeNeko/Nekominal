@@ -56,7 +56,7 @@ when git is not on the PATH; nothing here uses the network.
 | The main checkout | Refused (`Refusal::Main`), also forced | `the_main_checkout_is_never_removed_and_changes_only_by_force`, `a_dirty_worktree_is_refused_until_clean_then_removed_with_its_merged_branch` |
 | Changes not committed | Refused unless forced; an archive is never forced | same, and `an_archive_keeps_the_branch_and_refuses_changes` |
 | Remove with the branch, branch merged | Folder and branch go | `a_dirty_worktree_is_refused_until_clean_then_removed_with_its_merged_branch` |
-| Remove with the branch, branch not merged | Folder goes, `git branch -d` keeps the branch and what git said is returned | same |
+| Remove with the branch, branch not merged | Folder goes, `git branch -d` keeps the branch and what git said of it is returned (not the advice git adds after it) | same |
 | Archive | Folder goes, branch and its commits stay | `an_archive_keeps_the_branch_and_refuses_changes` |
 | A process (a pane's shell) still has the folder as its working directory | git removes the files and the worktree, then fails on the folder; the branch still goes as asked; the empty folder stays while the process holds it | `a_worktree_a_process_still_sits_in_loses_its_branch_as_asked` |
 | git fails | The last line git wrote (the `fatal:` line, not the progress before it) | `git_failures_report_the_last_line_git_wrote` |
