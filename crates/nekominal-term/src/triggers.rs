@@ -194,6 +194,15 @@ mod tests {
     }
 
     #[test]
+    fn the_program_filter_ignores_case_folders_and_exe_on_either_side() {
+        assert!(program_matches("CLAUDE.EXE", "claude"));
+        assert!(program_matches("claude.exe", "claude.exe"));
+        assert!(program_matches(r"C:\x\claude.exe", "/usr/bin/claude"), "only the file name counts");
+        assert!(!program_matches("claude.exe.exe", "claude"), "one .exe is left out, not every one");
+        assert!(!program_matches("node", "claude"));
+    }
+
+    #[test]
     fn a_highlight_rule_gives_the_range_of_every_match() {
         let triggers = Triggers::new(vec![TriggerRule { highlight: Some((1, 2, 3)), ..rule(0, "ab|x*") }]).unwrap();
         let hits = triggers.matches("ab-ab", false, None);
