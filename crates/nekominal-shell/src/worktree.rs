@@ -353,6 +353,197 @@ mod tests {
     }
 
     #[test]
+    fn the_folder_of_a_worktree_keeps_spaces_and_unicode_and_a_drive_root_has_one_too() {
+        let none = |_: &Path| false;
+        assert_eq!(worktree_path(Path::new(r"D:\my src\應用 app"), "功能/登入", none), Path::new(r"D:\my src\應用 app-功能-登入"));
+        assert_eq!(worktree_path(Path::new(r"D:\"), "fix", none), Path::new(r"D:\repo-fix"), "a repository at the root of a drive");
+        assert_eq!(worktree_path(Path::new(r"\\nas\share\app"), "fix", none), Path::new(r"\\nas\share\app-fix"));
+    }
+
+    /// The branch names to hold `valid_branch` and git to: those of the test above, and a few more.
+    const NAMES: &[&str] = &[
+        "fix", "fix/login", "agent-1", "feature/新功能", "v1.2", "a@b", "x.lockx", "a\"b", "a<b>|c", "a/b/c", "UPPER", "", "-x", "HEAD", "a..b",
+        "a b", "a~1", "a^", "a:b", "a?", "a*", "a[b", r"a\b", "a/", "/a", "a//b", ".a", "a/.b", "a.lock", "a/b.lock/c", "a.", "a@{1}", "@{-1}",
+        "a\tb", "a\u{7f}", "--force",
+    ];
+
+    #[test]
+    fn branch_names_agree_with_git_check_ref_format() {
+        let Some((base, repo)) = temp_repo("refs") else { return };
+        let long = "a".repeat(300);
+        for name in NAMES.iter().copied().chain([long.as_str()]) {
+            let git_says = git(&repo, ["check-ref-format", "--branch", name]).is_ok();
+            assert_eq!(valid_branch(name), git_says, "{name:?}");
+        }
+        // The one difference: git reads `@` as the branch checked out, which is no name for a new one.
+        assert!(git(&repo, ["check-ref-format", "--branch", "@"]).is_ok() && !valid_branch("@"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_branch_name_too_long_for_windows_is_refused_by_git_and_leaves_nothing_behind() {
+        let Some((base, repo)) = temp_repo("long") else { return };
+        let long = "a".repeat(260);
+        assert!(valid_branch(&long));
+        assert!(matches!(create(&repo, &long), Err(Error::Git(_))));
+        let folders: Vec<_> = std::fs::read_dir(&base).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(folders, ["repo"], "no folder for the worktree");
+        assert_eq!(git(&repo, ["branch", "--list"]).unwrap(), "* main", "no branch");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_real_worktree_takes_the_next_free_folder_in_a_path_with_spaces_and_unicode() {
+        let Some((base, repo)) = temp_repo("my repo 新") else { return };
+        std::fs::create_dir_all(base.join("repo-feature-新")).unwrap();
+        std::fs::create_dir_all(base.join("repo-feature-新-2")).unwrap();
+        let made = create(&repo, "feature/新").unwrap();
+        assert_eq!(made.file_name().unwrap(), "repo-feature-新-3");
+        let status = inspect(&made).unwrap();
+        assert_eq!((status.branch.as_deref(), status.main), (Some("feature/新"), false));
+        assert!(contains(&status.path, &made.to_string_lossy()));
+        std::fs::write(made.join("筆記 one.txt"), "x").unwrap();
+        assert_eq!(inspect(&made).unwrap().files, [('?', "筆記 one.txt".to_owned())]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_repository_with_no_commits_yet_has_no_counts_and_no_default_branch() {
+        let Some((base, _)) = temp_repo("unborn") else { return };
+        let repo = base.join("empty");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, ["init", "-q", "-b", "main"]).unwrap();
+        let status = inspect(&repo).unwrap();
+        assert!(status.main && !status.dirty());
+        assert_eq!(status.branch.as_deref(), Some("main"), "the branch to be");
+        assert_eq!((status.unpushed, &status.default_branch, status.merged), (None, &None, None));
+        // git 2.42 and later make an orphan branch; older ones refuse. Either way nothing breaks.
+        match create(&repo, "first") {
+            Ok(made) => assert_eq!(inspect(&made).unwrap().branch.as_deref(), Some("first")),
+            Err(e) => assert!(matches!(e, Error::Git(_)), "{e:?}"),
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_bare_repository_is_not_a_place_for_a_worktree() {
+        let Some((base, _)) = temp_repo("bare") else { return };
+        let bare = base.join("bare.git");
+        git(&base, ["init", "-q", "--bare", "bare.git"]).unwrap();
+        assert_eq!(create(&bare, "x"), Err(Error::NotRepo));
+        assert_eq!(inspect(&bare), Err(Error::NotRepo));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_submodule_is_the_main_checkout_of_its_own_repository() {
+        let Some((base, repo)) = temp_repo("submodule") else { return };
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        git(&lib, ["init", "-q", "-b", "main"]).unwrap();
+        commit(&lib, "lib");
+        // A local path as the URL, which git allows only when asked.
+        git(&repo, [OsString::from("-c"), "protocol.file.allow=always".into(), "submodule".into(), "add".into(), "-q".into(), lib.clone().into(), "lib".into()]).unwrap();
+        let sub = repo.join("lib");
+        let status = inspect(&sub).unwrap();
+        assert!(status.main, "a submodule is never removed as a worktree");
+        assert_eq!(check_remove(&status, true), Err(Refusal::Main));
+        assert_eq!(repository_root(&sub).unwrap().canonicalize().unwrap(), sub.canonicalize().unwrap());
+        let made = create(&sub, "x").unwrap();
+        assert_eq!(made.parent().unwrap().canonicalize().unwrap(), repo.canonicalize().unwrap(), "beside the folder of the submodule");
+        git(&sub, [OsString::from("worktree"), "remove".into(), made.into()]).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_detached_head_has_no_branch_and_is_not_archived() {
+        let Some((base, repo)) = temp_repo("detached") else { return };
+        let made = create(&repo, "agent/detached").unwrap();
+        git(&made, ["checkout", "-q", "--detach"]).unwrap();
+        let status = inspect(&made).unwrap();
+        assert_eq!((status.branch.as_deref(), status.main), (None, false));
+        assert_eq!(archive(&status), Err(Error::Refused(Refusal::Detached)));
+        assert!(made.exists());
+        git(&repo, [OsString::from("worktree"), "remove".into(), made.into()]).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn every_kind_of_change_is_counted_with_its_letter() {
+        let Some((base, repo)) = temp_repo("changes") else { return };
+        for (file, text) in [("a.txt", "a"), ("b.txt", "b"), ("old name.txt", "o"), (".gitignore", "*.log\n")] {
+            std::fs::write(repo.join(file), text).unwrap();
+        }
+        git(&repo, ["add", "-A"]).unwrap();
+        commit(&repo, "files");
+        std::fs::write(repo.join("build.log"), "x").unwrap();
+        let ignored = inspect(&repo).unwrap();
+        assert!(!ignored.dirty(), "files git ignores are no changes");
+
+        std::fs::write(repo.join("a.txt"), "changed").unwrap();
+        std::fs::write(repo.join("new.txt"), "n").unwrap();
+        git(&repo, ["add", "new.txt"]).unwrap();
+        git(&repo, ["mv", "old name.txt", "new name.txt"]).unwrap();
+        std::fs::write(repo.join("my notes.txt"), "u").unwrap();
+        let status = inspect(&repo).unwrap();
+        assert_eq!((status.changed, status.untracked), (3, 1));
+        for file in [('M', "a.txt"), ('A', "new.txt"), ('R', "old name.txt -> new name.txt"), ('?', "my notes.txt")] {
+            assert!(status.files.contains(&(file.0, file.1.to_owned())), "{file:?} in {:?}", status.files);
+        }
+
+        git(&repo, ["reset", "-q", "--hard"]).unwrap();
+        std::fs::remove_file(repo.join("my notes.txt")).unwrap();
+        git(&repo, ["checkout", "-q", "-b", "side"]).unwrap();
+        std::fs::write(repo.join("b.txt"), "side").unwrap();
+        git(&repo, ["add", "b.txt"]).unwrap();
+        commit(&repo, "side");
+        git(&repo, ["checkout", "-q", "main"]).unwrap();
+        std::fs::write(repo.join("b.txt"), "main").unwrap();
+        git(&repo, ["add", "b.txt"]).unwrap();
+        commit(&repo, "main");
+        assert!(git(&repo, ["-c", "user.name=t", "-c", "user.email=t@example.com", "merge", "-q", "side"]).is_err(), "a conflict");
+        let conflicted = inspect(&repo).unwrap();
+        assert_eq!((conflicted.changed, &conflicted.files[..]), (1, &[('U', "b.txt".to_owned())][..]));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn pushed_ahead_behind_and_unpushed_commits_are_read_against_the_remote() {
+        let Some((base, repo)) = temp_repo("remote") else { return };
+        git(&base, ["init", "-q", "--bare", "remote.git"]).unwrap();
+        git(&repo, [OsString::from("remote"), "add".into(), "origin".into(), base.join("remote.git").into()]).unwrap();
+        git(&repo, ["push", "-q", "-u", "origin", "main"]).unwrap();
+        let pushed = inspect(&repo).unwrap();
+        assert_eq!((pushed.remote.as_deref(), pushed.unpushed), (Some("origin"), Some(0)));
+        assert_eq!((pushed.default_branch.as_deref(), pushed.merged), (Some("main"), Some(true)), "no origin/HEAD: the local main");
+
+        commit(&repo, "one");
+        commit(&repo, "two");
+        assert_eq!(inspect(&repo).unwrap().unpushed, Some(2), "ahead of the upstream");
+        git(&repo, ["push", "-q"]).unwrap();
+        git(&repo, ["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+        assert_eq!(inspect(&repo).unwrap().unpushed, Some(0), "only behind: nothing to push");
+        git(&repo, ["pull", "-q", "--ff-only"]).unwrap();
+
+        // A branch never pushed: no upstream, so the commits on no remote branch.
+        let made = create(&repo, "agent/remote").unwrap();
+        let fresh = inspect(&made).unwrap();
+        assert_eq!((fresh.remote.as_deref(), fresh.unpushed), (Some("origin"), Some(0)));
+        commit(&made, "work");
+        assert_eq!(inspect(&made).unwrap().unpushed, Some(1));
+
+        git(&repo, ["remote", "set-head", "origin", "main"]).unwrap();
+        let unmerged = inspect(&made).unwrap();
+        assert_eq!((unmerged.default_branch.as_deref(), unmerged.merged), (Some("origin/main"), Some(false)));
+        git(&made, ["push", "-q", "origin", "HEAD:main"]).unwrap();
+        git(&repo, ["fetch", "-q"]).unwrap();
+        assert_eq!(inspect(&made).unwrap().merged, Some(true), "merged into origin/main");
+        assert_eq!(inspect(&made).unwrap().unpushed, Some(0), "on a remote branch now");
+        git(&repo, [OsString::from("worktree"), "remove".into(), made.into()]).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn git_is_asked_for_a_new_branch_and_the_path_after_the_end_of_the_options() {
         let args = add_args(Path::new(r"D:\src\app-fix"), "fix");
         assert_eq!(args, ["worktree", "add", "-b", "fix", "--", r"D:\src\app-fix"].map(OsString::from));
@@ -428,6 +619,19 @@ mod tests {
         assert!(contains(root, r"d:/SRC/app-fix/sub/"));
         assert!(!contains(root, r"D:\src\app-fix-2"), "a sibling with the same start");
         assert!(!contains(root, r"D:\src"));
+    }
+
+    #[test]
+    fn a_folder_is_in_a_worktree_only_below_it() {
+        let app = Path::new(r"D:\src\app");
+        assert!(!contains(app, r"D:\src\app2"), "a name that starts the same");
+        assert!(!contains(app, r"D:\src\ap"));
+        assert!(contains(app, r"D:\src\app\deep\er"));
+        assert!(contains(Path::new(r"D:\src\app\"), r"D:\src\app"), "a trailing separator on the worktree");
+        assert!(contains(Path::new("D:/src/app"), r"d:\src\APP\x"), "git's slashes");
+        assert!(contains(Path::new(r"D:\"), r"D:\anything"), "a worktree at the root of a drive");
+        assert!(contains(Path::new(r"D:\Ärger"), r"d:\ärger\x"), "case of letters beyond ASCII");
+        assert!(!contains(app, ""));
     }
 
     fn status(main: bool, branch: Option<&str>, changed: usize, untracked: usize) -> Status {
@@ -568,6 +772,60 @@ mod tests {
         assert_eq!(copy_included(&repo, &made).unwrap(), Vec::<String>::new(), "a file already there is kept");
         assert_eq!(read(".env").as_deref(), Some("A=1"));
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_missing_or_empty_worktreeinclude_copies_nothing() {
+        let Some((base, repo)) = temp_repo("include-empty") else { return };
+        std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+        std::fs::write(repo.join(".env"), "A=1").unwrap();
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        assert_eq!(copy_included(&repo, &dest), Ok(Vec::new()), "no .worktreeinclude");
+        for text in ["", "\n\n", "# only a comment\n"] {
+            std::fs::write(repo.join(".worktreeinclude"), text).unwrap();
+            assert_eq!(copy_included(&repo, &dest), Ok(Vec::new()), "{text:?}");
+        }
+        assert!(!dest.join(".env").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn worktreeinclude_negations_nested_folders_and_odd_names_are_followed() {
+        let Some((base, repo)) = temp_repo("include-more") else { return };
+        let write = |rel: &str| {
+            let path = repo.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, rel).unwrap();
+        };
+        std::fs::write(repo.join(".gitignore"), ".env*\nsecrets/\n*.key\n").unwrap();
+        std::fs::write(repo.join(".worktreeinclude"), "**/.env\n.env*\n!.env.example\nsecrets/\n!secrets/old/\n*.key\n").unwrap();
+        for rel in [".env", ".env.example", "apps/web/config/.env", "secrets/a.txt", "secrets/deep/b.txt", "secrets/old/c.txt", "my keys/金鑰 1.key"] {
+            write(rel);
+        }
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        let mut copied = copy_included(&repo, &dest).unwrap();
+        copied.sort();
+        // `!secrets/old/` takes nothing back: as in a .gitignore, a file whose folder is excluded cannot be re-included.
+        assert_eq!(copied, [".env", "apps/web/config/.env", "my keys/金鑰 1.key", "secrets/a.txt", "secrets/deep/b.txt", "secrets/old/c.txt"]);
+        assert_eq!(std::fs::read_to_string(dest.join("my keys").join("金鑰 1.key")).unwrap(), "my keys/金鑰 1.key");
+        assert!(!dest.join(".env.example").exists(), "a negation after the pattern it excepts");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_setup_script_must_be_a_file() {
+        let dir = std::env::temp_dir().join(format!("nekominal-setup-odd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".nekominal"), "a file, not a folder").unwrap();
+        assert_eq!(setup_command(&dir), None);
+        std::fs::remove_file(dir.join(".nekominal")).unwrap();
+        std::fs::create_dir_all(dir.join(".nekominal").join("setup.ps1")).unwrap();
+        assert_eq!(setup_command(&dir), None, "a folder named setup.ps1");
+        std::fs::write(dir.join(".nekominal").join("setup.cmd"), "").unwrap();
+        assert_eq!(setup_command(&dir).as_deref(), Some(r"cmd.exe /c .nekominal\setup.cmd"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

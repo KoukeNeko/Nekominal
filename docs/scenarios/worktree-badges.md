@@ -21,7 +21,7 @@ when git is not on the PATH; nothing here uses the network.
 | Scenario | Expected | Test |
 |---|---|---|
 | `D:\src\app` and `fix/login` | `D:\src\app-fix-login` | `the_worktree_goes_beside_the_repository_named_after_it_and_the_branch` |
-| `<>|"` in the branch (git allows them, Windows does not) | Each becomes `-` | same |
+| `<>\|"` in the branch (git allows them, Windows does not) | Each becomes `-` | same |
 | The folder exists, then `-2` exists | `-2`, then `-3` | same, and `a_real_worktree_takes_the_next_free_folder_in_a_path_with_spaces_and_unicode` |
 | Repository path with spaces and unicode, unicode branch | Kept as they are | `the_folder_of_a_worktree_keeps_spaces_and_unicode_and_a_drive_root_has_one_too`, `a_real_worktree_takes_the_next_free_folder_in_a_path_with_spaces_and_unicode` |
 | Repository at a drive root (`D:\`) | `D:\repo-<branch>` | `the_folder_of_a_worktree_keeps_spaces_and_unicode_and_a_drive_root_has_one_too` |
@@ -59,7 +59,7 @@ when git is not on the PATH; nothing here uses the network.
 | Remove with the branch, branch not merged | Folder goes, `git branch -d` keeps the branch and what git said of it is returned (not the advice git adds after it) | same |
 | Archive | Folder goes, branch and its commits stay | `an_archive_keeps_the_branch_and_refuses_changes` |
 | A process (a pane's shell) still has the folder as its working directory | git removes the files and the worktree, then fails on the folder; the branch still goes as asked; the empty folder stays while the process holds it | `a_worktree_a_process_still_sits_in_loses_its_branch_as_asked` |
-| git fails | The last line git wrote (the `fatal:` line, not the progress before it) | `git_failures_report_the_last_line_git_wrote` |
+| git fails | The last line git wrote (the `fatal:` line, not the progress before it); for `branch -d`, git's advice is turned off so that line is the reason | `a_dirty_worktree_is_refused_until_clean_then_removed_with_its_merged_branch` (checked without depending on git's language) |
 | git fails in another language | The line is passed on as git wrote it | Not testable automatically: the language of git follows `LANG`/`LC_ALL`, which are process-wide and would change every test running beside it; the extraction is the same as above |
 | git is not on the PATH | Every call is `Error::NotRepo` ("not a git repository (or git is not installed)") | Not testable automatically: `PATH` is process-wide, and the tests run in parallel; every git test skips itself instead |
 
@@ -82,7 +82,7 @@ when git is not on the PATH; nothing here uses the network.
 | Named but not ignored by git | Not copied (the checkout has it, or it is the user's to add) | same |
 | Ignored but not named | Not copied | same |
 | Already in the new worktree | Left alone | same |
-| Negations (`!`), later lines winning | As `.gitignore` reads them | `worktreeinclude_negations_nested_folders_and_odd_names_are_followed` |
+| Negations (`!`), later lines winning | As `.gitignore` reads them, including that a file under an excluded folder cannot be re-included | `worktreeinclude_negations_nested_folders_and_odd_names_are_followed` |
 | `**/` patterns and folders several levels deep, a folder pattern (`secrets/`) | Copied with their folders made | same |
 | Names with spaces and unicode | Copied | same |
 | Thousands of named files | Not handled: the paths go on one command line (about 32 000 characters) | Not tested: a `shortcut:` in the code says when to change it |
