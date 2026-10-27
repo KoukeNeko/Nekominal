@@ -2393,7 +2393,7 @@ impl App {
                     settings_page::Entry::PushTest => (Text::PushTestSend.get(lang).to_owned(), String::new()),
                     settings_page::Entry::Trigger(i) => {
                         let rule = settings_page::trigger_at(&self.settings, *i);
-                        (rule.name.clone(), format!("{} · {}", rule.pattern, settings_page::action_text(&rule.action, lang)))
+                        (settings_page::trigger_title(&rule, lang), format!("{} · {}", rule.pattern, settings_page::action_text(&rule.action, lang)))
                     }
                     settings_page::Entry::TriggerPresets => (Text::TriggerAdd.get(lang).to_owned(), nekominal_model::triggers::PRESETS.iter().map(|text| text.get(lang)).collect::<Vec<_>>().join(", ")),
                 })

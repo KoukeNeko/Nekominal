@@ -425,6 +425,11 @@ pub fn step_focus(entries: &[Entry], focus: Option<usize>, down: bool) -> Option
     }
 }
 
+/// What a rule is called on its plate and to a screen reader: its name, or for the one being added what adds it.
+pub fn trigger_title(rule: &Trigger, lang: Lang) -> String {
+    if rule.name.is_empty() { Text::TriggerAdd.get(lang).to_owned() } else { rule.name.clone() }
+}
+
 /// What the About page says of the look for a newer version.
 pub fn update_note(check: &crate::update::Check, lang: Lang) -> String {
     use crate::update::Check;
@@ -796,7 +801,7 @@ fn trigger_entry(items: &mut Vec<Item>, page: &Page, view: &View, measure: &mut 
     // The name, then the pattern in a pill, both cut to what is left of the line.
     let left = head.x + INNER;
     let room = (controls.right - left).max(0.0);
-    let name = if rule.name.is_empty() { Text::TriggerAdd.get(lang).to_owned() } else { rule.name.clone() };
+    let name = trigger_title(&rule, lang);
     let name_w = measure(&name, 13.0, true).min(room * 0.5);
     item(items, Rect::new(left, head.y, name_w, head.h), None, label(fit(&name, name_w, 13.0, measure), 13.0, if rule.name.is_empty() { Tone::Quiet } else { Tone::Text }, true, Align::Left), true);
     let code_x = left + name_w + 10.0;
@@ -2135,6 +2140,19 @@ mod tests {
             }
         });
         assert!(checked >= 8, "the rows that are buttons were on the pages: {checked}");
+    }
+
+    #[test]
+    fn a_rule_without_a_name_is_shown_and_read_out_as_the_rule_to_add() {
+        let settings = rules();
+        let adding = trigger_at(&settings, settings.triggers.len());
+        assert_eq!(trigger_title(&adding, Lang::EnUs), Text::TriggerAdd.get(Lang::EnUs), "a screen reader has a name to say");
+        assert_eq!(trigger_title(&settings.triggers[1], Lang::EnUs), "Approve");
+        let page = Page { section: section_of(Section::Triggers), trigger: Some(3), ..Page::default() };
+        let frame = frame(&page, &settings);
+        let plate = frame.rows[3];
+        let shown = frame.items.iter().any(|item| matches!(&item.visual, Visual::Label { text, bold: true, .. } if *text == trigger_title(&adding, Lang::EnUs)) && plate.contains(item.rect.x + 1.0, item.rect.y + 1.0));
+        assert!(shown, "its plate says the same");
     }
 
     #[test]
