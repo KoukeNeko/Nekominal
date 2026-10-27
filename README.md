@@ -74,8 +74,8 @@ allow. Large and multi-line pastes ask first.
 - **A tab in a new git worktree.** Type a branch name in the palette: Nekominal runs `git worktree add` beside the
   repository (branch `fix/login` of `app` goes to `app-fix-login`) and opens a tab there named after the branch, so each
   agent has files of its own. The ignored files that a `.worktreeinclude` at the root names (one `.gitignore` pattern a
-  line, such as `.env`) are copied into it, and the tab starts by running `.nekominal\setup.ps1` (or
-  `.nekominal\setup.cmd`) when the repository has one. "Remove this worktree" shows what would be lost (changed files,
+  line, such as `.env`) are copied into it, and the tab types the command that runs `.nekominal\setup.ps1` (or
+  `.nekominal\setup.cmd`) when the repository has one, for you to run with Enter. "Remove this worktree" shows what would be lost (changed files,
   commits not pushed, whether it is merged) and lets you keep or delete the branch; it never forces, and never touches the
   main checkout.
 - **Automation.** `nekominal cli` (`list`, `send-text`, `get-text`, `new-tab`, `split`, `focus`, `close`, `notify`,

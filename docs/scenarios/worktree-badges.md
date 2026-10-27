@@ -92,10 +92,11 @@ when git is not on the PATH; nothing here uses the network.
 | Scenario | Expected | Test |
 |---|---|---|
 | None | No command | `the_setup_script_is_found_and_powershell_comes_first` |
-| `setup.cmd` only | `cmd.exe /c .nekominal\setup.cmd` | same |
+| `setup.cmd` only | `powershell.exe -NoProfile -Command .nekominal/setup.cmd` | same |
 | `setup.ps1`, or both | PowerShell runs `setup.ps1` | same |
 | `.nekominal` is a file, or `setup.ps1` is a folder | Not taken for a script | `a_setup_script_must_be_a_file` |
-| The default profile is Git Bash or WSL | The command line is written for cmd and PowerShell; bash reads `\s` as an escape | Not tested: a documented limit of `setup_command` |
+| The default profile is cmd, PowerShell, Git Bash or WSL | One command line all of them read: forward slashes, no `cmd /c` | `the_setup_command_runs_the_script_in_cmd_powershell_and_git_bash_alike` (WSL not tested) |
+| A new worktree's tab | The command is typed, not run: the user presses Enter | Not tested: the tab needs a window |
 
 ### Workspace flows: `crates/nekominal-shell/src/app/workspace.rs`
 

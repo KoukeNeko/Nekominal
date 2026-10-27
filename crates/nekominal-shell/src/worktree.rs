@@ -8,8 +8,8 @@
 //! the second one.
 //!
 //! A new worktree gets the files git ignores that `.worktreeinclude` names (`.env`…: see [`copy_included`]), and its tab
-//! starts by running the setup script of the repository, `.nekominal\setup.ps1` or `.nekominal\setup.cmd`, if there is
-//! one ([`setup_command`]).
+//! starts with the command of the setup script of the repository, `.nekominal\setup.ps1` or `.nekominal\setup.cmd`, if
+//! there is one, typed for the user to run ([`setup_command`]).
 //!
 //! A worktree is removed (`git worktree remove`, then its branch with `git branch -d`) or archived (the folder goes, the
 //! branch stays): never the main checkout, and never with changes not committed unless forced ([`check_remove`]).
@@ -190,13 +190,17 @@ pub fn copy_included(root: &Path, dest: &Path) -> Result<Vec<String>, String> {
 
 /// What to type in the first tab of a new worktree to set it up, when the repository has a setup script: `.nekominal\setup.ps1`
 /// (run by Windows PowerShell, whatever the execution policy) or else `.nekominal\setup.cmd`. Typed into the shell, not run
-/// hidden, so the user sees it work. The command line suits cmd and PowerShell.
+/// hidden, so the user sees it, and not run until the user presses Enter: the script comes with the repository.
+///
+/// One command line for every shell a profile runs: cmd, PowerShell, Git Bash and WSL. A forward slash, as bash eats a
+/// backslash; and the `.cmd` goes through PowerShell too, as cmd takes `/` in a program's path for a switch and Git Bash
+/// turns cmd's `/c` into `C:/`.
 pub fn setup_command(worktree: &Path) -> Option<String> {
     let dir = worktree.join(".nekominal");
     if dir.join("setup.ps1").is_file() {
-        Some(r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File .nekominal\setup.ps1".to_owned())
+        Some("powershell.exe -NoProfile -ExecutionPolicy Bypass -File .nekominal/setup.ps1".to_owned())
     } else if dir.join("setup.cmd").is_file() {
-        Some(r"cmd.exe /c .nekominal\setup.cmd".to_owned())
+        Some("powershell.exe -NoProfile -Command .nekominal/setup.cmd".to_owned())
     } else {
         None
     }
@@ -824,7 +828,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".nekominal").join("setup.ps1")).unwrap();
         assert_eq!(setup_command(&dir), None, "a folder named setup.ps1");
         std::fs::write(dir.join(".nekominal").join("setup.cmd"), "").unwrap();
-        assert_eq!(setup_command(&dir).as_deref(), Some(r"cmd.exe /c .nekominal\setup.cmd"));
+        assert_eq!(setup_command(&dir).as_deref(), Some("powershell.exe -NoProfile -Command .nekominal/setup.cmd"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -835,9 +839,36 @@ mod tests {
         std::fs::create_dir_all(&scripts).unwrap();
         assert_eq!(setup_command(&dir), None);
         std::fs::write(scripts.join("setup.cmd"), "").unwrap();
-        assert_eq!(setup_command(&dir).as_deref(), Some(r"cmd.exe /c .nekominal\setup.cmd"));
+        assert_eq!(setup_command(&dir).as_deref(), Some("powershell.exe -NoProfile -Command .nekominal/setup.cmd"));
         std::fs::write(scripts.join("setup.ps1"), "").unwrap();
-        assert!(setup_command(&dir).unwrap().ends_with(r"-File .nekominal\setup.ps1"));
+        assert!(setup_command(&dir).unwrap().ends_with("-File .nekominal/setup.ps1"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The command line as cmd, PowerShell and Git Bash (where installed) read it, run in a folder with the scripts.
+    #[test]
+    fn the_setup_command_runs_the_script_in_cmd_powershell_and_git_bash_alike() {
+        let dir = std::env::temp_dir().join(format!("nekominal-setup-shells-{}", std::process::id()));
+        let scripts = dir.join(".nekominal");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("setup.cmd"), "@echo cmd-setup-ran").unwrap();
+        let bash = [("ProgramFiles", r"Git\bin\bash.exe"), ("USERPROFILE", r"scoop\apps\git\current\bin\bash.exe")]
+            .into_iter()
+            .find_map(|(var, rel)| std::env::var_os(var).map(|p| PathBuf::from(p).join(rel)).filter(|p| p.is_file()));
+        for script in ["cmd", "ps1"] {
+            if script == "ps1" {
+                std::fs::write(scripts.join("setup.ps1"), "Write-Output ps1-setup-ran").unwrap();
+            }
+            let line = setup_command(&dir).unwrap();
+            let mut shells = vec![Command::new("cmd.exe").args(["/d", "/c", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap()];
+            shells.push(Command::new("powershell.exe").args(["-NoProfile", "-Command", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap());
+            if let Some(bash) = &bash {
+                shells.push(Command::new(bash).args(["-c", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap());
+            }
+            for output in shells {
+                assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{script}-setup-ran")), "{line}: {output:?}");
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

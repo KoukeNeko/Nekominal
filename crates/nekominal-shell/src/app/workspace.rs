@@ -142,9 +142,10 @@ impl App {
         match Tab::new(|id| self.make_entry_with(id, size, &profile, Some(&path))) {
             Ok(mut tab) => {
                 tab.name = Some(branch.to_owned());
-                // Typed before the shell is up: the console keeps it until the shell reads its first line.
+                // Typed before the shell is up: the console keeps it until the shell reads its first line. Without Enter:
+                // the script came with the repository, and the user runs it, or not, having seen it.
                 if let (Some(setup), Some(entry)) = (crate::worktree::setup_command(std::path::Path::new(&path)), tab.focused_entry()) {
-                    entry.pane.send_text(&format!("{setup}\r"));
+                    entry.pane.send_text(&setup);
                 }
                 self.tabs.push(tab);
                 self.selected = self.tabs.len() - 1;

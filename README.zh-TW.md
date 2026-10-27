@@ -71,7 +71,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - **在新的 git 工作樹開啟分頁。** 從命令選擇區輸入分支名稱，Nekominal 會在儲存庫旁邊執行 `git worktree add`
   （`app` 的分支 `fix/login` 放在 `app-fix-login`），並在那裡開一個以分支命名的分頁，讓每個 agent 各有自己的檔案。
   根目錄的 `.worktreeinclude`（每行一個 `.gitignore` 樣式，例如 `.env`）列出的被忽略檔案會複製過去；儲存庫有
-  `.nekominal\setup.ps1`（或 `.nekominal\setup.cmd`）時，分頁會先執行它。「移除這個 git 工作樹」會列出會遺失的東西
+  `.nekominal\setup.ps1`（或 `.nekominal\setup.cmd`）時，分頁會先輸入執行它的命令，按 Enter 才會執行。「移除這個 git 工作樹」會列出會遺失的東西
   （變更的檔案、未推送的提交、是否已合併），讓你選擇保留或刪除分支；絕不強制，也不會動到主要簽出。
 - **自動化。** `nekominal cli`（`list`、`send-text`、`get-text`、`new-tab`、`split`、`focus`、`close`、`notify`、
   `subscribe`）透過只有你能開啟的 named pipe 操作執行中的終端機，讓腳本和 agent 能開窗格、讀取內容。
