@@ -746,8 +746,24 @@ pub fn saved_environment() -> Option<Vec<(OsString, OsString)>> {
             at = at.add(len + 1);
         }
         DestroyEnvironmentBlock(block);
-        Some(expand_references(vars))
+        Some(mend_path(expand_references(vars)))
     }
+}
+
+/// A PATH whose quotes do not pair up (an installer that wrote `C:\Program Files\dotnet"`) loses its quotes. Windows
+/// ignores the stray one, but Go's `filepath.SplitList` (gh, and the tools agents run) reads it as an opening quote and
+/// takes every folder after it as part of one name: git and the rest of the user's PATH are then not found.
+fn mend_path(vars: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+    vars.into_iter()
+        .map(|(key, value)| {
+            let text = value.to_string_lossy();
+            if key.to_string_lossy().eq_ignore_ascii_case("PATH") && text.matches('"').count() % 2 == 1 {
+                (key, OsString::from(text.replace('"', "")))
+            } else {
+                (key, value)
+            }
+        })
+        .collect()
 }
 
 /// The block expands a value before it holds every variable (`PSModulePath` names `%ProgramFiles%`, added after it), so
@@ -853,6 +869,16 @@ mod tests {
         let literal = expand_references(vars(&[("MINE", "%ProgramFiles%"), ("ProgramFiles", r"C:\Program Files")]));
         assert_eq!(literal[0].1, OsString::from("%ProgramFiles%"), "a plain string the user wrote is kept as written");
         assert!(saved.iter().all(|(key, value)| !key.to_string_lossy().eq_ignore_ascii_case("PSModulePath") || !value.to_string_lossy().contains("%ProgramFiles%")));
+    }
+
+    #[test]
+    fn a_path_with_a_stray_quote_loses_its_quotes_and_a_quoted_folder_keeps_them() {
+        let vars = |path: &str| vec![(OsString::from("Path"), OsString::from(path)), (OsString::from("Other"), OsString::from(r#"a"b"#))];
+        let mended = mend_path(vars(r#"C:\Windows;C:\Program Files\dotnet";C:\Users\me\scoop\shims"#));
+        assert_eq!(mended[0].1, OsString::from(r"C:\Windows;C:\Program Files\dotnet;C:\Users\me\scoop\shims"));
+        assert_eq!(mended[1].1, OsString::from(r#"a"b"#), "only PATH is mended");
+        let quoted = r#"C:\Windows;"C:\odd;name";C:\x"#;
+        assert_eq!(mend_path(vars(quoted))[0].1, OsString::from(quoted), "quotes that pair up are meant");
     }
 
     #[test]
