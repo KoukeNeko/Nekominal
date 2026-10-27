@@ -18,4 +18,5 @@ pub mod shell_integration;
 pub mod store;
 pub mod strings;
 pub mod themes;
+pub mod triggers;
 pub mod workspaces;

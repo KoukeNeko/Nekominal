@@ -429,6 +429,7 @@ version = "0.0.28"
 dependencies = [
  "base64",
  "nekominal-input",
+ "regex",
  "serde",
  "serde_json",
 ]

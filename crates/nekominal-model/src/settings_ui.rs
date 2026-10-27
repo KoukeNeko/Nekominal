@@ -567,6 +567,7 @@ mod tests {
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
+        ("triggers", "the triggers page waits for its approved design"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.
