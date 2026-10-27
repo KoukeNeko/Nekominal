@@ -194,6 +194,22 @@ fn reveal_scroll(scroll: f32, rect: Rect, content: f32, view: f32) -> f32 {
     clamp_scroll(scroll, content, view)
 }
 
+/// The width of a list that holds `rows` whole, their texts measured by `measure` (DIP): the widest row, its mark, label
+/// and hint with their gaps as `paint_popup` places them, between a list narrow enough to stay a menu and one too wide.
+pub fn fit_width(rows: &[Row], mut measure: impl FnMut(&str) -> f32) -> f32 {
+    const FIT: (f32, f32) = (180.0, 560.0);
+    let widest = rows
+        .iter()
+        .filter(|row| !row.is_separator())
+        .map(|row| {
+            let mark = if row.mark.is_some() { MARK_SIZE + MARK_GAP } else { 0.0 };
+            let hint = if row.hint.is_empty() { 0.0 } else { 8.0 + measure(&row.hint) };
+            12.0 + mark + measure(&row.label) + hint + 12.0
+        })
+        .fold(0.0, f32::max);
+    (widest + 2.0 * PADDING).ceil().clamp(FIT.0, FIT.1)
+}
+
 /// The rectangles of `rows` and the size of the rows with their padding, in DIP, for a window `width` wide.
 pub fn layout(rows: &[Row], width: f32) -> (Vec<Rect>, (f32, f32)) {
     let mut y = PADDING;
@@ -310,16 +326,18 @@ fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
 }
 
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
-pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
-    open_sized(owner, gpu, rows, kind, anchor, scale, dark, (DIALOG_HEADER, DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING))
+/// A list is `fit` wide when given (`fit_width`), `WIDTH` otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool, fit: Option<f32>) -> Result<Popup, String> {
+    open_sized(owner, gpu, rows, kind, anchor, scale, dark, (DIALOG_HEADER, DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING), fit)
 }
 
 /// `open`, with a confirmation `dialog.1` tall whose buttons start `dialog.0` from its top.
 #[allow(clippy::too_many_arguments)]
-pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool, dialog: (f32, f32)) -> Result<Popup, String> {
+pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool, dialog: (f32, f32), fit: Option<f32>) -> Result<Popup, String> {
     let (width, header, fixed_height, query) = match kind {
         Kind::Confirm => (DIALOG_WIDTH, dialog.0, Some(dialog.1), None),
-        Kind::List => (WIDTH, 0.0, None, None),
+        Kind::List => (fit.unwrap_or(WIDTH), 0.0, None, None),
         Kind::Wide => (PALETTE_WIDTH, 0.0, None, None),
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
         Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
@@ -400,6 +418,18 @@ pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i
 mod tests {
     use nekominal_input::Utf16Assembler;
     use super::*;
+
+    #[test]
+    fn a_fitted_list_is_as_wide_as_its_widest_row_within_its_bounds() {
+        let row = |label: &str, mark: bool| Row { label: label.into(), hint: String::new(), action: Some(Action::NewTab(0)), current: false, mark: mark.then_some(Mark::Glyph('x')), program: None };
+        let measure = |text: &str| 7.0 * text.chars().count() as f32;
+        assert_eq!(fit_width(&[row("cmd", true)], measure), 180.0, "a short list keeps the width of a menu");
+        let long = row("Developer PowerShell for VS 2022 Preview (x64)", true);
+        let wanted = 12.0 + MARK_SIZE + MARK_GAP + measure(&long.label) + 12.0 + 2.0 * PADDING;
+        assert_eq!(fit_width(&[row("cmd", true), Row::separator(), long.clone()], measure), wanted.ceil(), "the longest name whole");
+        assert!(wanted > WIDTH, "wider than the fixed width it had");
+        assert_eq!(fit_width(&[row(&"x".repeat(200), false)], measure), 560.0, "no wider than this");
+    }
 
     #[test]
     fn opening_a_menu_preserves_the_owner_activation() {

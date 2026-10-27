@@ -2045,7 +2045,7 @@ impl App {
         let size = self.surface.size();
         let anchor = self.screen_point((size.0 as f32 + popup::DIALOG_WIDTH * self.scale) / 2.0,
                                       (size.1 as f32 - sized.1 * self.scale) / 2.0 - 4.0 * self.scale);
-        match popup::open_sized(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark(), sized) {
+        match popup::open_sized(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark(), sized, None) {
             Ok(mut popup) => {
                 popup.heading = title;
                 popup.hover = Some(0);
@@ -4380,9 +4380,11 @@ impl App {
                 mark: Some(logic::profile_mark(profile.icon)),
                 program: self.programs.get(i).cloned().flatten(),
             })
-            .collect();
+            .collect::<Vec<_>>();
         let anchor = self.button_anchor(self.layout.profiles);
-        self.open_popup(rows, popup::Kind::List, anchor);
+        // As wide as the longest name of a profile (a WSL distribution, a Visual Studio shell), not cut at a fixed width.
+        let fit = popup::fit_width(&rows, |text| self.ui.measure(text, TEXT_SIZE, false));
+        self.open_popup_fit(rows, popup::Kind::List, anchor, Some(fit));
         self.popup_from = self.popup.as_ref().map(|_| Hit::Profiles);
     }
 
@@ -5155,10 +5157,15 @@ impl App {
 
     /// Opens a list with its top right corner at the screen point `anchor`.
     fn open_popup(&mut self, rows: Vec<popup::Row>, kind: popup::Kind, anchor: (i32, i32)) {
+        self.open_popup_fit(rows, kind, anchor, None);
+    }
+
+    /// `open_popup`, a list `fit` wide when given (`popup::fit_width`).
+    fn open_popup_fit(&mut self, rows: Vec<popup::Row>, kind: popup::Kind, anchor: (i32, i32), fit: Option<f32>) {
         if self.popup.is_some() || self.popup_closed.is_some_and(|at| at.elapsed() < Duration::from_millis(250)) {
             return;
         }
-        match popup::open(self.hwnd, &self.gpu, rows, kind, anchor, self.scale, self.dark()) {
+        match popup::open(self.hwnd, &self.gpu, rows, kind, anchor, self.scale, self.dark(), fit) {
             Ok(popup) => {
                 self.text = Utf16Assembler::default();
                 // SAFETY: invalidating the window just made.
