@@ -12,6 +12,7 @@ mod design;
 mod editor;
 mod find;
 mod glass;
+mod github;
 mod gpu;
 mod hooks;
 mod icons;
