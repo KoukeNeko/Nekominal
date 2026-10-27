@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use nekominal_render as r;
 use nekominal_term::{
-    CellColor, SnapCell, Snapshot,
+    CellColor, SnapCell, Snapshot, TriggerMark,
     alacritty_terminal::{term::cell::Flags, vte::ansi::CursorShape},
 };
 
@@ -99,6 +99,17 @@ pub fn pin_header(cells: &mut [r::Cell], header: &[SnapCell], tint: r::Rgb) {
         *cell = render_cell(from);
         if matches!(cell.bg, r::Color::Default) {
             cell.bg = r::Color::Rgb(tint.0, tint.1, tint.2);
+        }
+    }
+}
+
+/// Paints the cells the triggers highlight (`Snapshot::trigger_marks`) on their colour, in `cells`, a copy the caller
+/// made: the text keeps its own colour.
+pub fn mark_triggers(cells: &mut [r::Cell], marks: &[TriggerMark], columns: usize) {
+    for mark in marks {
+        let row = mark.row * columns;
+        for cell in cells.get_mut(row + mark.start..row + mark.end).unwrap_or_default() {
+            cell.bg = r::Color::Rgb(mark.color.0, mark.color.1, mark.color.2);
         }
     }
 }
@@ -213,6 +224,15 @@ mod tests {
         let marks = scroll_marks(&snapshot(90, 0), &[-90, 0], &[-80], &[(-45, false), (5, true)]);
         let places: Vec<(f32, r::MarkKind)> = marks.iter().map(|m| (m.at, m.kind)).collect();
         assert_eq!(places, [(0.0, r::MarkKind::Prompt), (0.9, r::MarkKind::Prompt), (0.1, r::MarkKind::Failed), (0.45, r::MarkKind::Match), (0.95, r::MarkKind::CurrentMatch)]);
+    }
+
+    #[test]
+    fn a_trigger_mark_paints_the_background_of_its_cells_and_no_others() {
+        let mut cells = vec![r::Cell::default(); 2 * 4];
+        let marks = [TriggerMark { row: 1, start: 1, end: 3, color: (9, 8, 7) }, TriggerMark { row: 5, start: 0, end: 4, color: (1, 1, 1) }];
+        mark_triggers(&mut cells, &marks, 4);
+        let painted: Vec<usize> = (0..cells.len()).filter(|i| cells[*i].bg == r::Color::Rgb(9, 8, 7)).collect();
+        assert_eq!(painted, [5, 6], "a mark off the grid is skipped");
     }
 
     fn distance(a: r::Rgb, b: r::Rgb) -> i32 {
