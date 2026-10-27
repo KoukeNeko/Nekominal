@@ -35,6 +35,8 @@ pub struct Seen {
     /// How long the agent has run: its own count when it says one, else since the pane was first seen running it.
     pub time_ms: Option<u64>,
     pub usage: Option<Usage>,
+    /// The pull request and listening ports of its tab, as text (`app/badges.rs`).
+    pub badges: Option<String>,
 }
 
 /// `ms` as the bar shows a time: `m:ss`, or `h:mm:ss` from an hour.
@@ -59,6 +61,7 @@ pub fn rows(mut seen: Vec<Seen>, here: isize, today: f64, lang: Lang) -> Vec<pop
                 usage.model,
                 usage.context.map(|share| format!("{share:.0}%")),
                 usage.cost.map(|cost| format!("${cost:.2}")),
+                s.badges,
             ]
             .into_iter()
             .flatten()
@@ -109,6 +112,7 @@ impl App {
                     state: logic::tab_status(&[signal]).state,
                     time_ms: usage.as_ref().and_then(|u| u.duration_ms).or_else(|| entry.agent_since.map(|at| at.elapsed().as_millis() as u64)),
                     usage,
+                    badges: self.badges.text(tab.uid),
                 });
             }
         }
@@ -174,6 +178,7 @@ mod tests {
             state,
             time_ms: None,
             usage: None,
+            badges: None,
         }
     }
 
@@ -222,8 +227,9 @@ mod tests {
     #[test]
     fn an_agent_that_said_nothing_shows_only_what_is_known() {
         let quiet = Seen { time_ms: Some(65_000), ..seen((0, 0), TabState::Idle) };
-        let rows = rows(vec![quiet], 100, 0.0, Lang::EnUs);
+        let rows = rows(vec![quiet.clone(), Seen { badges: Some("#4 open \u{b7} :3000".into()), ..quiet }], 100, 0.0, Lang::EnUs);
         assert_eq!(rows[0].hint, "1:05");
+        assert_eq!(rows[1].hint, "1:05 \u{b7} #4 open \u{b7} :3000", "the badges of its tab come last");
         assert_eq!(rows[0].mark, Some(Mark::Glyph(AGENT_GLYPH)));
     }
 

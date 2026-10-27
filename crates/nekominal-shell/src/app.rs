@@ -61,6 +61,7 @@ use crate::{
     util,
 };
 
+mod badges;
 mod notifications;
 mod workspace;
 
@@ -210,6 +211,8 @@ pub struct App {
     last_alert: Option<Instant>,
     /// What the notifications of Windows are told and when (`notify.rs`, shown by `app/notifications.rs`).
     notifier: notify::Notifier,
+    /// The pull request and the listening ports of each tab (`app/badges.rs`).
+    badges: badges::Badges,
     /// The right button opened the menu and is still down: letting go of it must not close the menu.
     context_release: bool,
     /// The button of the bar that opened the pop-up that is open: it stays lit while the pop-up hangs from it.
@@ -569,6 +572,7 @@ impl App {
             settings_win: None,
             last_alert: None,
             notifier: notify::Notifier::default(),
+            badges: badges::Badges::default(),
             context_release: false,
             popup_from: None,
             chip_view: HashMap::new(),
@@ -1735,6 +1739,7 @@ impl App {
             }
         }
         changed |= self.refresh_usage();
+        changed |= self.refresh_badges();
         if changed {
             self.redraw();
         }
