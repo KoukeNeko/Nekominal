@@ -274,6 +274,48 @@ mod tests {
     }
 
     #[test]
+    fn every_state_and_mix_of_checks_has_its_look() {
+        let (pass, fail, run) = (r#"{"state":"SUCCESS"}"#, r#"{"state":"FAILURE"}"#, r#"{"state":"PENDING"}"#);
+        // Every subset of passing, failing and running checks.
+        for mask in 0..8 {
+            let rollup = [(1, pass), (2, fail), (4, run)].iter().filter(|(bit, _)| mask & bit != 0).map(|(_, e)| *e).collect::<Vec<_>>().join(",");
+            let open = match mask {
+                0 => Look::Open,
+                m if m & 2 != 0 => Look::Failing,
+                m if m & 4 != 0 => Look::Running,
+                _ => Look::Passing,
+            };
+            for (state, draft, look) in [("OPEN", false, open), ("OPEN", true, Look::Draft), ("MERGED", false, Look::Merged), ("CLOSED", false, Look::Closed)] {
+                let chip = chips(Some(&pr(state, draft, &rollup)), &[]).remove(0);
+                assert_eq!(chip.look, look, "{state} draft={draft} [{rollup}]");
+                assert_eq!(chip.count.is_some(), look == Look::Failing, "only a failing badge counts");
+            }
+        }
+    }
+
+    #[test]
+    fn badges_wrap_at_the_exact_edge_and_with_no_room() {
+        let exact = place(&[50.0, 50.0, 1.0], 104.0);
+        assert_eq!(exact.iter().map(|r| (r.x, r.y)).collect::<Vec<_>>(), [(0.0, 0.0), (54.0, 0.0), (0.0, LINE)], "a badge that ends on the edge stays");
+        let none = place(&[20.0, 20.0], 0.0);
+        assert_eq!(none.iter().map(|r| (r.x, r.y)).collect::<Vec<_>>(), [(0.0, 0.0), (0.0, LINE)], "a line each, none lost");
+        assert_eq!(height(&none), 2.0 * LINE);
+        let many = place(&vec![30.0; 20], 100.0);
+        assert_eq!(height(&many), 7.0 * LINE, "three a line");
+    }
+
+    #[test]
+    fn the_text_of_the_badges_with_a_pull_request_only_or_many_ports() {
+        let mut badges = Badges::default();
+        badges.pull_request.insert(1, pr("OPEN", false, r#"{"state":"FAILURE"}"#));
+        assert_eq!(badges.text(1).as_deref(), Some("#142 open \u{b7} \u{2717}1"));
+        badges.ports.insert(2, (3000..3006).collect());
+        assert_eq!(badges.text(2).as_deref(), Some(":3000 :3001 :3002 :3003 :3004 :3005"));
+        assert_eq!(badges.chips(2).len(), 6);
+        assert_eq!(badges.text(3), None, "another tab");
+    }
+
+    #[test]
     fn a_click_on_a_badge_opens_its_pull_request_or_its_port() {
         let drawn: Vec<(Rect, String)> = chips(Some(&pr("OPEN", false, "")), &[3000])
             .into_iter()
