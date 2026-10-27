@@ -5,7 +5,8 @@
 //!
 //! The PowerShell script also gives Claude Code the status line of the window: when `NEKOMINAL_CLAUDE_SETTINGS` names a
 //! settings file (the window sets it while its status bar is on), `claude` runs `claude.exe --settings <that file>`,
-//! unless the user has a `claude` function of their own or the project's `.claude\settings*.json` sets a status line.
+//! unless the user has a `claude` function of their own; where the project's `.claude\settings*.json` sets a status line,
+//! the file beside it that holds only the hooks (`claude-hooks.json`).
 //! In the same way `codex`, `gemini` and `aider` get the window's hook for one run (`NEKOMINAL_CODEX_NOTIFY`, `_GEMINI_DEFAULTS`,
 //! `_AIDER_NOTIFY`, see the shell's `hooks.rs`), unless the user's own configuration already sets that hook.
 //!
@@ -49,9 +50,11 @@ if ($env:NEKOMINAL_CLAUDE_SETTINGS -and -not (Test-Path function:global:claude))
   function global:claude {
     $exe = (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $exe -and (Test-Path "$HOME\.local\bin\claude.exe")) { $exe = "$HOME\.local\bin\claude.exe" }
-    # A project that sets a status line of its own keeps it: --settings would win over it.
+    # A project that sets a status line of its own keeps it (--settings would win over it): only the hooks go in.
+    $settings = $env:NEKOMINAL_CLAUDE_SETTINGS
     $own = Get-ChildItem -LiteralPath (Join-Path $PWD.ProviderPath '.claude') -Filter 'settings*.json' -ErrorAction SilentlyContinue | Select-String -SimpleMatch '"statusLine"' -Quiet
-    if (-not $exe) { Write-Error 'claude.exe was not found' } elseif ($own) { & $exe @args } else { & $exe --settings $env:NEKOMINAL_CLAUDE_SETTINGS @args }
+    if ($own) { $settings = $settings -replace 'claude-settings\.json$', 'claude-hooks.json' }
+    if (-not $exe) { Write-Error 'claude.exe was not found' } else { & $exe --settings $settings @args }
   }
 }
 if ($env:NEKOMINAL_CODEX_NOTIFY -and -not (Test-Path function:global:codex)) {
@@ -181,10 +184,11 @@ __nk_precmd() {
 if [ -n "$NEKOMINAL_CLAUDE_SETTINGS" ] && ! declare -F claude >/dev/null; then
   claude() {
     local settings=$NEKOMINAL_CLAUDE_SETTINGS
-    # Claude Code in WSL is a Linux program: its settings run the status line through interop.
+    # A project that sets a status line of its own keeps it (--settings would win over it): only the hooks go in.
+    grep -qs '"statusLine"' .claude/settings*.json </dev/null && settings=${settings%claude-settings.json}claude-hooks.json
+    # Claude Code in WSL is a Linux program: its settings run the status line and hooks through interop.
     [ -n "$WSL_DISTRO_NAME" ] && settings=${settings%.json}-wsl.json
-    # A project that sets a status line of its own keeps it: --settings would win over it.
-    if grep -qs '"statusLine"' .claude/settings*.json </dev/null; then command claude "$@"; else command claude --settings "$settings" "$@"; fi
+    command claude --settings "$settings" "$@"
   }
 fi
 :
@@ -553,7 +557,7 @@ mod tests {
     /// Needs PowerShell 7 on PATH; run with `cargo test -p nekominal-model -- --ignored`.
     #[test]
     #[ignore = "starts pwsh"]
-    fn real_powershell_claude_takes_the_settings_unless_the_project_has_its_own_status_line() {
+    fn real_powershell_claude_takes_the_settings_and_only_the_hooks_where_the_project_has_its_own_status_line() {
         let root = std::env::temp_dir().join(format!("nekominal-claude-fn-{}", std::process::id()));
         let (bin, plain, own) = (root.join("bin"), root.join("plain"), root.join("own"));
         for dir in [&bin, &plain, &own.join(".claude")] {
@@ -573,7 +577,7 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         };
         assert_eq!(run(&plain), "ARGS --settings C:\\n\\claude-settings.json --resume");
-        assert_eq!(run(&own), "ARGS --resume", "the project's own status line stays");
+        assert_eq!(run(&own), "ARGS --settings C:\\n\\claude-hooks.json --resume", "the project's own status line stays, with our hooks");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
