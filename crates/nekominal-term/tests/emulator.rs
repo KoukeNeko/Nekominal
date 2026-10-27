@@ -785,6 +785,16 @@ fn the_command_line_is_read_from_the_prompt_marks_when_its_output_starts() {
 }
 
 #[test]
+fn the_command_line_loses_bidi_overrides_and_stops_at_256_characters_when_the_marks_span_the_screen() {
+    // It is shown in toasts and phone pushes, where an override would turn the text around.
+    let mut core = core(40, 12);
+    feed(&mut core, "\x1b]133;A\x07PS> \x1b]133;B\x07rm \u{202e}txt.exe\r\n\x1b]133;C\x07");
+    assert_eq!(core.last_command_line().as_deref(), Some("rm txt.exe"));
+    feed(&mut core, &format!("\x1b]133;A\x07PS> \x1b]133;B\x07{}\r\n\x1b]133;C\x07", "x".repeat(400)));
+    assert_eq!(core.last_command_line().map(|line| line.chars().count()), Some(256));
+}
+
+#[test]
 fn the_sticky_prompt_is_the_one_of_the_command_the_top_of_the_view_is_in_while_that_prompt_is_above_it() {
     let output = |first, last| CommandOutput { first, last, exit: Some(0), running: false };
     // Prompts at -20 and -8 with outputs -18..=-15 and -6..=3, and between them a command that wrote nothing at -13.

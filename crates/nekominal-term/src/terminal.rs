@@ -182,8 +182,8 @@ pub enum CoreEvent {
     Bell,
     /// OSC 52 write (allowed by `Osc52::OnlyCopy | CopyPaste`).
     ClipboardStore { clipboard: ClipboardKind, text: String },
-    /// OSC 52 read (only with `Osc52::OnlyPaste | CopyPaste`): the host asks the user, then writes
-    /// `reply(&clipboard_text)` to the PTY.
+    /// OSC 52 read (only with `Osc52::OnlyPaste | CopyPaste`): the host writes `reply(&clipboard_text)` to the
+    /// PTY straight away, without asking the user; the policy the user chose is the consent.
     ClipboardLoad { clipboard: ClipboardKind, reply: ClipboardFormatter },
     CursorBlinkingChange,
     MouseCursorDirty,
@@ -1056,9 +1056,11 @@ impl TerminalCore {
                 self.command_line = from.zip(cursor).and_then(|(from, to)| {
                     // The Enter that ended the line put the cursor at the start of the next one.
                     let end = if to.column == 0 { (to.line - 1, self.columns().saturating_sub(1)) } else { (to.line, to.column - 1) };
-                    let text = self.text_between(from, end);
-                    let text = text.trim();
-                    (!text.is_empty()).then(|| text.to_owned())
+                    // It ends up in toasts and phone pushes: no bidi overrides or controls, and not a screenful
+                    // when the marks span one.
+                    let text = strip_control(&self.text_between(from, end));
+                    let text: String = text.trim().chars().take(256).collect();
+                    (!text.is_empty()).then_some(text)
                 });
             }
             _ => {}
