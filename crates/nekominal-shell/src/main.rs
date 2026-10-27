@@ -30,6 +30,7 @@ mod pick;
 mod popup;
 mod push;
 mod ports;
+mod remove_dialog;
 mod search_tabs;
 mod settings_page;
 mod settings_window;

@@ -138,6 +138,8 @@ pub struct Popup {
     pub cursor: crate::textfield::Cursor,
     /// The find bar stays open when something else is clicked, and then the keyboard is the terminal's again.
     pub has_keys: bool,
+    /// The dialog of Remove this worktree, drawn above the buttons of a confirmation in place of its question.
+    pub remove: Option<crate::remove_dialog::View>,
 }
 
 impl Popup {
@@ -309,8 +311,14 @@ fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
 
 /// Opens the pop-up with its top right corner at the screen point `anchor` (pixels), kept on the screen.
 pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool) -> Result<Popup, String> {
+    open_sized(owner, gpu, rows, kind, anchor, scale, dark, (DIALOG_HEADER, DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING))
+}
+
+/// `open`, with a confirmation `dialog.1` tall whose buttons start `dialog.0` from its top.
+#[allow(clippy::too_many_arguments)]
+pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool, dialog: (f32, f32)) -> Result<Popup, String> {
     let (width, header, fixed_height, query) = match kind {
-        Kind::Confirm => (DIALOG_WIDTH, DIALOG_HEADER, Some(DIALOG_HEADER + ROW_HEIGHT + 2.0 * PADDING), None),
+        Kind::Confirm => (DIALOG_WIDTH, dialog.0, Some(dialog.1), None),
         Kind::List => (WIDTH, 0.0, None, None),
         Kind::Wide => (PALETTE_WIDTH, 0.0, None, None),
         Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
@@ -377,7 +385,7 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
             }
         };
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true };
+        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true, remove: None };
         if popup.query.is_some() {
             popup.set_rows(rows);
         } else {

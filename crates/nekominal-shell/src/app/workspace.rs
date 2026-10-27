@@ -161,48 +161,75 @@ impl App {
         self.tabs.iter().flat_map(|tab| tab.panes.iter().filter(inside).map(|entry| (tab.uid, entry.id))).collect()
     }
 
-    /// "Remove this worktree": what the worktree of the focused pane holds, and the question whether to remove it, or why not.
-    // shortcut: the notice and confirm dialogs stand in for the remove/archive UI still being designed.
+    /// "Remove this worktree": the dialog of what the worktree of the focused pane holds and how to remove it, or why it
+    /// is not removed.
     pub(super) fn ask_remove_worktree(&mut self) {
+        match self.focused().and_then(|entry| entry.cwd.clone()) {
+            Some(cwd) => self.ask_remove_worktree_in(std::path::Path::new(&cwd)),
+            None => self.inform(Text::WorktreeNotRepo.get(self.language()).to_owned()),
+        }
+    }
+
+    /// The dialog of Remove this worktree for the worktree `dir` is in.
+    // shortcut: git runs on the thread of the window, a few short commands; move `inspect` to a thread if it is felt.
+    fn ask_remove_worktree_in(&mut self, dir: &std::path::Path) {
         let lang = self.language();
-        let Some(cwd) = self.focused().and_then(|entry| entry.cwd.clone()) else {
-            return self.inform(Text::WorktreeNotRepo.get(lang).to_owned());
-        };
-        let status = match crate::worktree::inspect(std::path::Path::new(&cwd)) {
+        let status = match crate::worktree::inspect(dir) {
             Ok(status) => status,
             Err(e) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, e)),
         };
-        if let Err(refusal) = crate::worktree::check_archive(&status) {
-            return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal)));
-        }
-        let default = status.default_branch.clone().unwrap_or_default();
-        let merged = match status.merged {
-            Some(true) => Text::WorktreeMerged.format(lang, &[&default]),
-            Some(false) => Text::WorktreeNotMerged.format(lang, &[&default]),
-            None => Text::WorktreeMergeUnknown.get(lang).to_owned(),
-        };
-        let unpushed = status.unpushed.map_or("?".to_owned(), |n| n.to_string());
-        let path = status.path.display().to_string();
-        let mut title = Text::DialogRemoveWorktree.format(lang, &[&path, &status.branch.clone().unwrap_or_default(), &unpushed, &merged]);
         let mut tabs: Vec<u64> = self.panes_in(&status.path).into_iter().map(|(uid, _)| uid).collect();
         tabs.dedup();
-        if !tabs.is_empty() {
-            let names: Vec<String> = tabs.iter().filter_map(|uid| self.tabs.iter().position(|tab| tab.uid == *uid)).map(|i| self.tab_label(i)).collect();
-            title = format!("{title} {}", Text::WorktreeClosesTabs.format(lang, &[&names.join(", ")]));
-        }
-        self.confirm(title, Text::WorktreeRemove, Confirmation::RemoveWorktree(status.path));
+        let agent = self
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.panes)
+            .filter(|entry| entry.cwd.as_deref().is_some_and(|cwd| crate::worktree::contains(&status.path, cwd)) && Self::runs_agent(entry))
+            .find_map(|entry| {
+                let named = entry.job.as_deref().and_then(crate::hooks::agent_of_program).map(crate::hooks::agent_name);
+                // The status line of Claude Code is what hands over the usage.
+                named.or_else(|| entry.usage.is_some().then(|| "Claude Code".to_owned()))
+            });
+        let pr = self.tabs.get(self.selected).and_then(|tab| self.badges.pull_request.get(&tab.uid)).map(|pr| pr.number);
+        let facts = crate::remove_dialog::Facts { pr, tabs: tabs.len(), agent };
+        let dialog = match crate::remove_dialog::model(&status, &facts, lang) {
+            Ok(dialog) => dialog,
+            Err(refusal) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal))),
+        };
+        let (accept, action) = match dialog.primary {
+            crate::remove_dialog::Primary::Remove => (Text::WorktreeRemove, Confirmation::RemoveWorktree { path: status.path, delete_branch: dialog.delete_branch() }),
+            crate::remove_dialog::Primary::ShowTab => (Text::WorktreeShowTab, Confirmation::ShowFolder(status.path)),
+        };
+        let row = |label: Text, action| popup::Row { label: label.get(lang).into(), hint: String::new(), action: Some(action), current: false, mark: None, program: None };
+        let rows = vec![row(Text::CommonCancel, popup::Action::Cancel), row(accept, popup::Action::Confirm)];
+        self.open_dialog(dialog.title.clone(), rows, action, Some(dialog));
     }
 
-    /// Removes the worktree at `path` (asked by `ask_remove_worktree`): inspected again, as it may have changed since, then
-    /// the panes in it close, the folder goes, and the branch goes with it when it is merged.
-    pub(super) fn remove_worktree(&mut self, path: &std::path::Path) {
+    /// Shows the tab of a pane in the folder `path`, the focused one first.
+    pub(super) fn show_folder(&mut self, path: &std::path::Path) {
+        let focused = self.tabs.get(self.selected).map(|tab| (tab.uid, tab.focused));
+        let panes = self.panes_in(path);
+        let Some(&(uid, id)) = panes.iter().find(|pane| Some(**pane) == focused).or(panes.first()) else { return };
+        let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) else { return };
+        self.select(index);
+        self.tabs[index].focus(id);
+        self.sync_focus();
+        self.redraw();
+    }
+
+    /// Removes the worktree at `path` (asked by `ask_remove_worktree`), with its branch when `delete_branch`: inspected
+    /// again, as it may have changed since (the dialog comes back when it can no longer go), then the panes in it close,
+    /// the folder goes, and the branch with it or not.
+    pub(super) fn remove_worktree(&mut self, path: &std::path::Path, delete_branch: bool) {
         let lang = self.language();
         let status = match crate::worktree::inspect(path) {
             Ok(status) => status,
             Err(e) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, e)),
         };
-        if let Err(refusal) = crate::worktree::check_archive(&status) {
-            return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal)));
+        match crate::remove_dialog::model(&status, &Default::default(), lang) {
+            Ok(dialog) if dialog.primary == crate::remove_dialog::Primary::Remove => {}
+            Ok(_) => return self.ask_remove_worktree_in(path),
+            Err(refusal) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal))),
         }
         let panes = self.panes_in(&status.path);
         for (uid, id) in &panes {
@@ -215,7 +242,8 @@ impl App {
             // working directory; a fixed wait on the thread of the window, until the UI removes the folder after they exit.
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
-        match crate::worktree::remove(&status, false, true) {
+        let removed = if delete_branch { crate::worktree::remove(&status, false, true) } else { crate::worktree::archive(&status).map(|()| None) };
+        match removed {
             Ok(None) => util::log(&format!("worktree removed: {}", status.path.display())),
             Ok(Some(said)) => self.inform(Text::WorktreeBranchKept.format(lang, &[&status.branch.unwrap_or_default(), &said])),
             Err(e) => {
