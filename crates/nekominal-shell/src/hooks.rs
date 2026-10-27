@@ -103,10 +103,7 @@ pub fn environment() -> Vec<(String, String)> {
         env.push(("NEKOMINAL_CODEX_NOTIFY".to_owned(), notify));
     }
     if let Some(file) = std::env::var_os("LOCALAPPDATA").map(|dir| Path::new(&dir).join("Nekominal").join("gemini-defaults.json")) {
-        let text = gemini_settings(&exe);
-        if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
-            crate::agent::write_whole(&file, &text);
-        }
+        crate::agent::write_if_changed(&file, &gemini_settings(&exe));
         env.push(("NEKOMINAL_GEMINI_DEFAULTS".to_owned(), file.to_string_lossy().into_owned()));
     }
     env

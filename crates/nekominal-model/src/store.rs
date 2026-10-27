@@ -71,7 +71,8 @@ pub fn save(path: &Path, text: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let temp = sibling(path, ".tmp")?;
+    // This process's own: two windows' processes saving at once must not write into one temp file and move each other's.
+    let temp = sibling(path, &format!(".{}.tmp", std::process::id()))?;
     let result = write_synced(&temp, text).and_then(|()| {
         if path.exists() {
             fs::copy(path, sibling(path, ".bak")?)?;
@@ -270,6 +271,20 @@ mod tests {
             ["settings.json", "settings.json.bak"],
             "the temp file is cleaned up"
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_temp_file_is_this_processs_own_so_another_process_writing_its_own_does_not_get_in_the_way() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_dir("temp-per-process");
+        let path = dir.join("settings.json");
+        // Another process in the middle of its save: its temp file is open and shares nothing.
+        let other = File::options().write(true).create(true).share_mode(0).open(dir.join("settings.json.4242.tmp")).unwrap();
+        save(&path, "mine").unwrap();
+        drop(other);
+        assert_eq!(load(&path).unwrap().as_deref(), Some("mine"));
+        assert_eq!(names_in(&dir), ["settings.json", "settings.json.4242.tmp"], "its file is left to it, and none of this one's");
         fs::remove_dir_all(dir).unwrap();
     }
 

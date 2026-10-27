@@ -43,17 +43,22 @@ pub fn session_file(session: &str, extension: &str) -> Option<PathBuf> {
     Some(PathBuf::from(base).join("Nekominal").join("agents").join(format!("{session}.{extension}")))
 }
 
-/// Writes beside and moves over, so that the window never reads half a file. The name of the part is this process's: two
-/// commands that run at once (a status line and a hook) do not write into one another's.
-pub fn write_whole(file: &Path, text: &str) {
-    if let Some(dir) = file.parent()
-        && std::fs::create_dir_all(dir).is_ok()
-    {
-        let part = file.with_extension(format!("{}.part", std::process::id()));
-        if std::fs::write(&part, text).is_ok() && std::fs::rename(&part, file).is_err() {
-            let _ = std::fs::remove_file(&part);
-        }
+/// Writes beside and moves over, so that the window never reads half a file, and flushed to disk before the move, so that a
+/// crash leaves the old file or the new one, not an empty one. The name of the part is this process's: two commands that
+/// run at once (a status line and a hook) do not write into one another's. Whether the file was written.
+pub fn write_whole(file: &Path, text: &str) -> bool {
+    let Some(dir) = file.parent() else { return false };
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
     }
+    let part = file.with_extension(format!("{}.part", std::process::id()));
+    let written = std::fs::File::create(&part)
+        .and_then(|mut out| std::io::Write::write_all(&mut out, text.as_bytes()).and_then(|()| out.sync_all()))
+        .and_then(|()| std::fs::rename(&part, file));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written.is_ok()
 }
 
 /// Run as the `statusLine` command when the program was started with `--statusline`: keeps what Claude Code hands over
@@ -232,13 +237,9 @@ fn wsl_status_line_settings(exe: &Path) -> String {
     serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
 }
 
-/// Writes `text` to `file` unless it holds it already.
-fn write_if_changed(file: &Path, text: &str) -> Option<()> {
-    if std::fs::read_to_string(file).ok().as_deref() != Some(text) {
-        std::fs::create_dir_all(file.parent()?).ok()?;
-        std::fs::write(file, text).ok()?;
-    }
-    Some(())
+/// Writes `text` to `file` unless it holds it already: whole, as every window that starts writes it too.
+pub fn write_if_changed(file: &Path, text: &str) -> Option<()> {
+    (std::fs::read_to_string(file).ok().as_deref() == Some(text) || write_whole(file, text)).then_some(())
 }
 
 /// Writes the file `NEKOMINAL_CLAUDE_SETTINGS` names, and its WSL twin `claude-settings-wsl.json`, and returns where the
