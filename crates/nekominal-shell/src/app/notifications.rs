@@ -20,7 +20,7 @@ impl App {
         for (uid, event) in pending {
             let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) else { continue };
             let wanted = notify::wanted(&event, self.active, index == self.selected);
-            let push = push::wanted(&self.settings.notifications.push, self.active);
+            let push = push::wanted(&self.settings.notifications.push, self.active, &event);
             let toast = wanted && self.settings.notifications.toast;
             // The toast and the push are one notification to the limiter: a flood the window drops, the phone does too.
             if (toast || push) && self.notifier.limiter.allow(now, uid, &event) {
@@ -40,6 +40,12 @@ impl App {
                 self.alert(BellEffects { taskbar_flash: true, ..BellEffects::default() });
             }
         }
+    }
+
+    /// The test button of the settings page: a push with the settings as they are, whose result the page shows.
+    pub(super) fn send_test_push(&mut self) {
+        let lang = self.language();
+        push::send_test(&self.settings.notifications.push, nekominal_model::strings::APP_NAME.to_owned(), Text::PushTestBody.get(lang).to_owned());
     }
 
     /// A toast of the tab with this uid was clicked: selects the tab when this window has it.

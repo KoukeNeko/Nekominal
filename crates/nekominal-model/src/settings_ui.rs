@@ -11,8 +11,8 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, RightClick, Settings,
-        TabTitle, split_font_families,
+        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, PushEvent, PushKind,
+        PushWhen, RightClick, Settings, TabTitle, check_push_url, split_font_families,
     },
     strings::{Lang, Text},
     themes,
@@ -24,6 +24,8 @@ pub enum Section {
     Terminal,
     Profiles,
     Agents,
+    /// Regular expressions matched against the output (`triggers`): a page of its own, not rows of the table.
+    Triggers,
     Keys,
     Advanced,
     /// The version of the app and whether a newer one is out: no settings, only what the page shows.
@@ -32,8 +34,8 @@ pub enum Section {
 
 impl Section {
     /// In the order of the section strip.
-    pub const ALL: [Section; 7] =
-        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Keys, Section::Advanced, Section::About];
+    pub const ALL: [Section; 8] =
+        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Triggers, Section::Keys, Section::Advanced, Section::About];
 
     pub fn text(self) -> Text {
         match self {
@@ -41,6 +43,7 @@ impl Section {
             Section::Terminal => Text::SettingsTerminal,
             Section::Profiles => Text::SettingsProfiles,
             Section::Agents => Text::SettingsAgents,
+            Section::Triggers => Text::SettingsTriggers,
             Section::Keys => Text::SettingsKeys,
             Section::Advanced => Text::SettingsAdvanced,
             Section::About => Text::SettingsAbout,
@@ -56,6 +59,8 @@ pub enum Value {
     Index(usize),
     Number(f64),
     Text(String),
+    /// The options chosen in [`Control::Flags`], bit `i` for the option at `i`.
+    Flags(u32),
 }
 
 /// The bounds and steps of a control that holds a number.
@@ -87,6 +92,10 @@ pub enum Control {
     Layouts(&'static [Text]),
     /// A line of text.
     Text,
+    /// A line of text that is a secret: shown masked unless it is being edited.
+    Secret,
+    /// A few named options, any number of them chosen; the value is [`Value::Flags`].
+    Flags(&'static [Text]),
 }
 
 /// One row of the drawer. Two rows are the same row when they have the same `id`.
@@ -142,9 +151,9 @@ impl Descriptor {
             Control::Toggle => {
                 names.extend([Text::ToggleOff, Text::ToggleOn].map(|text| text.get(lang).to_owned()));
             }
-            Control::Choice(options) | Control::Layouts(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
+            Control::Choice(options) | Control::Layouts(options) | Control::Flags(options) => names.extend(options.iter().map(|text| text.get(lang).to_owned())),
             Control::Themes => names.extend(themes::theme_names(schemes).map(str::to_owned)),
-            Control::Slider(_) | Control::Number(_) | Control::Profiles | Control::Text => {}
+            Control::Slider(_) | Control::Number(_) | Control::Profiles | Control::Text | Control::Secret => {}
         }
         names.push(self.id.to_owned());
         names
@@ -217,6 +226,10 @@ const OSC52_POLICIES: [Text; 3] = [Text::ToggleOff, Text::Osc52Write, Text::Osc5
 const LANGUAGES: [Text; 3] = [Text::CommonAuto, Text::LanguageZhTw, Text::LanguageEnUs];
 const NO_AGENT: [Text; 2] = [Text::StatusBarPlace, Text::StatusBarHide];
 const LAYOUTS: [Text; 3] = [Text::LayoutTop, Text::LayoutList, Text::LayoutIcons];
+const PUSH_KINDS: [Text; 2] = [Text::PushKindNtfy, Text::PushKindWebhook];
+const PUSH_WHENS: [Text; 2] = [Text::PushWhenAway, Text::BellSoundAlways];
+/// The events that can be pushed, in the order of [`PushEvent::ALL`].
+const PUSH_EVENTS: [Text; 5] = [Text::GroupWaiting, Text::PushEventFailed, Text::PushEventDone, Text::PushEventLongCommand, Text::PushEventMessage];
 
 const FONT_SIZE: Range = Range { min: FONT_SIZE_RANGE.0, max: FONT_SIZE_RANGE.1, step: 1.0, large: 4.0 };
 const LINE_HEIGHT: Range = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
@@ -392,11 +405,77 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
-    toggle!("notifications.toast", Terminal, SettingsToast, notifications.toast),
-    count!("notifications.longCommand", Terminal, SettingsLongCommand, LONG_COMMAND, notifications.long_command),
     toggle!("confirmClose", Terminal, SettingsConfirmClose, confirm_close),
     count!("confirmCloseThreshold", Terminal, SettingsConfirmCloseThreshold, CLOSE_THRESHOLD, confirm_close_threshold),
     toggle!("restoreSession", Terminal, SettingsRestoreSession, restore_session),
+    // The notifications last on the page, under their headings.
+    toggle!("notifications.toast", Terminal, SettingsToast, notifications.toast),
+    count!("notifications.longCommand", Terminal, SettingsLongCommand, LONG_COMMAND, notifications.long_command),
+    Descriptor {
+        id: "notifications.push.url",
+        section: Section::Terminal,
+        label: Text::SettingsPushUrl,
+        control: Control::Text,
+        get: |s| Value::Text(s.notifications.push.url.clone()),
+        set: |s, v| {
+            // Empty turns the push off; anything else must be an address the push takes (`refusal` says why not).
+            if let Value::Text(url) = v
+                && (url.trim().is_empty() || check_push_url(url.trim()).is_ok())
+            {
+                s.notifications.push.url = url.trim().to_owned();
+            }
+        },
+    },
+    Descriptor {
+        id: "notifications.push.kind",
+        section: Section::Terminal,
+        label: Text::SettingsPushKind,
+        control: Control::Choice(&PUSH_KINDS),
+        get: |s| choice(&PushKind::ALL, s.notifications.push.kind),
+        set: |s, v| {
+            if let Some(kind) = chosen(&PushKind::ALL, v) {
+                s.notifications.push.kind = kind;
+            }
+        },
+    },
+    Descriptor {
+        id: "notifications.push.when",
+        section: Section::Terminal,
+        label: Text::SettingsPushWhen,
+        control: Control::Choice(&PUSH_WHENS),
+        get: |s| choice(&PushWhen::ALL, s.notifications.push.when),
+        set: |s, v| {
+            if let Some(when) = chosen(&PushWhen::ALL, v) {
+                s.notifications.push.when = when;
+            }
+        },
+    },
+    Descriptor {
+        id: "notifications.push.token",
+        section: Section::Terminal,
+        label: Text::SettingsPushToken,
+        control: Control::Secret,
+        get: |s| Value::Text(s.notifications.push.token.clone()),
+        set: |s, v| {
+            if let Value::Text(token) = v {
+                s.notifications.push.token = token.trim().to_owned();
+            }
+        },
+    },
+    Descriptor {
+        id: "notifications.push.events",
+        section: Section::Terminal,
+        label: Text::SettingsPushEvents,
+        control: Control::Flags(&PUSH_EVENTS),
+        get: |s| Value::Flags(PushEvent::ALL.iter().enumerate().filter(|(_, event)| s.notifications.push.events.contains(event)).fold(0, |bits, (i, _)| bits | 1 << i)),
+        set: |s, v| {
+            if let Value::Flags(bits) = v
+                && bits >> PushEvent::ALL.len() == 0
+            {
+                s.notifications.push.events = PushEvent::ALL.iter().enumerate().filter(|(i, _)| bits & 1 << i != 0).map(|(_, event)| *event).collect();
+            }
+        },
+    },
     toggle!("explorerMenu", Advanced, SettingsExplorerMenu, explorer_menu),
     toggle!("inheritEnvironment", Advanced, SettingsInheritEnvironment, inherit_environment),
     Descriptor {
@@ -503,11 +582,35 @@ impl Row {
 }
 
 /// The headings that split a page into sections, each over the row with this id and the rows after it on its page.
-const HEADINGS: &[(&str, Text)] = &[("notifications.toast", Text::SettingsNotificationsHeading)];
+const HEADINGS: &[(&str, Text)] = &[("notifications.toast", Text::SettingsNotificationsHeading), ("notifications.push.url", Text::SettingsPushHeading)];
 
 /// The heading that starts a section of its page at the row with this id, if one does.
 pub fn heading_before(id: &str) -> Option<Text> {
     HEADINGS.iter().find(|(first, _)| *first == id).map(|(_, text)| *text)
+}
+
+/// What a row is for, in smaller words under its label, for the rows whose label alone does not say.
+const NOTES: &[(&str, Text)] = &[("notifications.push.url", Text::NotePushUrl), ("notifications.push.token", Text::NotePushToken)];
+
+/// The note under the label of the row with this id, if it has one.
+pub fn note_of(id: &str) -> Option<Text> {
+    NOTES.iter().find(|(row, _)| *row == id).map(|(_, text)| *text)
+}
+
+/// The rows that share their line with the row after them, each half of it: two short choices that belong together.
+const PAIRED: &[&str] = &["notifications.push.kind"];
+
+/// Whether the row with this id and the one after it on its page share a line.
+pub fn paired_with_next(id: &str) -> bool {
+    PAIRED.contains(&id)
+}
+
+/// Why `value` is not taken by `row`, for a value typed in a field: the field stays open with the reason under it.
+pub fn refusal(row: &Descriptor, value: &Value) -> Option<Text> {
+    match (row.id, value) {
+        ("notifications.push.url", Value::Text(url)) if !url.trim().is_empty() && check_push_url(url.trim()).is_err() => Some(Text::PushBadUrl),
+        _ => None,
+    }
 }
 
 /// The page a heading is on: the page of the row it stands over.
@@ -581,12 +684,8 @@ mod tests {
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("paste.images", "the row waits for its approved design"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
-        ("notifications.push.url", "the push row waits for its approved design"),
-        ("notifications.push.kind", "the push row waits for its approved design"),
-        ("notifications.push.token", "the push row waits for its approved design"),
-        ("notifications.push.when", "the push row waits for its approved design"),
         ("api.enabled", "the API row waits for its approved design"),
-        ("triggers", "the triggers page waits for its approved design"),
+        ("triggers", "the Triggers page lists them, a plate each that opens into its form"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.
@@ -649,6 +748,7 @@ mod tests {
         assert_eq!(ids(Section::Keys), Vec::<&str>::new(), "the shortcuts page lists commands, not settings");
         assert_eq!(ids(Section::Advanced), ["explorerMenu", "inheritEnvironment", "editor", "language"]);
         assert_eq!(ids(Section::About), Vec::<&str>::new(), "the About page shows the version, not settings");
+        assert_eq!(ids(Section::Triggers), Vec::<&str>::new(), "the Triggers page lists the rules, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
         assert_eq!(ids(Section::Appearance)[..6], ["tabs.layout", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
@@ -668,6 +768,9 @@ mod tests {
         assert_eq!(options("osc52"), Osc52Policy::ALL.map(Osc52Policy::text));
         assert_eq!(options("statusBar.noAgent"), NoAgent::ALL.map(NoAgent::text));
         assert_eq!(options("language"), Language::ALL.map(Language::text));
+        assert_eq!(options("notifications.push.kind").len(), PushKind::ALL.len());
+        assert_eq!(options("notifications.push.when"), [Text::PushWhenAway, Text::BellSoundAlways], "in the order of PushWhen::ALL");
+        assert_eq!(PushWhen::ALL, [PushWhen::Away, PushWhen::Always]);
     }
 
     /// A value other than the default that the control of the row can hand over.
@@ -682,6 +785,9 @@ mod tests {
             }
             (Control::Themes, _) => Value::Text("Nord".to_owned()),
             (Control::Profiles, _) => Value::Text("wsl".to_owned()),
+            (Control::Flags(_), Value::Flags(bits)) => Value::Flags(bits ^ 1),
+            (Control::Secret, _) => Value::Text("tk_1234".to_owned()),
+            (Control::Text, _) if row.id == "notifications.push.url" => Value::Text("https://ntfy.sh/cat".to_owned()),
             (Control::Text, _) if row.id == "tabs.title.parts" => Value::Text("folder, title|profile".to_owned()),
             (Control::Text, _) if row.id == "editor" => Value::Text(r#"zed "{file}:{line}""#.to_owned()),
             (Control::Text, _) => Value::Text("Fira Code, Consolas".to_owned()),
@@ -732,10 +838,59 @@ mod tests {
             ("osc52", Value::Text("write".into())),
             ("editor", Value::Text("code -g".into())),
             ("editor", Value::Text("{file}".into())),
+            ("notifications.push.url", Value::Text("http://ntfy.sh/cat".into())),
+            ("notifications.push.events", Value::Flags(1 << 9)),
+            ("notifications.push.events", Value::Index(0)),
         ] {
             (find(id).unwrap().set)(&mut settings, bad);
             assert_eq!(settings, before, "{id}");
         }
+    }
+
+    #[test]
+    fn the_pushed_events_are_flags_waiting_failed_and_done_by_default_and_read_back_what_was_set() {
+        let row = find("notifications.push.events").unwrap();
+        assert_eq!((row.get)(&Settings::default()), Value::Flags(0b00111), "waiting, failed and done");
+        let mut settings = Settings::default();
+        (row.set)(&mut settings, Value::Flags(0b11000));
+        assert_eq!(settings.notifications.push.events, [PushEvent::LongCommand, PushEvent::Message]);
+        assert_eq!((row.get)(&settings), Value::Flags(0b11000));
+        let again = crate::settings::parse(Some(&crate::settings::serialize(&settings))).settings;
+        assert_eq!((row.get)(&again), Value::Flags(0b11000), "through the file and back");
+        (row.set)(&mut settings, Value::Flags(0));
+        assert!(settings.notifications.push.events.is_empty(), "none chosen is allowed: nothing is pushed");
+        match row.control {
+            Control::Flags(options) => assert_eq!(options.len(), PushEvent::ALL.len()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_push_address_refuses_what_it_cannot_send_to_and_takes_empty_as_off() {
+        let row = find("notifications.push.url").unwrap();
+        assert_eq!(refusal(row, &Value::Text("http://ntfy.sh/cat".into())), Some(Text::PushBadUrl));
+        assert_eq!(refusal(row, &Value::Text(" https://ntfy.sh/cat ".into())), None);
+        assert_eq!(refusal(row, &Value::Text("".into())), None, "empty is off");
+        assert_eq!(refusal(find("editor").unwrap(), &Value::Text("anything".into())), None);
+        let mut settings = Settings::default();
+        (row.set)(&mut settings, Value::Text(" https://ntfy.sh/cat ".into()));
+        assert_eq!(settings.notifications.push.url, "https://ntfy.sh/cat");
+        (row.set)(&mut settings, Value::Text(String::new()));
+        assert_eq!(settings.notifications.push.url, "");
+    }
+
+    #[test]
+    fn the_phone_notifications_are_a_section_of_the_terminal_page_with_notes_and_a_pair() {
+        let ids: Vec<&str> = in_section(Section::Terminal).map(|row| row.id).collect();
+        let at = ids.iter().position(|id| *id == "notifications.push.url").unwrap();
+        assert_eq!(ids[at..], ["notifications.push.url", "notifications.push.kind", "notifications.push.when", "notifications.push.token", "notifications.push.events"], "last on the page");
+        assert_eq!(heading_before("notifications.push.url"), Some(Text::SettingsPushHeading));
+        assert_eq!(heading_section(Text::SettingsPushHeading), Section::Terminal);
+        assert_eq!(note_of("notifications.push.url"), Some(Text::NotePushUrl));
+        assert_eq!(note_of("notifications.push.token"), Some(Text::NotePushToken));
+        assert_eq!(note_of("scrollback"), None);
+        assert!(paired_with_next("notifications.push.kind") && !paired_with_next("notifications.push.when"));
+        assert_eq!(find("notifications.push.token").unwrap().control, Control::Secret);
     }
 
     #[test]

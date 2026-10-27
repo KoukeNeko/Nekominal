@@ -65,6 +65,7 @@ mod drop;
 mod badges;
 pub(crate) mod automation;
 mod notifications;
+mod trigger_page;
 mod workspace;
 
 /// Posted by a reader thread when a pane has output to draw.
@@ -1772,6 +1773,10 @@ impl App {
         if changed {
             self.redraw();
         }
+        // The test push came back: the settings page says what it came to.
+        if crate::push::take_test_change() {
+            self.page_redraw();
+        }
     }
 
     /// Reads again what the agent of the focused pane said about its session, when it said something new, and the branch
@@ -2370,7 +2375,7 @@ impl App {
             sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section, tab_bounds(i))).collect(),
             search_label: Text::SettingsSearch.get(lang).to_owned(),
             query: page.query.clone(),
-            rows: settings_page::entries(page, lang, &self.keymap, &self.settings.schemes)
+            rows: settings_page::entries(page, lang, &self.keymap, &self.settings)
                 .iter()
                 .map(|entry| match entry {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
@@ -2385,6 +2390,12 @@ impl App {
                     settings_page::Entry::Snippets => (Text::SettingsSnippets.get(lang).to_owned(), self.settings.snippets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                     settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
                     settings_page::Entry::ProfileField(field) => (field.label().get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| if *field == profile_edit::Field::Elevate { (if p.options.elevate { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned() } else { profile_edit::text(p, *field) })),
+                    settings_page::Entry::PushTest => (Text::PushTestSend.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::Trigger(i) => {
+                        let rule = settings_page::trigger_at(&self.settings, *i);
+                        (rule.name.clone(), format!("{} · {}", rule.pattern, settings_page::action_text(&rule.action, lang)))
+                    }
+                    settings_page::Entry::TriggerPresets => (Text::TriggerAdd.get(lang).to_owned(), nekominal_model::triggers::PRESETS.iter().map(|text| text.get(lang)).collect::<Vec<_>>().join(", ")),
                 })
                 .collect(),
             focused: page.focus,
@@ -2525,7 +2536,10 @@ impl App {
             settings_page::Tone::Text => col(g.text()),
             settings_page::Tone::Quiet => col(g.text_secondary()),
             settings_page::Tone::Error => col(g.mark(g.danger)),
+            settings_page::Tone::Good => col(g.mark(g.success)),
         };
+        // A pill tinted with a colour of the scheme, faint enough for text on it.
+        let tint = |color: themes::Color, alpha: u8| { let c = col(color); Color([c.0[0], c.0[1], c.0[2], alpha]) };
         let mut clipped = false;
         for item in &frame.items {
             if item.scrolls && !clipped {
@@ -2560,7 +2574,39 @@ impl App {
                     settings_page::Fill::Switch { on, hover } => widgets::switch(&mut self.ui, &g, rect, on, hover),
                     settings_page::Fill::Slider { share } => widgets::slider(&mut self.ui, &g, rect, share),
                     settings_page::Fill::Radio { on, hover } => widgets::radio(&mut self.ui, &g, rect, on, hover),
+                    settings_page::Fill::Tag(tag) => {
+                        let fill = match tag {
+                            settings_page::Tag::Code => Color([0, 0, 0, 52]),
+                            settings_page::Tag::Plain => tint(g.accent, 36),
+                            settings_page::Tag::Warn => tint(g.warning, 36),
+                            settings_page::Tag::Mark => tint(g.danger, 40),
+                        };
+                        self.ui.rrect(rect, rect.h / 2.0, fill, None);
+                    }
                 },
+                settings_page::Visual::Swatch { color, selected, hover } => {
+                    let fill = themes::Color::parse_hex(color).map_or(col(g.divider()), col);
+                    let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text()), 1.0) } else { (col(g.divider()), 1.0) };
+                    self.ui.rrect(rect, CORNER_RADIUS, fill, Some(border));
+                }
+                settings_page::Visual::Sample { lines } => {
+                    self.ui.rrect(rect, CORNER_RADIUS, Color([0, 0, 0, 64]), None);
+                    self.ui.push_clip(rect);
+                    let size = 12.0;
+                    let line = self.ui.line_height(size);
+                    for (row, (text, hits)) in lines.iter().enumerate() {
+                        let (x, y) = (rect.x + 10.0, rect.y + 8.0 + row as f32 * 18.0 + (18.0 - line) / 2.0);
+                        // What the pattern matches is marked behind the text.
+                        for &(start, end) in hits {
+                            let (Some(before), Some(hit)) = (text.get(..start), text.get(start..end)) else { continue };
+                            let left = self.ui.measure(before, size, false);
+                            let width = self.ui.measure(hit, size, false);
+                            self.ui.rrect(Rect::new(x + left, y, width, line), 2.0, tint(g.warning, 72), None);
+                        }
+                        self.ui.text(x, y, text, size, col(g.text_secondary()), false);
+                    }
+                    self.ui.pop_clip();
+                }
                 settings_page::Visual::Label { text, size, tone, bold, align } => {
                     let width = self.ui.measure(text, *size, *bold);
                     let line = self.ui.line_height(*size);
@@ -3504,9 +3550,12 @@ impl App {
         let lang = self.language();
         let area = self.page_area();
         let page = self.page.as_ref()?;
+        // The pane is read only while a rule's form is open: the form is all that shows it.
+        let sample = if page.trigger.is_some() { self.trigger_sample() } else { Vec::new() };
         let ui = &mut self.ui;
         let update = self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed);
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some() };
+        let push_test = crate::push::test_status().map(|(at, test)| (at.elapsed(), test));
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some(), push_test, sample: &sample };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 
@@ -3730,6 +3779,10 @@ impl App {
             settings_page::SNIPPET_NAME_ID => Part::SnippetName(env_row),
             settings_page::SNIPPET_INPUT_ID => Part::SnippetInput(env_row),
             settings_page::LAYOUT_NAME_ID => Part::LayoutName(env_row),
+            settings_page::TRIGGER_NAME_ID => Part::TriggerName(env_row),
+            settings_page::TRIGGER_PATTERN_ID => Part::TriggerPattern(env_row),
+            settings_page::TRIGGER_PROGRAM_ID => Part::TriggerProgram(env_row),
+            settings_page::TRIGGER_TEXT_ID => Part::TriggerText(env_row),
             _ => profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField),
         });
         let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
@@ -3774,6 +3827,18 @@ impl App {
             self.page_redraw();
             return;
         }
+        if id.starts_with("trigger.") {
+            // What a rule cannot take keeps the field open, with the reason under it, as a profile's field does.
+            let result = self.commit_trigger(id, env_row, &text);
+            if let Some(page) = self.page.as_mut() {
+                page.error = result.err().map(|error| (id, error));
+                if page.error.is_some() {
+                    page.editing = Some((id, text));
+                }
+            }
+            self.page_redraw();
+            return;
+        }
         let profile_change = match (id, profile_edit::Field::from_id(id)) {
             (profile_edit::ENV_KEY_ID, _) => Some(self.edit_profile(|settings, profile| profile_edit::rename_env(settings, profile, env_row, &text))),
             (profile_edit::ENV_VALUE_ID, _) => Some(self.edit_profile(|settings, profile| Ok(profile_edit::set_env_value(settings, profile, env_row, &text)))),
@@ -3789,7 +3854,20 @@ impl App {
                 page.error = None;
             }
         } else if let Some(row) = settings_ui::find(id) {
-            self.set_setting(row, Value::Text(text));
+            let value = Value::Text(text);
+            match settings_ui::refusal(row, &value) {
+                Some(error) => {
+                    if let (Some(page), Value::Text(text)) = (self.page.as_mut(), value) {
+                        (page.editing, page.error) = (Some((id, text)), Some((id, error)));
+                    }
+                }
+                None => {
+                    if let Some(page) = self.page.as_mut() {
+                        page.error = None;
+                    }
+                    self.set_setting(row, value);
+                }
+            }
         }
         self.page_redraw();
     }
@@ -3849,7 +3927,8 @@ impl App {
             Some(Part::SnippetName(i)) => editing == Some(settings_page::SNIPPET_NAME_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             Some(Part::SnippetInput(i)) => editing == Some(settings_page::SNIPPET_INPUT_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
             Some(Part::LayoutName(i)) => editing == Some(settings_page::LAYOUT_NAME_ID) && self.page.as_ref().is_some_and(|p| p.env_row == i),
-            _ => false,
+            Some(part) => settings_page::trigger_field(part).is_some_and(|(id, i)| editing == Some(id) && self.page.as_ref().is_some_and(|p| p.env_row == i)),
+            None => false,
         };
         if !same_field {
             self.page_commit_edit();
@@ -3861,7 +3940,7 @@ impl App {
                 if let Some(page) = self.page.as_mut() {
                     (page.section, page.query, page.scroll, page.focus) = (i, String::new(), 0.0, None);
                     // A field left open with a refused value goes with the page it was on.
-                    (page.profile, page.editing, page.error) = (None, None, None);
+                    (page.profile, page.editing, page.error, page.trigger) = (None, None, None, None);
                     page.cursor = textfield::Cursor::default();
                 }
             }
@@ -3870,7 +3949,12 @@ impl App {
             Part::Toggle(id) => self.step_setting(id, true, false),
             Part::Option(id, i) => {
                 if let Some(row) = settings_ui::find(id) {
-                    self.set_setting(row, Value::Index(i));
+                    // An option of flags is pressed on and off on its own; one of a choice is chosen.
+                    let value = match (row.get)(&self.settings) {
+                        Value::Flags(bits) => Value::Flags(bits ^ 1 << i),
+                        _ => Value::Index(i),
+                    };
+                    self.set_setting(row, value);
                 }
             }
             Part::Minus(id) => self.step_setting(id, false, false),
@@ -3941,6 +4025,18 @@ impl App {
             Part::EditProfile(_) | Part::NewProfile | Part::ProfileBack | Part::DeleteProfile | Part::ProfileField(_) | Part::Browse(_) | Part::ProfileScheme(_) | Part::ProfileFont(_) | Part::ProfileFontReset | Part::EnvAdd | Part::EnvKey(_) | Part::EnvValue(_) | Part::EnvDelete(_) => self.press_profile_part(part),
             Part::SnippetAdd | Part::SnippetName(_) | Part::SnippetInput(_) | Part::SnippetDelete(_) => self.press_snippet_part(part),
             Part::LayoutSave | Part::LayoutName(_) | Part::LayoutOpen(_) | Part::LayoutDelete(_) => self.press_layout_part(part),
+            Part::PushTest => self.send_test_push(),
+            Part::TriggerAdd
+            | Part::TriggerOpen(_)
+            | Part::TriggerSwitch(_)
+            | Part::TriggerName(_)
+            | Part::TriggerPattern(_)
+            | Part::TriggerInstant(_)
+            | Part::TriggerProgram(_)
+            | Part::TriggerText(_)
+            | Part::TriggerAction(..)
+            | Part::TriggerColor(..)
+            | Part::TriggerPreset(_) => self.press_trigger_part(part),
         }
         self.page_redraw();
         capture
@@ -3985,18 +4081,21 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
+        // What Enter presses on a row that is not a setting or a command: the button it stands for.
         let focused_profile_part = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::NewProfile => Some(Part::NewProfile),
             settings_page::Entry::Snippets => Some(Part::SnippetAdd),
             settings_page::Entry::Layouts => Some(Part::LayoutSave),
             settings_page::Entry::ProfileHeader => Some(Part::ProfileBack),
             settings_page::Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
+            settings_page::Entry::PushTest => Some(Part::PushTest),
+            settings_page::Entry::Trigger(i) => Some(Part::TriggerOpen(*i)),
             _ => None,
         });
         match vk_code {
@@ -4034,14 +4133,15 @@ impl App {
                     self.record_key(command, settings_page::KeySlot::First);
                 }
             }
-            VK_RETURN if !repeat && focused_profile_part.is_some() => {
-                if let Some(part) = focused_profile_part {
-                    self.press_profile_part(part);
-                }
-            }
+            VK_RETURN if !repeat && focused_profile_part.is_some() => match focused_profile_part {
+                Some(Part::PushTest) => self.send_test_push(),
+                Some(part @ Part::TriggerOpen(_)) => self.press_trigger_part(part),
+                Some(part) => self.press_profile_part(part),
+                None => {}
+            },
             VK_RETURN if !repeat => {
                 let Some(row) = focused_row else { return true };
-                if matches!(row.control, Control::Text) {
+                if matches!(row.control, Control::Text | Control::Secret) {
                     if let (Value::Text(text), Some(page)) = ((row.get)(&self.settings), self.page.as_mut()) {
                         page.edit_cursor = textfield::Cursor { caret: textfield::length(&text), anchor: Some(0) };
                         page.editing = Some((row.id, text));

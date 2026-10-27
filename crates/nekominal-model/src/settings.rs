@@ -247,13 +247,22 @@ pub struct Notifications {
 }
 
 /// Where a notification is pushed to: an ntfy topic or a webhook of the user's own. An empty `url` turns it off.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Push {
     pub url: String,
     pub kind: PushKind,
     /// Sent as `Authorization: Bearer`; empty sends none.
     pub token: String,
     pub when: PushWhen,
+    /// What is pushed, in the order of [`PushEvent::ALL`].
+    pub events: Vec<PushEvent>,
+}
+
+impl Default for Push {
+    fn default() -> Push {
+        // What needs the user or ends the work: the rest stays on the desk.
+        Push { url: String::new(), kind: PushKind::Ntfy, token: String::new(), when: PushWhen::Away, events: vec![PushEvent::Waiting, PushEvent::Failed, PushEvent::Done] }
+    }
 }
 
 /// What the target of the push speaks.
@@ -267,6 +276,10 @@ pub enum PushKind {
     Webhook,
 }
 
+impl PushKind {
+    pub const ALL: [PushKind; 2] = [PushKind::Ntfy, PushKind::Webhook];
+}
+
 /// When a notification is also pushed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -275,6 +288,84 @@ pub enum PushWhen {
     /// Only while the window is not in the foreground: at the desk the toast is enough.
     #[default]
     Away,
+}
+
+impl PushWhen {
+    /// In the order of the settings page: the default first.
+    pub const ALL: [PushWhen; 2] = [PushWhen::Away, PushWhen::Always];
+}
+
+/// A kind of notification that can be pushed (`notifications.push.events`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PushEvent {
+    /// An agent waits for an answer.
+    Waiting,
+    /// An agent failed.
+    Failed,
+    /// An agent finished.
+    Done,
+    /// A long command ended.
+    LongCommand,
+    /// A program's own notification or its bell.
+    Message,
+}
+
+impl PushEvent {
+    pub const ALL: [PushEvent; 5] = [PushEvent::Waiting, PushEvent::Failed, PushEvent::Done, PushEvent::LongCommand, PushEvent::Message];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PushEvent::Waiting => "waiting",
+            PushEvent::Failed => "failed",
+            PushEvent::Done => "done",
+            PushEvent::LongCommand => "longCommand",
+            PushEvent::Message => "message",
+        }
+    }
+}
+
+/// Why `url` is not taken as the target of the push, if it is not: the token and the text would cross the network in the
+/// clear over anything but HTTPS, so plain HTTP is only for a receiver on this computer.
+pub fn check_push_url(url: &str) -> Result<(), &'static str> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("the address has a space or a control character");
+    }
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") && url_host(url).is_some_and(|h| !h.is_empty()) {
+        return Ok(());
+    }
+    if lower.starts_with("http://") && url_host(url).is_some_and(|h| matches!(h.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]")) {
+        return Ok(());
+    }
+    Err("the address is not https:// (http:// only to this computer)")
+}
+
+/// The host of `url`, without user, port, path or query: what the log may say of an address.
+pub fn url_host(url: &str) -> Option<&str> {
+    let rest = &url[url.find("://")? + 3..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    Some(match host.find(']') {
+        Some(end) if host.starts_with('[') => &host[..=end],
+        _ => host.split(':').next().unwrap_or(host),
+    })
+}
+
+/// The `events` of `notifications.push`: names of [`PushEvent`], kept in its order. Anything else keeps the default and
+/// is reported.
+fn push_events(push: &Map<String, Value>, default: &[PushEvent], problems: &mut Problems) -> Vec<PushEvent> {
+    let Some(value) = push.get("events") else { return default.to_vec() };
+    let named = |item: &Value| item.as_str().and_then(|name| PushEvent::ALL.into_iter().find(|event| event.name() == name));
+    if let Value::Array(items) = value
+        && let Some(mut events) = items.iter().map(named).collect::<Option<Vec<_>>>()
+    {
+        events.sort();
+        events.dedup();
+        return events;
+    }
+    problems.fail("notifications.push", "events", Expected::OneOf(PushEvent::ALL.map(|event| event.name().to_owned()).to_vec()));
+    default.to_vec()
 }
 
 /// Valid range of `notifications.longCommand`, in seconds: up to a day.
@@ -1250,6 +1341,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
                     kind: one_of(&push, "kind", &[("ntfy", PushKind::Ntfy), ("webhook", PushKind::Webhook)], p.kind, path, &mut problems),
                     token: text(&push, "token", &p.token, path, &mut problems),
                     when: one_of(&push, "when", &[("always", PushWhen::Always), ("away", PushWhen::Away)], p.when, path, &mut problems),
+                    events: push_events(&push, &p.events, &mut problems),
                 }
             },
         },
@@ -1898,10 +1990,11 @@ mod tests {
 
     #[test]
     fn the_push_is_off_until_it_has_a_url_and_waits_for_the_user_to_be_away() {
-        assert_eq!(Settings::default().notifications.push, Push { url: String::new(), kind: PushKind::Ntfy, token: String::new(), when: PushWhen::Away });
+        let events = vec![PushEvent::Waiting, PushEvent::Failed, PushEvent::Done];
+        assert_eq!(Settings::default().notifications.push, Push { url: String::new(), kind: PushKind::Ntfy, token: String::new(), when: PushWhen::Away, events: events.clone() });
         let result = parsed(r#"{ "notifications": { "push": { "url": "https://example.com/hook", "kind": "webhook", "token": "t0k", "when": "always" } } }"#);
         assert!(result.problems.is_empty(), "{:?}", result.problems);
-        let push = Push { url: "https://example.com/hook".into(), kind: PushKind::Webhook, token: "t0k".into(), when: PushWhen::Always };
+        let push = Push { url: "https://example.com/hook".into(), kind: PushKind::Webhook, token: "t0k".into(), when: PushWhen::Always, events };
         assert_eq!(result.settings.notifications.push, push);
         // An unknown kind or time keeps the default and is reported, each.
         let result = parsed(r#"{ "notifications": { "push": { "kind": "pager", "when": "never" } } }"#);
@@ -1914,6 +2007,46 @@ mod tests {
         );
         let written = round_trips(Settings { notifications: Notifications { push: Push { url: "https://ntfy.sh/cat".into(), ..Push::default() }, ..Settings::default().notifications }, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "notifications": { "push": { "url": "https://ntfy.sh/cat" } } }));
+    }
+
+    #[test]
+    fn the_pushed_events_are_names_kept_in_their_order_and_a_bad_list_keeps_the_default() {
+        let result = parsed(r#"{ "notifications": { "push": { "events": ["message", "longCommand", "message"] } } }"#);
+        assert!(result.problems.is_empty(), "{:?}", result.problems);
+        assert_eq!(result.settings.notifications.push.events, [PushEvent::LongCommand, PushEvent::Message]);
+        let written = round_trips(result.settings);
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "notifications": { "push": { "events": ["longCommand", "message"] } } }));
+        let none = parsed(r#"{ "notifications": { "push": { "events": [] } } }"#);
+        assert!(none.settings.notifications.push.events.is_empty(), "nothing chosen is nothing pushed");
+        for bad in [r#"["waiting", "lunch"]"#, r#""waiting""#] {
+            let result = parsed(&format!(r#"{{ "notifications": {{ "push": {{ "events": {bad} }} }} }}"#));
+            assert_eq!(result.settings.notifications.push.events, Push::default().events, "{bad}");
+            assert_eq!(result.problems.len(), 1, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_https_is_taken_as_a_push_target_and_plain_http_only_to_this_computer() {
+        assert!(check_push_url("https://ntfy.sh/mytopic").is_ok());
+        assert!(check_push_url("HTTPS://hooks.example.com:8443/a?b=c").is_ok());
+        assert!(check_push_url("http://localhost:8080/hook").is_ok());
+        assert!(check_push_url("http://127.0.0.1/hook").is_ok());
+        assert!(check_push_url("http://[::1]:9000/").is_ok());
+        assert!(check_push_url("http://ntfy.sh/mytopic").is_err());
+        assert!(check_push_url("http://localhost.evil.com/").is_err());
+        assert!(check_push_url("http://localhost@evil.com/").is_err(), "the host is after the user");
+        assert!(check_push_url("ftp://ntfy.sh/x").is_err());
+        assert!(check_push_url("https://").is_err());
+        assert!(check_push_url("https://ntfy.sh/a b").is_err());
+        assert!(check_push_url("ntfy.sh/mytopic").is_err());
+    }
+
+    #[test]
+    fn the_log_names_only_the_host_of_an_address() {
+        assert_eq!(url_host("https://user:pw@hooks.example.com:8443/path?token=x#y"), Some("hooks.example.com"));
+        assert_eq!(url_host("https://ntfy.sh?auth=x"), Some("ntfy.sh"));
+        assert_eq!(url_host("http://[::1]:9000/"), Some("[::1]"));
+        assert_eq!(url_host("nothing"), None);
     }
 
     #[test]
