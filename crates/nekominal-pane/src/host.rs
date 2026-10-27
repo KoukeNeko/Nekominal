@@ -554,11 +554,6 @@ impl Pane {
         live.sessions.close(live.id);
     }
 
-    /// A handle other threads can use to feed the writer thread (probe scripts).
-    pub fn sender(&self) -> Sender<Vec<u8>> {
-        self.live.borrow().input.clone()
-    }
-
     /// The file name of the program the pane is running now (`vim.exe`; the shell when nothing else runs), if it can be told.
     /// The program the session runs now, with the path of its file.
     pub fn job(&self) -> Option<nekominal_pty::conpty::Job> {

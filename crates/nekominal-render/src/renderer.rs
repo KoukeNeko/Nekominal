@@ -224,16 +224,6 @@ impl PaneState {
             images: Default::default(),
         }
     }
-
-    /// Instance buffer bytes currently reserved on the GPU.
-    pub fn gpu_bytes(&self) -> u64 {
-        self.gpu
-            .as_ref()
-            .map(|g| {
-                g.bg.capacity() + g.glyphs.capacity() + g.lcd.capacity() + g.deco.capacity() + g.overlay.capacity()
-            })
-            .unwrap_or(0)
-    }
 }
 
 pub struct PaneDraw<'a> {
@@ -262,7 +252,6 @@ pub struct Renderer {
     /// The picture pipeline, made when the first picture shows up.
     pub(crate) image_pipeline: Option<crate::images::ImagePipeline>,
     pub stats: RendererStats,
-    pub init_timings: Vec<(&'static str, std::time::Duration)>,
 }
 
 impl UpdateStats {
@@ -293,22 +282,15 @@ impl Renderer {
         cfg: RendererConfig,
         shared: Option<Arc<Pipelines>>,
     ) -> Result<Self, String> {
-        let mut init_timings = Vec::new();
         // Dual-source blending is part of feature level 11.
         let lcd_supported = true;
-        let t = std::time::Instant::now();
         let pipelines = match shared {
             Some(shared) => shared,
             None => Arc::new(Pipelines::new(gpu)?),
         };
-        init_timings.push(("pipelines (HLSL, 3 pixel shaders)", t.elapsed()));
-        let t = std::time::Instant::now();
         let atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, cfg.atlas_initial, cfg.atlas_max)?;
         let atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, cfg.atlas_initial, cfg.atlas_max)?;
-        init_timings.push(("atlas textures", t.elapsed()));
-        let t = std::time::Instant::now();
         let fonts = FontStack::new(cfg.fonts.clone())?;
-        init_timings.push(("FontStack::new (DirectWrite locator + primary faces)", t.elapsed()));
         let mut r = Renderer {
             gpu: gpu.clone(),
             theme: Arc::new(Theme::campbell()),
@@ -340,12 +322,9 @@ impl Renderer {
             lcd_supported,
             image_pipeline: None,
             stats: RendererStats::default(),
-            init_timings,
             cfg,
         };
-        let t = std::time::Instant::now();
         r.recompute_metrics()?;
-        r.init_timings.push(("cell metrics", t.elapsed()));
         Ok(r)
     }
 
