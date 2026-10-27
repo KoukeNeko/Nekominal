@@ -547,6 +547,12 @@ impl Pane {
         live.sessions.get(live.id).ok()?.job()
     }
 
+    /// The ids of every process the session runs: its program and all it started. Empty when the session is gone.
+    pub fn job_process_ids(&self) -> Vec<u32> {
+        let live = self.live.borrow();
+        live.sessions.get(live.id).map(|session| session.job_process_ids()).unwrap_or_default()
+    }
+
     /// Term and PTY are resized together under the terminal lock so a snapshot never sees half a resize.
     pub fn resize(&self, cols: u16, rows: u16) {
         let mut core = self.term.lock();

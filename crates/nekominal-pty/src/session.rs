@@ -101,6 +101,11 @@ impl Session {
     pub fn job(&self) -> Option<crate::conpty::Job> {
         self.pty.job()
     }
+
+    /// Every process of the session's job; see [`Pty::job_process_ids`].
+    pub fn job_process_ids(&self) -> Vec<u32> {
+        self.pty.job_process_ids()
+    }
 }
 
 #[derive(Default)]

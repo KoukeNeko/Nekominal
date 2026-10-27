@@ -378,7 +378,7 @@ impl Pty {
     }
 
     /// Every process currently in the job: the child and all its descendants.
-    pub(crate) fn job_process_ids(&self) -> Vec<u32> {
+    pub fn job_process_ids(&self) -> Vec<u32> {
         // The list header is two u32 counts followed by pointer-sized ids; u64 words keep the
         // buffer aligned for it. A job of more processes than fit (`make -j80`) says how many it
         // has: the list is asked for again with room for them, and for a few started meanwhile.
