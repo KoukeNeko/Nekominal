@@ -909,11 +909,12 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             fixed.scrolls = false;
         }
     }
-    // Right after the title of the Triggers page the button that adds a rule, and under it what a rule is.
+    // At the right end of the title of the Triggers page the button that adds a rule, as the shortcuts page has its reset,
+    // and under the title what a rule is.
     if !searching && Section::ALL.get(page.section) == Some(&Section::Triggers) {
         let text = Text::TriggerAdd.get(lang);
-        let x = x0 + INNER + measure(title.get(lang), 20.0, true) + 16.0;
-        let button = Rect::new(x, oy + 18.0, (measure(text, 13.0, false) + 40.0).min((x0 + content_width - INNER - x).max(0.0)), CONTROL);
+        let width = measure(text, 13.0, false) + 40.0;
+        let button = Rect::new(x0 + content_width - INNER - width, oy + 18.0, width, CONTROL);
         icon_button(&mut items, button, Part::TriggerAdd, '\u{E710}', text, true, hover);
         item(&mut items, Rect::new(x0 + INNER, oy + 46.0, (content_width - 2.0 * INNER).max(0.0), 18.0), None, label(Text::TriggersIntro.get(lang), 12.0, Tone::Quiet, false, Align::Left), false);
         for fixed in items.iter_mut().rev().take(4) {
