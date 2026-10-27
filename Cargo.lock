@@ -429,6 +429,7 @@ version = "0.0.28"
 dependencies = [
  "base64",
  "nekominal-input",
+ "regex",
  "serde",
  "serde_json",
 ]
@@ -497,6 +498,7 @@ dependencies = [
  "base64",
  "memchr",
  "nekominal-pty",
+ "regex",
  "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.61.2",

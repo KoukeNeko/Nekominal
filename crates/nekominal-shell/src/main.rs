@@ -38,6 +38,7 @@ mod status;
 mod tab;
 mod textfield;
 mod toast;
+mod triggers;
 mod update;
 mod welcome;
 mod widgets;

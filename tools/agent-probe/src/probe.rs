@@ -241,7 +241,8 @@ pub enum Observed {
 
 fn observe(event: CoreEvent) -> Option<Observed> {
     Some(match event {
-        CoreEvent::PtyWrite(_) => return None,
+        // The probe sets no triggers.
+        CoreEvent::PtyWrite(_) | CoreEvent::Trigger(_) => return None,
         CoreEvent::Title(title) => Observed::Title(title),
         CoreEvent::ResetTitle => Observed::ResetTitle,
         CoreEvent::Bell => Observed::Bell,

@@ -33,6 +33,7 @@ use nekominal_term::{
     agent_status::{AgentRecord, AgentState, Report},
     alacritty_terminal::{grid::Scroll, sync::FairMutex, term::Osc52, vte::ansi::CursorStyle},
     osc::{Notification, Progress, PromptMark},
+    triggers::{TriggerHit, Triggers},
 };
 
 /// The most text a program may put on the clipboard (OSC 52), and the most the clipboard may hand to one: 1 MiB.
@@ -77,6 +78,8 @@ pub enum UiEvent {
     ClipboardLoad(ClipboardRequest),
     /// An OSC 52 write was dropped for its size (over [`MAX_CLIPBOARD_TEXT`]). The text is not kept.
     ClipboardRefused { bytes: usize },
+    /// A line of the output matched a trigger.
+    Trigger(TriggerHit),
     /// Anything else the emulator reported, as debug text.
     Other(String),
 }
@@ -143,6 +146,7 @@ fn ui_event(event: CoreEvent) -> UiEvent {
         CoreEvent::Notification(notification) => UiEvent::Notification(notification),
         CoreEvent::Progress(progress) => UiEvent::Progress(progress),
         CoreEvent::PromptMark { mark, .. } => UiEvent::PromptMark(mark),
+        CoreEvent::Trigger(hit) => UiEvent::Trigger(hit),
         // Windows has one clipboard and no primary selection: a program that writes to or reads the selection
         // would otherwise overwrite or read what the user copied.
         CoreEvent::ClipboardStore { clipboard: ClipboardKind::Clipboard, text } if text.len() <= MAX_CLIPBOARD_TEXT => {
@@ -544,7 +548,19 @@ impl Pane {
     /// The program the session runs now, with the path of its file.
     pub fn job(&self) -> Option<nekominal_pty::conpty::Job> {
         let live = self.live.borrow();
-        live.sessions.get(live.id).ok()?.job()
+        let job = live.sessions.get(live.id).ok()?.job();
+        // The triggers of one program follow what the last look found; a look that failed changes nothing.
+        // shortcut: only as fresh as the shell's looks (the focused pane of each tab, once a tick); a look of its own
+        // per line of output would be too dear.
+        if let Some(job) = &job {
+            self.term.lock().set_program(Some(job.name.clone()));
+        }
+        job
+    }
+
+    /// The triggers matched against the output from now on (a settings change reaches panes that already run).
+    pub fn set_triggers(&self, triggers: Option<std::sync::Arc<Triggers>>) {
+        self.term.lock().set_triggers(triggers);
     }
 
     /// The ids of every process the session runs: its program and all it started. Empty when the session is gone.

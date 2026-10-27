@@ -914,6 +914,7 @@ impl App {
             branch: None,
             scheme: profile.options.color_scheme.clone(),
             font_size: profile.options.font_size,
+            sends: Default::default(),
         })
     }
 
@@ -1278,6 +1279,8 @@ impl App {
             let (focused, uid) = (tab.focused, tab.uid);
             for entry in &mut tab.panes {
                 while let Ok(event) = entry.pane.events.try_recv() {
+                    // A trigger's hit is done there, or comes back as the bell or the notification it asks for.
+                    let Some(event) = crate::triggers::take(event, &self.settings.triggers, entry, watched) else { continue };
                     entry.progress = status::progress_after(entry.progress, &event);
                     match event {
                         UiEvent::Title(title) => entry.title = logic::clean_title(&title),
@@ -4437,6 +4440,10 @@ impl App {
             if effects.sticky_header {
                 entry.pane.set_sticky_header(self.settings.sticky_header);
             }
+        }
+        if self.settings.triggers != before.triggers {
+            let rules = crate::triggers::rules(&self.settings.triggers);
+            self.tabs.iter().flat_map(|tab| &tab.panes).for_each(|entry| entry.pane.set_triggers(rules.clone()));
         }
         if self.settings.profiles != before.profiles {
             self.profiles = profiles::merge(&self.found, &self.settings.profiles);

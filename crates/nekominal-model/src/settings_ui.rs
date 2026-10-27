@@ -586,6 +586,7 @@ mod tests {
         ("notifications.push.token", "the push row waits for its approved design"),
         ("notifications.push.when", "the push row waits for its approved design"),
         ("api.enabled", "the API row waits for its approved design"),
+        ("triggers", "the triggers page waits for its approved design"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.

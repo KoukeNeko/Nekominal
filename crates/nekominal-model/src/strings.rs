@@ -296,6 +296,9 @@ texts! {
     ProblemUnknownTheme "problem.unknownTheme" "找不到「{0}」" "No color scheme \"{0}\"";
     ProblemUnknownCommand "problem.unknownCommand" "找不到命令" "No such command";
     ProblemBadShortcut "problem.badShortcut" "「{0}」不是有效的快速鍵" "\"{0}\" is not a valid shortcut";
+    ProblemRegex "problem.regex" "不是有效的正規表示式：{0}" "Not a valid regular expression: {0}";
+    ProblemMostEntries "problem.mostEntries" "最多 {0} 個，其餘略過" "At most {0}; the rest are left out";
+    ProblemMostChars "problem.mostChars" "最多 {0} 個字元" "At most {0} characters";
     ProblemUnparsable "problem.unparsable" "無法解析：{0}" "Cannot parse: {0}";
     ProblemJsonObject "problem.jsonObject" "需要是 JSON 物件" "Needs to be a JSON object";
     StatusSettingsSaveFailed "status.settingsSaveFailed" "無法儲存設定：{0}" "Cannot save settings: {0}";

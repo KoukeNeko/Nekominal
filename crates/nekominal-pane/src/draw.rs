@@ -251,10 +251,11 @@ impl PaneRenderer {
         // The pinned prompt line and the labels of hint mode are drawn over a copy of the cells: the screen under them is
         // left as it is.
         let sticky = !self.snapshot.sticky_header.is_empty();
-        let cells = if self.hint_labels.is_empty() && !sticky {
+        let cells = if self.hint_labels.is_empty() && !sticky && self.snapshot.trigger_marks.is_empty() {
             &self.cells
         } else {
             self.labelled.clone_from(&self.cells);
+            view::mark_triggers(&mut self.labelled, &self.snapshot.trigger_marks, self.snapshot.columns);
             // The tint of the IME's composition: a background a step off the pane's own.
             view::pin_header(&mut self.labelled, &self.snapshot.sticky_header, self.theme.preedit_bg);
             let (fg, bg) = (self.theme.search_current_fg, self.theme.search_current_bg);

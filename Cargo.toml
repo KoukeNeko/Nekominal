@@ -35,6 +35,8 @@ nekominal-pane = { path = "crates/nekominal-pane" }
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 base64 = "0.22.1"
 memchr = "2.8"
+# The patterns of the triggers (`settings.json` `triggers`): one RegexSet over every line, captures for the actions.
+regex = "1.13"
 unicode-width = "=0.2.2"
 
 # Renderer

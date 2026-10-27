@@ -584,6 +584,8 @@ pub struct Settings {
     pub welcomed: bool,
     /// Command id to shortcuts; an empty list unbinds a default.
     pub keybindings: BTreeMap<String, Vec<String>>,
+    /// Regular expressions matched against the lines of the output, each with what it does (`triggers`).
+    pub triggers: Vec<crate::triggers::Trigger>,
 }
 
 impl Settings {
@@ -635,6 +637,7 @@ impl Default for Settings {
             editor: crate::editor::AUTO.to_owned(),
             welcomed: false,
             keybindings: BTreeMap::new(),
+            triggers: Vec::new(),
         }
     }
 }
@@ -706,6 +709,12 @@ pub enum Expected {
     Clash(Command),
     /// A shortcut that can be read; this is the text that could not be.
     Shortcut(String),
+    /// A regular expression; this is what the regex parser said.
+    Regex(String),
+    /// A list of at most this many entries: the ones after it are left out.
+    MostEntries(usize),
+    /// Text of at most this many characters.
+    MostChars(usize),
     /// The whole file is not JSON; this is what the parser said.
     Parsable(String),
     JsonObject,
@@ -735,6 +744,9 @@ impl Expected {
             Expected::KnownCommand => Text::ProblemUnknownCommand.get(lang).to_owned(),
             Expected::Clash(owner) => Text::KeyConflict.format(lang, &[&owner.label(lang)]),
             Expected::Shortcut(text) => Text::ProblemBadShortcut.format(lang, &[text]),
+            Expected::Regex(error) => Text::ProblemRegex.format(lang, &[error]),
+            Expected::MostEntries(most) => Text::ProblemMostEntries.format(lang, &[most]),
+            Expected::MostChars(most) => Text::ProblemMostChars.format(lang, &[most]),
             Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
             Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),
         }
@@ -762,10 +774,10 @@ impl Problem {
 }
 
 #[derive(Default)]
-struct Problems(Vec<Problem>);
+pub(crate) struct Problems(Vec<Problem>);
 
 impl Problems {
-    fn fail(&mut self, path: &str, key: &str, expected: Expected) {
+    pub(crate) fn fail(&mut self, path: &str, key: &str, expected: Expected) {
         let prefix = if path.is_empty() { String::new() } else { format!("{path}.") };
         self.0.push(Problem::new(format!("{prefix}{key}"), expected));
     }
@@ -784,7 +796,7 @@ fn number(source: &Map<String, Value>, key: &str, fallback: f64, (min, max): (f6
     }
 }
 
-fn boolean(source: &Map<String, Value>, key: &str, fallback: bool, path: &str, problems: &mut Problems) -> bool {
+pub(crate) fn boolean(source: &Map<String, Value>, key: &str, fallback: bool, path: &str, problems: &mut Problems) -> bool {
     match source.get(key) {
         None => fallback,
         Some(Value::Bool(value)) => *value,
@@ -795,7 +807,7 @@ fn boolean(source: &Map<String, Value>, key: &str, fallback: bool, path: &str, p
     }
 }
 
-fn text(source: &Map<String, Value>, key: &str, fallback: &str, path: &str, problems: &mut Problems) -> String {
+pub(crate) fn text(source: &Map<String, Value>, key: &str, fallback: &str, path: &str, problems: &mut Problems) -> String {
     match source.get(key) {
         None => fallback.to_owned(),
         Some(Value::String(value)) => value.clone(),
@@ -1268,6 +1280,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         editor: text(&root, "editor", &d.editor, "", &mut problems),
         welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
         keybindings: read_keybindings(&root, &mut problems),
+        triggers: crate::triggers::read(&root, &mut problems),
     };
     Parsed { settings, problems: problems.0 }
 }

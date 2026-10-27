@@ -30,6 +30,7 @@ use crate::{
     osc::{is_control_or_bidi, strip_control, Notification, Progress, PromptMark},
     sniffer::{MouseExtension, Sniffed, Sniffer, Unsupported},
     theme::Palette,
+    triggers::{GridLine, TriggerHit, Triggers, MAX_LINE_CHARS},
 };
 
 /// Dimensions for `Term::new` / `Term::resize`. Only `columns` and `screen_lines` are read by them;
@@ -196,6 +197,8 @@ pub enum CoreEvent {
     /// alacritty_terminal panicked while parsing (an upstream bug, for example the 4097th kitty keyboard
     /// push). The terminal was reset and keeps running; the screen content is lost.
     EmulatorPanic(String),
+    /// A line matched a trigger (`triggers`); the shell does what the rule says.
+    Trigger(TriggerHit),
 }
 
 impl fmt::Debug for CoreEvent {
@@ -220,6 +223,8 @@ impl fmt::Debug for CoreEvent {
             Self::Unsupported(u) => write!(f, "Unsupported({u:?})"),
             Self::Win32InputMode(on) => write!(f, "Win32InputMode({on})"),
             Self::EmulatorPanic(message) => write!(f, "EmulatorPanic({message:?})"),
+            // The text matched is output, which may be anything: only the rule goes to a log.
+            Self::Trigger(hit) => write!(f, "Trigger({})", hit.rule),
         }
     }
 }
@@ -255,6 +260,8 @@ pub struct CoreConfig {
     /// While the view is scrolled up into a command's output, its prompt line is pinned over the top row
     /// (`Snapshot::sticky_header`).
     pub sticky_header: bool,
+    /// The triggers matched against the output (`triggers`); none costs nothing.
+    pub triggers: Option<Arc<Triggers>>,
 }
 
 /// Default semantic escape characters plus the full-width punctuation Traditional Chinese text uses.
@@ -277,6 +284,7 @@ impl Default for CoreConfig {
             da1_reply: None,
             damage_margin: 2,
             sticky_header: true,
+            triggers: None,
         }
     }
 }
@@ -388,6 +396,17 @@ pub struct Snapshot {
     pub top_line: Option<LineId>,
     /// The cells of the prompt line pinned over the top row (`TerminalCore::sticky_prompt`); empty when none is.
     pub sticky_header: Vec<SnapCell>,
+    /// The cells of the viewport that triggers highlight.
+    pub trigger_marks: Vec<TriggerMark>,
+}
+
+/// Cells of one viewport row a trigger highlights: `start..end` columns, drawn on `color`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TriggerMark {
+    pub row: usize,
+    pub start: usize,
+    pub end: usize,
+    pub color: (u8, u8, u8),
 }
 
 impl Default for Snapshot {
@@ -405,6 +424,7 @@ impl Default for Snapshot {
             overrides: Vec::new(),
             top_line: None,
             sticky_header: Vec::new(),
+            trigger_marks: Vec::new(),
         }
     }
 }
@@ -539,7 +559,18 @@ pub struct TerminalCore {
     utf8_tail: Vec<u8>,
     /// The folder the shell last reported (OSC 7 or 9;9): where a relative path in the text is, for `link_at`.
     folder: Option<String>,
+    /// The first line the triggers have not matched yet (see `triggers`).
+    trigger_next: Option<LineId>,
+    /// The line the cursor is on and the instant rules that already fired on it.
+    trigger_instant: Option<(LineId, Vec<usize>)>,
+    /// The program the pane runs, for the rules of one program.
+    trigger_program: Option<String>,
+    /// What the highlight rules marked, by line, oldest first: (line, columns, colour).
+    trigger_marks: std::collections::VecDeque<(LineId, usize, usize, (u8, u8, u8))>,
 }
+
+/// The highlights of triggers kept at most: the oldest goes past it.
+const MAX_TRIGGER_MARKS: usize = 1024;
 
 /// How far the scrollback may overshoot its cap between two `enforce_scrollback` calls. One feed chunk adds
 /// at most one line per byte, so it is larger than `FEED_CHUNK`.
@@ -630,6 +661,10 @@ impl TerminalCore {
             command_line: None,
             utf8_tail: Vec::new(),
             folder: None,
+            trigger_next: Some(LineId { epoch: 0, index: 0 }),
+            trigger_instant: None,
+            trigger_program: None,
+            trigger_marks: Default::default(),
         }
     }
 
@@ -672,6 +707,9 @@ impl TerminalCore {
             self.pump();
             self.enforce_scrollback();
             pos += consumed;
+        }
+        if let Some(triggers) = self.config.triggers.clone() {
+            self.match_triggers(&triggers);
         }
         // Same rule as alacritty's own event loop: bytes parked in a synchronized update do not
         // change what is on screen.
@@ -753,7 +791,121 @@ impl TerminalCore {
         self.line_base = 0;
         self.prompts.clear();
         self.outputs.clear();
+        // The text was rewritten (reflowed, cleared): what is there now was matched before, or never will be.
+        self.trigger_next = None;
+        self.trigger_instant = None;
+        self.trigger_marks.clear();
         self.events.push(CoreEvent::LineIdsReset);
+    }
+
+    // --- triggers -------------------------------------------------------------------------------
+
+    /// The triggers matched from now on (a settings change reaches panes that already run). The highlights of the
+    /// old ones go; the lines already matched are not matched again.
+    pub fn set_triggers(&mut self, triggers: Option<Arc<Triggers>>) {
+        self.config.triggers = triggers;
+        self.trigger_marks.clear();
+        self.dirty = true;
+    }
+
+    /// The program the pane runs now (its file name), for the triggers of one program.
+    pub fn set_program(&mut self, program: Option<String>) {
+        self.trigger_program = program;
+    }
+
+    /// The text of the line that starts at grid line `first`, wrapped rows joined, and its last grid line.
+    fn grid_line(&self, first: i32) -> (GridLine, i32) {
+        let grid = self.term.grid();
+        let (columns, bottom) = (self.term.columns(), self.term.bottommost_line().0);
+        let mut line = GridLine::default();
+        let mut at = first;
+        loop {
+            let row = &grid[Line(at)];
+            if line.cells.len() < MAX_LINE_CHARS {
+                for column in 0..columns {
+                    let cell = &row[Column(column)];
+                    if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                        continue;
+                    }
+                    let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+                    line.push(cell.c, cell.zerowidth().unwrap_or_default(), at, column, width);
+                }
+            }
+            if at >= bottom || !row[Column(columns - 1)].flags.contains(Flags::WRAPLINE) {
+                break;
+            }
+            at += 1;
+        }
+        line.trim_end();
+        (line, at)
+    }
+
+    /// Matches the lines completed since the last call, and the cursor's line for the instant rules.
+    fn match_triggers(&mut self, triggers: &Triggers) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let cursor = self.term.grid().cursor.point.line.0;
+        let top = -(self.term.history_size() as i32);
+        // A line trimmed from the scrollback before it was matched is gone; a reset buffer starts at the cursor.
+        let mut at = match self.trigger_next {
+            Some(id) if id.epoch == self.line_epoch => {
+                self.line_of(id).unwrap_or(if self.line_id(top).is_some_and(|oldest| id < oldest) { top } else { cursor })
+            }
+            _ => cursor,
+        };
+        while at < cursor {
+            let (line, last) = self.grid_line(at);
+            if last >= cursor {
+                break;
+            }
+            self.fire(triggers, &line, false);
+            at = last + 1;
+        }
+        // The cursor went up (a program redraws above it): the lines below were matched already.
+        let next = self.line_id(at);
+        if next.is_some_and(|next| self.trigger_next.is_none_or(|old| old.epoch != next.epoch || next > old)) {
+            self.trigger_next = next;
+        }
+        if triggers.any_instant() {
+            let mut first = cursor;
+            while first > top && self.term.grid()[Line(first - 1)][self.term.last_column()].flags.contains(Flags::WRAPLINE) {
+                first -= 1;
+            }
+            let Some(id) = self.line_id(first) else { return };
+            if self.trigger_instant.as_ref().is_none_or(|(on, _)| *on != id) {
+                self.trigger_instant = Some((id, Vec::new()));
+            }
+            let (line, _) = self.grid_line(first);
+            self.fire(triggers, &line, true);
+        }
+    }
+
+    /// Reports the rules `line` matches and keeps the highlights. An instant rule fires once per line.
+    fn fire(&mut self, triggers: &Triggers, line: &GridLine, instant: bool) {
+        if line.text.is_empty() {
+            return;
+        }
+        for found in triggers.matches(&line.text, instant, self.trigger_program.as_deref()) {
+            if instant {
+                let Some((_, fired)) = self.trigger_instant.as_mut() else { continue };
+                if fired.contains(&found.hit.rule) {
+                    continue;
+                }
+                fired.push(found.hit.rule);
+            }
+            if let Some((color, ranges)) = &found.highlight {
+                for (grid_line, start, end) in ranges.iter().flat_map(|range| line.spans(range)) {
+                    let Some(id) = self.line_id(grid_line) else { continue };
+                    if self.trigger_marks.len() == MAX_TRIGGER_MARKS {
+                        self.trigger_marks.pop_front();
+                    }
+                    self.trigger_marks.push_back((id, start, end, *color));
+                    self.dirty = true;
+                }
+            }
+            self.events.push(CoreEvent::Trigger(found.hit));
+        }
     }
 
     /// Identity of grid line `line` (0 is the top of the screen, negative lines are scrollback). `None` on
@@ -1489,6 +1641,13 @@ impl TerminalCore {
         };
         out.history_size = self.term.history_size();
         out.top_line = self.line_id(-(display_offset as i32));
+        out.trigger_marks.clear();
+        if let Some(top) = out.top_line {
+            out.trigger_marks.extend(self.trigger_marks.iter().filter_map(|&(line, start, end, color)| {
+                let row = line.index.checked_sub(top.index).filter(|_| line.epoch == top.epoch)? as usize;
+                (row < rows).then_some(TriggerMark { row, start: start.min(columns), end: end.min(columns), color })
+            }));
+        }
         out.sticky_header.clear();
         if let Some(line) = self.sticky_prompt() {
             let row = &self.term.grid()[Line(line)];
