@@ -1812,23 +1812,25 @@ impl App {
         }
     }
 
-    /// Reads again what the agent of the focused pane said about its session, when it said something new, and the branch
-    /// of the folder the pane is in. True when the status bar has to be drawn again.
+    /// Reads again what the agent of the focused pane of each tab said about its session, when it said something new, and
+    /// the branch of the folder the pane is in: the status bar shows the selected one, the rows of the sidebar every one.
+    /// True when something has to be drawn again.
     fn refresh_usage(&mut self) -> bool {
-        let Some(entry) = self.tabs.get_mut(self.selected).and_then(|tab| tab.focused_entry_mut()) else { return false };
-        let stamp = agent::usage_stamp(&entry.session);
         let mut changed = false;
-        if stamp != entry.usage_stamp {
-            entry.usage_stamp = stamp;
-            let usage = stamp.and_then(|_| agent::read_usage(&entry.session));
-            changed |= usage != entry.usage;
-            entry.usage = usage;
-        }
-        let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
-        let branch = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
-        if branch != entry.branch {
-            entry.branch = branch;
-            changed = true;
+        for entry in self.tabs.iter_mut().filter_map(Tab::focused_entry_mut) {
+            let stamp = agent::usage_stamp(&entry.session);
+            if stamp != entry.usage_stamp {
+                entry.usage_stamp = stamp;
+                let usage = stamp.and_then(|_| agent::read_usage(&entry.session));
+                changed |= usage != entry.usage;
+                entry.usage = usage;
+            }
+            let folder = entry.usage.as_ref().and_then(|u| u.cwd.clone()).or_else(|| entry.cwd.clone());
+            let branch = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
+            if branch != entry.branch {
+                entry.branch = branch;
+                changed = true;
+            }
         }
         changed
     }

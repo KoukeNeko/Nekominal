@@ -333,9 +333,9 @@ impl App {
             TabStyle::Activity => {
                 // Two lines and a line of the context a tab, the first one selected and waiting.
                 for (n, (color, share)) in [(wait, 0.62), (work, 0.41), (work, 0.18), (done, 0.0)].into_iter().enumerate() {
-                    let y = mini.y + 21.0 + n as f32 * 25.0;
+                    let y = mini.y + 21.0 + n as f32 * 22.0;
                     if n == 0 {
-                        self.ui.rrect(Rect::new(x, y - 3.0, w, 23.0), 3.0, faint, None);
+                        self.ui.rrect(Rect::new(x, y - 3.0, w, 21.0), 3.0, faint, None);
                     }
                     dot(&mut self.ui, x + 4.0, y, color);
                     self.ui.rrect(Rect::new(x + 13.0, y, w * 0.55, 4.0), 2.0, strong, None);
@@ -349,13 +349,13 @@ impl App {
             TabStyle::Cards => {
                 // Two cards, each with its pill, a box of what it did and a line under it.
                 for (n, color) in [wait, work].into_iter().enumerate() {
-                    let card = Rect::new(x, mini.y + 21.0 + n as f32 * 44.0, w, 39.0);
+                    let card = Rect::new(x, mini.y + 20.0 + n as f32 * 40.0, w, 35.0);
                     self.ui.rrect(card, 4.0, faint, Some((if n == 0 { col(g.accent) } else { line }, 1.0)));
                     dot(&mut self.ui, card.x + 5.0, card.y + 5.0, color);
                     self.ui.rrect(Rect::new(card.x + 14.0, card.y + 5.0, card.w * 0.45, 4.0), 2.0, strong, None);
                     self.ui.rrect(Rect::new(card.x + card.w - 22.0, card.y + 4.5, 16.0, 6.0), 3.0, tint(color, 110), None);
-                    self.ui.rrect(Rect::new(card.x + 5.0, card.y + 14.0, card.w - 10.0, 12.0), 2.0, Color([0, 0, 0, 70]), None);
-                    self.ui.rrect(Rect::new(card.x + 5.0, card.y + 31.0, card.w * 0.5, 3.0), 1.5, faint, None);
+                    self.ui.rrect(Rect::new(card.x + 5.0, card.y + 13.0, card.w - 10.0, 10.0), 2.0, Color([0, 0, 0, 70]), None);
+                    self.ui.rrect(Rect::new(card.x + 5.0, card.y + 28.0, card.w * 0.5, 3.0), 1.5, faint, None);
                 }
             }
             TabStyle::Repo => {
