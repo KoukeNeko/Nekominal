@@ -18,7 +18,7 @@ impl App {
 
     /// Changes the rule at `index`, one past the last adding it, and keeps the settings.
     fn change_trigger(&mut self, index: usize, change: impl FnOnce(&mut Trigger)) {
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         let mut rule = settings_page::trigger_at(&self.settings, index);
         change(&mut rule);
         match self.settings.triggers.get_mut(index) {
@@ -94,6 +94,7 @@ impl App {
         if id == settings_page::TRIGGER_PATTERN_ID {
             if text.is_empty() {
                 if index < count {
+                    // The index was checked against the settings as they are: no reload between the check and the removal.
                     let before = self.settings.clone();
                     self.settings.triggers.remove(index);
                     self.apply_settings(&before);

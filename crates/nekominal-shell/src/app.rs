@@ -288,6 +288,9 @@ pub struct App {
     /// it was last written, by this window or another, as this window last saw it.
     settings_readable: bool,
     settings_stamp: Option<std::time::SystemTime>,
+    /// What was wrong in the settings file when it was last loaded, not yet told: the next tick of the jobs tells it, out
+    /// of the activation or the creation of the window that loaded it.
+    settings_problems: Vec<settings::Problem>,
     /// Where the window was when the session was saved, for the window code to put it back.
     placement: Option<Placement>,
     /// Keys (by scan code) that went down as a shortcut of the shell: the program does not get their release either.
@@ -482,21 +485,23 @@ pub mod agents_panel;
 
 /// The settings of the file, and whether it could be read: missing or empty is fine (the defaults), but text that is not
 /// JSON, or not UTF-8, is a file the user is in the middle of editing, which a save must not replace with the defaults.
-pub(crate) fn load_settings() -> (Settings, bool) {
+/// And the problems found, for the window to tell the user why a value is not the one in the file.
+pub(crate) fn load_settings() -> (Settings, bool, Vec<settings::Problem>) {
     let loaded = store::settings_path().map(|path| store::load(&path)).transpose();
-    let (text, readable) = match loaded {
-        Ok(text) => (text.flatten(), true),
+    let (text, unreadable) = match loaded {
+        Ok(text) => (text.flatten(), None),
         Err(e) => {
             util::log(&format!("settings: {e}"));
-            (None, false)
+            (None, Some(settings::Problem::new("", settings::Expected::Parsable(e.to_string()))))
         }
     };
-    let parsed = settings::parse(text.as_deref());
+    let mut parsed = settings::parse(text.as_deref());
     for problem in &parsed.problems {
         util::log(&format!("settings: {} {:?}", problem.key, problem.expected));
     }
-    let whole_file = parsed.problems.iter().any(|problem| problem.key.is_empty());
-    (parsed.settings, readable && !whole_file)
+    let readable = unreadable.is_none() && !parsed.problems.iter().any(|problem| problem.key.is_empty());
+    parsed.problems.extend(unreadable);
+    (parsed.settings, readable, parsed.problems)
 }
 
 /// When the settings file was last written.
@@ -546,7 +551,7 @@ fn input_mods(m: Modifiers) -> Mods {
 
 impl App {
     pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
-        let (settings, settings_readable) = load_settings();
+        let (settings, settings_readable, settings_problems) = load_settings();
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
         let scheme = themes::find(&settings.schemes, &settings.theme);
         let glass = Glass::from_scheme(scheme);
@@ -623,6 +628,7 @@ impl App {
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
+            settings_problems,
             placement: None,
             shortcut_keys: Vec::new(),
             window_title: String::new(),
@@ -1803,6 +1809,13 @@ impl App {
         if changed {
             self.redraw();
         }
+        // An edit of the file by hand while this window stays active is taken now, not written over by its next change.
+        self.reload_if_changed();
+        if !self.settings_problems.is_empty() && self.confirmation.is_none() {
+            let lang = self.language();
+            let told: Vec<String> = std::mem::take(&mut self.settings_problems).iter().map(|problem| problem.text(lang)).collect();
+            self.inform(Text::LabelValue.format(lang, &[&Text::SettingsFile.get(lang), &told.join(" ")]));
+        }
         // The test push came back: the settings page says what it came to.
         if crate::push::take_test_change() {
             self.page_redraw();
@@ -2175,7 +2188,7 @@ impl App {
             Command::TabCloseOthers => self.request_close_tabs(logic::tabs_other_than(self.tabs.len(), self.selected)),
             Command::TabCloseRight => self.request_close_tabs(logic::tabs_right_of(self.tabs.len(), self.selected)),
             Command::ViewSidebar => {
-                let before = self.settings.clone();
+                let before = self.settings_before_change();
                 self.settings.tabs.sidebar_open = !self.settings.tabs.sidebar_open;
                 self.apply_settings(&before);
             }
@@ -3230,7 +3243,7 @@ impl App {
         let layout = state.layout;
         if done {
             self.welcome = None;
-            let before = self.settings.clone();
+            let before = self.settings_before_change();
             self.settings.tabs.layout = layout;
             self.settings.welcomed = true;
             self.apply_settings(&before);
@@ -3510,6 +3523,7 @@ impl App {
 
     /// Puts a backdrop and an opacity of the background in effect, and keeps them in the settings file.
     fn set_appearance(&mut self, backdrop: Backdrop, opacity: f64) {
+        self.reload_if_changed();
         let appearance = &mut self.settings.appearance;
         if (appearance.backdrop, appearance.opacity) == (backdrop, opacity) {
             return;
@@ -3534,6 +3548,14 @@ impl App {
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
     }
 
+    /// The settings as they are before a change, taking the file first when it changed since this window last read or
+    /// wrote it: the copy the change is made to, and then written, holds an edit by hand made while this window stayed
+    /// active. One metadata read.
+    fn settings_before_change(&mut self) -> Settings {
+        self.reload_if_changed();
+        self.settings.clone()
+    }
+
     fn save_settings(&mut self) {
         if !self.settings_readable {
             util::log("settings: the file could not be read, so it is not written over; fix it and the changes made here are saved again");
@@ -3548,7 +3570,7 @@ impl App {
     }
 
     fn set_setting(&mut self, row: &'static Descriptor, value: Value) {
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         (row.set)(&mut self.settings, value);
         self.apply_settings(&before);
     }
@@ -3749,7 +3771,7 @@ impl App {
             Part::DeleteScheme(i) => {
                 let name = themes::theme_names(&self.settings.schemes).nth(i).map(str::to_owned);
                 if let Some(name) = name {
-                    let before = self.settings.clone();
+                    let before = self.settings_before_change();
                     self.settings.schemes.retain(|scheme| scheme.name != name);
                     self.apply_settings(&before);
                 }
@@ -3764,7 +3786,7 @@ impl App {
             }
             Part::Reset(id) => {
                 if let Some(row) = settings_ui::find(id) {
-                    let before = self.settings.clone();
+                    let before = self.settings_before_change();
                     row.reset(&mut self.settings);
                     self.apply_settings(&before);
                 }
@@ -3917,7 +3939,7 @@ impl App {
             }
             VK_DELETE => {
                 let Some(row) = focused_row else { return false };
-                let before = self.settings.clone();
+                let before = self.settings_before_change();
                 row.reset(&mut self.settings);
                 self.apply_settings(&before);
             }
@@ -3938,7 +3960,7 @@ impl App {
     fn edit_profile<R>(&mut self, change: impl FnOnce(&mut Settings, &Profile) -> R) -> Option<R> {
         let id = self.page.as_ref().and_then(|page| page.profile.clone())?;
         let profile = self.profiles.iter().find(|p| p.id == id).cloned()?;
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         let result = change(&mut self.settings, &profile);
         self.apply_settings(&before);
         Some(result)
@@ -3970,7 +3992,7 @@ impl App {
             }
             Part::ProfileBack => self.show_profile(None),
             Part::NewProfile => {
-                let before = self.settings.clone();
+                let before = self.settings_before_change();
                 let base = self.profile.clone();
                 let name = Text::ProfileNew.get(self.language());
                 let id = profile_edit::add(&mut self.settings, &base, &self.profiles, name);
@@ -3979,7 +4001,7 @@ impl App {
             }
             Part::DeleteProfile => {
                 let Some(id) = self.page.as_ref().and_then(|page| page.profile.clone()) else { return };
-                let before = self.settings.clone();
+                let before = self.settings_before_change();
                 profile_edit::remove(&mut self.settings, &id);
                 self.apply_settings(&before);
                 // A shell found on the machine is still there, as it was found.
@@ -4062,6 +4084,7 @@ impl App {
             Part::SnippetName(i) => self.start_profile_edit(settings_page::SNIPPET_NAME_ID, snippet(self, i).map(|s| s.name), i),
             Part::SnippetInput(i) => self.start_profile_edit(settings_page::SNIPPET_INPUT_ID, snippet(self, i).map(|s| settings_page::snippet_shown(&s.input)), i),
             Part::SnippetDelete(i) if i < self.settings.snippets.len() => {
+                // The index was checked against the settings as they are: no reload between the check and the removal.
                 let before = self.settings.clone();
                 self.settings.snippets.remove(i);
                 self.apply_settings(&before);
@@ -4074,7 +4097,7 @@ impl App {
     /// What was typed in a field of the snippet at `row` becomes its name or its text. An empty text deletes it, and a
     /// snippet being added is kept only once it types something.
     fn commit_snippet(&mut self, id: &str, row: usize, text: &str) {
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         let input = settings_page::snippet_input(text);
         match (id, self.settings.snippets.get_mut(row)) {
             (settings_page::SNIPPET_NAME_ID, Some(snippet)) if !text.trim().is_empty() => snippet.name = text.trim().to_owned(),
@@ -4094,7 +4117,7 @@ impl App {
 
     /// Changes the shortcuts the user bound, puts the new key map in effect and keeps the settings.
     fn change_bindings(&mut self, change: impl FnOnce(&mut std::collections::BTreeMap<String, Vec<String>>)) {
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         change(&mut self.settings.keybindings);
         self.keymap = keymap::build_keymap(commands::default_bindings(), &self.settings.keybindings).keymap;
         self.apply_settings(&before);
@@ -4219,11 +4242,17 @@ impl App {
         }
     }
 
-    /// Reads the settings file again and puts what changed in effect. Nothing is written back.
+    /// Reads the settings file again and puts what changed in effect. Nothing is written back. A file that cannot be read
+    /// (a syntax error halfway through an edit) leaves the settings in effect as they are, and blocks saving until fixed.
     fn reload_settings(&mut self) {
-        let (loaded, readable) = load_settings();
+        let (loaded, readable, problems) = load_settings();
         self.settings_readable = readable;
         self.settings_stamp = settings_stamp();
+        self.settings_problems = problems;
+        if !readable {
+            util::log("settings: the file could not be read; the settings in effect are kept");
+            return;
+        }
         let before = std::mem::replace(&mut self.settings, loaded);
         self.keymap = keymap::build_keymap(commands::default_bindings(), &self.settings.keybindings).keymap;
         self.apply_changes(&before);
@@ -4233,7 +4262,7 @@ impl App {
     /// Adds the colour schemes of the settings of each Windows Terminal installed (the Store one, its Preview, and one
     /// installed without the Store) that are not here by name, and keeps them in the file.
     fn import_schemes(&mut self) {
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
         let packages = ["Microsoft.WindowsTerminal_8wekyb3d8bbwe", "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe"];
         let files = packages.map(|package| local.join("Packages").join(package).join("LocalState")).into_iter().chain([local.join("Microsoft").join("Windows Terminal")]);
@@ -4275,7 +4304,7 @@ impl App {
         if files.is_empty() {
             return;
         }
-        let before = self.settings.clone();
+        let before = self.settings_before_change();
         let (mut added, mut failed) = (Vec::new(), Vec::new());
         for path in files.iter().map(std::path::Path::new) {
             let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
@@ -5468,7 +5497,7 @@ impl App {
             Some(popup::Action::ColorScheme(index)) => {
                 let name = themes::theme_names(&self.settings.schemes).nth(index).map(str::to_owned);
                 if let Some(name) = name {
-                    let before = self.settings.clone();
+                    let before = self.settings_before_change();
                     self.settings.theme = name;
                     self.apply_settings(&before);
                 }
