@@ -25,6 +25,7 @@ mod notify;
 mod open;
 mod pick;
 mod popup;
+mod ports;
 mod search_tabs;
 mod settings_page;
 mod settings_window;
