@@ -147,8 +147,15 @@ fn exists(path: &Path) -> bool {
 }
 
 fn find_on_path(exe: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path)
+    find_in(&env::var_os("PATH")?, exe)
+}
+
+/// `exe` in the first folder of `path` (a PATH) that has it. Only absolute folders: an empty
+/// entry (`a;;b`, a trailing `;`) or a relative one would name the current directory, where a
+/// repository being looked at could put a `pwsh.exe` of its own.
+fn find_in(path: &OsStr, exe: &str) -> Option<PathBuf> {
+    env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(exe))
         .find(|candidate| exists(candidate))
 }
@@ -194,7 +201,9 @@ fn powershell_7() -> Option<PathBuf> {
 fn git_roots_from_path(path: &OsStr) -> Vec<PathBuf> {
     env::split_paths(path)
         .filter(|dir| {
-            dir.file_name()
+            dir.is_absolute()
+                && dir
+                    .file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("cmd"))
                 && exists(&dir.join("git.exe"))
         })
@@ -719,6 +728,22 @@ Host build-box
     #[test]
     fn ssh_host_names_cannot_become_options() {
         assert_eq!(parse_ssh_hosts("Host -oProxyCommand=calc ok"), vec!["ok"]);
+    }
+
+    #[test]
+    fn an_empty_or_relative_path_entry_never_finds_a_program_in_the_current_directory() {
+        // Tests run in the folder of the crate, which holds Cargo.toml and src\lib.rs.
+        assert!(Path::new("Cargo.toml").exists());
+        let root = temp_tree("path-entries");
+        touch(&root.join("b").join("tool.exe"));
+        let (a, b) = (root.join("a"), root.join("b"));
+        let path = |text: String| std::ffi::OsString::from(text);
+        assert_eq!(find_in(&path(format!("{};;{}", a.display(), b.display())), "Cargo.toml"), None, "a;;b");
+        assert_eq!(find_in(&path(format!("{};", a.display())), "Cargo.toml"), None, "a trailing ;");
+        assert_eq!(find_in(&path("src".into()), "lib.rs"), None, "a relative folder");
+        assert_eq!(find_in(&path(format!("{};;{}", a.display(), b.display())), "tool.exe"), Some(b.join("tool.exe")), "the absolute ones still count");
+        assert!(git_roots_from_path(&path(";cmd;".into())).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
