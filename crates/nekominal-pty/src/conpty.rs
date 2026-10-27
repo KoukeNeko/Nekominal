@@ -303,6 +303,8 @@ impl Pty {
         let api = api()?;
         let (input_read, input_write) = create_pipe()?;
         let (output_read, output_write) = create_pipe()?;
+        // Before the pseudoconsole: a `?` after it would leak the console, and its conhost with it.
+        let job = create_kill_on_close_job()?;
 
         let hpc = create_pseudoconsole(
             api.create,
@@ -315,7 +317,6 @@ impl Pty {
         drop(input_read);
         drop(output_write);
 
-        let job = create_kill_on_close_job()?;
         let process = match spawn_in_pseudoconsole(hpc, job.0, config) {
             Ok(process) => process,
             Err(e) => {
