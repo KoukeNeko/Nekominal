@@ -4,7 +4,7 @@
 //! size, the tabs and how much room the right of the bar needs (the waiting count and the numbers of the agent), and gets
 //! rectangles and hit tests back.
 
-use nekominal_model::settings::TabLayout;
+use nekominal_model::settings::{TabLayout, TabStyle};
 use nekominal_ui::Rect;
 
 use crate::logic;
@@ -26,11 +26,18 @@ pub const DRAG_MIN: f32 = 48.0;
 /// A tab at least this wide has room for a close button.
 pub const CLOSE_FROM: f32 = 96.0;
 const CLOSE_SIZE: f32 = 18.0;
-/// Width of the sidebar as a list and as icons.
+/// Width of the sidebar as a list (of each style) and as icons.
 pub const SIDE_LIST: f32 = 220.0;
+pub const SIDE_CARDS: f32 = 280.0;
+pub const SIDE_REPO: f32 = 240.0;
 pub const SIDE_ICONS: f32 = 52.0;
-/// A row of the list: the program and its state on a line, the folder and the branch under it.
+/// A row of the list: the program and its state on a line, what it last did (or where it is) under them.
 pub const LIST_ROW: f32 = 44.0;
+/// A card before what it holds under its two lines, and the space between two cards.
+pub const CARD_ROW: f32 = 48.0;
+pub const CARD_GAP: f32 = 6.0;
+/// A tab under its repository: one line.
+pub const REPO_ROW: f32 = 30.0;
 /// The heading of a group of the list (when it is grouped by state).
 pub const LIST_HEADING: f32 = 26.0;
 /// An icon of the column, and the space a row of the column takes.
@@ -64,23 +71,38 @@ pub enum Hit {
     Pane,
 }
 
-/// How the tabs are shown: where (`TabLayout`), whether the sidebar is open, and whether the shield of an elevated window
+/// How the tabs are shown: where (`TabLayout`), how a row of the list looks (`TabStyle`), whether the sidebar is open,
+/// and whether the shield of an elevated window
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mode {
     pub layout: TabLayout,
+    pub style: TabStyle,
     pub sidebar_open: bool,
     pub admin: bool,
 }
 
 impl Mode {
-    pub const TOP: Mode = Mode { layout: TabLayout::Top, sidebar_open: true, admin: false };
+    pub const TOP: Mode = Mode { layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, admin: false };
 
     /// The width of the sidebar on show; 0 with the tabs on top or the sidebar hidden.
     pub fn side_width(self) -> f32 {
         match (self.layout, self.sidebar_open) {
-            (TabLayout::List, true) => SIDE_LIST,
+            (TabLayout::List, true) => match self.style {
+                TabStyle::Activity => SIDE_LIST,
+                TabStyle::Cards => SIDE_CARDS,
+                TabStyle::Repo => SIDE_REPO,
+            },
             (TabLayout::Icons, true) => SIDE_ICONS,
             _ => 0.0,
+        }
+    }
+
+    /// A row of the list before what it adds for its own (`Layout::new`'s `tall`), and the space under it.
+    fn row(self) -> (f32, f32) {
+        match self.style {
+            TabStyle::Activity => (LIST_ROW, 2.0),
+            TabStyle::Cards => (CARD_ROW, CARD_GAP),
+            TabStyle::Repo => (REPO_ROW, 2.0),
         }
     }
 }
@@ -143,7 +165,9 @@ impl Layout {
             let mut headings = Vec::new();
             let mut y = TITLE_HEIGHT + SIDE_PAD;
             let list = mode.layout == TabLayout::List;
-            let named = list && groups.len() > 1;
+            // The tabs under their repositories always have the names of the repositories over them.
+            let named = list && (groups.len() > 1 || mode.style == TabStyle::Repo);
+            let (row, gap) = mode.row();
             for (g, group) in groups.iter().enumerate() {
                 if named && !group.is_empty() {
                     headings.push((Rect::new(SIDE_PAD, y, side - 2.0 * SIDE_PAD, LIST_HEADING), g));
@@ -151,11 +175,11 @@ impl Layout {
                 }
                 for &i in group.iter().filter(|i| **i < tabs) {
                     chips[i] = if list {
-                        Rect::new(SIDE_PAD, y, SIDE_LIST - 2.0 * SIDE_PAD, LIST_ROW + tall.get(i).copied().unwrap_or(0.0))
+                        Rect::new(SIDE_PAD, y, side - 2.0 * SIDE_PAD, row + tall.get(i).copied().unwrap_or(0.0))
                     } else {
                         Rect::new((SIDE_ICONS - ICON_CELL) / 2.0, y + (ICON_ROW - ICON_CELL) / 2.0, ICON_CELL, ICON_CELL)
                     };
-                    y += if list { chips[i].h + 2.0 } else { ICON_ROW };
+                    y += if list { chips[i].h + gap } else { ICON_ROW };
                 }
             }
             // shortcut: the sidebar does not scroll; rows past its bottom are not shown (about 14 rows at 720 DIP).
@@ -241,7 +265,7 @@ mod tests {
 
     fn side(layout: TabLayout, open: bool, groups: &[Vec<usize>]) -> Layout {
         let tabs = groups.iter().map(Vec::len).sum();
-        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, sidebar_open: open, admin: false }, 200.0, groups, &[])
+        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, style: TabStyle::Activity, sidebar_open: open, admin: false }, 200.0, groups, &[])
     }
 
     #[test]
@@ -328,7 +352,7 @@ mod tests {
 
     #[test]
     fn a_row_with_badges_is_taller_and_the_rows_under_it_move_down_by_as_much() {
-        let mode = Mode { layout: TabLayout::List, sidebar_open: true, admin: false };
+        let mode = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false };
         let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
         let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[0.0, 20.0]);
         assert_eq!((tall.chips[0], tall.chips[1].h), (plain.chips[0], LIST_ROW + 20.0));
@@ -338,14 +362,34 @@ mod tests {
     }
 
     #[test]
+    fn each_style_of_the_list_has_its_width_its_rows_and_its_headings() {
+        let groups = [vec![0, 1], vec![2]];
+        let of = |style| Layout::new(1200.0, 720.0, 3, CAPTION, 0, Mode { style, ..Mode { layout: TabLayout::List, ..Mode::TOP } }, 0.0, &groups, &[0.0, 10.0]);
+        let activity = of(TabStyle::Activity);
+        let cards = of(TabStyle::Cards);
+        let repo = of(TabStyle::Repo);
+        assert_eq!([&activity, &cards, &repo].map(|l| l.pane.x), [SIDE_LIST, SIDE_CARDS, SIDE_REPO]);
+        assert!([&activity, &cards, &repo].iter().all(|l| l.chips.iter().all(|c| c.x == SIDE_PAD && c.x + c.w == l.pane.x - SIDE_PAD)), "a row is as wide as its sidebar");
+        assert_eq!([&activity, &cards, &repo].map(|l| l.chips[0].h), [LIST_ROW, CARD_ROW, REPO_ROW]);
+        assert_eq!(cards.chips[1].h, CARD_ROW + 10.0, "what a row adds is added to each style");
+        assert_eq!(cards.chips[1].y - (cards.chips[0].y + cards.chips[0].h), CARD_GAP, "cards stand apart");
+        let one = Layout::new(1200.0, 720.0, 2, CAPTION, 0, Mode { style: TabStyle::Repo, ..Mode { layout: TabLayout::List, ..Mode::TOP } }, 0.0, &[vec![0, 1]], &[]);
+        assert_eq!(one.headings.len(), 1, "a single repository still has its name over its tabs");
+        let plain = Layout::new(1200.0, 720.0, 2, CAPTION, 0, Mode { layout: TabLayout::List, ..Mode::TOP }, 0.0, &[vec![0, 1]], &[]);
+        assert!(plain.headings.is_empty());
+        let icons = Mode { layout: TabLayout::Icons, style: TabStyle::Cards, ..Mode::TOP };
+        assert_eq!(icons.side_width(), SIDE_ICONS, "the style is the list's only");
+    }
+
+    #[test]
     fn the_strip_and_the_icons_take_no_room_for_badges() {
         for layout in [TabLayout::Top, TabLayout::Icons] {
-            let mode = Mode { layout, sidebar_open: true, admin: false };
+            let mode = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false };
             let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
             let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[20.0, 40.0, 20.0]);
             assert_eq!(tall.chips, plain.chips, "{layout:?}");
         }
-        let list = Mode { layout: TabLayout::List, sidebar_open: true, admin: false };
+        let list = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false };
         let short = Layout::new(1200.0, 720.0, 1, CAPTION, 0, list, 0.0, &[vec![0]], &[20.0, 40.0]);
         assert_eq!(short.chips.len(), 1, "heights past the last tab are left");
     }
@@ -353,7 +397,7 @@ mod tests {
     #[test]
     fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
         for layout in [TabLayout::Top, TabLayout::List] {
-            let plain = Mode { layout, sidebar_open: true, admin: false };
+            let plain = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false };
             let admin = Mode { admin: true, ..plain };
             let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]], &[]);
             let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]], &[]);

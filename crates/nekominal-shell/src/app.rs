@@ -62,6 +62,7 @@ use crate::{
 
 mod drop;
 mod badges;
+mod tab_rows;
 pub(crate) mod automation;
 mod notifications;
 mod settings_tab;
@@ -241,7 +242,7 @@ pub struct App {
     /// sidebar by group, and what the badges add to each row of the list, as the layout was last made with them.
     right_width: f32,
     groups: Vec<Vec<usize>>,
-    badge_heights: Vec<f32>,
+    row_extras: Vec<f32>,
     /// The first start: the window shows the choice of the layout of the tabs over everything until it is made.
     welcome: Option<welcome::Welcome>,
     /// The frame being drawn has a mark that moves, and the time the marks count from. They move whatever Windows' "Animation
@@ -597,7 +598,7 @@ impl App {
             badge_hits: Vec::new(),
             right_width: 0.0,
             groups: Vec::new(),
-            badge_heights: Vec::new(),
+            row_extras: Vec::new(),
             welcome: None,
             animating: false,
             marks_epoch: Instant::now(),
@@ -775,13 +776,17 @@ impl App {
 
     /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated() }
+        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated() }
     }
 
-    /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, or, when the list is
-    /// grouped by state, the groups of `logic::sidebar_group`.
+    /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, under their repositories
+    /// in that style of the list, or, when the list is grouped by state, the groups of `logic::sidebar_group`.
     fn sidebar_groups(&self) -> Vec<Vec<usize>> {
-        if !self.settings.tabs.group_by_state || self.settings.tabs.layout != settings::TabLayout::List {
+        let list = self.settings.tabs.layout == settings::TabLayout::List;
+        if list && self.settings.tabs.style == settings::TabStyle::Repo {
+            return self.repo_groups();
+        }
+        if !self.settings.tabs.group_by_state || !list {
             return vec![(0..self.tabs.len()).collect()];
         }
         let mut groups = vec![Vec::new(); logic::SIDEBAR_GROUPS];
@@ -796,7 +801,7 @@ impl App {
     /// them.
     fn rebuild_layout(&mut self) {
         let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups, &self.badge_heights);
+        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups, &self.row_extras);
     }
 
     /// Pixels between the top of the window and the top of the panes.
@@ -2627,10 +2632,15 @@ impl App {
                 settings_page::Visual::Edit { text, cursor, placeholder } => {
                     widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder });
                 }
-                settings_page::Visual::Layout { layout, selected, hover } => {
-                    let style = settings::TabLayout::ALL.get(*layout).copied().unwrap_or(settings::TabLayout::Top);
+                settings_page::Visual::Layout { layout, style, selected, hover } => {
                     let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text_secondary()), 1.0) } else { (col(g.divider()), 1.0) };
-                    self.paint_miniature(Rect::new(rect.x, rect.y, rect.w, rect.h), style, background);
+                    if *style {
+                        let style = settings::TabStyle::ALL.get(*layout).copied().unwrap_or(settings::TabStyle::Activity);
+                        self.paint_style_miniature(Rect::new(rect.x, rect.y, rect.w, rect.h), style, background);
+                    } else {
+                        let layout = settings::TabLayout::ALL.get(*layout).copied().unwrap_or(settings::TabLayout::Top);
+                        self.paint_miniature(Rect::new(rect.x, rect.y, rect.w, rect.h), layout, background);
+                    }
                     self.ui.rrect(rect, 6.0, Color::TRANSPARENT, Some(border));
                 }
                 settings_page::Visual::Tile { scheme, selected, hover } => {
@@ -2787,10 +2797,10 @@ impl App {
         // not move from under it.
         let over_side = matches!(self.hover, Hit::Chip(_) | Hit::ChipClose(_) | Hit::Side);
         let groups = if over_side { self.groups.clone() } else { self.sidebar_groups() };
-        let heights = self.badge_heights();
-        let relaid = right_width != self.right_width || groups != self.groups || heights != self.badge_heights;
+        let heights = self.row_extras();
+        let relaid = right_width != self.right_width || groups != self.groups || heights != self.row_extras;
         if relaid {
-            (self.right_width, self.groups, self.badge_heights) = (right_width, groups, heights);
+            (self.right_width, self.groups, self.row_extras) = (right_width, groups, heights);
             self.rebuild_layout();
         }
 
@@ -2979,7 +2989,12 @@ impl App {
         self.ui.push_clip(side);
         let names = [Text::GroupWaiting, Text::AgentWorking, Text::AgentDone, Text::GroupOther];
         let small = self.ui.line_height(SMALL_SIZE);
+        let style = if list { self.settings.tabs.style } else { settings::TabStyle::Activity };
         for (rect, group) in self.layout.headings.clone() {
+            if style == settings::TabStyle::Repo {
+                self.paint_repo_heading(rect, group);
+                continue;
+            }
             let text = names.get(group).map_or("", |name| name.get(lang));
             self.ui.text(rect.x + 10.0, rect.y + rect.h - small - 4.0, text, SMALL_SIZE, quiet, false);
         }
@@ -2993,16 +3008,23 @@ impl App {
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
             let state = self.tabs[i].status().state;
+            match style {
+                settings::TabStyle::Cards => {
+                    self.paint_card(i, side, row, selected, hover);
+                    continue;
+                }
+                settings::TabStyle::Repo => {
+                    self.paint_repo_row(i, side, row, selected, hover);
+                    continue;
+                }
+                settings::TabStyle::Activity => {}
+            }
             if selected {
                 widgets::plate(&mut self.ui, row, col(g.hover()));
             } else if hover {
                 widgets::plate(&mut self.ui, row, soft);
             }
-            // The colour the user gave the tab: a bar at the left edge of its row.
-            if let Some((_, (r, gr, b))) = self.tabs[i].color.and_then(|c| logic::TAB_COLORS.get(c)) {
-                let bar = Rect::new(side.x + 2.0, row.y + 6.0, 3.0, (row.h - 12.0).max(4.0));
-                self.ui.rrect(bar, 1.5, Color([*r, *gr, *b, 255]), None);
-            }
+            self.tab_color_bar(i, side, row);
             if !list {
                 self.tab_icon(i, Rect::new(row.x + (row.w - 18.0) / 2.0, row.y + (row.h - 18.0) / 2.0, 18.0, 18.0), quiet);
                 if state != logic::TabState::Idle {
@@ -3068,12 +3090,7 @@ impl App {
                 self.ui.text(badge.x + 4.0, badge.y + (badge.h - small) / 2.0, &count, SMALL_SIZE, quiet, false);
             }
             self.ui.pop_clip();
-            if let Some(place) = self.place_text(i) {
-                self.ui.push_clip(Rect::new(x, row.y, (row.x + row.w - 10.0 - x).max(0.0), row.h));
-                self.ui.text(x, row.y + row.h.min(layout::LIST_ROW) - 7.0 - small, &place, SMALL_SIZE, quiet, false);
-                self.ui.pop_clip();
-            }
-            self.paint_row_badges(i, row, x);
+            self.paint_activity_rest(i, row, x);
         }
         self.ui.pop_clip();
         if let Some((i, row)) = tip {

@@ -89,9 +89,39 @@ pub fn at(drawn: &[(Rect, String)], x: f32, y: f32) -> Option<usize> {
     drawn.iter().position(|(rect, _)| rect.contains(x, y))
 }
 
+/// The repository a tab is in: the main one for a worktree, so that the tabs of its worktrees go under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Repo {
+    pub root: std::path::PathBuf,
+    pub worktree: bool,
+}
+
+impl Repo {
+    pub fn name(&self) -> String {
+        self.root.file_name().map_or_else(|| self.root.to_string_lossy().into_owned(), |name| name.to_string_lossy().into_owned())
+    }
+}
+
+/// The repository of the folder `root` whose `.git` is a file saying `git_file` (a worktree or a submodule) or a folder
+/// (`None`): a worktree's `.git` names `<main>/.git/worktrees/<name>`.
+pub fn repo_of(root: &std::path::Path, git_file: Option<&str>) -> Repo {
+    let main = git_file.and_then(|text| text.trim().strip_prefix("gitdir:")).and_then(|dir| {
+        let dir = root.join(dir.trim());
+        let worktrees = dir.parent()?;
+        let git = worktrees.parent()?;
+        (worktrees.file_name()? == "worktrees" && git.file_name()? == ".git").then(|| git.parent().map(std::path::Path::to_path_buf)).flatten()
+    });
+    match main {
+        Some(main) => Repo { root: main, worktree: true },
+        None => Repo { root: root.to_path_buf(), worktree: false },
+    }
+}
+
 #[derive(Default)]
 pub struct Badges {
     prs: github::PullRequests,
+    /// By the uid of the tab: the repository of its focused pane's folder.
+    pub repo: HashMap<u64, Repo>,
     /// By the uid of the tab: the pull request of the branch of its focused pane's folder.
     pub pull_request: HashMap<u64, github::PullRequest>,
     /// By the uid of the tab: the ports its panes listen on, ascending; open one at `ports::url`.
@@ -143,6 +173,9 @@ impl App {
                 let branch = agent::git_branch(dir)?;
                 Some((github::repo_root(dir)?, branch))
             });
+            // git_branch found the repository on a local disk, so its `.git` is read here too.
+            let repo = key.as_ref().map(|(root, _)| repo_of(root, std::fs::read_to_string(root.join(".git")).ok().as_deref()));
+            changed |= set(&mut badges.repo, tab.uid, repo, "repository");
             let pr = key.as_ref().and_then(|key| badges.prs.get(key, now).cloned());
             changed |= set(&mut badges.pull_request, tab.uid, pr, "pull request");
             keys.extend(key);
@@ -151,30 +184,20 @@ impl App {
         let open = |uid: &u64| self.tabs.iter().any(|tab| tab.uid == *uid);
         badges.ports.retain(|uid, _| open(uid));
         badges.pull_request.retain(|uid, _| open(uid));
+        badges.repo.retain(|uid, _| open(uid));
         changed
     }
 
-    /// The badges of tab `i` on its row of the list, placed from the left of the words of the row under its two lines.
-    fn row_badges(&mut self, i: usize) -> Vec<(Chip, Rect)> {
+    /// The badges of tab `i` on its row of the list, placed in lines `room` wide from the top left of their first line.
+    pub(super) fn row_badges(&mut self, i: usize, room: f32) -> Vec<(Chip, Rect)> {
         let chips = self.badges.chips(self.tabs[i].uid);
         let widths: Vec<f32> = chips.iter().map(|chip| width(chip, |text| self.ui.measure(text, SIDE.0, false))).collect();
-        // The row less its padding, less the icon before the words (as `paint_sidebar` has them) and the right margin.
-        let room = layout::SIDE_LIST - 2.0 * layout::SIDE_PAD - (10.0 + TAB_ICON + 10.0) - 10.0;
         chips.into_iter().zip(place(&widths, room)).collect()
     }
 
-    /// What each row of the list adds for its badges, by tab; nothing but the list has them.
-    pub(super) fn badge_heights(&mut self) -> Vec<f32> {
-        if self.settings.tabs.layout != settings::TabLayout::List {
-            return Vec::new();
-        }
-        (0..self.tabs.len()).map(|i| height(&self.row_badges(i).into_iter().map(|(_, rect)| rect).collect::<Vec<_>>())).collect()
-    }
-
-    /// The badges of tab `i` on its row, the words of which start at `x`.
-    pub(super) fn paint_row_badges(&mut self, i: usize, row: Rect, x: f32) {
-        let top = row.y + layout::LIST_ROW - 3.0;
-        for (chip, rect) in self.row_badges(i) {
+    /// The badges of tab `i` on its row, in lines `room` wide from (`x`, `top`).
+    pub(super) fn paint_row_badges(&mut self, i: usize, x: f32, top: f32, room: f32) {
+        for (chip, rect) in self.row_badges(i, room) {
             self.paint_badge(&chip, Rect::new(x + rect.x, top + rect.y, rect.w, rect.h), SIDE.0);
         }
     }
@@ -228,6 +251,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worktree_goes_under_its_main_repository_and_anything_else_is_its_own() {
+        let root = std::path::Path::new(r"D:\src\app-fix");
+        let worktree = repo_of(root, Some("gitdir: D:/src/app/.git/worktrees/app-fix\n"));
+        assert_eq!((worktree.name(), worktree.worktree), ("app".to_owned(), true));
+        let relative = repo_of(root, Some("gitdir: ../app/.git/worktrees/app-fix"));
+        assert!(relative.worktree && relative.root.ends_with("app"));
+        for other in [None, Some("gitdir: ../.git/modules/sub"), Some("not a pointer")] {
+            assert_eq!(repo_of(root, other), Repo { root: root.to_path_buf(), worktree: false }, "{other:?}");
+        }
+    }
 
     #[test]
     fn a_badge_is_set_once_and_cleared_with_none() {

@@ -329,8 +329,9 @@ pub enum Visual {
     Edit { text: String, cursor: Option<crate::textfield::Cursor>, placeholder: String },
     /// A color scheme: its background with its name and a few of its colours.
     Tile { scheme: usize, selected: bool, hover: bool },
-    /// A layout of the tabs (an index into `TabLayout::ALL`): a window in a few rectangles.
-    Layout { layout: usize, selected: bool, hover: bool },
+    /// A layout of the tabs (an index into `TabLayout::ALL`), or with `style` a style of the list (into `TabStyle::ALL`): a
+    /// window in a few rectangles.
+    Layout { layout: usize, style: bool, selected: bool, hover: bool },
     /// A colour of a highlight (`#RRGGBB`) to choose.
     Swatch { color: &'static str, selected: bool, hover: bool },
     /// The last lines of the pane on a dark box, the byte ranges a pattern matches in each marked.
@@ -1460,9 +1461,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         let w = ((content_width - 2.0 * INNER - 2.0 * TILE_GAP) / 3.0).clamp(0.0, LAYOUT_THUMB);
                         for (i, option) in options.iter().enumerate() {
                             let thumb = Rect::new(x0 + INNER + i as f32 * (w + TILE_GAP), y, w, w * LAYOUT_RATIO);
+                            // A picker that does nothing with the others as they are shows its choice unlit and takes no click.
                             let part = Part::Option(id, i);
-                            item(&mut items, thumb, Some(part), Visual::Layout { layout: i, selected: i == chosen, hover: hover == Some(part) }, true);
-                            let tone = if i == chosen { Tone::Text } else { Tone::Quiet };
+                            let visual = Visual::Layout { layout: i, style: id == "tabs.style", selected: i == chosen && applies, hover: applies && hover == Some(part) };
+                            item(&mut items, thumb, applies.then_some(part), visual, true);
+                            let tone = if i == chosen && applies { Tone::Text } else { Tone::Quiet };
                             item(&mut items, Rect::new(thumb.x, thumb.y + thumb.h + 4.0, w, 22.0), None, label(option.get(lang), 12.0, tone, false, Align::Center), true);
                         }
                         y += w * LAYOUT_RATIO + 4.0 + 22.0 + GRID_BOTTOM;
@@ -1838,8 +1841,14 @@ mod tests {
         assert!(can_press(&settings, "tabs.sidebarOpen") && !can_press(&settings, "tabs.groupByState"), "the groups are only for the list");
         settings.tabs.layout = nekominal_model::settings::TabLayout::List;
         assert!(can_press(&settings, "tabs.groupByState"));
-        let thumbs = frame(&page, &settings).items.iter().filter(|item| matches!(item.visual, Visual::Layout { .. })).count();
-        assert_eq!(thumbs, 3, "a miniature for each layout");
+        let thumbs = |style: bool| frame(&page, &settings).items.iter().filter(|item| matches!(item.visual, Visual::Layout { style: s, .. } if s == style)).count();
+        assert_eq!((thumbs(false), thumbs(true)), (3, 3), "a miniature for each layout and each style of the list");
+        settings.tabs.style = nekominal_model::settings::TabStyle::Repo;
+        assert!(!can_press(&settings, "tabs.groupByState"), "tabs under their repositories are not grouped by state");
+        let can_pick = |settings: &Settings| frame(&page, settings).items.iter().any(|item| item.part == Some(Part::Option("tabs.style", 0)));
+        assert!(can_pick(&settings));
+        settings.tabs.layout = nekominal_model::settings::TabLayout::Top;
+        assert!(!can_pick(&settings), "the style of the list is not picked with the tabs on top");
     }
 
     #[test]
