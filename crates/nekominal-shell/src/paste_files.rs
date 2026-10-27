@@ -14,12 +14,26 @@ use crate::{clipboard, util::log};
 /// Pasted images are kept this long: long enough for the agent to read them, then they are cleared at the next start.
 const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Where a pane's program looks for the files: Windows itself, or a WSL distribution (named when it is known), which
-/// sees the drives under `/mnt`.
+/// Where a pane's program looks for the files and how its shell reads quotes: Windows itself (cmd, and any shell not
+/// known), PowerShell and Git Bash, which take Windows paths but run what `$(…)` names inside double quotes, or a WSL
+/// distribution (named when it is known), which sees the drives under `/mnt`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target<'a> {
     Windows,
+    PowerShell,
+    Bash,
     Wsl(Option<&'a str>),
+}
+
+impl Target<'_> {
+    /// The target of a pane whose shell is `shell` (the name of its program without `.exe`).
+    pub fn of_shell(shell: &str) -> Target<'static> {
+        match shell.to_ascii_lowercase().as_str() {
+            "pwsh" | "pwsh-preview" | "powershell" => Target::PowerShell,
+            "bash" | "sh" | "zsh" => Target::Bash,
+            _ => Target::Windows,
+        }
+    }
 }
 
 /// The folder the pasted images go in: `%TEMP%\Nekominal\paste`.
@@ -122,7 +136,24 @@ fn one_path(path: &Path, target: Target) -> String {
             Some(linux) => linux,
             None => single_quoted(&windows),
         },
-        // Double quotes are what cmd, PowerShell and the agents' prompts all read as one path; a Windows path cannot hold one.
+        // Single quotes, in which nothing runs: PowerShell doubles a quote inside them, and takes the typographic ones
+        // (‘’‚‛), which a file name can hold, as quotes too.
+        Target::PowerShell if windows.chars().any(|c| c.is_whitespace() || "&()[]{}^=;!'+,`$@#%~\u{2018}\u{2019}\u{201a}\u{201b}".contains(c)) => {
+            let mut quoted = String::from("'");
+            for c in windows.chars() {
+                quoted.push(c);
+                if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+                    quoted.push(c);
+                }
+            }
+            quoted.push('\'');
+            quoted
+        }
+        Target::PowerShell => windows.into_owned(),
+        // Git Bash halves the backslashes of a word not quoted, so a Windows path is always quoted.
+        Target::Bash => single_quoted(&windows),
+        // Double quotes are what cmd and the agents' prompts read as one path; a Windows path cannot hold one. cmd runs
+        // nothing inside them (`%NAME%` is still replaced, as cmd has no way to keep it).
         Target::Windows if windows.chars().any(|c| c.is_whitespace() || "&()[]{}^=;!'+,`$@#%~".contains(c)) => format!("\"{windows}\""),
         Target::Windows => windows.into_owned(),
     }
@@ -223,6 +254,27 @@ mod tests {
         assert_eq!(path_text(&paths(&[r"C:\shots\a.png"]), Target::Windows), r"C:\shots\a.png");
         assert_eq!(path_text(&paths(&[r"C:\Users\Jo Doe\a.png", r"D:\x&y\b.png"]), Target::Windows), r#""C:\Users\Jo Doe\a.png" "D:\x&y\b.png""#);
         assert_eq!(path_text(&paths(&[r"C:\圖片\截圖.png"]), Target::Windows), r"C:\圖片\截圖.png", "letters of any script need no quotes");
+    }
+
+    #[test]
+    fn powershell_and_git_bash_get_single_quotes_so_that_dollar_parens_and_backticks_in_a_name_never_run() {
+        let ps = |path: &str| path_text(&paths(&[path]), Target::of_shell("pwsh"));
+        assert_eq!(ps(r"C:\a\$(calc).png"), r"'C:\a\$(calc).png'");
+        assert_eq!(ps(r"C:\a\`calc`.png"), r"'C:\a\`calc`.png'");
+        assert_eq!(ps(r"C:\Jo's files\a b.png"), r"'C:\Jo''s files\a b.png'", "a quote is doubled");
+        assert_eq!(ps("C:\\Jo\u{2019}s\\a.png"), "'C:\\Jo\u{2019}\u{2019}s\\a.png'", "and a typographic one too");
+        assert_eq!(ps(r"C:\圖片\截圖 1.png"), r"'C:\圖片\截圖 1.png'");
+        assert_eq!(ps(r"C:\shots\a.png"), r"C:\shots\a.png", "a plain path stays bare");
+        assert_eq!(Target::of_shell("PowerShell"), Target::PowerShell);
+
+        let bash = |path: &str| path_text(&paths(&[path]), Target::of_shell("bash"));
+        assert_eq!(bash(r"C:\a\$(calc).png"), r"'C:\a\$(calc).png'");
+        assert_eq!(bash(r"C:\a\`calc`.png"), r"'C:\a\`calc`.png'");
+        assert_eq!(bash(r"C:\Jo's files\a b.png"), r"'C:\Jo'\''s files\a b.png'");
+        assert_eq!(bash(r"C:\圖片\截圖.png"), r"'C:\圖片\截圖.png'", "backslashes always need quotes in bash");
+
+        assert_eq!(Target::of_shell("cmd"), Target::Windows);
+        assert_eq!(path_text(&paths(&[r"C:\a\$(calc) `x`.png"]), Target::Windows), r#""C:\a\$(calc) `x`.png""#, "cmd runs nothing in double quotes");
     }
 
     #[test]

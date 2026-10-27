@@ -5,13 +5,14 @@ use crate::paste_files::{self, Target};
 
 use super::*;
 
-/// Where the program of the pane looks for files: a WSL pane (its program is `wsl.exe`) sees the drives under `/mnt`.
+/// Where the program of the pane looks for files, and how its shell quotes: a WSL pane (its program is `wsl.exe`) sees
+/// the drives under `/mnt`.
 fn target(entry: &PaneEntry) -> Target<'_> {
     if entry.shell.eq_ignore_ascii_case("wsl") {
         // The profiles found on the machine are `wsl-<distribution>`; others leave the distribution unknown.
         Target::Wsl(entry.profile_id.strip_prefix("wsl-"))
     } else {
-        Target::Windows
+        Target::of_shell(&entry.shell)
     }
 }
 
