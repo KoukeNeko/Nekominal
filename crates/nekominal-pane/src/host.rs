@@ -14,7 +14,7 @@ use std::{
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU32, AtomicU8, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_channel},
     },
     thread,
 };
@@ -80,9 +80,11 @@ pub enum UiEvent {
     ClipboardRefused { bytes: usize },
     /// A line of the output matched a trigger.
     Trigger(TriggerHit),
-    /// Anything else the emulator reported, as debug text.
-    Other(String),
 }
+
+/// How many events a pane's queue to the UI holds. When it is full the reader waits for the UI to take some, so a
+/// program that floods titles or notifications is slowed instead of growing the queue without limit.
+const UI_QUEUE: usize = 4096;
 
 /// Whether a command runs in the pane, as far as the prompt marks of the shell (OSC 133) and the input sent to it
 /// tell. The integration of PowerShell marks the prompt and the end of a command but not its start, so a command
@@ -135,9 +137,10 @@ impl Activity {
     }
 }
 
-/// The event the shell gets for what the emulator reported. `PtyWrite` is not one: it goes to the program.
-fn ui_event(event: CoreEvent) -> UiEvent {
-    match event {
+/// The event the shell gets for what the emulator reported, if the shell acts on it. `PtyWrite` is not one: it goes
+/// to the program.
+fn ui_event(event: CoreEvent) -> Option<UiEvent> {
+    Some(match event {
         CoreEvent::Title(title) => UiEvent::Title(title),
         CoreEvent::Cwd(path) => UiEvent::Cwd(path),
         CoreEvent::Bell => UiEvent::Bell,
@@ -158,11 +161,10 @@ fn ui_event(event: CoreEvent) -> UiEvent {
         CoreEvent::ClipboardLoad { clipboard: ClipboardKind::Clipboard, reply } => {
             UiEvent::ClipboardLoad(ClipboardRequest { reply })
         }
-        CoreEvent::ClipboardStore { .. } | CoreEvent::ClipboardLoad { .. } => {
-            UiEvent::Other("clipboard: the primary selection is not supported".to_owned())
-        }
-        other => UiEvent::Other(format!("{other:?}")),
-    }
+        // The primary selection and everything else (cursor blinking, line ids reset, an emulator panic): the shell
+        // does nothing with them, so they are neither formatted nor queued.
+        _ => return None,
+    })
 }
 
 /// The input modes the program set, as the key and mouse encoders want them. `alacritty_terminal` tracks neither
@@ -194,7 +196,7 @@ pub struct Pane {
     pub term: Arc<FairMutex<TerminalCore>>,
     pub events: Receiver<UiEvent>,
     live: RefCell<Live>,
-    ui: Sender<UiEvent>,
+    ui: SyncSender<UiEvent>,
     /// Which session the pane listens to: a session that was replaced by a restart still ends, and what it says
     /// then is not the new session's.
     generation: Arc<AtomicU32>,
@@ -212,7 +214,7 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 fn start_session(
     config: &SpawnConfig,
     term: &Arc<FairMutex<TerminalCore>>,
-    ui: &Sender<UiEvent>,
+    ui: &SyncSender<UiEvent>,
     activity: &Arc<AtomicU8>,
     generation: &Arc<AtomicU32>,
     wake: &Wake,
@@ -223,9 +225,8 @@ fn start_session(
     let pending_ack = Arc::new(AtomicUsize::new(0));
 
     let sink: Sink = {
-        let (term, ui_tx, input_tx, session_cell, pending_ack, activity, generation, wake) = (
+        let (term, input_tx, session_cell, pending_ack, activity, generation, wake) = (
             term.clone(),
-            ui.clone(),
             input_tx.clone(),
             session_cell.clone(),
             pending_ack.clone(),
@@ -233,6 +234,17 @@ fn start_session(
             generation.clone(),
             wake.clone(),
         );
+        // Runs with the terminal lock released, so waiting for room cannot hold up the UI thread. A full queue
+        // wakes the UI first: it takes events only when woken, and this frame's wake comes after the loop.
+        let deliver = {
+            let (ui_tx, wake) = (ui.clone(), wake.clone());
+            move |event: UiEvent| {
+                if let Err(TrySendError::Full(event)) = ui_tx.try_send(event) {
+                    wake();
+                    let _ = ui_tx.send(event);
+                }
+            }
+        };
         Box::new(move |event| {
             if generation.load(Ordering::Relaxed) != mine {
                 return false;
@@ -244,20 +256,23 @@ fn start_session(
                         core.feed(&bytes);
                         core.take_events()
                     };
+                    // All the replies of one frame go to the writer as one write, in the order they came.
+                    let mut replies = Vec::new();
                     for event in events {
                         match event {
-                            CoreEvent::PtyWrite(reply) => {
-                                if input_tx.send(reply).is_err() {
-                                    return false;
-                                }
-                            }
+                            CoreEvent::PtyWrite(reply) => replies.extend_from_slice(&reply),
                             other => {
                                 if let CoreEvent::PromptMark { mark, .. } = &other {
                                     activity.store(Activity::after_mark(*mark).code(), Ordering::Relaxed);
                                 }
-                                let _ = ui_tx.send(ui_event(other));
+                                if let Some(event) = ui_event(other) {
+                                    deliver(event);
+                                }
                             }
                         }
+                    }
+                    if !replies.is_empty() && input_tx.send(replies).is_err() {
+                        return false;
                     }
                     // Ack after the emulator consumed the frame: this is the back-pressure.
                     match session_cell.get() {
@@ -271,7 +286,7 @@ fn start_session(
                 }
                 Event::Exit(code) => {
                     term.lock().on_child_exit();
-                    let _ = ui_tx.send(UiEvent::Exit(code));
+                    deliver(UiEvent::Exit(code));
                     wake();
                     true
                 }
@@ -328,7 +343,7 @@ impl Pane {
         let mut emulator = TerminalCore::new(cols, rows, core);
         prepare(&mut emulator);
         let term = Arc::new(FairMutex::new(emulator));
-        let (ui_tx, ui_rx) = channel::<UiEvent>();
+        let (ui_tx, ui_rx) = sync_channel::<UiEvent>(UI_QUEUE);
         let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
         let generation = Arc::new(AtomicU32::new(0));
         let live = start_session(&config, &term, &ui_tx, &activity, &generation, &wake, 0)?;
@@ -636,7 +651,7 @@ mod tests {
     fn events_for(bytes: &[u8]) -> Vec<UiEvent> {
         let mut core = TerminalCore::new(80, 24, CoreConfig::default());
         core.feed(bytes);
-        core.take_events().into_iter().filter(|e| !matches!(e, CoreEvent::PtyWrite(_))).map(ui_event).collect()
+        core.take_events().into_iter().filter(|e| !matches!(e, CoreEvent::PtyWrite(_))).filter_map(ui_event).collect()
     }
 
     #[test]
@@ -683,7 +698,7 @@ mod tests {
         assert_eq!(core.agent_summary().map(|r| r.state), Some(AgentState::Working));
         core.take_events();
         core.feed(b"\x1b]133;A\x07");
-        let events: Vec<UiEvent> = core.take_events().into_iter().map(ui_event).collect();
+        let events: Vec<UiEvent> = core.take_events().into_iter().filter_map(ui_event).collect();
         assert!(
             matches!(events.as_slice(), [UiEvent::AgentRecordsDropped, UiEvent::PromptMark(PromptMark::PromptStart)]),
             "{events:?}"
@@ -718,7 +733,7 @@ mod tests {
         let events = events_for(&osc52_write('c', 1));
         let [UiEvent::ClipboardStore(text)] = events.as_slice() else { panic!("{events:?}") };
         assert_eq!(text, "AAA");
-        assert!(matches!(events_for(&osc52_write('p', 1)).as_slice(), [UiEvent::Other(_)]));
+        assert!(events_for(&osc52_write('p', 1)).is_empty());
     }
 
     #[test]
@@ -740,7 +755,7 @@ mod tests {
         assert!(events_for(query).is_empty(), "the default policy denies reads");
         let mut core = TerminalCore::new(80, 24, CoreConfig { osc52: Osc52::CopyPaste, ..CoreConfig::default() });
         core.feed(query);
-        let events: Vec<UiEvent> = core.take_events().into_iter().map(ui_event).collect();
+        let events: Vec<UiEvent> = core.take_events().into_iter().filter_map(ui_event).collect();
         let [UiEvent::ClipboardLoad(request)] = events.as_slice() else { panic!("{events:?}") };
         assert_eq!((request.reply)("hi"), "\x1b]52;c;aGk=\x07");
         assert_eq!(format!("{request:?}"), "ClipboardRequest", "no clipboard text can leak through Debug");
@@ -752,6 +767,13 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, UiEvent::Title(title) if title == "build")), "{events:?}");
         assert!(events.iter().any(|e| matches!(e, UiEvent::Cwd(path) if path == "C:\\work")), "{events:?}");
         assert!(events.iter().any(|e| matches!(e, UiEvent::Bell)), "{events:?}");
-        assert!(events.iter().all(|e| !matches!(e, UiEvent::Other(_))), "{events:?}");
+    }
+
+    #[test]
+    fn a_run_of_bells_is_one_event_and_events_the_shell_ignores_are_not_queued() {
+        // Each of these used to be one event in an unbounded queue, the last ones formatted as debug text.
+        let flood = format!("{}\x1b[?12h\x1b[?12l{}", "\x07".repeat(10_000), "\x07".repeat(10_000));
+        let events = events_for(flood.as_bytes());
+        assert!(matches!(events.as_slice(), [UiEvent::Bell, UiEvent::Bell]), "{events:?}");
     }
 }

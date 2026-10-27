@@ -1209,6 +1209,8 @@ impl TerminalCore {
             },
             AlacEvent::Title(title) => self.events.push(CoreEvent::Title(strip_control(&title))),
             AlacEvent::ResetTitle => self.events.push(CoreEvent::ResetTitle),
+            // A run of BELs rings once: each would be one more event for the host to queue.
+            AlacEvent::Bell if matches!(self.events.last(), Some(CoreEvent::Bell)) => {}
             AlacEvent::Bell => self.events.push(CoreEvent::Bell),
             AlacEvent::ClipboardStore(ty, text) => {
                 self.events.push(CoreEvent::ClipboardStore { clipboard: ty.into(), text })
