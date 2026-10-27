@@ -31,7 +31,24 @@ pub struct Facts {
 impl Facts {
     pub fn of(usage: &agent::Usage) -> Option<Facts> {
         let share = usage.context?;
-        Some(Facts { model: usage.model.clone(), share, cost: usage.cost, duration_ms: usage.duration_ms, status_line: usage.cost.is_some(), ..Facts::default() })
+        let parts = match (usage.cache_read_tokens, usage.cache_creation_tokens, usage.input_tokens) {
+            (None, None, None) => None,
+            (read, write, new) => Some([read.unwrap_or(0), write.unwrap_or(0), new.unwrap_or(0)]),
+        };
+        Some(Facts {
+            model: usage.model.clone(),
+            share,
+            window: usage.context_window,
+            parts,
+            last_out: usage.output_tokens,
+            cost: usage.cost,
+            duration_ms: usage.duration_ms,
+            api_ms: usage.api_duration_ms,
+            totals: usage.total_input_tokens.zip(usage.total_output_tokens),
+            lines: usage.lines_added.zip(usage.lines_removed),
+            // Only the status line reports a cost: from the transcript there is none.
+            status_line: usage.cost.is_some(),
+        })
     }
 
     /// The tokens in use: the three parts, or the share of the window.
@@ -210,5 +227,8 @@ mod tests {
         assert_eq!(windowed.used(), Some(580_000));
         let split = Facts { parts: Some([541_000, 36_900, 2_300]), ..windowed };
         assert_eq!(split.used(), Some(580_200));
+        let from_transcript = agent::Usage { context: Some(24.5), cache_creation_tokens: Some(48_916), input_tokens: Some(2), output_tokens: Some(4), context_window: Some(200_000), ..Default::default() };
+        let facts = Facts::of(&from_transcript).unwrap();
+        assert_eq!((facts.parts, facts.window, facts.last_out, facts.status_line), (Some([0, 48_916, 2]), Some(200_000), Some(4), false), "a part not reported is none of the window");
     }
 }
