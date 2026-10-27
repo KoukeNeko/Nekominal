@@ -113,6 +113,8 @@ fn quake_toggle() {
 thread_local! {
     static APPS: RefCell<HashMap<isize, Rc<RefCell<App>>>> = RefCell::new(HashMap::new());
     static RETIRED: RefCell<Vec<Rc<RefCell<App>>>> = const { RefCell::new(Vec::new()) };
+    /// Windows is ending the session and one window has written it.
+    static SESSION_ENDED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The icon of the app, resource 1 of the program (`nekominal.rc`); none when the build has no resources.
@@ -416,6 +418,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, |app| app.open_window_menu(hwnd, lo(lparam), hi(lparam)));
             LRESULT(0)
         }
+        // A minimized window reports a tiny client area: laying the panes out to it would shrink every shell to 2×1 and
+        // reflow their text. The restore sends the real size again.
+        WM_SIZE if wparam.0 == SIZE_MINIMIZED as usize => LRESULT(0),
         WM_SIZE => {
             let size = client_size(hwnd);
             with_app(hwnd, |app| app.on_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
@@ -708,6 +713,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_GETMINMAXINFO => {
             // SAFETY: lParam points to a MINMAXINFO.
             unsafe { (*(lparam.0 as *mut MINMAXINFO)).ptMinTrackSize = POINT { x: 480, y: 320 } };
+            LRESULT(0)
+        }
+        // Windows ends the process after a shutdown or a sign-out without destroying the windows: the session is written
+        // here, once, by the first window told, as the last window closing would.
+        WM_ENDSESSION if wparam.0 != 0 => {
+            if !SESSION_ENDED.replace(true) {
+                with_app(hwnd, |app| app.save_session());
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
