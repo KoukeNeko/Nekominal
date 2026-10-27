@@ -374,6 +374,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             });
             LRESULT(0)
         }
+        // A press on the frame or the title bar while a menu is open closes the menu and does nothing else, as a click
+        // outside any menu of Windows does: the drag area would start moving the window under the menu, and the caption
+        // buttons have presses of their own.
+        WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK | WM_NCRBUTTONDOWN | WM_NCMBUTTONDOWN
+            if with_app(hwnd, |app| {
+                let open = app.popup_keeps_owner_active();
+                if open {
+                    app.close_popup();
+                }
+                open
+            }) == Some(true) =>
+        {
+            LRESULT(0)
+        }
         // Without the default handling there is no modal loop: the button is pressed here and acts when let go of over
         // the same button.
         WM_NCLBUTTONDOWN if caption_hit(wparam.0 as u32).is_some() => {
