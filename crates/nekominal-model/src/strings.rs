@@ -145,6 +145,7 @@ texts! {
     SchemesNoneNew "schemes.noneNew" "沒有新的色彩配置可以匯入" "No new color schemes to import";
     SchemesNotImported "schemes.notImported" "無法匯入：{0}" "Could not import: {0}";
     TabNewWorktree "tab.newWorktree" "在新的 git 工作樹開啟分頁" "New tab in a git worktree";
+    TabRemoveWorktree "tab.removeWorktree" "移除這個 git 工作樹" "Remove this worktree";
     AppSaveLayout "app.saveLayout" "儲存視窗配置" "Save window layout";
     AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
     AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
@@ -222,6 +223,14 @@ texts! {
     WorktreeIsMain "worktree.isMain" "這是儲存庫的主要簽出，不會被移除" "This is the main checkout of the repository: it is never removed";
     WorktreeDirty "worktree.dirty" "工作樹有 {0} 個未提交的變更與 {1} 個未追蹤的檔案：請先提交或捨棄它們" "The worktree has {0} uncommitted changes and {1} untracked files: commit or discard them first";
     WorktreeDetached "worktree.detached" "工作樹不在任何分支上：移除它會遺失它的提交" "The worktree is on no branch: removing it would lose its commits";
+    DialogRemoveWorktree "dialog.removeWorktree" "移除工作樹「{0}」？分支「{1}」：{2} 個提交未推送，{3}" "Remove the worktree “{0}”? Branch “{1}”: {2} commits not pushed, {3}";
+    WorktreeMerged "worktree.merged" "已合併到 {0}，會一併刪除" "merged into {0}: it is deleted too";
+    WorktreeNotMerged "worktree.notMerged" "未合併到 {0}，會保留" "not merged into {0}: it is kept";
+    WorktreeMergeUnknown "worktree.mergeUnknown" "不確定是否已合併，未合併就保留" "kept unless it is merged";
+    WorktreeClosesTabs "worktree.closesTabs" "會關閉這些分頁：{0}" "These tabs close: {0}";
+    WorktreeRemove "worktree.remove" "移除" "Remove";
+    WorktreeBranchKept "worktree.branchKept" "工作樹已移除；分支「{0}」保留：{1}" "The worktree is removed; its branch “{0}” is kept: {1}";
+    WorktreeRemoveFailed "worktree.removeFailed" "無法移除工作樹：{0}" "The worktree could not be removed: {0}";
     SuggestionHistory "suggestion.history" "最近的指令" "Recent command";
     SuggestionSnippet "suggestion.snippet" "片段" "Snippet";
     EditSuggestions "edit.suggestions" "建議（片段與最近的指令）" "Suggestions (snippets and recent commands)";

@@ -63,6 +63,9 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
   視窗在背景時也會提醒工作列。
 - **在新的 git 工作樹開啟分頁。** 從命令選擇區輸入分支名稱，Nekominal 會在儲存庫旁邊執行 `git worktree add`
   （`app` 的分支 `fix/login` 放在 `app-fix-login`），並在那裡開一個以分支命名的分頁，讓每個 agent 各有自己的檔案。
+  根目錄的 `.worktreeinclude`（每行一個 `.gitignore` 樣式，例如 `.env`）列出的被忽略檔案會複製過去；儲存庫有
+  `.nekominal\setup.ps1`（或 `.nekominal\setup.cmd`）時，分頁會先執行它。「移除這個 git 工作樹」會移除目前窗格的工作樹，
+  分支已合併就一併刪除；主要簽出或還有未提交的變更時會拒絕。
 
 ### 指令與它們的輸出
 
