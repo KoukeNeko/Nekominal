@@ -28,10 +28,11 @@ impl App {
         self.apply_settings(&before);
     }
 
-    /// Opens the rule at `index` in place, or closes the one open.
+    /// Opens the rule at `index` in place, or closes the one open. A field left open with a refused value goes with the
+    /// form it was in, as it goes with its page: else the keys would type into a field no longer shown.
     fn open_trigger(&mut self, index: Option<usize>) {
         if let Some(page) = self.page.as_mut() {
-            (page.trigger, page.error) = (index, None);
+            (page.trigger, page.error, page.editing) = (index, None, None);
         }
     }
 
