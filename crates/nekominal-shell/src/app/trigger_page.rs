@@ -104,7 +104,7 @@ impl App {
                 return Err(Text::TriggerBadPattern);
             }
             let pattern = text.to_owned();
-            self.change_trigger(index, |rule| rule.pattern = pattern);
+            self.change_trigger(index, |rule| rule.set_pattern(pattern));
             return Ok(());
         }
         // The other fields belong to a rule that is in the settings already.

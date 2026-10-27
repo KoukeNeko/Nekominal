@@ -174,6 +174,15 @@ impl Trigger {
         }
     }
 
+    /// Gives the rule its pattern; a rule without a name is called by it, as the file calls one, so that its notification
+    /// has a title and its mark on the tab a note.
+    pub fn set_pattern(&mut self, pattern: String) {
+        if self.name.is_empty() {
+            self.name = pattern.clone();
+        }
+        self.pattern = pattern;
+    }
+
     /// Changes what the rule does; a send starts off, so that it never types into a program before the user says so.
     pub fn set_action(&mut self, action: Action) {
         if matches!(action, Action::Send { .. }) && !matches!(self.action, Action::Send { .. }) {
@@ -520,6 +529,16 @@ mod tests {
         let mut guard = SendGuard::default();
         let sent = (0..600).filter(|k| guard.allow(start + Duration::from_millis(100 * k), 0)).count();
         assert_eq!(sent, SEND_BURST);
+    }
+
+    #[test]
+    fn a_rule_without_a_name_is_named_by_its_pattern_when_it_gets_one() {
+        // The rule the settings page adds starts with no name and no pattern.
+        let mut rule = Trigger { name: String::new(), pattern: String::new(), enabled: true, action: Action::Badge, program: None, instant: false };
+        rule.set_pattern("FAIL".into());
+        assert_eq!((rule.name.as_str(), rule.pattern.as_str()), ("FAIL", "FAIL"));
+        rule.set_pattern("FAILED".into());
+        assert_eq!(rule.name, "FAIL", "a name it has stays");
     }
 
     #[test]
