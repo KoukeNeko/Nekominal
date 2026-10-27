@@ -1989,7 +1989,10 @@ impl App {
             return;
         };
         let script = update::encoded(&update::update_script(std::process::id(), &app_dir));
-        match std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &script]).creation_flags(CREATE_NEW_CONSOLE).spawn() {
+        // Started outside the app's folder: run from a shortcut of Scoop, this process works in `current`, and a console
+        // that inherited that would hold the folder Scoop unlinks.
+        let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        match std::process::Command::new("powershell.exe").args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &script]).current_dir(home).creation_flags(CREATE_NEW_CONSOLE).spawn() {
             Ok(_) => crate::win::close_all_windows(),
             Err(e) => util::log(&format!("update: {e}")),
         }

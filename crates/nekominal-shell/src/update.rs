@@ -75,6 +75,8 @@ pub fn update_script(pid: u32, app_dir: &Path) -> String {
     let current = quoted(&app_dir.join("current"));
     format!(
         r#"$Host.UI.RawUI.WindowTitle = 'Nekominal update'
+# Out of the folder Scoop is to replace: a console whose working folder is in it holds it, and Scoop cannot unlink it.
+Set-Location -LiteralPath $env:USERPROFILE
 $dir = {dir}
 # The folder Scoop runs the app from: `current`, unless Scoop is set to keep no junction, then the version's own.
 function Prefix {{ $p = scoop prefix nekominal 2>$null 6>$null | Select-Object -Last 1; if ($p -and (Test-Path -LiteralPath $p)) {{ $p }} else {{ {current} }} }}
@@ -89,7 +91,11 @@ if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
     Start-Sleep -Seconds 3
     exit
 }}
-Get-Process OpenConsole -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -and $_.Path.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase) }} | Wait-Process
+# Every program that runs from the app's folder holds it: the OpenConsole of the shells, and Nekominal itself as an
+# agent's status line or a cli call. They are waited for, a while; what still runs then is named.
+$held = {{ Get-Process -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne $PID -and $_.Path -and $_.Path.StartsWith("$dir\", [StringComparison]::OrdinalIgnoreCase) }} }}
+& $held | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
+& $held | ForEach-Object {{ Write-Host "Still running from the Nekominal folder: $($_.Name) ($($_.Id)). Close it if the update fails." }}
 scoop update
 scoop update nekominal
 $after = Installed
@@ -148,6 +154,9 @@ mod tests {
         assert!(!script.contains("-like"), "a [ in the folder is no wildcard");
         assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current'"), "a quote in a path is doubled");
         assert!(script.contains("scoop prefix nekominal"), "the folder Scoop runs the app from, junction or not");
+        let leave = lines.iter().position(|line| line.starts_with("Set-Location -LiteralPath $env:USERPROFILE")).expect("the script leaves the app's folder");
+        assert!(leave < bucket, "before Scoop replaces it");
+        assert!(!script.contains("Get-Process OpenConsole"), "every program from the folder is waited for, not the console only");
         // The base64 of UTF-16LE: "a" is 61 00.
         assert_eq!(encoded("a"), "YQA=");
     }
