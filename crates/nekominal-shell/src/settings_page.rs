@@ -2144,6 +2144,149 @@ mod tests {
     }
 
     #[test]
+    fn at_any_width_every_part_of_the_new_rows_stays_inside_its_row() {
+        let mut settings = full_settings();
+        // A long name and pattern, to be cut rather than run into the tag.
+        settings.triggers[2].name = "a rule with a name far longer than its plate has room for".into();
+        settings.triggers[2].pattern = r"Ok to proceed\? \(y\) and a great deal more of a pattern than fits".into();
+        let sample = ["  Do you want to proceed?".to_owned(), "error[E0308]: mismatched types".to_owned()];
+        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
+            let check = |frame: &Frame, what: &str| {
+                for item in frame.items.iter().filter(|item| item.scrolls && item.part.is_some()) {
+                    let part = item.part.unwrap();
+                    assert!(item.rect.w > 0.0 && item.rect.h > 0.0, "{what} at {width}: {part:?} has no room");
+                    let inside = frame.rows.iter().any(|row| {
+                        item.rect.x >= row.x - 0.01 && item.rect.x + item.rect.w <= row.x + row.w + 0.01 && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + row.h + 0.01
+                    });
+                    assert!(inside, "{what} at {width}: {part:?} at {:?} is outside every row", item.rect);
+                }
+                for (entry, row) in frame.entries.iter().zip(&frame.rows) {
+                    let Entry::Trigger(_) = entry else { continue };
+                    // On the line of the name: the name and the pattern end before the tag, the tag before the switch.
+                    let head = |item: &&Item| item.scrolls && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + ROW + 0.01;
+                    let tag = frame.items.iter().filter(head).find(|item| matches!(item.visual, Visual::Plate(Fill::Tag(tag)) if tag != Tag::Code)).expect("the tag");
+                    let switch = frame.items.iter().filter(head).find(|item| matches!(item.visual, Visual::Plate(Fill::Switch { .. }))).expect("the switch");
+                    assert!(tag.rect.x + tag.rect.w <= switch.rect.x + 0.01, "{what} at {width}: the tag runs into the switch");
+                    for left in frame.items.iter().filter(head).filter(|item| matches!(item.visual, Visual::Label { bold: true, .. } | Visual::Plate(Fill::Tag(Tag::Code)))) {
+                        assert!(left.rect.x + left.rect.w <= tag.rect.x + 0.01, "{what} at {width}: {:?} runs into the tag", left.visual);
+                    }
+                }
+            };
+            every_page(&settings, width, &sample, &mut |page, view| {
+                let frame = build(page, view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
+                check(&frame, &format!("section {} rule {:?}", page.section, page.trigger));
+            });
+            // A refused pattern says why under its field, inside the rule's plate.
+            let keymap = keymap();
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: Some((std::time::Duration::from_secs(90), crate::push::Test::Failed("curl.exe exited with 6".into()))), sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+            let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "(".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
+            let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
+            check(&frame, "refused pattern");
+            let error = frame.items.iter().find(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, .. })).expect("the reason");
+            assert!(frame.rows[1].contains(error.rect.x + 1.0, error.rect.y + 1.0) && error.rect.y + error.rect.h <= frame.rows[1].y + frame.rows[1].h, "the reason is inside the plate at {width}");
+            let terminal = build(&Page { section: section_of(Section::Terminal), ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
+            check(&terminal, "push test that failed");
+        }
+    }
+
+    #[test]
+    fn a_note_sits_under_its_label_inside_the_row() {
+        let frame = frame(&Page { section: section_of(Section::Terminal), ..Page::default() }, &Settings::default());
+        for id in ["notifications.push.url", "notifications.push.token"] {
+            let row = at_entry(&frame, |e| matches!(e, Entry::Setting(row) if row.id == id));
+            let in_row = |item: &&Item| row.contains(item.rect.x + 1.0, item.rect.y + 1.0);
+            let label = frame.items.iter().filter(in_row).find(|item| matches!(&item.visual, Visual::Label { text, .. } if text == settings_ui::find(id).unwrap().label(Lang::EnUs))).expect("the label");
+            let note_text = settings_ui::note_of(id).unwrap().get(Lang::EnUs);
+            let note = frame.items.iter().filter(in_row).find(|item| matches!(&item.visual, Visual::Label { text, size, .. } if text == note_text && *size < 13.0)).expect("the note, smaller");
+            assert!(note.rect.y > label.rect.y && note.rect.x == label.rect.x, "{id}: under the label");
+            assert!(note.rect.y + note.rect.h <= row.y + row.h + 0.01, "{id}: inside the row");
+        }
+    }
+
+    #[test]
+    fn a_secret_shows_its_ends_only_past_ten_characters() {
+        assert_eq!(masked("0123456789"), "\u{2022}".repeat(10));
+        assert_eq!(masked("0123456789a"), format!("012{}789a", "\u{2022}".repeat(4)));
+        // Counted in characters, so a secret of wide characters is not cut inside one.
+        assert_eq!(masked("一二三四五六七八九十甲"), format!("一二三{}八九十甲", "\u{2022}".repeat(4)));
+    }
+
+    #[test]
+    fn no_flag_and_every_flag_are_shown_as_they_are() {
+        let terminal = Page { section: section_of(Section::Terminal), ..Page::default() };
+        let events = row("notifications.push.events");
+        let Control::Flags(options) = events.control else { panic!("the events are flags") };
+        for bits in [0, (1 << options.len()) - 1] {
+            let mut settings = Settings::default();
+            (events.set)(&mut settings, Value::Flags(bits));
+            let frame = frame(&terminal, &settings);
+            let chosen = (0..options.len()).filter(|i| frame.items.iter().any(|item| item.part == Some(Part::Option(events.id, *i)) && matches!(item.visual, Visual::Plate(Fill::Button { selected: true, .. })))).count();
+            assert_eq!(chosen, bits.count_ones() as usize, "{bits:b}");
+            let read = value_text(events, &settings, &[], Lang::EnUs);
+            assert_eq!(read.is_empty(), bits == 0, "{bits:b}: {read}");
+        }
+    }
+
+    #[test]
+    fn each_action_shows_only_the_parts_it_needs() {
+        let keymap = keymap();
+        for (k, wanted) in [(0, "colours"), (1, "text"), (2, "nothing"), (3, "text"), (4, "nothing")] {
+            let mut settings = rules();
+            settings.triggers[0].action = Action::at(k).unwrap();
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+            let frame = build(&Page { section: section_of(Section::Triggers), trigger: Some(0), ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            let shown = parts(&frame);
+            let colours = shown.iter().filter(|p| matches!(p, Part::TriggerColor(0, _))).count();
+            let text = shown.contains(&Part::TriggerText(0));
+            assert_eq!((colours > 0, text), (wanted == "colours", wanted == "text"), "action {k}");
+            for part in [Part::TriggerName(0), Part::TriggerPattern(0), Part::TriggerInstant(0), Part::TriggerProgram(0)] {
+                assert!(shown.contains(&part), "action {k}: {part:?}");
+            }
+            assert!(!frame.items.iter().any(|item| matches!(item.visual, Visual::Sample { .. })), "no pane, no sample");
+        }
+        // The text of a send shows its Enter as \r, which a line of text cannot hold.
+        let mut settings = rules();
+        settings.triggers[2].enabled = true;
+        let frame = frame(&Page { section: section_of(Section::Triggers), trigger: Some(2), ..Page::default() }, &settings);
+        assert!(texts(&frame).iter().any(|t| t == "y\\r"));
+    }
+
+    #[test]
+    fn every_heading_is_on_its_page_once_and_never_found_alone() {
+        let settings = Settings::default();
+        for section in 0..Section::ALL.len() {
+            let frame = frame(&Page { section, ..Page::default() }, &settings);
+            let headings: Vec<Text> = frame.entries.iter().filter_map(|e| if let Entry::Heading(text) = e { Some(*text) } else { None }).collect();
+            let unique: std::collections::BTreeSet<&str> = headings.iter().map(|t| t.get(Lang::EnUs)).collect();
+            assert_eq!(unique.len(), headings.len(), "{section}: a heading twice");
+            for (i, entry) in frame.entries.iter().enumerate() {
+                if let Entry::Heading(text) = entry {
+                    assert_eq!(settings_ui::heading_section(*text), Section::ALL[section], "{text:?} is on the page it belongs to");
+                    assert!(frame.entries.get(i + 1).is_some_and(|next| !matches!(next, Entry::Heading(_))), "{text:?} stands over a row");
+                }
+            }
+        }
+        for text in [Text::SettingsNotificationsHeading, Text::SettingsPushHeading, Text::SettingsSnippetsHeading] {
+            let found = frame(&Page { query: text.get(Lang::EnUs).into(), ..Page::default() }, &settings);
+            assert!(!found.entries.iter().any(|e| matches!(e, Entry::Heading(_))), "{text:?}: a search shows rows, not headings");
+        }
+    }
+
+    #[test]
+    fn a_search_finds_the_push_rows_and_never_a_heading_alone() {
+        let settings = rules();
+        let found = |query: &str| frame(&Page { query: query.into(), ..Page::default() }, &settings).entries;
+        let ids = |entries: Vec<Entry>| entries.into_iter().filter_map(|e| if let Entry::Setting(row) = e { Some(row.id) } else { None }).collect::<Vec<_>>();
+        assert!(ids(found("token")).contains(&"notifications.push.token"));
+        assert!(ids(found("ntfy")).contains(&"notifications.push.kind"), "by an option");
+        assert!(found("Approve").is_empty(), "the rules are not rows of the settings: their names find nothing");
+        // A result comes under the name of its section, drawn as a heading over it, never as a result of its own.
+        let frame = frame(&Page { query: "token".into(), ..Page::default() }, &settings);
+        assert!(frame.entries.iter().all(|e| !matches!(e, Entry::Heading(_))));
+        assert!(texts(&frame).iter().any(|t| t == Section::Terminal.text().get(Lang::EnUs)));
+    }
+
+    #[test]
     fn a_rule_without_a_name_is_shown_and_read_out_as_the_rule_to_add() {
         let settings = rules();
         let adding = trigger_at(&settings, settings.triggers.len());
