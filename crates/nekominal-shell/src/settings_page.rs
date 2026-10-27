@@ -1377,7 +1377,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let value = (row.get)(view.settings);
                 // A toggle is pressed anywhere on its row.
                 let row_part = (applies && matches!(row.control, Control::Toggle)).then_some(Part::Toggle(id));
-                row_plate(&mut items, rect, row_part, focus);
+                // The profiles are items of their own: the row that holds them is the heading of their section, not one more item.
+                let heading = matches!(row.control, Control::Profiles);
+                if !heading {
+                    row_plate(&mut items, rect, row_part, focus);
+                }
                 // Beside its control the label has half the row, or less where the control is wider; a note under it, a
                 // sentence rather than a name, has all the room up to the control (and the reset button left of it).
                 let beside = rect.w - 2.0 * INNER - RESET_ROOM - control_width - GAP;
@@ -1389,7 +1393,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     ((rect.w - 2.0 * INNER - RESET_ROOM) / 2.0).min(beside).max(label_width)
                 };
                 let tone = if applies { Tone::Text } else { Tone::Quiet };
-                row_label(&mut items, rect, label_room, row.label(lang), note, tone);
+                if heading {
+                    section_heading(&mut items, x0, y, content_width, row.label(lang));
+                } else {
+                    row_label(&mut items, rect, label_room, row.label(lang), note, tone);
+                }
                 // Where the control beside the label starts: the reset button goes left of it. A control under its label (or a
                 // grid) leaves the reset button at the right end of the label's line.
                 let mut control_left = right;
@@ -1490,7 +1498,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         y += lines as f32 * (CONTROL + GAP) - GAP + GRID_BOTTOM;
                     }
                     (Control::Profiles, Value::Text(current)) => {
-                        y += ROW;
+                        y += HEADING;
                         let chosen = view.profiles.iter().position(|p| p.id == current).unwrap_or(0);
                         for (i, profile) in view.profiles.iter().enumerate() {
                             let line = Rect::new(x0, y, content_width, ROW - ROW_GAP);
