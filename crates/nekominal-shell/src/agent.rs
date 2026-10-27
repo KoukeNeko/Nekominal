@@ -6,10 +6,16 @@
 //! Nothing leaves the machine, and Claude Code's own settings are never written: the command reaches it only through
 //! `--settings`, which the `claude` function (a doskey macro in cmd) of the shell integration adds when
 //! `NEKOMINAL_CLAUDE_SETTINGS` names a file. The window sets that variable for a new pane while the status bar is on, unless
-//! Claude Code has a status line of the user's own, which it would replace. In WSL, `WSLENV` carries both variables in and
-//! the pane back out to this program.
+//! Claude Code has a status line of the user's own, which it would replace: then the file names hooks only. In WSL,
+//! `WSLENV` carries both variables in and the pane back out to this program.
+//!
+//! The status line can be taken from us: a plugin's, or the user's own, wins over it, and then Claude Code never runs this
+//! program. So the same file also gives Claude Code hooks (`--claude-hook`), which it merges with every other source's and
+//! so always runs: they note where the session's transcript is (`<pane>.claude`), and the window reads the model and the
+//! tokens of the last answer from the end of that transcript whenever the status line has not said what the context is.
 
 use std::{
+    io::{Read as _, Seek as _},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
@@ -19,6 +25,14 @@ use std::{
 pub const SESSION_VAR: &str = "NEKOMINAL_SESSION";
 /// The argument that makes this program the `statusLine` command instead of a window.
 const FLAG: &str = "--statusline";
+/// The argument that makes this program a hook of Claude Code instead of a window.
+const HOOK_FLAG: &str = "--claude-hook";
+/// The extension of the file of a pane that holds what the hooks of Claude Code last said about its session.
+const HOOK_EXTENSION: &str = "claude";
+/// The events whose hooks note the session: it starts (or is resumed, cleared, compacted), and its turns go on.
+const HOOK_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"];
+/// How much of the end of a transcript is read for its last answer: a few answers' worth, read in well under a millisecond.
+const TRANSCRIPT_TAIL: u64 = 256 * 1024;
 /// The variable that names the settings file the `claude` function of the shell integration hands to Claude Code.
 pub const CLAUDE_SETTINGS_VAR: &str = "NEKOMINAL_CLAUDE_SETTINGS";
 
@@ -74,8 +88,42 @@ pub fn statusline_main() -> bool {
     if let Some(file) = std::env::var(SESSION_VAR).ok().as_deref().and_then(usage_file) {
         write_whole(&file, &value.to_string());
     }
+    if let (Some(model), Some(size)) = (value.pointer("/model/id").and_then(|v| v.as_str()), value.pointer("/context_window/context_window_size").and_then(serde_json::Value::as_u64)) {
+        remember_window(model, size);
+    }
     crate::spend::record(&value);
     true
+}
+
+/// Run as a hook of Claude Code when the program was started with `--claude-hook`: notes where the session's transcript is
+/// for the window, and prints nothing (Claude Code would add what a `SessionStart` or `UserPromptSubmit` hook prints to the
+/// conversation). It exits 0 whatever happens, and writes only when something changed: it runs after every tool.
+pub fn claude_hook_main() -> bool {
+    if std::env::args().nth(1).as_deref() != Some(HOOK_FLAG) {
+        return false;
+    }
+    let mut values = serde_json::Deserializer::from_reader(std::io::stdin().lock()).into_iter::<serde_json::Value>();
+    let Some(Ok(input)) = values.next() else { return true };
+    if let Some(file) = std::env::var(SESSION_VAR).ok().and_then(|s| session_file(&s, HOOK_EXTENSION)) {
+        let old = std::fs::read_to_string(&file).ok();
+        if let Some(text) = hook_record(&input, old.as_deref()) {
+            write_if_changed(&file, &text);
+        }
+    }
+    true
+}
+
+/// What the file of a pane keeps of a hook's input: the session, its transcript and folder, and the model when the event
+/// names one (`SessionStart` does in recent versions). A model said before is kept while the session is the same one.
+fn hook_record(input: &serde_json::Value, old: Option<&str>) -> Option<String> {
+    let text = |value: &serde_json::Value, key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
+    let session = text(input, "session_id");
+    let transcript = text(input, "transcript_path")?;
+    // A model is a string in some versions and `{id, display_name}` in others.
+    let model = input.get("model").and_then(|m| m.as_str().map(str::to_owned).or_else(|| text(m, "display_name")).or_else(|| text(m, "id")));
+    let old: Option<serde_json::Value> = old.and_then(|o| serde_json::from_str(o).ok());
+    let model = model.or_else(|| old.as_ref().filter(|o| text(o, "session_id") == session).and_then(|o| text(o, "model")));
+    Some(serde_json::json!({ "session_id": session, "transcript_path": transcript, "cwd": text(input, "cwd"), "model": model }).to_string())
 }
 
 /// What the agent of a pane last said about its session.
@@ -87,34 +135,202 @@ pub struct Usage {
     pub cost: Option<f64>,
     pub duration_ms: Option<u64>,
     pub cwd: Option<String>,
+    /// The tokens of the last request, whose sum of the first three is the context in use, and of its answer.
+    pub input_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// The size of the context window the share is of.
+    pub context_window: Option<u64>,
+    /// The whole session's tokens, lines and time waiting for the API, as the status line has them.
+    pub total_input_tokens: Option<u64>,
+    pub total_output_tokens: Option<u64>,
+    pub lines_added: Option<u64>,
+    pub lines_removed: Option<u64>,
+    pub api_duration_ms: Option<u64>,
 }
 
-/// The fields of the JSON Claude Code hands its `statusLine` command that the bar shows.
+/// The fields of the JSON Claude Code hands its `statusLine` command that the bar shows. `used_percentage` and
+/// `current_usage` are null until the first answer.
 pub fn parse_usage(json: &str) -> Option<Usage> {
     let value: serde_json::Value = serde_json::from_str(json.trim_start_matches('\u{feff}')).ok()?;
     let text = |pointer: &str| value.pointer(pointer).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
     let number = |pointer: &str| value.pointer(pointer).and_then(serde_json::Value::as_f64).filter(|n| n.is_finite() && *n >= 0.0);
+    let count = |pointer: &str| number(pointer).map(|n| n as u64);
     Some(Usage {
         model: text("/model/display_name"),
         context: number("/context_window/used_percentage").map(|n| n.min(100.0)),
         cost: number("/cost/total_cost_usd"),
-        duration_ms: number("/cost/total_duration_ms").map(|n| n as u64),
+        duration_ms: count("/cost/total_duration_ms"),
         cwd: text("/workspace/current_dir").or_else(|| text("/cwd")),
+        input_tokens: count("/context_window/current_usage/input_tokens"),
+        cache_creation_tokens: count("/context_window/current_usage/cache_creation_input_tokens"),
+        cache_read_tokens: count("/context_window/current_usage/cache_read_input_tokens"),
+        output_tokens: count("/context_window/current_usage/output_tokens"),
+        context_window: count("/context_window/context_window_size").filter(|&n| n > 0),
+        total_input_tokens: count("/context_window/total_input_tokens"),
+        total_output_tokens: count("/context_window/total_output_tokens"),
+        lines_added: count("/cost/total_lines_added"),
+        lines_removed: count("/cost/total_lines_removed"),
+        api_duration_ms: count("/cost/total_api_duration_ms"),
     })
 }
 
-/// When the file of a pane was last written, to tell whether it has to be read again.
-pub fn usage_stamp(session: &str) -> Option<SystemTime> {
-    std::fs::metadata(usage_file(session)?).ok()?.modified().ok()
+/// When the files the usage of a pane comes from were last written: the status line's, the hooks', and the transcript the
+/// hooks named. Read every second, so the transcript is looked at only on a disk of this machine (a path of WSL is not).
+pub type Stamp = [Option<SystemTime>; 3];
+
+fn modified(file: &Path) -> Option<SystemTime> {
+    std::fs::metadata(file).ok()?.modified().ok()
 }
 
+/// The stamp of a pane's files, `None` while Claude Code has said nothing in it.
+pub fn usage_stamp(session: &str) -> Option<Stamp> {
+    let line = modified(&usage_file(session)?);
+    let hook_file = session_file(session, HOOK_EXTENSION)?;
+    let hook = modified(&hook_file);
+    let transcript = hook.and_then(|_| read_hook(&hook_file)).and_then(|record| hook_transcript(&record)).and_then(|t| modified(&t));
+    (line.is_some() || hook.is_some()).then_some([line, hook, transcript])
+}
+
+fn read_hook(file: &Path) -> Option<serde_json::Value> {
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
+}
+
+/// The transcript the hooks of a pane named, when it is on a disk of this machine.
+// shortcut: a WSL pane's transcript is a Linux path and is skipped; map it to \\wsl.localhost\<distro> if WSL users ask.
+fn hook_transcript(record: &serde_json::Value) -> Option<PathBuf> {
+    Some(PathBuf::from(record.get("transcript_path")?.as_str()?)).filter(|path| on_local_disk(path))
+}
+
+/// What the status line last said of a pane's session, with what the transcript says filling in a context it has not
+/// said: no status line ran (another took its place), or it ran before the first answer.
 pub fn read_usage(session: &str) -> Option<Usage> {
-    parse_usage(&std::fs::read_to_string(usage_file(session)?).ok()?)
+    let line = std::fs::read_to_string(usage_file(session)?).ok().and_then(|json| parse_usage(&json));
+    if line.as_ref().is_some_and(|usage| usage.context.is_some()) {
+        return line;
+    }
+    let hook = read_hook(&session_file(session, HOOK_EXTENSION)?);
+    if line.is_none() && hook.is_none() {
+        return None;
+    }
+    let hook_text = |key: &str| hook.as_ref().and_then(|h| h.get(key)).and_then(|v| v.as_str()).map(str::to_owned);
+    let mut usage = line.unwrap_or_default();
+    usage.cwd = usage.cwd.or_else(|| hook_text("cwd"));
+    if let Some(turn) = hook.as_ref().and_then(hook_transcript).and_then(|t| read_tail(&t)).and_then(|(tail, cut)| last_turn(&tail, cut)) {
+        let window = usage.context_window.unwrap_or_else(|| window_size(known_window(&turn.model), turn.context()));
+        fill_from_turn(&mut usage, &turn, window);
+    }
+    usage.model = usage.model.or_else(|| hook_text("model").map(|m| model_name(&m)));
+    Some(usage)
+}
+
+/// The last answer of a session's main conversation, as its transcript has it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Turn {
+    model: String,
+    input: u64,
+    cache_creation: u64,
+    cache_read: u64,
+    output: u64,
+}
+
+impl Turn {
+    /// The context the request of the answer took: what it sent, written to the cache, and read from it.
+    fn context(&self) -> u64 {
+        self.input + self.cache_creation + self.cache_read
+    }
+}
+
+/// The end of a transcript, and whether it was cut (its first line then is most likely a part of one).
+fn read_tail(file: &Path) -> Option<(String, bool)> {
+    let mut input = std::fs::File::open(file).ok()?;
+    let length = input.metadata().ok()?.len();
+    let start = length.saturating_sub(TRANSCRIPT_TAIL);
+    input.seek(std::io::SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    input.read_to_end(&mut bytes).ok()?;
+    Some((String::from_utf8_lossy(&bytes).into_owned(), start > 0))
+}
+
+/// The last answer in the lines of a transcript with tokens: not a subagent's (`isSidechain`), and not one Claude Code
+/// made up itself (an error, an interruption: model `<synthetic>`, no usage worth the name).
+fn last_turn(tail: &str, cut: bool) -> Option<Turn> {
+    let whole = if cut { tail.split_once('\n').map_or("", |(_, rest)| rest) } else { tail };
+    whole.lines().rev().find_map(|line| {
+        let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+        if entry.get("type")?.as_str()? != "assistant" || entry.get("isSidechain").and_then(serde_json::Value::as_bool) == Some(true) {
+            return None;
+        }
+        let message = entry.get("message")?;
+        let model = message.get("model")?.as_str().filter(|m| !m.is_empty() && *m != "<synthetic>")?;
+        let usage = message.get("usage")?;
+        let count = |key: &str| usage.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let turn = Turn {
+            model: model.to_owned(),
+            input: count("input_tokens"),
+            cache_creation: count("cache_creation_input_tokens"),
+            cache_read: count("cache_read_input_tokens"),
+            output: count("output_tokens"),
+        };
+        (turn.context() > 0).then_some(turn)
+    })
+}
+
+/// What the status bar shows of an answer, against a window of `window` tokens.
+fn fill_from_turn(usage: &mut Usage, turn: &Turn, window: u64) {
+    usage.model = usage.model.take().or_else(|| Some(model_name(&turn.model)));
+    usage.context = Some((turn.context() as f64 * 100.0 / window as f64).min(100.0));
+    usage.context_window = Some(window);
+    usage.input_tokens = Some(turn.input);
+    usage.cache_creation_tokens = Some(turn.cache_creation);
+    usage.cache_read_tokens = Some(turn.cache_read);
+    usage.output_tokens = Some(turn.output);
+}
+
+/// The window a model's context is measured against: the one the status line once gave for it, else the usual 200k,
+/// unless more than that is in use already (a 1M window, whose model id is the same).
+fn window_size(known: Option<u64>, used: u64) -> u64 {
+    known.filter(|&size| size >= used).unwrap_or(if used > 200_000 { 1_000_000 } else { 200_000 })
+}
+
+/// The name a model goes by on the bar, from its id: `claude-opus-4-1-20250805` is "Opus 4.1"; another id stays as it is.
+fn model_name(id: &str) -> String {
+    let Some(rest) = id.strip_prefix("claude-") else { return id.to_owned() };
+    let parts: Vec<&str> = rest.split('-').filter(|part| !part.is_empty()).collect();
+    let names: Vec<String> = parts
+        .iter()
+        .filter(|part| !part.bytes().all(|b| b.is_ascii_digit()))
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+        })
+        .collect();
+    // A date (`20250805`) is not part of the version.
+    let version: Vec<&str> = parts.iter().copied().filter(|part| part.bytes().all(|b| b.is_ascii_digit()) && part.len() < 8).collect();
+    if names.is_empty() { id.to_owned() } else { format!("{} {}", names.join(" "), version.join(".")).trim_end().to_owned() }
+}
+
+/// The windows the status line gave per model id, kept for the transcript's answers: `context-windows.json`.
+fn windows_file() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("context-windows.json"))
+}
+
+fn known_window(model: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(windows_file()?).ok()?).ok()?;
+    value.get(model)?.as_u64().filter(|&n| n > 0)
+}
+
+fn remember_window(model: &str, size: u64) {
+    let Some(file) = windows_file().filter(|_| size > 0 && known_window(model) != Some(size)) else { return };
+    let mut known: serde_json::Map<String, serde_json::Value> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    known.insert(model.to_owned(), size.into());
+    write_whole(&file, &serde_json::Value::Object(known).to_string());
 }
 
 /// Takes the files of a pane that is gone.
 pub fn forget(session: &str) {
-    for extension in ["json", crate::hooks::EXTENSION] {
+    for extension in ["json", HOOK_EXTENSION, crate::hooks::EXTENSION] {
         if let Some(file) = session_file(session, extension) {
             let _ = std::fs::remove_file(file);
         }
@@ -220,21 +436,32 @@ fn has_status_line(text: &str) -> bool {
     value.as_ref().and_then(|v| v.get("statusLine")).is_some_and(|line| !line.is_null())
 }
 
-/// The settings Claude Code takes with `--settings` in a pane: a status line that is this program. Forward slashes,
-/// because Claude Code runs the command through Git Bash when it can, which eats backslashes; quotes for a path with spaces.
-fn status_line_settings(exe: &Path) -> String {
+/// This program run with `flag` by Claude Code in a pane. Forward slashes, because Claude Code runs the command through
+/// Git Bash when it can, which eats backslashes; quotes for a path with spaces.
+fn command(exe: &Path, flag: &str) -> String {
     let exe = exe.to_string_lossy().replace('\\', "/");
-    let command = if exe.contains(' ') { format!("\"{exe}\" {FLAG}") } else { format!("{exe} {FLAG}") };
-    serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
+    if exe.contains(' ') { format!("\"{exe}\" {flag}") } else { format!("{exe} {flag}") }
 }
 
-/// The settings Claude Code of a WSL distribution takes: the same command, which a Linux shell runs through interop at
-/// the path `wslpath` gives (it knows where the distribution mounts the drives). The `claude` function of the bash
-/// integration picks this file, beside the other, inside WSL.
-fn wsl_status_line_settings(exe: &Path) -> String {
+/// The same command for Claude Code of a WSL distribution, which a Linux shell runs through interop at the path `wslpath`
+/// gives (it knows where the distribution mounts the drives).
+fn wsl_command(exe: &Path, flag: &str) -> String {
     let exe = exe.to_string_lossy().replace('\'', r"'\''");
-    let command = format!("\"$(wslpath -u '{exe}')\" {FLAG}");
-    serde_json::json!({ "statusLine": { "type": "command", "command": command } }).to_string()
+    format!("\"$(wslpath -u '{exe}')\" {flag}")
+}
+
+/// The settings Claude Code takes with `--settings` in a pane: this program as the hooks that note the session, and as
+/// the status line unless the user has one of their own. `wsl` for the twin the `claude` function of the bash integration
+/// picks, beside the other, inside WSL.
+fn settings_json(exe: &Path, wsl: bool, status_line: bool) -> String {
+    let command = |flag: &str| if wsl { wsl_command(exe, flag) } else { command(exe, flag) };
+    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command(HOOK_FLAG) }] }]);
+    let hooks: serde_json::Map<String, serde_json::Value> = HOOK_EVENTS.iter().map(|event| ((*event).to_owned(), hook.clone())).collect();
+    let mut settings = serde_json::json!({ "hooks": hooks });
+    if status_line {
+        settings["statusLine"] = serde_json::json!({ "type": "command", "command": command(FLAG) });
+    }
+    settings.to_string()
 }
 
 /// Writes `text` to `file` unless it holds it already: whole, as every window that starts writes it too.
@@ -242,15 +469,18 @@ pub fn write_if_changed(file: &Path, text: &str) -> Option<()> {
     (std::fs::read_to_string(file).ok().as_deref() == Some(text) || write_whole(file, text)).then_some(())
 }
 
-/// Writes the file `NEKOMINAL_CLAUDE_SETTINGS` names, and its WSL twin `claude-settings-wsl.json`, and returns where the
-/// first is: next to the files of the panes, rewritten when this program moved (another build, an update).
-pub fn claude_settings_file() -> Option<PathBuf> {
+/// Writes the files `NEKOMINAL_CLAUDE_SETTINGS` names, next to the files of the panes and rewritten when this program
+/// moved (another build, an update): `claude-settings.json` (status line and hooks) and `claude-hooks.json` (hooks only,
+/// for a status line of the user's own, which the shell integration also picks for a project that sets one), each with a
+/// WSL twin `-wsl.json`. Returns the one for a pane.
+pub fn claude_settings_file(own_status_line: bool) -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal");
     let exe = std::env::current_exe().ok()?;
-    write_if_changed(&dir.join("claude-settings-wsl.json"), &wsl_status_line_settings(&exe))?;
-    let file = dir.join("claude-settings.json");
-    write_if_changed(&file, &status_line_settings(&exe))?;
-    Some(file)
+    for (name, status_line) in [("claude-settings", true), ("claude-hooks", false)] {
+        write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line))?;
+        write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line))?;
+    }
+    Some(dir.join(if own_status_line { "claude-hooks.json" } else { "claude-settings.json" }))
 }
 
 #[cfg(test)]
@@ -290,21 +520,133 @@ mod tests {
         assert!(!has_status_line("{\"a\": 1,}"), "a file Claude Code cannot read either sets nothing");
     }
 
+    fn settings(exe: &str, wsl: bool, status_line: bool) -> serde_json::Value {
+        serde_json::from_str(&settings_json(Path::new(exe), wsl, status_line)).unwrap()
+    }
+
     #[test]
     fn the_settings_of_a_pane_run_this_program_with_forward_slashes() {
-        let plain: serde_json::Value = serde_json::from_str(&status_line_settings(Path::new(r"C:\n\nekominal.exe"))).unwrap();
+        let plain = settings(r"C:\n\nekominal.exe", false, true);
         assert_eq!(plain["statusLine"]["command"], "C:/n/nekominal.exe --statusline");
         assert_eq!(plain["statusLine"]["type"], "command");
-        let spaced: serde_json::Value = serde_json::from_str(&status_line_settings(Path::new(r"C:\Program Files\N\n.exe"))).unwrap();
+        let spaced = settings(r"C:\Program Files\N\n.exe", false, true);
         assert_eq!(spaced["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline");
+        for event in HOOK_EVENTS {
+            assert_eq!(spaced["hooks"][event][0]["hooks"][0]["command"], "\"C:/Program Files/N/n.exe\" --claude-hook", "{event}");
+            assert_eq!(spaced["hooks"][event][0]["hooks"][0]["type"], "command");
+        }
     }
 
     #[test]
     fn the_settings_of_a_wsl_pane_run_this_program_at_the_path_wslpath_gives() {
-        let spaced: serde_json::Value = serde_json::from_str(&wsl_status_line_settings(Path::new(r"C:\Program Files\N\n.exe"))).unwrap();
+        let spaced = settings(r"C:\Program Files\N\n.exe", true, true);
         assert_eq!(spaced["statusLine"]["command"], r#""$(wslpath -u 'C:\Program Files\N\n.exe')" --statusline"#);
-        let quoted: serde_json::Value = serde_json::from_str(&wsl_status_line_settings(Path::new(r"C:\Bob's\n.exe"))).unwrap();
+        assert_eq!(spaced["hooks"]["Stop"][0]["hooks"][0]["command"], r#""$(wslpath -u 'C:\Program Files\N\n.exe')" --claude-hook"#);
+        let quoted = settings(r"C:\Bob's\n.exe", true, true);
         assert_eq!(quoted["statusLine"]["command"], r#""$(wslpath -u 'C:\Bob'\''s\n.exe')" --statusline"#, "a quote in the path ends no string");
+    }
+
+    #[test]
+    fn a_status_line_of_the_user_s_own_still_gets_the_hooks_but_never_ours() {
+        for wsl in [false, true] {
+            let hooks = settings(r"C:\n\nekominal.exe", wsl, false);
+            assert!(hooks.get("statusLine").is_none(), "--settings would win over the user's status line");
+            assert_eq!(hooks["hooks"].as_object().unwrap().len(), HOOK_EVENTS.len());
+            assert!(hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap().ends_with(" --claude-hook"));
+        }
+    }
+
+    #[test]
+    fn a_hook_notes_the_transcript_and_keeps_a_model_said_before_in_the_same_session() {
+        let start: serde_json::Value = serde_json::from_str(
+            r#"{"session_id":"s1","transcript_path":"C:\\Users\\me\\.claude\\projects\\p\\s1.jsonl","cwd":"C:\\work","hook_event_name":"SessionStart","source":"startup","model":"claude-opus-5-5"}"#,
+        ).unwrap();
+        let first = hook_record(&start, None).unwrap();
+        let noted: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(noted["transcript_path"], "C:\\Users\\me\\.claude\\projects\\p\\s1.jsonl");
+        assert_eq!((noted["session_id"].as_str(), noted["cwd"].as_str(), noted["model"].as_str()), (Some("s1"), Some("C:\\work"), Some("claude-opus-5-5")));
+        let tool: serde_json::Value = serde_json::from_str(r#"{"session_id":"s1","transcript_path":"C:\\t\\s1.jsonl","cwd":"C:\\work","hook_event_name":"PostToolUse","tool_name":"Bash"}"#).unwrap();
+        let later: serde_json::Value = serde_json::from_str(&hook_record(&tool, Some(&first)).unwrap()).unwrap();
+        assert_eq!(later["model"], "claude-opus-5-5", "the model of the session's start stays");
+        let cleared: serde_json::Value = serde_json::from_str(r#"{"session_id":"s2","transcript_path":"C:\\t\\s2.jsonl","hook_event_name":"SessionStart","model":{"id":"claude-haiku-4-5","display_name":"Haiku 4.5"}}"#).unwrap();
+        let cleared: serde_json::Value = serde_json::from_str(&hook_record(&cleared, Some(&first)).unwrap()).unwrap();
+        assert_eq!((cleared["transcript_path"].as_str(), cleared["model"].as_str()), (Some("C:\\t\\s2.jsonl"), Some("Haiku 4.5")));
+        let other: serde_json::Value = serde_json::from_str(r#"{"session_id":"s3","transcript_path":"C:\\t\\s3.jsonl"}"#).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&hook_record(&other, Some(&first)).unwrap()).unwrap()["model"].is_null(), "another session's model is not kept");
+        assert_eq!(hook_record(&serde_json::json!({"session_id":"s1"}), None), None, "nothing to note without a transcript");
+    }
+
+    #[test]
+    fn the_last_answer_of_the_main_conversation_is_read_from_the_end_of_the_transcript() {
+        let tail = [
+            r#"ns":5}},"type":"assistant","uuid":"cut-in-half"}"#,
+            r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","usage":{"input_tokens":3,"cache_creation_input_tokens":1200,"cache_read_input_tokens":40000,"output_tokens":512}}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-4-5","usage":{"input_tokens":9000,"output_tokens":10}}}"#,
+            r#"{"type":"assistant","isSidechain":false,"message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error"}]}}"#,
+            r#"{"type":"assistant","isSidechain":false,"message":{"model":"claude-opus-5-5","content":[]}}"#,
+            r#"{"type":"system","subtype":"turn_duration"}"#,
+            "",
+        ]
+        .join("\n");
+        let turn = last_turn(&tail, true).unwrap();
+        assert_eq!(turn, Turn { model: "claude-opus-5-5".into(), input: 3, cache_creation: 1200, cache_read: 40000, output: 512 });
+        assert_eq!(turn.context(), 41_203);
+        assert_eq!(last_turn(r#"{"type":"assistant","message":{"model":"m","usage":{"input_tokens":7}}}"#, true), None, "a cut first line is never taken");
+        assert_eq!(last_turn("", false), None);
+        let mut usage = Usage { model: Some("Opus 5.5".into()), ..Usage::default() };
+        fill_from_turn(&mut usage, &turn, 200_000);
+        assert_eq!(usage.model.as_deref(), Some("Opus 5.5"), "the status line's name stays");
+        assert!((usage.context.unwrap() - 20.6015).abs() < 1e-3);
+        assert_eq!((usage.input_tokens, usage.cache_creation_tokens, usage.cache_read_tokens, usage.output_tokens), (Some(3), Some(1200), Some(40000), Some(512)));
+        let mut usage = Usage::default();
+        fill_from_turn(&mut usage, &turn, 200_000);
+        assert_eq!(usage.model.as_deref(), Some("Opus 5.5"), "the name from the id");
+    }
+
+    #[test]
+    fn the_end_of_a_long_transcript_is_read_from_its_last_quarter_megabyte() {
+        let file = std::env::temp_dir().join(format!("nekominal-transcript-{}.jsonl", new_session()));
+        let answer = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":10,"cache_read_input_tokens":90}}}"#;
+        let filler = format!("{{\"type\":\"user\",\"pad\":\"{}\"}}\n", "x".repeat(1000));
+        std::fs::write(&file, filler.repeat(400) + answer + "\n").unwrap();
+        let (tail, cut) = read_tail(&file).unwrap();
+        assert!(cut && tail.len() as u64 == TRANSCRIPT_TAIL);
+        assert_eq!(last_turn(&tail, cut).map(|t| t.context()), Some(100));
+        std::fs::write(&file, answer).unwrap();
+        assert_eq!(read_tail(&file).map(|(_, cut)| cut), Some(false), "a short file is read whole");
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn the_window_is_the_one_the_status_line_gave_else_200k_or_1m_past_that() {
+        assert_eq!(window_size(Some(1_000_000), 50_000), 1_000_000);
+        assert_eq!(window_size(None, 50_000), 200_000);
+        assert_eq!(window_size(None, 200_000), 200_000);
+        assert_eq!(window_size(None, 250_000), 1_000_000);
+        assert_eq!(window_size(Some(200_000), 250_000), 1_000_000, "a window smaller than what is in use was another one's");
+    }
+
+    #[test]
+    fn a_model_goes_by_its_family_and_version() {
+        assert_eq!(model_name("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(model_name("claude-haiku-4-5-20251001"), "Haiku 4.5");
+        assert_eq!(model_name("claude-3-5-sonnet-20241022"), "Sonnet 3.5");
+        assert_eq!(model_name("claude-fable"), "Fable");
+        assert_eq!(model_name("gpt-6-luna"), "gpt-6-luna", "another id stays as it is");
+        assert_eq!(model_name("claude-"), "claude-");
+    }
+
+    #[test]
+    fn the_status_line_json_gives_the_tokens_lines_and_window() {
+        let json = r#"{"context_window":{"context_window_size":1000000,"current_usage":{"input_tokens":5,"cache_creation_input_tokens":300,"cache_read_input_tokens":20000,"output_tokens":42},
+            "total_input_tokens":123456,"total_output_tokens":7890,"used_percentage":2.03},"cost":{"total_api_duration_ms":4500,"total_lines_added":12,"total_lines_removed":3}}"#;
+        let usage = parse_usage(json).unwrap();
+        assert_eq!((usage.input_tokens, usage.cache_creation_tokens, usage.cache_read_tokens, usage.output_tokens), (Some(5), Some(300), Some(20000), Some(42)));
+        assert_eq!((usage.context_window, usage.total_input_tokens, usage.total_output_tokens), (Some(1_000_000), Some(123_456), Some(7890)));
+        assert_eq!((usage.lines_added, usage.lines_removed, usage.api_duration_ms), (Some(12), Some(3), Some(4500)));
+        let early = parse_usage(r#"{"context_window":{"context_window_size":1000000,"current_usage":null,"used_percentage":null}}"#).unwrap();
+        assert_eq!((early.context, early.input_tokens, early.context_window), (None, None, Some(1_000_000)), "null before the first answer");
     }
 
     #[test]

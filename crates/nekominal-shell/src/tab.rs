@@ -55,7 +55,7 @@ pub struct PaneEntry {
     /// last handed over, with when it did.
     pub session: String,
     pub usage: Option<crate::agent::Usage>,
-    pub usage_stamp: Option<std::time::SystemTime>,
+    pub usage_stamp: Option<crate::agent::Stamp>,
     /// When the hook of the pane's agent (`hooks.rs`) last wrote its file, as last read.
     pub hook_stamp: Option<std::time::SystemTime>,
     /// The Git repository of the folder the pane is in, with its branch: looked up once a tick for the focused pane of each

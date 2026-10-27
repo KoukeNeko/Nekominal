@@ -887,13 +887,13 @@ impl App {
             env.extend(nekominal_pty::profiles::agent_environment());
             env.extend(crate::hooks::environment());
         }
-        // Which pane a program runs in, for the status line command of Claude Code, and the settings that make that command
-        // this program, while the status bar is on and Claude Code has no status line of the user's own.
+        // Which pane a program runs in, for the status line command and the hooks of Claude Code, and the settings that make
+        // them this program while the status bar is on: the hooks only when Claude Code has a status line of the user's own.
         env.extend(profile.options.env.clone());
         env.extend(profiles::launch_env(profile, self.settings.shell_integration));
         env.insert(agent::SESSION_VAR.to_owned(), session.to_owned());
         env.extend(crate::api::pane_environment(session));
-        if self.settings.status_bar.show && !self.claude.own_status_line && let Some(file) = agent::claude_settings_file() {
+        if self.settings.status_bar.show && let Some(file) = agent::claude_settings_file(self.claude.own_status_line) {
             env.insert(agent::CLAUDE_SETTINGS_VAR.to_owned(), file.to_string_lossy().into_owned());
         }
         let program = nekominal_pty::profiles::resolve_program(&profile.program)

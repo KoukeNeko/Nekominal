@@ -95,8 +95,8 @@ fn main() {
             }
         }
     }
-    // Claude Code's status line command is this program too: it hands the session over and is gone.
-    if agent::statusline_main() || hooks::hook_main() {
+    // Claude Code's status line command and hooks are this program too: they hand the session over and are gone.
+    if agent::statusline_main() || agent::claude_hook_main() || hooks::hook_main() {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();

@@ -208,7 +208,7 @@ mod tests {
             folder: Some("~\\repo".into()),
             focused: true,
             time_ms: Some(3_725_000),
-            usage: Some(Usage { model: Some("Opus".into()), context: Some(42.4), cost: Some(0.8412), duration_ms: Some(3_725_000), cwd: None }),
+            usage: Some(Usage { model: Some("Opus".into()), context: Some(42.4), cost: Some(0.8412), duration_ms: Some(3_725_000), ..Usage::default() }),
             agent: "Claude Code".into(),
             ..seen((0, 0), TabState::Working)
         };
