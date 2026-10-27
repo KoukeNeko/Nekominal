@@ -542,6 +542,11 @@ pub fn pane_environment(pane: &str) -> Vec<(String, String)> {
 /// Opens the pipe `name`, waiting a little while every instance is taken (the server makes the next one right away).
 pub fn connect(name: &str) -> std::io::Result<File> {
     const ERROR_PIPE_BUSY: i32 = 231;
+    // Only a pipe of this computer: any other name (a broken instance file, a slip in --pipe) would open that file and
+    // write the request into it.
+    if !name.get(..9).is_some_and(|start| start.eq_ignore_ascii_case(r"\\.\pipe\")) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, r"not the name of a pipe (\\.\pipe\…)"));
+    }
     for _ in 0..100 {
         match std::fs::OpenOptions::new().read(true).write(true).open(name) {
             Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => std::thread::sleep(Duration::from_millis(20)),
@@ -557,8 +562,13 @@ pub fn connect_default() -> Result<File, String> {
     if let Some(name) = std::env::var(PIPE_VAR).ok().filter(|name| !name.is_empty()) {
         return connect(&name).map_err(|e| format!("{name}: {e}"));
     }
-    let dir = instances_dir().ok_or("LOCALAPPDATA is not set")?;
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
+    connect_newest(&instances_dir().ok_or("LOCALAPPDATA is not set")?)
+}
+
+/// The newest instance whose file in `dir` names a pipe that opens; the files of instances that are gone, or that name
+/// no pipe, are removed on the way.
+fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .map(|entries| entries.flatten().filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path()))).collect())
         .unwrap_or_default();
     found.sort_by(|a, b| b.0.cmp(&a.0));
@@ -566,7 +576,7 @@ pub fn connect_default() -> Result<File, String> {
         let Ok(name) = std::fs::read_to_string(&file) else { continue };
         match connect(name.trim()) {
             Ok(pipe) => return Ok(pipe),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput) => {
                 let _ = std::fs::remove_file(&file);
             }
             Err(_) => {}
@@ -760,6 +770,39 @@ mod tests {
         let mut lines = BufReader::new(&pipe).lines();
         assert_eq!(lines.next().unwrap().unwrap(), format!(r#"{{"error":"a request is at most {MAX_LINE} bytes","id":null,"ok":false}}"#));
         assert!(lines.next().is_none_or(|line| line.is_err()), "and the pipe is closed");
+    }
+
+    #[test]
+    fn the_cli_finds_the_newest_live_instance_and_clears_files_that_name_none() {
+        let dir = std::env::temp_dir().join(format!("nekominal-api-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = |file: &str, text: &str, age: u64| {
+            std::fs::write(dir.join(file), text).unwrap();
+            let when = std::time::SystemTime::now() - Duration::from_secs(age);
+            std::fs::File::options().write(true).open(dir.join(file)).unwrap().set_modified(when).unwrap();
+        };
+        // A file of the user's that a broken instance file names: it must not be opened for writing.
+        let victim = dir.with_extension("victim.txt");
+        std::fs::write(&victim, "keep me").unwrap();
+        at("1", &format!(r"\\.\pipe\nekominal-test-{}-crashed", std::process::id()), 10);
+        at("2", &victim.display().to_string(), 5);
+        at("3", "", 1);
+        at("4", "\u{feff}garbage \0 \u{1}", 0);
+        assert_eq!(connect_newest(&dir).unwrap_err(), "no running Nekominal was found");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(left.is_empty(), "the files that name no live pipe are gone: {left:?}");
+        // A live instance older than a crashed one is still found.
+        at("5", &format!("{}\r\n", served()), 20);
+        at("6", &format!(r"\\.\pipe\nekominal-test-{}-crashed", std::process::id()), 0);
+        let pipe = connect_newest(&dir).expect("the live one");
+        writeln!(&pipe, r#"{{"cmd":"list"}}"#).unwrap();
+        assert!(BufReader::new(&pipe).lines().next().unwrap().unwrap().contains("listed"));
+        assert!(!dir.join("6").exists() && dir.join("5").exists());
+        assert!(connect(victim.to_str().unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidInput), "--pipe with a path is refused too");
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&victim).unwrap();
     }
 
     #[test]
