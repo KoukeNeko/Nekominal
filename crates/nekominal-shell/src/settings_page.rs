@@ -15,6 +15,7 @@ use nekominal_model::{
     settings_ui::{self, Control, Descriptor, Range, Section, Value},
     strings::{Lang, Text},
     themes,
+    triggers::{self, Action, Trigger},
 };
 use nekominal_ui::Rect;
 
@@ -52,6 +53,7 @@ const CONTROL: f32 = 28.0;
 const SWITCH: (f32, f32) = (44.0, 24.0);
 const SLIDER_WIDTH: f32 = 200.0;
 const FIELD_WIDTH: f32 = 280.0;
+const WIDE_FIELD: f32 = 320.0;
 const TILE: (f32, f32) = (148.0, 64.0);
 const TILE_GAP: f32 = 2.0 * GAP;
 const RADIO_ROW: f32 = 40.0;
@@ -97,6 +99,8 @@ pub struct Page {
     pub error: Option<(&'static str, Text)>,
     /// The names of the saved layouts, read when the page opens and after each change to them, not at each frame.
     pub layouts: Vec<String>,
+    /// The rule of the Triggers page that is open in place, by its index; one past the last is the one being added.
+    pub trigger: Option<usize>,
 }
 
 /// Which shortcut of the command being recorded the chord pressed is for.
@@ -180,6 +184,76 @@ pub enum Part {
     LayoutName(usize),
     LayoutOpen(usize),
     LayoutDelete(usize),
+    /// Sends a test push with the settings of the Terminal page.
+    PushTest,
+    /// The Triggers page: adding a rule, and of the rule at this index its plate (which opens and closes it), its switch,
+    /// the fields of its form, its "before the line ends" chip, the action and the colour at an index, and the ready-made
+    /// rule at an index of `triggers::PRESETS`.
+    TriggerAdd,
+    TriggerOpen(usize),
+    TriggerSwitch(usize),
+    TriggerName(usize),
+    TriggerPattern(usize),
+    TriggerInstant(usize),
+    TriggerProgram(usize),
+    TriggerText(usize),
+    TriggerAction(usize, usize),
+    TriggerColor(usize, usize),
+    TriggerPreset(usize),
+}
+
+/// The ids the fields of a rule of the Triggers page are edited under (`Page::editing`); `Page::env_row` is the rule's
+/// index, one past the last for the one being added.
+pub const TRIGGER_NAME_ID: &str = "trigger.name";
+pub const TRIGGER_PATTERN_ID: &str = "trigger.pattern";
+pub const TRIGGER_PROGRAM_ID: &str = "trigger.program";
+pub const TRIGGER_TEXT_ID: &str = "trigger.text";
+
+/// The id a field of a rule is edited under, and the index of its rule.
+pub fn trigger_field(part: Part) -> Option<(&'static str, usize)> {
+    match part {
+        Part::TriggerName(i) => Some((TRIGGER_NAME_ID, i)),
+        Part::TriggerPattern(i) => Some((TRIGGER_PATTERN_ID, i)),
+        Part::TriggerProgram(i) => Some((TRIGGER_PROGRAM_ID, i)),
+        Part::TriggerText(i) => Some((TRIGGER_TEXT_ID, i)),
+        _ => None,
+    }
+}
+
+/// The rule at `index` of the settings, or the one being added past the last: a highlight, as the file's default.
+pub fn trigger_at(settings: &Settings, index: usize) -> Trigger {
+    settings.triggers.get(index).cloned().unwrap_or_else(|| Trigger {
+        name: String::new(),
+        pattern: String::new(),
+        enabled: true,
+        action: Action::Highlight { color: triggers::DEFAULT_HIGHLIGHT.to_owned() },
+        program: None,
+        instant: false,
+    })
+}
+
+/// What the tag of a rule says it does: a send also says what it types, its Enter as ⏎.
+pub fn action_text(action: &Action, lang: Lang) -> String {
+    let name = ACTIONS[action.index()].get(lang);
+    match action {
+        Action::Send { text, .. } => format!("{name} {}", text.replace('\r', "\u{23CE}")),
+        _ => name.to_owned(),
+    }
+}
+
+/// The names of the actions, in the order of `Action::index`.
+const ACTIONS: [Text; 5] = [Text::TriggerHighlight, Text::AgentNotification, Text::TriggerBadge, Text::TriggerSend, Text::TriggerBell];
+
+/// A secret as its field shows it while it is not edited: its first three and last four characters, the rest dots, and
+/// a short one all dots.
+pub fn masked(secret: &str) -> String {
+    let chars: Vec<char> = secret.chars().collect();
+    if chars.len() <= 10 {
+        return "\u{2022}".repeat(chars.len());
+    }
+    let head: String = chars[..3].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}{}{tail}", "\u{2022}".repeat(chars.len() - 7))
 }
 
 /// The id the name of a saved layout is edited under; `Page::env_row` is its place, one past the last for a new one.
@@ -207,6 +281,19 @@ pub enum Tone {
     Quiet,
     /// What says why a value was not taken.
     Error,
+    /// What says something went well: the test push got through.
+    Good,
+}
+
+/// The look of a small pill: a pattern in a rule's plate, or the tag of its action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag {
+    Code,
+    Plain,
+    /// A send: it types into a program.
+    Warn,
+    /// A highlight: it marks the text.
+    Mark,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,6 +317,7 @@ pub enum Fill {
     /// A slider, its thumb `share` of the way (0 to 1) along the track; the rectangle is the one that takes the presses.
     Slider { share: f32 },
     Radio { on: bool, hover: bool },
+    Tag(Tag),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,6 +335,10 @@ pub enum Visual {
     Tile { scheme: usize, selected: bool, hover: bool },
     /// A layout of the tabs (an index into `TabLayout::ALL`): a window in a few rectangles.
     Layout { layout: usize, selected: bool, hover: bool },
+    /// A colour of a highlight (`#RRGGBB`) to choose.
+    Swatch { color: &'static str, selected: bool, hover: bool },
+    /// The last lines of the pane on a dark box, the byte ranges a pattern matches in each marked.
+    Sample { lines: Vec<(String, Vec<(usize, usize)>)> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +373,11 @@ pub enum Entry {
     Snippets,
     /// Under the profiles: the saved layouts of windows, a line each, and the button that saves this window's.
     Layouts,
+    /// Under the phone notifications: the button that sends a test, and what the last one came to.
+    PushTest,
+    /// The rule of the Triggers page at this index (one past the last is the one being added), and the ready-made ones.
+    Trigger(usize),
+    TriggerPresets,
 }
 
 impl Entry {
@@ -290,7 +387,8 @@ impl Entry {
             Entry::Setting(row) => row.section,
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
-            Entry::Snippets => Section::Terminal,
+            Entry::Snippets | Entry::PushTest => Section::Terminal,
+            Entry::Trigger(_) | Entry::TriggerPresets => Section::Triggers,
             Entry::Layouts => Section::Profiles,
             Entry::About | Entry::Repo | Entry::Contributors => Section::About,
             Entry::NewProfile | Entry::ProfileHeader | Entry::ProfileField(_) => Section::Profiles,
@@ -316,6 +414,7 @@ fn section_glyph(section: Section) -> char {
         Section::Terminal => '\u{E756}',
         Section::Profiles => '\u{E77B}',
         Section::Agents => '\u{E99A}',
+        Section::Triggers => '\u{E945}',
         Section::Keys => '\u{E765}',
         Section::Advanced => '\u{E713}',
         Section::About => '\u{E946}',
@@ -348,6 +447,10 @@ pub struct View<'a> {
     /// What the last look for a newer version found, and whether Scoop installed this copy (so that it can update it).
     pub update: crate::update::Check,
     pub scoop: bool,
+    /// What the last test push came to, and how long ago it was sent.
+    pub push_test: Option<(std::time::Duration, crate::push::Test)>,
+    /// The last lines of the focused pane that are not blank, which the form of a rule matches its pattern against.
+    pub sample: &'a [String],
 }
 
 impl Frame {
@@ -386,9 +489,9 @@ impl Frame {
 }
 
 /// The rows on show: the matches of the query, or the section.
-pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Scheme]) -> Vec<Entry> {
+pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, settings: &Settings) -> Vec<Entry> {
     if !page.query.trim().is_empty() {
-        let mut found: Vec<Entry> = settings_ui::search_with(&page.query, lang, keymap, schemes)
+        let mut found: Vec<Entry> = settings_ui::search_with(&page.query, lang, keymap, &settings.schemes)
             .into_iter()
             .map(|row| match row {
                 settings_ui::Row::Setting(descriptor) => Entry::Setting(descriptor),
@@ -402,6 +505,10 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Sche
     let section = Section::ALL[page.section.min(Section::ALL.len() - 1)];
     if section == Section::Keys {
         settings_ui::key_rows().map(Entry::Key).collect()
+    } else if section == Section::Triggers {
+        // The rules, the one being added after them while it is open, then the ready-made ones.
+        let count = settings.triggers.len() + usize::from(page.trigger == Some(settings.triggers.len()));
+        (0..count).map(Entry::Trigger).chain([Entry::TriggerPresets]).collect()
     } else if section == Section::Profiles && page.profile.is_some() {
         std::iter::once(Entry::ProfileHeader).chain(Field::ALL.map(Entry::ProfileField)).collect()
     } else {
@@ -410,8 +517,11 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, schemes: &[themes::Sche
         let about = if section == Section::About { vec![Entry::About, Entry::Repo, Entry::Contributors] } else { Vec::new() };
         let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
         let snippets = (section == Section::Terminal).then_some(Entry::Snippets);
-        // A row that starts a section of the page comes under its heading.
-        let rows = settings_ui::in_section(section).flat_map(|row| settings_ui::heading_before(row.id).map(Entry::Heading).into_iter().chain([Entry::Setting(row)]));
+        // A row that starts a section of the page comes under its heading; the test of the push comes after its rows.
+        let rows = settings_ui::in_section(section).flat_map(|row| {
+            let test = (row.id == "notifications.push.events").then_some(Entry::PushTest);
+            settings_ui::heading_before(row.id).map(Entry::Heading).into_iter().chain([Entry::Setting(row)]).chain(test)
+        });
         agents.into_iter().chain(about).chain(rows).chain(new_profile).chain(snippets).collect()
     }
 }
@@ -437,6 +547,8 @@ pub fn value_text(row: &Descriptor, settings: &Settings, profiles: &[Profile], l
         (Control::Slider(_), Value::Number(n)) => format!("{n:.0}%"),
         (Control::Number(range), Value::Number(n)) => number_text(range, n),
         (Control::Profiles, Value::Text(id)) => profiles.iter().find(|p| p.id == id).map_or(id, |p| p.name.clone()),
+        (Control::Secret, Value::Text(text)) => masked(&text),
+        (Control::Flags(options), Value::Flags(bits)) => options.iter().enumerate().filter(|(i, _)| bits & 1 << i != 0).map(|(_, text)| text.get(lang)).collect::<Vec<_>>().join(", "),
         (_, Value::Text(text)) => text,
         _ => String::new(),
     }
@@ -496,9 +608,9 @@ fn item(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, visual: Visual, s
     items.push(Item { rect, part, visual, scrolls });
 }
 
-/// A button with a glyph before its text.
-fn icon_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, text: &str, hover: Option<Part>) {
-    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+/// A button with a glyph before its text; `primary` for the one a page stands for (add a rule).
+fn icon_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, text: &str, primary: bool, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: primary, hover: hover == Some(part) }), true);
     item(items, Rect::new(rect.x + 8.0, rect.y, 16.0, rect.h), None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
     item(items, Rect::new(rect.x + 28.0, rect.y, (rect.w - 32.0).max(0.0), rect.h), None, label(text, 13.0, Tone::Text, false, Align::Left), true);
 }
@@ -596,6 +708,150 @@ impl Controls {
     }
 }
 
+/// What the test row of the push says: under its label when the last test was sent, and beside its button what it came to.
+fn push_test_texts(test: Option<&(std::time::Duration, crate::push::Test)>, lang: Lang) -> (Option<String>, Option<(String, Tone)>) {
+    use crate::push::Test;
+    let Some((age, test)) = test else { return (None, None) };
+    let minutes = age.as_secs() / 60;
+    let ago = if minutes == 0 { Text::PushJustNow.get(lang).to_owned() } else { Text::PushMinutesAgo.format(lang, &[&minutes]) };
+    match test {
+        Test::Sending => (None, Some((Text::PushSending.get(lang).to_owned(), Tone::Quiet))),
+        Test::Sent => (Some(Text::PushLastSent.format(lang, &[&ago])), Some((format!("\u{25CF} {}", Text::PushDelivered.get(lang)), Tone::Good))),
+        Test::Failed(why) => (Some(Text::PushLastTried.format(lang, &[&ago])), Some((why.clone(), Tone::Error))),
+    }
+}
+
+/// `text` cut to `room` with an ellipsis when it is wider.
+fn fit(text: &str, room: f32, size: f32, measure: &mut dyn FnMut(&str, f32, bool) -> f32) -> String {
+    if measure(text, size, false) <= room {
+        return text.to_owned();
+    }
+    let mut cut: String = text.to_owned();
+    while !cut.is_empty() && measure(&format!("{cut}\u{2026}"), size, false) > room {
+        cut.pop();
+    }
+    format!("{cut}\u{2026}")
+}
+
+/// The width of the labels of the form of a rule, left of its fields.
+const FORM_LABEL: f32 = 110.0;
+/// One line of the form of a rule: a field and the gap under it.
+const FORM_LINE: f32 = CONTROL + 2.0 * GAP;
+/// A line of the sample of the pane in the form of a rule.
+const SAMPLE_LINE: f32 = 18.0;
+
+/// The plate of the rule at `index` of the Triggers page: its name, its pattern, the tag of its action and its switch,
+/// and, while it is open, its form under them. Its height.
+fn trigger_entry(items: &mut Vec<Item>, page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) -> f32, index: usize, at: Rect, focus: bool) -> f32 {
+    let (lang, hover) = (view.lang, page.hover);
+    let rule = trigger_at(view.settings, index);
+    let open = page.trigger == Some(index);
+    let plate = items.len();
+    row_plate(items, Rect::new(at.x, at.y, at.w, 0.0), None, focus || open);
+    let head = Rect::new(at.x, at.y, at.w, ROW - ROW_GAP);
+    // The line of the name opens and closes the form; a press on the form between its fields does nothing.
+    item(items, Rect::new(head.x + INNER, head.y, (head.w - 2.0 * INNER).max(0.0), head.h), Some(Part::TriggerOpen(index)), label("", 13.0, Tone::Quiet, false, Align::Left), true);
+    let mut controls = Controls::new(head);
+    let switch = controls.take(SWITCH.0, SWITCH.1);
+    item(items, switch, Some(Part::TriggerSwitch(index)), Visual::Plate(Fill::Switch { on: rule.is_on(), hover: hover == Some(Part::TriggerSwitch(index)) }), true);
+    let tag_text = action_text(&rule.action, lang);
+    let tag = controls.take(measure(&tag_text, 12.0, false) + 18.0, 22.0);
+    let look = match rule.action {
+        Action::Highlight { .. } => Tag::Mark,
+        Action::Send { .. } => Tag::Warn,
+        _ => Tag::Plain,
+    };
+    item(items, tag, None, Visual::Plate(Fill::Tag(look)), true);
+    item(items, tag, None, label(tag_text, 12.0, Tone::Text, false, Align::Center), true);
+    // The name, then the pattern in a pill, both cut to what is left of the line.
+    let left = head.x + INNER;
+    let room = (controls.right - left).max(0.0);
+    let name = if rule.name.is_empty() { Text::TriggerAdd.get(lang).to_owned() } else { rule.name.clone() };
+    let name_w = measure(&name, 13.0, true).min(room * 0.5);
+    item(items, Rect::new(left, head.y, name_w, head.h), None, label(fit(&name, name_w, 13.0, measure), 13.0, if rule.name.is_empty() { Tone::Quiet } else { Tone::Text }, true, Align::Left), true);
+    let code_x = left + name_w + 10.0;
+    let code_w = (measure(&rule.pattern, 12.0, false) + 16.0).min((controls.right - code_x).max(0.0));
+    if !rule.pattern.is_empty() && code_w > 24.0 {
+        let code = Rect::new(code_x, head.y + (head.h - 22.0) / 2.0, code_w, 22.0);
+        item(items, code, None, Visual::Plate(Fill::Tag(Tag::Code)), true);
+        item(items, Rect::new(code.x + 8.0, code.y, code.w - 16.0, code.h), None, label(fit(&rule.pattern, code.w - 16.0, 12.0, measure), 12.0, Tone::Quiet, false, Align::Left), true);
+    }
+    let mut height = ROW;
+    if open {
+        // The form: a label at the left of each line, its field at the right of it.
+        let right = at.x + at.w - INNER;
+        let field_x = left + FORM_LABEL + 14.0;
+        let field_w = (right - field_x).max(0.0);
+        let mut line_y = at.y + ROW;
+        let editing_of = |id: &str| page.editing.as_ref().filter(|(edit_id, _)| *edit_id == id && page.env_row == index).map(|(_, text)| text.clone());
+        let form_label = |items: &mut Vec<Item>, line_y: f32, text: Text| item(items, Rect::new(left, line_y, FORM_LABEL, CONTROL), None, label(text.get(lang), 13.0, Tone::Quiet, false, Align::Left), true);
+        form_label(items, line_y, Text::ProfileName);
+        text_field(items, Rect::new(field_x, line_y, field_w, CONTROL), Part::TriggerName(index), editing_of(TRIGGER_NAME_ID), page.edit_cursor, &rule.name, "");
+        line_y += FORM_LINE;
+        form_label(items, line_y, Text::TriggerPattern);
+        let chip_text = Text::TriggerInstant.get(lang);
+        let chip = Rect::new(right - measure(chip_text, 13.0, false) - 24.0, line_y, measure(chip_text, 13.0, false) + 24.0, CONTROL);
+        option_button(items, chip, Part::TriggerInstant(index), chip_text, rule.instant, hover);
+        let typed = editing_of(TRIGGER_PATTERN_ID);
+        let pattern = typed.clone().unwrap_or_else(|| rule.pattern.clone());
+        text_field(items, Rect::new(field_x, line_y, (chip.x - GAP - field_x).max(0.0), CONTROL), Part::TriggerPattern(index), typed, page.edit_cursor, &rule.pattern, "");
+        line_y += FORM_LINE;
+        if let Some((_, error)) = page.error.filter(|(id, _)| *id == TRIGGER_PATTERN_ID && page.env_row == index) {
+            item(items, Rect::new(field_x, line_y - 2.0 * GAP + 2.0, field_w, 18.0), None, label(error.get(lang), 12.0, Tone::Error, false, Align::Left), true);
+            line_y += 20.0;
+        }
+        // The last lines of the pane, what the pattern being typed matches in them marked.
+        if !view.sample.is_empty() {
+            let hits = triggers::sample_hits(&pattern, view.sample);
+            let lines: Vec<(String, Vec<(usize, usize)>)> = view.sample.iter().cloned().zip(hits).collect();
+            let box_h = lines.len() as f32 * SAMPLE_LINE + 16.0;
+            item(items, Rect::new(field_x, line_y, field_w, box_h), None, Visual::Sample { lines }, true);
+            line_y += box_h + 2.0 * GAP;
+        }
+        form_label(items, line_y, Text::TriggerProgram);
+        let note = Text::TriggerProgramNote.get(lang);
+        let note_w = measure(note, 12.0, false).min(field_w / 2.0);
+        item(items, Rect::new(right - note_w, line_y, note_w, CONTROL), None, label(note, 12.0, Tone::Quiet, false, Align::Right), true);
+        let program = rule.program.clone().unwrap_or_default();
+        text_field(items, Rect::new(field_x, line_y, (right - note_w - GAP - field_x).max(0.0), CONTROL), Part::TriggerProgram(index), editing_of(TRIGGER_PROGRAM_ID), page.edit_cursor, &program, "");
+        line_y += FORM_LINE;
+        form_label(items, line_y, Text::TriggerAction);
+        let widths: Vec<f32> = ACTIONS.iter().map(|text| measure(text.get(lang), 13.0, false) + 24.0).collect();
+        let places = wrap(&widths, field_w, GAP);
+        for (k, (text, (line, offset))) in ACTIONS.iter().zip(&places).enumerate() {
+            let button = Rect::new(field_x + offset, line_y + *line as f32 * (CONTROL + GAP), widths[k], CONTROL);
+            option_button(items, button, Part::TriggerAction(index, k), text.get(lang), rule.action.index() == k, hover);
+        }
+        line_y += places.iter().map(|(line, _)| *line + 1).max().unwrap_or(1) as f32 * (CONTROL + GAP) + GAP;
+        // What the action needs: the text of a notification or of a send, the colour of a highlight.
+        match &rule.action {
+            Action::Notify { text } => {
+                form_label(items, line_y, Text::TriggerNotifyText);
+                text_field(items, Rect::new(field_x, line_y, field_w, CONTROL), Part::TriggerText(index), editing_of(TRIGGER_TEXT_ID), page.edit_cursor, text, "$0");
+                line_y += FORM_LINE;
+            }
+            Action::Send { text, .. } => {
+                form_label(items, line_y, Text::TriggerSendText);
+                text_field(items, Rect::new(field_x, line_y, field_w, CONTROL), Part::TriggerText(index), editing_of(TRIGGER_TEXT_ID), page.edit_cursor, &snippet_shown(text), Text::SnippetInput.get(lang));
+                line_y += FORM_LINE;
+            }
+            Action::Highlight { color } => {
+                form_label(items, line_y, Text::TriggerColor);
+                for (k, swatch) in triggers::HIGHLIGHTS.iter().enumerate() {
+                    let part = Part::TriggerColor(index, k);
+                    let rect = Rect::new(field_x + k as f32 * (CONTROL + GAP), line_y, CONTROL, CONTROL);
+                    item(items, rect, Some(part), Visual::Swatch { color: swatch, selected: color.eq_ignore_ascii_case(swatch), hover: hover == Some(part) }, true);
+                }
+                line_y += FORM_LINE;
+            }
+            Action::Badge | Action::Bell => {}
+        }
+        height = line_y - at.y - 2.0 * GAP + GRID_BOTTOM;
+    }
+    items[plate].rect.h = height - ROW_GAP;
+    height
+}
+
 pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) -> f32) -> Frame {
     let lang = view.lang;
     let Rect { x: ox, y: oy, w: width, h: height } = view.area;
@@ -605,7 +861,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     // The column of the sections at the left: the search line on top, a line a section (with what a search finds in it),
     // and the button for the file at the bottom.
     let searching = !page.query.trim().is_empty();
-    let entries = entries(page, lang, view.keymap, &view.settings.schemes);
+    let entries = entries(page, lang, view.keymap, view.settings);
     let nav = Rect::new(ox, oy, NAV.min(width / 2.0), height);
     item(&mut items, nav, None, Visual::Plate(Fill::Strip), false);
     let (inner_x, inner_w) = (nav.x + NAV_PAD, (nav.w - 2.0 * NAV_PAD).max(0.0));
@@ -652,6 +908,17 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             fixed.scrolls = false;
         }
     }
+    // Right after the title of the Triggers page the button that adds a rule, and under it what a rule is.
+    if !searching && Section::ALL.get(page.section) == Some(&Section::Triggers) {
+        let text = Text::TriggerAdd.get(lang);
+        let x = x0 + INNER + measure(title.get(lang), 20.0, true) + 16.0;
+        let button = Rect::new(x, oy + 18.0, (measure(text, 13.0, false) + 40.0).min((x0 + content_width - INNER - x).max(0.0)), CONTROL);
+        icon_button(&mut items, button, Part::TriggerAdd, '\u{E710}', text, true, hover);
+        item(&mut items, Rect::new(x0 + INNER, oy + 46.0, (content_width - 2.0 * INNER).max(0.0), 18.0), None, label(Text::TriggersIntro.get(lang), 12.0, Tone::Quiet, false, Align::Left), false);
+        for fixed in items.iter_mut().rev().take(4) {
+            fixed.scrolls = false;
+        }
+    }
     let top = oy + CONTENT_TOP;
     let viewport = Rect::new(page_x, top, (width - nav.w).max(0.0), (oy + height - top).max(0.0));
     let mut rows = Vec::new();
@@ -662,6 +929,8 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     }
     let theme_names: Vec<&str> = themes::theme_names(&view.settings.schemes).collect();
     let mut last_section = None;
+    // The bottom of the left row of a pair that shares a line, while the right one is still to come.
+    let mut pair_bottom: Option<f32> = None;
     for (n, entry) in entries.iter().enumerate() {
         let focus = page.focus == Some(n);
         // What a search finds comes by section, under the name of each.
@@ -670,8 +939,42 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             y += section_heading(&mut items, x0, y, content_width, entry.section().text().get(lang));
         }
         let start = y;
+        // Where the entry is across the page: all of it, or a half of a pair's line.
+        let mut slot = (x0, content_width);
+        // The bottom of the entry when it is not where the next one starts (the left of a pair).
+        let mut end = None;
         match *entry {
             Entry::Heading(text) => y += section_heading(&mut items, x0, y, content_width, text.get(lang)),
+            Entry::PushTest => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                row_plate(&mut items, rect, None, focus);
+                let (note, status) = push_test_texts(view.push_test.as_ref(), lang);
+                let mut controls = Controls::new(rect);
+                let text = Text::PushTestSend.get(lang);
+                let button = controls.take(measure(text, 13.0, false) + 40.0, CONTROL);
+                icon_button(&mut items, button, Part::PushTest, '\u{E72A}', text, false, hover);
+                if let Some((status, tone)) = status {
+                    let at = controls.take(measure(&status, 13.0, false).min((controls.right - rect.x - INNER) / 2.0).max(0.0), CONTROL);
+                    item(&mut items, at, None, label(status, 13.0, tone, false, Align::Right), true);
+                }
+                row_label(&mut items, rect, (controls.right - rect.x - INNER).max(0.0), Text::PushTest.get(lang), note.as_deref(), Tone::Text);
+                y += ROW;
+            }
+            Entry::Trigger(i) => y += trigger_entry(&mut items, page, view, measure, i, Rect::new(x0, y, content_width, 0.0), focus),
+            Entry::TriggerPresets => {
+                // A chip a ready-made rule, as many in a line as fit inside the inset.
+                let texts: Vec<&str> = triggers::PRESETS.iter().map(|text| text.get(lang)).collect();
+                let widths: Vec<f32> = texts.iter().map(|text| measure(text, 13.0, false) + 40.0).collect();
+                let places = wrap(&widths, (content_width - 2.0 * INNER).max(0.0), GAP);
+                let lines = places.iter().map(|(line, _)| *line + 1).max().unwrap_or(1);
+                let rect = Rect::new(x0, y, content_width, INNER + lines as f32 * (CONTROL + GAP) - GAP + GRID_BOTTOM);
+                row_plate(&mut items, rect, None, focus);
+                for (i, (text, (line, offset))) in texts.iter().zip(&places).enumerate() {
+                    let chip = Rect::new(rect.x + INNER + offset, rect.y + INNER + *line as f32 * (CONTROL + GAP), widths[i], CONTROL);
+                    icon_button(&mut items, chip, Part::TriggerPreset(i), '\u{E710}', text, false, hover);
+                }
+                y += rect.h;
+            }
             Entry::Key(command) => {
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 let capturing = page.capturing == Some(command);
@@ -784,7 +1087,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let text = Text::SnippetsAdd.get(lang);
                 let add = Controls::new(rect).take(measure(text, 13.0, false) + 40.0, CONTROL);
                 row_label(&mut items, rect, (add.x - GAP - rect.x - INNER).max(0.0), Text::SettingsSnippets.get(lang), None, Tone::Text);
-                icon_button(&mut items, add, Part::SnippetAdd, '\u{E710}', text, hover);
+                icon_button(&mut items, add, Part::SnippetAdd, '\u{E710}', text, false, hover);
                 // A line a snippet: its name, what it types and the button that deletes it; then the one being added.
                 let mut line_y = y + ROW - ROW_GAP;
                 let count = view.settings.snippets.len();
@@ -816,7 +1119,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let text = Text::AppSaveLayout.get(lang);
                 let save = Controls::new(rect).take(measure(text, 13.0, false) + 40.0, CONTROL);
                 row_label(&mut items, rect, (save.x - GAP - rect.x - INNER).max(0.0), Text::SettingsLayouts.get(lang), None, Tone::Text);
-                icon_button(&mut items, save, Part::LayoutSave, '\u{E74E}', text, hover);
+                icon_button(&mut items, save, Part::LayoutSave, '\u{E74E}', text, false, hover);
                 // A line a layout: its name (pressed, it is renamed), the buttons that open it here and delete it; then the
                 // one being saved.
                 let mut line_y = y + ROW - ROW_GAP;
@@ -841,7 +1144,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 row_plate(&mut items, rect, None, focus);
                 let text = Text::ProfileNew.get(lang);
                 let button = Rect::new(rect.x + INNER, rect.y + (rect.h - CONTROL) / 2.0, measure(text, 13.0, false) + 40.0, CONTROL);
-                icon_button(&mut items, button, Part::NewProfile, '\u{E710}', text, hover);
+                icon_button(&mut items, button, Part::NewProfile, '\u{E710}', text, false, hover);
                 y += ROW;
             }
             Entry::ProfileHeader => {
@@ -850,7 +1153,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let mut controls = Controls::new(rect);
                 let text = Text::ProfileBack.get(lang);
                 let back = Rect::new(rect.x + INNER, controls.mid, measure(text, 13.0, false) + 40.0, CONTROL);
-                icon_button(&mut items, back, Part::ProfileBack, '\u{E72B}', text, hover);
+                icon_button(&mut items, back, Part::ProfileBack, '\u{E72B}', text, false, hover);
                 let profile = edited(page, view);
                 // A profile written in the settings is deleted; the entry of a shell found on the machine is taken out, which
                 // puts it back as found. A shell nothing changes has neither.
@@ -922,7 +1225,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     Field::Env => {
                         let text = Text::ProfileAddVariable.get(lang);
                         let add = Rect::new(right - measure(text, 13.0, false) - 40.0, mid, measure(text, 13.0, false) + 40.0, CONTROL);
-                        icon_button(&mut items, add, Part::EnvAdd, '\u{E710}', text, hover);
+                        icon_button(&mut items, add, Part::EnvAdd, '\u{E710}', text, false, hover);
                         // A line a variable: its name, its value and the button that deletes it.
                         let mut line_y = y + ROW - ROW_GAP;
                         let vars: Vec<(String, String)> = profile.map(|p| p.options.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default();
@@ -974,14 +1277,31 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             }
             Entry::Setting(row) => {
                 let id = row.id;
+                // Two rows of a pair share a line, a half each; outside a search, where they may not be found together.
+                let left = !searching && settings_ui::paired_with_next(id);
+                let right_half = !searching && pair_bottom.is_some();
+                let half = ((content_width - GAP) / 2.0).max(0.0);
+                let (x0, content_width) = if left {
+                    (x0, half)
+                } else if right_half {
+                    (x0 + content_width - half, half)
+                } else {
+                    (x0, content_width)
+                };
+                slot = (x0, content_width);
+                let note = settings_ui::note_of(id).map(|text| text.get(lang));
+                let error = page.error.filter(|(error_id, _)| *error_id == id).map(|(_, text)| text.get(lang));
+                let error_room = if error.is_some() { 20.0 } else { 0.0 };
                 // A control that does not fit beside the label goes on a line of its own under it.
                 let label_width = measure(row.label(lang), 13.0, false);
                 let control_width = match row.control {
                     Control::Toggle => SWITCH.0,
-                    Control::Choice(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 30.0).sum::<f32>() - GAP,
+                    Control::Choice(options) | Control::Flags(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 30.0).sum::<f32>() - GAP,
                     Control::Slider(_) => 48.0 + 12.0 + SLIDER_WIDTH,
                     Control::Number(_) => 2.0 * CONTROL + 72.0,
-                    Control::Text => FIELD_WIDTH,
+                    // A line of text with a note under its label has the room of a long one: an address, a token.
+                    Control::Text | Control::Secret if note.is_some() => WIDE_FIELD,
+                    Control::Text | Control::Secret => FIELD_WIDTH,
                     Control::Themes | Control::Profiles | Control::Layouts(_) => 0.0,
                 };
                 // A setting that does nothing with the others as they are is greyed and cannot be pressed.
@@ -991,12 +1311,12 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 // What fits on the line of the control under the label: the options of a choice go on more lines when they do not.
                 let room = content_width - 2.0 * INNER;
                 let option_widths: Vec<f32> = match row.control {
-                    Control::Choice(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 24.0).collect(),
+                    Control::Choice(options) | Control::Flags(options) => options.iter().map(|option| measure(option.get(lang), 13.0, false) + 24.0).collect(),
                     _ => Vec::new(),
                 };
                 let option_lines = if stacked { wrap(&option_widths, room, GAP) } else { Vec::new() };
                 let lines = option_lines.iter().map(|(line, _)| *line + 1).max().unwrap_or(1);
-                let extra = (lines - 1) as f32 * (CONTROL + GAP);
+                let extra = (lines - 1) as f32 * (CONTROL + GAP) + error_room;
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP + drop + extra);
                 let line = Rect::new(rect.x, rect.y + drop, rect.w, ROW - ROW_GAP);
                 let mid = line.y + (line.h - CONTROL) / 2.0;
@@ -1006,20 +1326,27 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 // A toggle is pressed anywhere on its row.
                 let row_part = (applies && matches!(row.control, Control::Toggle)).then_some(Part::Toggle(id));
                 item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
-                let label_room = if stacked { rect.w - 2.0 * INNER - RESET_ROOM } else { (rect.w - 2.0 * INNER - RESET_ROOM) / 2.0 };
+                // Beside its control the label (and the note under it) has half the row, or less where the control is wider.
+                let label_room = if stacked { rect.w - 2.0 * INNER - RESET_ROOM } else { ((rect.w - 2.0 * INNER - RESET_ROOM) / 2.0).min(rect.w - 2.0 * INNER - RESET_ROOM - control_width - GAP).max(label_width) };
                 let tone = if applies { Tone::Text } else { Tone::Quiet };
-                item(&mut items, Rect::new(rect.x + INNER, rect.y, label_room, ROW - ROW_GAP), None, label(row.label(lang), 13.0, tone, false, Align::Left), true);
+                row_label(&mut items, rect, label_room, row.label(lang), note, tone);
                 // Where the control beside the label starts: the reset button goes left of it. A control under its label (or a
                 // grid) leaves the reset button at the right end of the label's line.
                 let mut control_left = right;
-                match (row.control, value) {
+                match (row.control, value.clone()) {
                     (Control::Toggle, Value::Bool(on)) => {
                         let switch = Rect::new(right - SWITCH.0, line.y + (line.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
                         item(&mut items, switch, None, Visual::Plate(Fill::Switch { on: on && applies, hover: hover == Some(Part::Toggle(id)) }), true);
                         control_left = switch.x;
                         y += ROW + drop;
                     }
-                    (Control::Choice(options), Value::Index(chosen)) => {
+                    (Control::Choice(options), Value::Index(_)) | (Control::Flags(options), Value::Flags(_)) => {
+                        // A choice has one option chosen; flags any number, each pressed on and off on its own.
+                        let chosen = |i: usize| match value {
+                            Value::Index(chosen) => i == chosen,
+                            Value::Flags(bits) => bits & 1 << i != 0,
+                            _ => false,
+                        };
                         let mut at = right;
                         for (i, option) in options.iter().enumerate().rev() {
                             let text = option.get(lang);
@@ -1028,7 +1355,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                                 Some((line, offset)) => Rect::new(rect.x + INNER + offset, mid + *line as f32 * (CONTROL + GAP), w, CONTROL),
                                 None => Rect::new(at - w, mid, w, CONTROL),
                             };
-                            option_button(&mut items, button, Part::Option(id, i), text, i == chosen, hover);
+                            option_button(&mut items, button, Part::Option(id, i), text, chosen(i), hover);
                             at = button.x - GAP;
                         }
                         control_left = at + GAP;
@@ -1054,19 +1381,18 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         control_left = minus.x;
                         y += ROW + drop;
                     }
-                    (Control::Text, Value::Text(text)) => {
-                        let field_width = FIELD_WIDTH.min(room - RESET_ROOM);
+                    (Control::Text | Control::Secret, Value::Text(text)) => {
+                        let field_width = control_width.min(room - RESET_ROOM);
                         let field = Rect::new(right - field_width, mid, field_width, CONTROL);
                         control_left = field.x;
                         let editing = page.editing.as_ref().filter(|(edit_id, _)| *edit_id == id).map(|(_, text)| text.clone());
-                        item(&mut items, field, Some(Part::Field(id)), Visual::Plate(Fill::Field { editing: editing.is_some() }), true);
-                        let inner = Rect::new(field.x + 10.0, field.y, field.w - 20.0, field.h);
-                        if let Some(text) = editing {
-                            item(&mut items, inner, None, Visual::Edit { text, cursor: Some(page.edit_cursor), placeholder: String::new() }, true);
-                        } else {
-                            item(&mut items, inner, None, label(text, 13.0, Tone::Quiet, false, Align::Left), true);
+                        // A secret shows masked unless it is being edited.
+                        let shown = if row.control == Control::Secret { masked(&text) } else { text };
+                        text_field(&mut items, field, Part::Field(id), editing, page.edit_cursor, &shown, "");
+                        if let Some(error) = error {
+                            item(&mut items, Rect::new(field.x, mid + CONTROL + 2.0, field.w, 18.0), None, label(error, 12.0, Tone::Error, false, Align::Left), true);
                         }
-                        y += ROW + drop;
+                        y += ROW + drop + error_room;
                     }
                     (Control::Layouts(options), Value::Index(chosen)) => {
                         y += ROW;
@@ -1137,9 +1463,16 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     let reset = Rect::new(x, rect.y + (ROW - ROW_GAP - RESET) / 2.0, RESET, RESET);
                     glyph_button(&mut items, reset, Part::Reset(id), '\u{E777}', hover);
                 }
+                // The left row of a pair leaves the line to the right one; the line is as tall as the taller of them.
+                if left {
+                    (end, pair_bottom) = (Some(y), Some(y));
+                    y = start;
+                } else if let Some(bottom) = pair_bottom.take() {
+                    y = y.max(bottom);
+                }
             }
         }
-        rows.push(Rect::new(x0, start, content_width, y - start));
+        rows.push(Rect::new(slot.0, start, slot.1, end.unwrap_or(y) - start));
     }
     Frame { items, viewport, content_height: y - top + PAD, rows, entries }
 }
@@ -1158,7 +1491,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -1177,8 +1510,11 @@ mod tests {
             let own = match section {
                 Section::Agents => 1,
                 Section::About => 3,
-                Section::Terminal => 1,
+                // The snippets, and the test of the push.
+                Section::Terminal => 2,
                 Section::Profiles => 2,
+                // No rules yet: the ready-made ones.
+                Section::Triggers => 1,
                 _ => 0,
             };
             // And a heading over each row that starts a section of the page.
@@ -1251,7 +1587,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for (width, height) in [crate::settings_window::MIN_SIZE, (900.0, 650.0), (1400.0, 900.0)] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -1294,7 +1630,9 @@ mod tests {
                 if !matches!(setting.control, Control::Toggle | Control::Choice(_) | Control::Number(_)) {
                     continue;
                 }
-                let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y && item.rect.y + item.rect.h <= row.y + row.h;
+                // A row of a pair is half the line: its control ends at the inset of its half.
+                let right = row.x + row.w - INNER;
+                let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y && item.rect.y + item.rect.h <= row.y + row.h && item.rect.x >= row.x && item.rect.x + item.rect.w <= row.x + row.w + 0.01;
                 let end = frame.items.iter().filter(in_row).filter(|item| !matches!(item.visual, Visual::Plate(Fill::Row { .. }))).map(|item| item.rect.x + item.rect.w).fold(0.0, f32::max);
                 assert!((end - right).abs() < 0.01, "{}: its control ends at {end}, not at {right}", setting.id);
             }
@@ -1313,7 +1651,7 @@ mod tests {
         let keymap = keymap();
         let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
         let parts = |update: Check, scoop: bool| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
             let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let texts: Vec<String> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect();
             (frame.items.iter().filter_map(|item| item.part).filter(|p| matches!(p, Part::Update | Part::CheckUpdate)).collect::<Vec<_>>(), texts)
@@ -1325,7 +1663,7 @@ mod tests {
         assert_eq!(newer, [Part::Update, Part::CheckUpdate]);
         assert!(texts.iter().any(|t| t.contains("9.9.9")));
         let all: Vec<Part> = {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, scoop: true };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, scoop: true };
             build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5).items.iter().filter_map(|item| item.part).collect()
         };
         assert!(all.contains(&Part::OpenRepo), "the repository can be opened");
@@ -1435,7 +1773,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         // The profiles come first on their page: the Agent page has a mark of its own.
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
@@ -1461,7 +1799,7 @@ mod tests {
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == Section::Profiles).unwrap();
         let build_for = |page: &Page| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
             build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
         };
         let parts = |frame: &Frame| frame.items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
@@ -1487,7 +1825,7 @@ mod tests {
         let mut settings = settings.clone();
         settings.profiles[0].options.env.insert("LANG".into(), "zh_TW".into());
         let profiles = nekominal_model::profiles::merge(&found, &settings.profiles);
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let page = Page { section, profile: Some("mine".into()), editing: Some((profile_edit::ENV_KEY_ID, "A B".into())), error: Some((profile_edit::ENV_KEY_ID, Text::ProfileBadVariable)), ..Page::default() };
         let with_var = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         for part in [Part::EnvKey(0), Part::EnvValue(0), Part::EnvDelete(0)] {
@@ -1544,6 +1882,189 @@ mod tests {
         assert_eq!(stepped(row("copyOnSelect"), &settings, &[], true, false), Some(Value::Bool(!settings.copy_on_select)));
     }
 
+    fn section_of(section: Section) -> usize {
+        Section::ALL.iter().position(|s| *s == section).unwrap()
+    }
+
+    fn parts(frame: &Frame) -> Vec<Part> {
+        frame.items.iter().filter_map(|item| item.part).collect()
+    }
+
+    fn texts(frame: &Frame) -> Vec<String> {
+        frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect()
+    }
+
+    fn at_entry(frame: &Frame, wanted: impl Fn(&Entry) -> bool) -> Rect {
+        frame.rows[frame.entries.iter().position(wanted).expect("the entry is on the page")]
+    }
+
+    #[test]
+    fn the_phone_notifications_are_under_their_heading_with_every_part_of_the_preview() {
+        let terminal = Page { section: section_of(Section::Terminal), ..Page::default() };
+        let frame = frame(&terminal, &Settings::default());
+        let heading = frame.entries.iter().position(|e| matches!(e, Entry::Heading(Text::SettingsPushHeading))).expect("the heading");
+        let ids: Vec<&str> = frame.entries[heading + 1..].iter().filter_map(|e| if let Entry::Setting(row) = e { Some(row.id) } else { None }).collect();
+        assert_eq!(ids, ["notifications.push.url", "notifications.push.kind", "notifications.push.when", "notifications.push.token", "notifications.push.events"]);
+        assert!(matches!(frame.entries[heading + 6], Entry::PushTest), "the test row after the events");
+        let shown = parts(&frame);
+        for part in [Part::Field("notifications.push.url"), Part::Option("notifications.push.kind", 1), Part::Option("notifications.push.when", 1), Part::Field("notifications.push.token"), Part::Option("notifications.push.events", 4), Part::PushTest] {
+            assert!(shown.contains(&part), "{part:?}");
+        }
+        let words = texts(&frame);
+        for text in [Text::NotePushUrl, Text::NotePushToken, Text::PushTestSend, Text::PushTest, Text::PushKindNtfy, Text::PushWhenAway, Text::BellSoundAlways, Text::GroupWaiting, Text::PushEventMessage] {
+            assert!(words.iter().any(|w| w == text.get(Lang::EnUs)), "{text:?}");
+        }
+        // The format and the time to send share a line, a half each.
+        let kind = at_entry(&frame, |e| matches!(e, Entry::Setting(row) if row.id == "notifications.push.kind"));
+        let when = at_entry(&frame, |e| matches!(e, Entry::Setting(row) if row.id == "notifications.push.when"));
+        assert_eq!(kind.y, when.y);
+        assert!(kind.x + kind.w <= when.x && kind.w < frame.rows[0].w / 2.0 + 0.01);
+        let token = at_entry(&frame, |e| matches!(e, Entry::Setting(row) if row.id == "notifications.push.token"));
+        assert!(token.y >= kind.y + kind.h, "the next row is under the pair");
+    }
+
+    #[test]
+    fn the_token_shows_masked_unless_it_is_being_edited() {
+        assert_eq!(masked("tk_0123456789abcdefa91c"), "tk_\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}a91c");
+        assert_eq!(masked("short"), "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}", "a short secret shows nothing of itself");
+        assert_eq!(masked(""), "");
+        let mut settings = Settings::default();
+        settings.notifications.push.token = "tk_0123456789abcdefa91c".into();
+        let terminal = Page { section: section_of(Section::Terminal), ..Page::default() };
+        let words = texts(&frame(&terminal, &settings));
+        assert!(words.iter().any(|w| *w == masked("tk_0123456789abcdefa91c")));
+        assert!(!words.iter().any(|w| w.contains("0123456789")), "the token itself is not on the page");
+        assert_eq!(value_text(row("notifications.push.token"), &settings, &[], Lang::EnUs), masked("tk_0123456789abcdefa91c"), "nor read out");
+        let editing = Page { editing: Some(("notifications.push.token", "tk_0123456789abcdefa91c".into())), ..terminal };
+        assert!(frame(&editing, &settings).items.iter().any(|item| matches!(&item.visual, Visual::Edit { text, .. } if text == "tk_0123456789abcdefa91c")), "edited, it is the text");
+    }
+
+    #[test]
+    fn the_events_are_flags_each_shown_chosen_on_its_own() {
+        let terminal = Page { section: section_of(Section::Terminal), ..Page::default() };
+        let chosen = |settings: &Settings| -> Vec<bool> {
+            let frame = frame(&terminal, settings);
+            (0..5).map(|i| frame.items.iter().any(|item| item.part == Some(Part::Option("notifications.push.events", i)) && matches!(item.visual, Visual::Plate(Fill::Button { selected: true, .. })))).collect()
+        };
+        assert_eq!(chosen(&Settings::default()), [true, true, true, false, false], "waiting, failed and done by default");
+        let mut settings = Settings::default();
+        (row("notifications.push.events").set)(&mut settings, Value::Flags(0b10010));
+        assert_eq!(chosen(&settings), [false, true, false, false, true]);
+        assert_eq!(value_text(row("notifications.push.events"), &settings, &[], Lang::EnUs), "Failed, Program notifications");
+    }
+
+    #[test]
+    fn a_refused_address_says_why_under_its_field() {
+        let page = Page { section: section_of(Section::Terminal), editing: Some(("notifications.push.url", "http://ntfy.sh/x".into())), error: Some(("notifications.push.url", Text::PushBadUrl)), ..Page::default() };
+        let frame = frame(&page, &Settings::default());
+        let error = frame.items.iter().find(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, text, .. } if text == Text::PushBadUrl.get(Lang::EnUs))).expect("the reason");
+        let row = at_entry(&frame, |e| matches!(e, Entry::Setting(row) if row.id == "notifications.push.url"));
+        assert!(row.contains(error.rect.x + 1.0, error.rect.y + 1.0) && error.rect.y + error.rect.h <= row.y + row.h, "inside its row, which grew for it");
+    }
+
+    #[test]
+    fn the_test_row_says_what_the_last_test_came_to() {
+        use crate::push::Test;
+        use std::time::Duration;
+        assert_eq!(push_test_texts(None, Lang::EnUs), (None, None));
+        let (note, status) = push_test_texts(Some(&(Duration::from_secs(5), Test::Sent)), Lang::ZhTw);
+        assert_eq!(note.as_deref(), Some("上次傳送：剛才，手機已收到"));
+        assert_eq!(status, Some(("\u{25CF} 已送達".to_owned(), Tone::Good)));
+        let (note, status) = push_test_texts(Some(&(Duration::from_secs(150), Test::Failed("curl.exe exited with 6".into()))), Lang::EnUs);
+        assert_eq!(note.as_deref(), Some("Last sent 2 min ago"));
+        assert_eq!(status, Some(("curl.exe exited with 6".to_owned(), Tone::Error)));
+        assert_eq!(push_test_texts(Some(&(Duration::ZERO, Test::Sending)), Lang::EnUs).1.map(|(text, _)| text), Some("Sending".to_owned()));
+    }
+
+    fn rules() -> Settings {
+        let mut settings = Settings::default();
+        settings.triggers = vec![
+            triggers::preset(0, Lang::EnUs).unwrap(),
+            Trigger { name: "Approve".into(), pattern: "Do you want to (proceed|make this edit)".into(), enabled: true, action: Action::Notify { text: "$TAB: $0".into() }, program: Some("claude.exe".into()), instant: true },
+            Trigger { name: "npm".into(), pattern: r"Ok to proceed\? \(y\)".into(), enabled: false, action: Action::Send { text: "y\r".into(), allow_send: false }, program: None, instant: false },
+        ];
+        settings
+    }
+
+    #[test]
+    fn the_triggers_page_is_a_plate_a_rule_with_its_name_pattern_tag_and_switch_and_the_presets() {
+        let page = Page { section: section_of(Section::Triggers), ..Page::default() };
+        let settings = rules();
+        let frame = frame(&page, &settings);
+        assert!(matches!(frame.entries[..], [Entry::Trigger(0), Entry::Trigger(1), Entry::Trigger(2), Entry::TriggerPresets]));
+        let shown = parts(&frame);
+        assert!(shown.contains(&Part::TriggerAdd));
+        for i in 0..3 {
+            assert!(shown.contains(&Part::TriggerOpen(i)) && shown.contains(&Part::TriggerSwitch(i)));
+            assert!(!shown.contains(&Part::TriggerPattern(i)), "closed, a rule shows no form");
+        }
+        assert_eq!(shown.iter().filter(|p| matches!(p, Part::TriggerPreset(_))).count(), triggers::PRESETS.len());
+        let words = texts(&frame);
+        for word in ["Approve", "npm", "Send text y\u{23CE}", "Notification", "Highlight", Text::TriggersIntro.get(Lang::EnUs), Text::TriggerAdd.get(Lang::EnUs)] {
+            assert!(words.iter().any(|w| w == word), "{word}");
+        }
+        let switches: Vec<bool> = frame.items.iter().filter_map(|item| match item.visual { Visual::Plate(Fill::Switch { on, .. }) => Some(on), _ => None }).collect();
+        assert_eq!(switches, [true, true, false], "a send not allowed to send is off");
+        let tags: Vec<Tag> = frame.items.iter().filter_map(|item| match item.visual { Visual::Plate(Fill::Tag(tag)) if tag != Tag::Code => Some(tag), _ => None }).collect();
+        assert_eq!(tags, [Tag::Mark, Tag::Plain, Tag::Warn]);
+    }
+
+    #[test]
+    fn an_open_rule_shows_its_form_in_place_with_the_sample_matched() {
+        let settings = rules();
+        let keymap = keymap();
+        let sample = ["  Do you want to proceed?".to_owned(), "  \u{276F} 1. Yes  2. No".to_owned()];
+        let page = Page { section: section_of(Section::Triggers), trigger: Some(1), ..Page::default() };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let open = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+        let shown = parts(&open);
+        for part in [Part::TriggerName(1), Part::TriggerPattern(1), Part::TriggerInstant(1), Part::TriggerProgram(1), Part::TriggerText(1)] {
+            assert!(shown.contains(&part), "{part:?}");
+        }
+        assert_eq!(shown.iter().filter(|p| matches!(p, Part::TriggerAction(1, _))).count(), 5, "the five actions");
+        assert!(!shown.contains(&Part::TriggerName(0)), "only the open rule has a form");
+        let chosen = |part: Part| open.items.iter().any(|item| item.part == Some(part) && matches!(item.visual, Visual::Plate(Fill::Button { selected: true, .. })));
+        assert!(chosen(Part::TriggerAction(1, 1)) && chosen(Part::TriggerInstant(1)), "notify and before the line ends");
+        let words = texts(&open);
+        for text in [Text::ProfileName, Text::TriggerPattern, Text::TriggerProgram, Text::TriggerProgramNote, Text::TriggerAction, Text::TriggerNotifyText] {
+            assert!(words.iter().any(|w| w == text.get(Lang::EnUs)), "{text:?}");
+        }
+        let lines = open.items.iter().find_map(|item| match &item.visual { Visual::Sample { lines } => Some(lines.clone()), _ => None }).expect("the sample");
+        assert_eq!(lines[0].1, [(2, 24)], "the match is marked");
+        assert!(lines[1].1.is_empty());
+        // The open rule grew; the rules after it moved down.
+        let closed = frame(&Page { section: section_of(Section::Triggers), ..Page::default() }, &settings);
+        assert!(open.rows[1].h > closed.rows[1].h && open.rows[2].y > closed.rows[2].y);
+        // A highlight offers its colours instead of a text.
+        let highlight = build(&Page { trigger: Some(0), ..page.clone() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+        assert_eq!(parts(&highlight).iter().filter(|p| matches!(p, Part::TriggerColor(0, _))).count(), triggers::HIGHLIGHTS.len());
+        assert!(!parts(&highlight).contains(&Part::TriggerText(0)));
+    }
+
+    #[test]
+    fn a_pattern_that_is_not_a_regular_expression_says_so_under_its_field_and_matches_nothing() {
+        let settings = rules();
+        let keymap = keymap();
+        let sample = ["  Do you want to proceed?".to_owned()];
+        let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "Do you (want".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+        assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, text, .. } if text == Text::TriggerBadPattern.get(Lang::EnUs))));
+        assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Edit { text, .. } if text == "Do you (want")), "the field stays open with what was typed");
+        let lines = frame.items.iter().find_map(|item| match &item.visual { Visual::Sample { lines } => Some(lines.clone()), _ => None }).unwrap();
+        assert!(lines[0].1.is_empty(), "the sample follows what is typed, which matches nothing");
+    }
+
+    #[test]
+    fn a_rule_being_added_is_a_form_of_its_own_after_the_rules() {
+        let settings = rules();
+        let page = Page { section: section_of(Section::Triggers), trigger: Some(3), env_row: 3, editing: Some((TRIGGER_PATTERN_ID, String::new())), ..Page::default() };
+        let frame = frame(&page, &settings);
+        assert!(matches!(frame.entries[..], [.., Entry::Trigger(3), Entry::TriggerPresets]));
+        assert!(parts(&frame).contains(&Part::TriggerPattern(3)));
+        assert_eq!(trigger_at(&settings, 3).pattern, "", "it is in the settings once its pattern is given");
+    }
+
     #[test]
     fn at_any_width_a_control_stays_in_its_row_and_clear_of_the_label() {
         let settings = Settings::default();
@@ -1553,14 +2074,14 @@ mod tests {
         for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };
                     if matches!(setting.control, Control::Themes | Control::Profiles | Control::Layouts(_)) {
                         continue;
                     }
-                    let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + row.h + 0.01;
+                    let in_row = |item: &&Item| item.scrolls && item.rect.y >= row.y - 0.01 && item.rect.y + item.rect.h <= row.y + row.h + 0.01 && item.rect.x >= row.x - 0.01 && item.rect.x <= row.x + row.w;
                     let controls: Vec<&Item> = frame
                         .items
                         .iter()

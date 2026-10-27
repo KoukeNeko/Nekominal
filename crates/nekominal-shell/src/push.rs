@@ -3,12 +3,14 @@
 //! bucket, so the app takes no HTTP library. A push that fails is dropped: a phone that hears about a finished agent a
 //! minute late after three retries is worth less than a window that never waits on the network.
 
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use nekominal_model::settings::{Push, PushKind, PushWhen};
+pub use nekominal_model::settings::{check_push_url as check_url, url_host as host};
+use nekominal_model::settings::{Push, PushEvent, PushKind, PushWhen};
 
 use crate::logic::TabState;
 use crate::notify::Event;
@@ -48,37 +50,60 @@ pub fn kind_of(event: &Event) -> &'static str {
     }
 }
 
-/// Whether a notification goes to the phone now: a target is set, and the user is away from the window unless the
-/// setting says always.
-pub fn wanted(push: &Push, window_active: bool) -> bool {
-    !push.url.is_empty() && (push.when == PushWhen::Always || !window_active)
+/// Which of the events the user chose (`notifications.push.events`) a word of `kind_of` belongs to.
+pub fn event_of(kind: &str) -> PushEvent {
+    match kind {
+        "blocked" => PushEvent::Waiting,
+        "error" => PushEvent::Failed,
+        "command" | "commandFailed" => PushEvent::LongCommand,
+        "bell" | "message" => PushEvent::Message,
+        _ => PushEvent::Done,
+    }
 }
 
-/// Why `url` is not taken, if it is not: the token and the text would cross the network in the clear over anything but
-/// HTTPS, so plain HTTP is only for a receiver on this computer.
-pub fn check_url(url: &str) -> Result<(), &'static str> {
-    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("the address has a space or a control character");
-    }
-    let lower = url.to_ascii_lowercase();
-    if lower.starts_with("https://") && host(url).is_some_and(|h| !h.is_empty()) {
-        return Ok(());
-    }
-    if lower.starts_with("http://") && host(url).is_some_and(|h| matches!(h.to_ascii_lowercase().as_str(), "localhost" | "127.0.0.1" | "[::1]")) {
-        return Ok(());
-    }
-    Err("the address is not https:// (http:// only to this computer)")
+/// Whether a notification goes to the phone now: a target is set, the user chose its kind of event, and the user is away
+/// from the window unless the setting says always.
+pub fn wanted(push: &Push, window_active: bool, event: &Event) -> bool {
+    !push.url.is_empty() && push.events.contains(&event_of(kind_of(event))) && (push.when == PushWhen::Always || !window_active)
 }
 
-/// The host of `url`, without user, port, path or query: what the log may say of an address.
-pub fn host(url: &str) -> Option<&str> {
-    let rest = &url[url.find("://")? + 3..];
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
-    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    Some(match host.find(']') {
-        Some(end) if host.starts_with('[') => &host[..=end],
-        _ => host.split(':').next().unwrap_or(host),
-    })
+/// What the last test push from the settings page came to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Test {
+    Sending,
+    Sent,
+    /// Why it did not get through: curl's exit code or why the address is not taken, in the words of the log.
+    Failed(String),
+}
+
+/// The last test push and when it was asked for; and whether that changed since the page last looked, so that the page
+/// is drawn again only then.
+static TEST: Mutex<Option<(Instant, Test)>> = Mutex::new(None);
+static TEST_CHANGED: AtomicBool = AtomicBool::new(false);
+
+fn set_test(test: Test, asked: Option<Instant>) {
+    if let Ok(mut last) = TEST.lock() {
+        let at = asked.or(last.as_ref().map(|(at, _)| *at)).unwrap_or_else(Instant::now);
+        *last = Some((at, test));
+        TEST_CHANGED.store(true, Ordering::Relaxed);
+    }
+}
+
+/// What the last test push came to, and when it was sent.
+pub fn test_status() -> Option<(Instant, Test)> {
+    TEST.lock().ok().and_then(|last| last.clone())
+}
+
+/// Whether the result of the test push changed since this was last asked.
+pub fn take_test_change() -> bool {
+    TEST_CHANGED.swap(false, Ordering::Relaxed)
+}
+
+/// Sends a test push through the same thread as the others; its result goes to [`test_status`].
+pub fn send_test(push: &Push, title: String, body: String) {
+    let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    set_test(Test::Sending, Some(Instant::now()));
+    enqueue(push, Message { title, body, kind: "message", tab: 0, at }, true);
 }
 
 /// The headers and the body of the POST for the kind of the target.
@@ -185,19 +210,27 @@ const QUEUE: usize = 8;
 
 /// Hands the push to the thread that sends it; returns at once.
 pub fn send(push: &Push, message: Message) {
-    static SENDER: OnceLock<SyncSender<(Push, Message)>> = OnceLock::new();
+    enqueue(push, message, false);
+}
+
+/// Hands a push to the thread that sends it; the result of a `test` goes to [`test_status`].
+fn enqueue(push: &Push, message: Message, test: bool) {
+    static SENDER: OnceLock<SyncSender<(Push, Message, bool)>> = OnceLock::new();
     let sender = SENDER.get_or_init(|| {
-        let (sender, jobs) = sync_channel::<(Push, Message)>(QUEUE);
+        let (sender, jobs) = sync_channel::<(Push, Message, bool)>(QUEUE);
         std::thread::Builder::new()
             .name("push".into())
             .spawn(move || {
                 // A failure is logged once until a push gets through again, not once for every agent that finishes.
                 let mut failing = false;
-                for (push, message) in jobs {
+                for (push, message, test) in jobs {
                     let sent = check_url(&push.url).map_err(str::to_owned).and_then(|()| {
                         let (headers, body) = request(&push, &message);
                         post(&curl_config(&push.url, &headers, &body))
                     });
+                    if test {
+                        set_test(sent.clone().map_or_else(Test::Failed, |()| Test::Sent), None);
+                    }
                     match sent {
                         Ok(()) => failing = false,
                         Err(e) if !failing => {
@@ -211,8 +244,11 @@ pub fn send(push: &Push, message: Message) {
             .expect("the push thread starts");
         sender
     });
-    if let Err(TrySendError::Full(_)) = sender.try_send((push.clone(), message)) {
+    if let Err(TrySendError::Full(_)) = sender.try_send((push.clone(), message, test)) {
         util::log("push: the queue is full, a notification was dropped");
+        if test {
+            set_test(Test::Failed("the queue is full".into()), None);
+        }
     }
 }
 
@@ -225,7 +261,7 @@ mod tests {
     }
 
     fn push(kind: PushKind, token: &str) -> Push {
-        Push { url: "https://ntfy.sh/cat".into(), kind, token: token.into(), when: PushWhen::Away }
+        Push { url: "https://ntfy.sh/cat".into(), kind, token: token.into(), when: PushWhen::Away, ..Push::default() }
     }
 
     #[test]
@@ -270,38 +306,28 @@ mod tests {
     }
 
     #[test]
-    fn only_https_is_taken_and_plain_http_only_to_this_computer() {
-        assert!(check_url("https://ntfy.sh/mytopic").is_ok());
-        assert!(check_url("HTTPS://hooks.example.com:8443/a?b=c").is_ok());
-        assert!(check_url("http://localhost:8080/hook").is_ok());
-        assert!(check_url("http://127.0.0.1/hook").is_ok());
-        assert!(check_url("http://[::1]:9000/").is_ok());
-        assert!(check_url("http://ntfy.sh/mytopic").is_err());
-        assert!(check_url("http://localhost.evil.com/").is_err());
-        assert!(check_url("http://localhost@evil.com/").is_err(), "the host is after the user");
-        assert!(check_url("ftp://ntfy.sh/x").is_err());
-        assert!(check_url("https://").is_err());
-        assert!(check_url("https://ntfy.sh/a b").is_err());
-        assert!(check_url("ntfy.sh/mytopic").is_err());
-    }
-
-    #[test]
-    fn the_log_names_only_the_host_of_an_address() {
-        assert_eq!(host("https://user:pw@hooks.example.com:8443/path?token=x#y"), Some("hooks.example.com"));
-        assert_eq!(host("https://ntfy.sh?auth=x"), Some("ntfy.sh"));
-        assert_eq!(host("http://[::1]:9000/"), Some("[::1]"));
-        assert_eq!(host("nothing"), None);
-    }
-
-    #[test]
     fn away_pushes_only_while_the_window_is_in_the_background() {
+        let waiting = Event::Agent(TabState::Blocked, None);
         let mut target = push(PushKind::Ntfy, "");
-        assert!(wanted(&target, false));
-        assert!(!wanted(&target, true), "at the desk the toast is enough");
+        assert!(wanted(&target, false, &waiting));
+        assert!(!wanted(&target, true, &waiting), "at the desk the toast is enough");
         target.when = PushWhen::Always;
-        assert!(wanted(&target, true));
+        assert!(wanted(&target, true, &waiting));
         target.url.clear();
-        assert!(!wanted(&target, false), "no address is off");
+        assert!(!wanted(&target, false, &waiting), "no address is off");
+    }
+
+    #[test]
+    fn only_the_kinds_of_event_the_user_chose_are_pushed() {
+        let target = push(PushKind::Ntfy, "");
+        assert!(wanted(&target, false, &Event::Agent(TabState::Error, None)));
+        assert!(wanted(&target, false, &Event::Agent(TabState::Done, None)));
+        assert!(!wanted(&target, false, &Event::Command { line: None, exit: Some(1), seconds: 20 }), "a long command is not chosen by default");
+        assert!(!wanted(&target, false, &Event::Bell));
+        let target = Push { events: vec![PushEvent::LongCommand, PushEvent::Message], ..target };
+        assert!(wanted(&target, false, &Event::Command { line: None, exit: Some(1), seconds: 20 }));
+        assert!(wanted(&target, false, &Event::Message("hi".into())) && wanted(&target, false, &Event::Bell), "a bell is the program's own call");
+        assert!(!wanted(&target, false, &Event::Agent(TabState::Blocked, None)));
     }
 
     #[test]
