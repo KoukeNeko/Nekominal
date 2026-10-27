@@ -410,6 +410,109 @@ mod tests {
     }
 
     #[test]
+    fn every_combination_of_checks_enables_the_choices_only_when_nothing_is_lost() {
+        let files = |n: usize| (0..n).map(|i| ('M', format!("{i}.rs"))).collect::<Vec<_>>();
+        for (changed, untracked) in [(0, 0), (2, 0), (0, 1)] {
+            for remote in [None, Some("origin")] {
+                for unpushed in [None, Some(0), Some(3)] {
+                    for (default, merged) in [(None, None), (Some("main"), Some(true)), (Some("main"), Some(false))] {
+                        for pr in [None, Some(7)] {
+                            for (tabs, agent) in [(0, None), (2, Some("Codex"))] {
+                                let status = Status {
+                                    changed,
+                                    untracked,
+                                    files: files(changed + untracked),
+                                    remote: remote.map(str::to_owned),
+                                    unpushed,
+                                    default_branch: default.map(str::to_owned),
+                                    merged,
+                                    ..status()
+                                };
+                                let facts = Facts { pr, tabs, agent: agent.map(str::to_owned) };
+                                let case = format!("{status:?} {facts:?}");
+                                let dialog = model(&status, &facts, Lang::EnUs).unwrap();
+                                let dirty = changed + untracked > 0;
+                                let waits = remote.is_some() && unpushed.is_some_and(|n| n > 0);
+                                let free = !dirty && !waits;
+
+                                assert!(dialog.choices.iter().all(|c| c.enabled == free), "{case}");
+                                let chosen = free.then_some(if merged == Some(true) { DELETE_BRANCH } else { ARCHIVE });
+                                assert_eq!(dialog.chosen, chosen, "{case}");
+                                assert_eq!(dialog.primary, if free { Primary::Remove } else { Primary::ShowTab }, "{case}");
+
+                                // A line for the changes, one for pushing unless git could not tell, one for merging when
+                                // there is a default branch, one for the tabs and one for the agent when there are.
+                                let lines = 1 + usize::from(remote.is_none() || unpushed.is_some()) + usize::from(default.is_some()) + usize::from(tabs > 0) + usize::from(agent.is_some());
+                                assert_eq!(dialog.checks.len(), lines, "{case}");
+                                let warnings = dialog.checks.iter().filter(|c| c.mark == Mark::Warn).count();
+                                assert_eq!(warnings, usize::from(dirty) + usize::from(waits), "{case}: only what would be lost warns");
+                                assert_eq!(dialog.checks[0].files.len(), changed + untracked, "{case}");
+                                assert!(dialog.checks[1..].iter().all(|c| c.files.is_empty()));
+                                assert_eq!(dialog.checks.iter().any(|c| c.text.contains("PR #7")), pr.is_some() && merged == Some(true), "{case}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_file_list_shows_five_files_and_the_count_says_all() {
+        for (n, shown) in [(1, 1), (5, 5), (6, 5), (40, 5)] {
+            let files = (0..n).map(|i| ('M', format!("{i}.rs"))).collect();
+            let dialog = model(&Status { changed: n, files, ..status() }, &Facts::default(), Lang::EnUs).unwrap();
+            assert_eq!(dialog.checks[0].files.len(), shown);
+            assert_eq!(dialog.checks[0].text, format!("{n} files have uncommitted changes"));
+            assert_eq!(dialog.checks[0].files[0].1, "0.rs", "in the order git lists them");
+        }
+        // Counted but not named (git said more than the lines could tell): the line with no list under it.
+        let unnamed = model(&Status { untracked: 2, ..status() }, &Facts::default(), Lang::EnUs).unwrap();
+        assert_eq!((unnamed.checks[0].mark, unnamed.checks[0].files.len()), (Mark::Warn, 0));
+    }
+
+    #[test]
+    fn the_choice_moves_only_between_choices_that_can_be_taken() {
+        let mut dialog = model(&status(), &Facts::default(), Lang::EnUs).unwrap();
+        assert_eq!(dialog.chosen, Some(DELETE_BRANCH));
+        assert!(!dialog.choose(2) && !dialog.choose(usize::MAX), "no third choice");
+        assert!(dialog.toggle() && dialog.chosen == Some(ARCHIVE));
+        assert!(dialog.toggle() && dialog.chosen == Some(DELETE_BRANCH), "and back");
+        assert!(dialog.choose(ARCHIVE) && !dialog.choose(ARCHIVE));
+        // One choice that cannot be taken keeps the other.
+        dialog.choices[DELETE_BRANCH].enabled = false;
+        assert!(!dialog.toggle() && !dialog.choose(DELETE_BRANCH));
+        assert_eq!(dialog.chosen, Some(ARCHIVE));
+    }
+
+    #[test]
+    fn a_screen_reader_hears_the_title_path_checks_and_files() {
+        let files = vec![('M', "src/a.rs".to_owned()), ('?', "my notes.txt".to_owned())];
+        let status = Status { changed: 1, untracked: 1, files, ..status() };
+        let dialog = model(&status, &Facts { pr: None, tabs: 1, agent: None }, Lang::EnUs).unwrap();
+        let spoken = spoken(&dialog);
+        let lines: Vec<&str> = spoken.lines().collect();
+        assert_eq!(lines[..5], [dialog.title.as_str(), r"D:\src\app-fix-login", "2 files have uncommitted changes", "M src/a.rs", "? my notes.txt"]);
+        assert_eq!(lines.len(), 2 + dialog.checks.len() + 2);
+    }
+
+    #[test]
+    fn the_files_under_a_check_push_the_lines_below_them_down() {
+        use nekominal_render::offscreen::{AdapterKind, create_gpu};
+        let gpu = create_gpu(AdapterKind::Warp).expect("D3D11 WARP");
+        let mut ui = Ui::new(&gpu).expect("UI");
+        let clean = model(&Status { unpushed: Some(2), ..status() }, &Facts::default(), Lang::EnUs).unwrap();
+        let files = (0..9).map(|i| ('M', format!("{i}.rs"))).collect();
+        let dirty = model(&Status { changed: 9, files, unpushed: Some(2), ..status() }, &Facts::default(), Lang::EnUs).unwrap();
+        let (a, b) = (place(&mut ui, &clean), place(&mut ui, &dirty));
+        assert_eq!(a.checks[0], b.checks[0]);
+        let list = FILES as f32 * ui.line_height(SMALL_SIZE) + 18.0;
+        assert!((b.checks[1] - a.checks[1] - list).abs() < 0.01, "five lines of files, not nine");
+        assert!((b.height - a.height - list).abs() < 0.01);
+        assert!(b.choices[0].y > b.checks[b.checks.len() - 1] && b.buttons > b.choices[1].y + b.choices[1].h);
+    }
+
+    #[test]
     fn the_dialog_renders_its_lines_choices_and_buttons() {
         use nekominal_render::offscreen::{AdapterKind, OffscreenTarget, create_gpu, write_png};
         let gpu = create_gpu(AdapterKind::Warp).expect("D3D11 WARP");
