@@ -235,6 +235,8 @@ texts! {
     WorktreeNotMerged "worktree.notMerged" "還沒合併到 {0}" "Not merged into {0}";
     WorktreeTabsClose "worktree.tabsClose" "{0} 個分頁在這個資料夾，會一起關閉" "{0} tabs in this folder close with it";
     WorktreeAgentRuns "worktree.agentRuns" "{0} 正在這個資料夾執行" "{0} is running in this folder";
+    WorktreeIgnored "worktree.ignored" "{0} 個被 git 忽略的檔案或資料夾（例如 .env、建置結果）會隨資料夾刪除" "{0} files or folders git ignores (.env, build output) are deleted with the folder";
+    WorktreeMergedIgnoredLost "worktree.mergedIgnoredLost" "分支已合併，但被忽略的檔案會刪除" "The branch is merged, but the ignored files are deleted";
     WorktreeDeleteBranch "worktree.deleteBranch" "移除資料夾並刪除分支" "Remove the folder and delete the branch";
     WorktreeNothingLost "worktree.nothingLost" "分支已合併，不會遺失任何東西" "The branch is merged: nothing is lost";
     WorktreeOnlyMerged "worktree.onlyMerged" "git 只刪除已合併的分支" "git deletes the branch only once it is merged";

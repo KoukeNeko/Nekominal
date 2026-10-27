@@ -59,6 +59,9 @@ pub struct Status {
     /// Lines of `git status --porcelain`: changed tracked files (staged or not), and files not tracked.
     pub changed: usize,
     pub untracked: usize,
+    /// Files and folders git ignores (`!!` of `--ignored`: `.env`, build output): no change to git, but the removal of the
+    /// folder deletes them too.
+    pub ignored: usize,
     /// Those files with the letter of their state (`M`, `A`, `D`, `R`, `?` for untracked…), in the order git lists them.
     pub files: Vec<(char, String)>,
     /// The remote the branch pushes to (its upstream's, else the first one); None when the repository has none.
@@ -206,9 +209,9 @@ pub fn setup_command(worktree: &Path) -> Option<String> {
     }
 }
 
-/// Changed and untracked files in the output of `git status --porcelain`.
+/// Changed and untracked files in the output of `git status --porcelain`; the ignored ones (`!!`) are counted apart.
 pub fn parse_porcelain(text: &str) -> (usize, usize) {
-    let lines = text.lines().filter(|line| !line.trim().is_empty());
+    let lines = text.lines().filter(|line| !line.trim().is_empty() && !ignored_line(line));
     lines.fold((0, 0), |(changed, untracked), line| if line.starts_with("??") { (changed, untracked + 1) } else { (changed + 1, untracked) })
 }
 
@@ -221,12 +224,18 @@ pub fn parse_porcelain(text: &str) -> (usize, usize) {
 pub fn parse_files(text: &str) -> Vec<(char, String)> {
     let unquote = |path: &str| path.strip_prefix('"').and_then(|p| p.strip_suffix('"')).unwrap_or(path).to_owned();
     text.lines()
+        .filter(|line| !ignored_line(line))
         .filter_map(|line| {
             let (code, path) = line.trim_start().split_once(' ')?;
             let path = path.trim_start().split(" -> ").map(unquote).collect::<Vec<_>>().join(" -> ");
             Some((code.chars().next()?, path))
         })
         .collect()
+}
+
+/// A line of `git status --porcelain --ignored` for a file or folder git ignores.
+fn ignored_line(line: &str) -> bool {
+    line.trim_start().starts_with("!!")
 }
 
 /// (behind, ahead) in the output of `git rev-list --left-right --count @{upstream}...HEAD`.
@@ -244,8 +253,9 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
     let [top, git_dir, common] = dirs.lines().collect::<Vec<_>>()[..] else { return Err(Error::NotRepo) };
     let path = PathBuf::from(top.replace('/', "\\"));
     let branch = git(&path, ["branch", "--show-current"]).ok().filter(|b| !b.is_empty());
-    let porcelain = git(&path, ["-c", "core.quotePath=false", "status", "--porcelain"]).map_err(Error::Git)?;
+    let porcelain = git(&path, ["-c", "core.quotePath=false", "status", "--porcelain", "--ignored"]).map_err(Error::Git)?;
     let (changed, untracked) = parse_porcelain(&porcelain);
+    let ignored = porcelain.lines().filter(|line| ignored_line(line)).count();
     let remote = branch
         .as_ref()
         .and_then(|b| git(&path, ["config", "--get", &format!("branch.{b}.remote")]).ok())
@@ -259,7 +269,7 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
         .ok()
         .or_else(|| ["main", "master"].into_iter().find(|b| git(&path, ["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok()).map(str::to_owned));
     let merged = default_branch.as_ref().map(|b| git(&path, ["merge-base", "--is-ancestor", "HEAD", b]).is_ok());
-    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, files: parse_files(&porcelain), remote, unpushed, default_branch, merged })
+    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, ignored, files: parse_files(&porcelain), remote, unpushed, default_branch, merged })
 }
 
 /// Paths git wrote, compared as Windows does: either slash, any case, no trailing separator.
@@ -590,6 +600,8 @@ mod tests {
         assert_eq!(parse_porcelain(""), (0, 0));
         assert_eq!(parse_porcelain("M a.rs\n M b.rs\nA  c.rs\nR  d -> e\n?? new.txt\n?? dir/\n"), (4, 2));
         assert_eq!(parse_porcelain("UU conflict.rs\n\n"), (1, 0));
+        assert_eq!(parse_porcelain("!! .env\n M a.rs\n!! build/\n"), (1, 0), "ignored files are no changes");
+        assert_eq!(parse_files("!! .env\n M a.rs"), [('M', "a.rs".to_owned())]);
     }
 
     #[test]
@@ -639,7 +651,7 @@ mod tests {
     }
 
     fn status(main: bool, branch: Option<&str>, changed: usize, untracked: usize) -> Status {
-        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, files: Vec::new(), remote: None, unpushed: Some(0), default_branch: None, merged: None }
+        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, ignored: 0, files: Vec::new(), remote: None, unpushed: Some(0), default_branch: None, merged: None }
     }
 
     #[test]
@@ -725,6 +737,26 @@ mod tests {
         assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/held"]).is_err(), "the branch goes as asked");
         assert!(!git(&repo, ["worktree", "list"]).unwrap().contains("agent/held"));
         assert!(std::fs::read_dir(&made).map_or(true, |mut entries| entries.next().is_none()), "at most an empty folder is left");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn ignored_files_are_counted_apart_from_changes_as_the_removal_deletes_them() {
+        let Some((base, repo)) = temp_repo("ignored") else { return };
+        std::fs::write(repo.join(".gitignore"), ".env\nbuild/\n").unwrap();
+        git(&repo, ["add", ".gitignore"]).unwrap();
+        commit(&repo, "ignore");
+        let made = create(&repo, "agent/ignored").unwrap();
+        assert_eq!(inspect(&made).unwrap().ignored, 0);
+        std::fs::write(made.join(".env"), "SECRET=1").unwrap();
+        std::fs::create_dir_all(made.join("build")).unwrap();
+        std::fs::write(made.join("build").join("a.bin"), "x").unwrap();
+        std::fs::write(made.join("build").join("b.bin"), "x").unwrap();
+        let status = inspect(&made).unwrap();
+        assert_eq!((status.changed, status.untracked, status.ignored), (0, 0, 2), "the file and the folder, no change");
+        assert!(status.files.is_empty() && !status.dirty());
+        assert_eq!(remove(&status, false, true), Ok(None), "git removes them without asking");
+        assert!(!made.join(".env").exists());
         std::fs::remove_dir_all(&base).unwrap();
     }
 

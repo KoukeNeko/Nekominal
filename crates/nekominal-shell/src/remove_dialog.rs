@@ -127,6 +127,11 @@ pub fn model(status: &Status, facts: &Facts, lang: Lang) -> Result<Dialog, Refus
         (Some(default), Some(false), _) => checks.push(line(Mark::Note, Text::WorktreeNotMerged.format(lang, &[default]))),
         _ => {}
     }
+    // Not a reason to refuse (git removes them without asking, and they are mostly build output), but the folder takes
+    // them: a `.env` that exists only here goes too.
+    if status.ignored > 0 {
+        checks.push(line(Mark::Warn, Text::WorktreeIgnored.format(lang, &[&status.ignored])));
+    }
     if facts.tabs > 0 {
         checks.push(line(Mark::Note, Text::WorktreeTabsClose.format(lang, &[&facts.tabs])));
     }
@@ -139,6 +144,7 @@ pub fn model(status: &Status, facts: &Facts, lang: Lang) -> Result<Dialog, Refus
         (true, true) => Text::WorktreeCommitPushFirst.get(lang).to_owned(),
         (true, false) => Text::WorktreeCommitFirst.get(lang).to_owned(),
         (false, true) => Text::WorktreePushFirst.get(lang).to_owned(),
+        (false, false) if merged && status.ignored > 0 => Text::WorktreeMergedIgnoredLost.get(lang).to_owned(),
         (false, false) if merged => Text::WorktreeNothingLost.get(lang).to_owned(),
         (false, false) => Text::WorktreeOnlyMerged.get(lang).to_owned(),
     };
@@ -323,6 +329,7 @@ mod tests {
             main: false,
             changed: 0,
             untracked: 0,
+            ignored: 0,
             files: Vec::new(),
             remote: Some("origin".into()),
             unpushed: Some(0),
@@ -352,6 +359,16 @@ mod tests {
         assert_eq!(dialog.choices[ARCHIVE].note, "保留分支 fix/login，之後可以再建立工作樹");
         assert_eq!((dialog.chosen, dialog.primary), (Some(DELETE_BRANCH), Primary::Remove));
         assert!(dialog.delete_branch());
+    }
+
+    #[test]
+    fn ignored_files_warn_that_they_go_with_the_folder_and_nothing_is_lost_is_not_said() {
+        let dialog = model(&Status { ignored: 3, ..status() }, &Facts::default(), Lang::EnUs).unwrap();
+        assert!(texts(&dialog).contains(&(Mark::Warn, "3 files or folders git ignores (.env, build output) are deleted with the folder")));
+        assert_eq!(dialog.choices[DELETE_BRANCH].note, "The branch is merged, but the ignored files are deleted");
+        assert!(dialog.choices.iter().all(|c| c.enabled) && dialog.primary == Primary::Remove, "a warning, not a refusal");
+        let zh = model(&Status { ignored: 1, ..status() }, &Facts::default(), Lang::ZhTw).unwrap();
+        assert_ne!(zh.choices[DELETE_BRANCH].note, "分支已合併，不會遺失任何東西");
     }
 
     #[test]
