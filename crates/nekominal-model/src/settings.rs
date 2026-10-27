@@ -497,11 +497,26 @@ impl TabLayout {
     }
 }
 
+/// What a tab of the sidebar as a list shows: two lines and its context (activity), a card with what it last said
+/// (cards), or a line under the repository it is in (repo).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabStyle {
+    Activity,
+    Cards,
+    Repo,
+}
+
+impl TabStyle {
+    pub const ALL: [TabStyle; 3] = [TabStyle::Activity, TabStyle::Cards, TabStyle::Repo];
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tabs {
     pub title: TabTitle,
     pub layout: TabLayout,
+    pub style: TabStyle,
     /// The sidebar is shown; it is hidden and shown again with the button of the title bar or Ctrl+B.
     pub sidebar_open: bool,
     /// The list of the sidebar puts the tabs that wait for the user first instead of keeping their order.
@@ -510,7 +525,7 @@ pub struct Tabs {
 
 impl Default for Tabs {
     fn default() -> Self {
-        Tabs { title: TabTitle::default(), layout: TabLayout::Top, sidebar_open: true, group_by_state: false }
+        Tabs { title: TabTitle::default(), layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, group_by_state: false }
     }
 }
 
@@ -1291,6 +1306,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         tabs: Tabs {
             title: TabTitle { parts: title_slots(&tab_title, &d.tabs.title.parts, &mut problems) },
             layout: one_of(&tabs, "layout", &[("top", TabLayout::Top), ("list", TabLayout::List), ("icons", TabLayout::Icons)], d.tabs.layout, "tabs", &mut problems),
+            style: one_of(&tabs, "style", &[("activity", TabStyle::Activity), ("cards", TabStyle::Cards), ("repo", TabStyle::Repo)], d.tabs.style, "tabs", &mut problems),
             sidebar_open: boolean(&tabs, "sidebarOpen", d.tabs.sidebar_open, "tabs", &mut problems),
             group_by_state: boolean(&tabs, "groupByState", d.tabs.group_by_state, "tabs", &mut problems),
         },

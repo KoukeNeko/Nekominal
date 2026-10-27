@@ -461,6 +461,12 @@ texts! {
     LayoutTop "layout.top" "上方分頁" "Tabs on top";
     LayoutList "layout.list" "側邊欄 · 清單" "Sidebar · list";
     LayoutIcons "layout.icons" "側邊欄 · 圖示" "Sidebar · icons";
+    SettingsTabStyle "settings.tabStyle" "側邊欄的分頁" "Sidebar tabs";
+    NoteTabStyle "settings.tabStyleNote" "側邊欄 · 清單時，每個分頁顯示多少" "How much each tab shows in the sidebar list";
+    StyleActivity "style.activity" "活動清單" "Activity";
+    StyleCards "style.cards" "Agent 卡片" "Agent cards";
+    StyleRepo "style.repo" "依專案分組" "By repository";
+    RepoTabs "group.repoTabs" "{0} 個分頁" "{0} tabs";
     SettingsSidebarOpen "settings.sidebarOpen" "開啟時顯示側邊欄" "Show the sidebar";
     SettingsGroupByState "settings.groupByState" "依狀態分組" "Group by state";
     TabsWaiting "tabs.waiting" "{0} 個等待回應" "{0} waiting";

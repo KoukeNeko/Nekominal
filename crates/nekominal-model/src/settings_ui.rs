@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, OPACITY_RANGE, Osc52Policy, PushEvent, PushKind,
+        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, TabStyle,OPACITY_RANGE, Osc52Policy, PushEvent, PushKind,
         PushWhen, RightClick, Settings, TabTitle, check_push_url, split_font_families,
     },
     strings::{Lang, Text},
@@ -127,7 +127,9 @@ impl Descriptor {
     pub fn applies(&self, settings: &Settings) -> bool {
         match self.id {
             "tabs.sidebarOpen" => settings.tabs.layout.is_side(),
-            "tabs.groupByState" => settings.tabs.layout == crate::settings::TabLayout::List,
+            "tabs.style" => settings.tabs.layout == crate::settings::TabLayout::List,
+            // Tabs under their repositories are not grouped by their states as well.
+            "tabs.groupByState" => settings.tabs.layout == crate::settings::TabLayout::List && settings.tabs.style != TabStyle::Repo,
             "cursor.blinkRate" => settings.cursor.blink,
             _ => true,
         }
@@ -226,6 +228,7 @@ const OSC52_POLICIES: [Text; 3] = [Text::ToggleOff, Text::Osc52Write, Text::Osc5
 const LANGUAGES: [Text; 3] = [Text::CommonAuto, Text::LanguageZhTw, Text::LanguageEnUs];
 const NO_AGENT: [Text; 2] = [Text::StatusBarPlace, Text::StatusBarHide];
 const LAYOUTS: [Text; 3] = [Text::LayoutTop, Text::LayoutList, Text::LayoutIcons];
+const STYLES: [Text; 3] = [Text::StyleActivity, Text::StyleCards, Text::StyleRepo];
 const PUSH_KINDS: [Text; 2] = [Text::PushKindNtfy, Text::PushKindWebhook];
 const PUSH_WHENS: [Text; 2] = [Text::PushWhenAway, Text::BellSoundAlways];
 /// The events that can be pushed, in the order of [`PushEvent::ALL`].
@@ -252,6 +255,18 @@ pub const TABLE: &[Descriptor] = &[
         set: |s, v| {
             if let Some(layout) = chosen(&TabLayout::ALL, v) {
                 s.tabs.layout = layout;
+            }
+        },
+    },
+    Descriptor {
+        id: "tabs.style",
+        section: Section::Appearance,
+        label: Text::SettingsTabStyle,
+        control: Control::Layouts(&STYLES),
+        get: |s| choice(&TabStyle::ALL, s.tabs.style),
+        set: |s, v| {
+            if let Some(style) = chosen(&TabStyle::ALL, v) {
+                s.tabs.style = style;
             }
         },
     },
@@ -590,7 +605,7 @@ pub fn heading_before(id: &str) -> Option<Text> {
 }
 
 /// What a row is for, in smaller words under its label, for the rows whose label alone does not say.
-const NOTES: &[(&str, Text)] = &[("notifications.push.url", Text::NotePushUrl), ("notifications.push.token", Text::NotePushToken)];
+const NOTES: &[(&str, Text)] = &[("tabs.style", Text::NoteTabStyle), ("notifications.push.url", Text::NotePushUrl), ("notifications.push.token", Text::NotePushToken)];
 
 /// The note under the label of the row with this id, if it has one.
 pub fn note_of(id: &str) -> Option<Text> {
@@ -751,8 +766,27 @@ mod tests {
         assert_eq!(ids(Section::Triggers), Vec::<&str>::new(), "the Triggers page lists the rules, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
-        assert_eq!(ids(Section::Appearance)[..6], ["tabs.layout", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
+        assert_eq!(ids(Section::Appearance)[..7], ["tabs.layout", "tabs.style", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
         assert_eq!(ids(Section::Agents).last(), Some(&"osc52"));
+    }
+
+    #[test]
+    fn the_style_of_the_tabs_applies_to_the_list_and_tabs_by_repository_are_not_grouped_by_state() {
+        use crate::settings::TabLayout;
+        let applies = |id: &str, layout, style| {
+            let mut settings = Settings::default();
+            (settings.tabs.layout, settings.tabs.style) = (layout, style);
+            find(id).unwrap().applies(&settings)
+        };
+        for layout in TabLayout::ALL {
+            assert_eq!(applies("tabs.style", layout, TabStyle::Cards), layout == TabLayout::List, "{layout:?}");
+        }
+        assert!(applies("tabs.groupByState", TabLayout::List, TabStyle::Activity) && applies("tabs.groupByState", TabLayout::List, TabStyle::Cards));
+        assert!(!applies("tabs.groupByState", TabLayout::List, TabStyle::Repo));
+        let row = find("tabs.style").unwrap();
+        let mut settings = Settings::default();
+        (row.set)(&mut settings, Value::Index(2));
+        assert_eq!(((row.get)(&settings), settings.tabs.style), (Value::Index(2), TabStyle::Repo));
     }
 
     #[test]
