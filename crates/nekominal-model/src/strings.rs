@@ -219,6 +219,9 @@ texts! {
     WorktreeBadBranch "worktree.badBranch" "「{0}」不能當分支名稱" "“{0}” cannot be a branch name";
     WorktreeNotRepo "worktree.notRepo" "這個窗格的資料夾不在 git 儲存庫裡" "The folder of this pane is not in a git repository";
     WorktreeFailed "worktree.failed" "無法建立工作樹：{0}" "The worktree could not be made: {0}";
+    WorktreeIsMain "worktree.isMain" "這是儲存庫的主要簽出，不會被移除" "This is the main checkout of the repository: it is never removed";
+    WorktreeDirty "worktree.dirty" "工作樹有 {0} 個未提交的變更與 {1} 個未追蹤的檔案：請先提交或捨棄它們" "The worktree has {0} uncommitted changes and {1} untracked files: commit or discard them first";
+    WorktreeDetached "worktree.detached" "工作樹不在任何分支上：移除它會遺失它的提交" "The worktree is on no branch: removing it would lose its commits";
     SuggestionHistory "suggestion.history" "最近的指令" "Recent command";
     SuggestionSnippet "suggestion.snippet" "片段" "Snippet";
     EditSuggestions "edit.suggestions" "建議（片段與最近的指令）" "Suggestions (snippets and recent commands)";

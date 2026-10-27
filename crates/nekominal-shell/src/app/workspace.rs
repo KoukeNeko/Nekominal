@@ -126,10 +126,9 @@ impl App {
     fn open_worktree_tab(&mut self, folder: &str, branch: &str) {
         let path = match crate::worktree::create(std::path::Path::new(folder), branch) {
             Ok(path) => path.display().to_string(),
-            Err(crate::worktree::Error::NotRepo) => return self.inform(Text::WorktreeNotRepo.get(self.language()).to_owned()),
-            Err(crate::worktree::Error::Git(said)) => {
-                util::log(&format!("worktree {branch} in {folder}: {said}"));
-                return self.inform(Text::WorktreeFailed.format(self.language(), &[&said]));
+            Err(e) => {
+                util::log(&format!("worktree {branch} in {folder}: {e:?}"));
+                return self.inform(self.worktree_error(Text::WorktreeFailed, e));
             }
         };
         util::log(&format!("worktree {branch}: {path}"));
@@ -149,6 +148,19 @@ impl App {
                 self.redraw();
             }
             Err(e) => util::log(&format!("worktree tab: {e}")),
+        }
+    }
+
+    /// What to tell the user of `error`; `failed` holds what git said.
+    fn worktree_error(&self, failed: Text, error: crate::worktree::Error) -> String {
+        use crate::worktree::{Error, Refusal};
+        let lang = self.language();
+        match error {
+            Error::NotRepo => Text::WorktreeNotRepo.get(lang).to_owned(),
+            Error::Git(said) => failed.format(lang, &[&said]),
+            Error::Refused(Refusal::Main) => Text::WorktreeIsMain.get(lang).to_owned(),
+            Error::Refused(Refusal::Dirty { changed, untracked }) => Text::WorktreeDirty.format(lang, &[&changed, &untracked]),
+            Error::Refused(Refusal::Detached) => Text::WorktreeDetached.get(lang).to_owned(),
         }
     }
 
