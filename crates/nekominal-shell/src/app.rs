@@ -61,6 +61,7 @@ use crate::{
     util,
 };
 
+mod drop;
 mod notifications;
 mod workspace;
 
@@ -1838,7 +1839,7 @@ impl App {
         if self.paste_into_field() {
             return;
         }
-        if let (Some(text), Some(entry)) = (clipboard::read_text(), self.focused()) {
+        if let (Some(text), Some(entry)) = (clipboard::read_text().or_else(|| self.clipboard_files_text()), self.focused()) {
             let warning = logic::paste_warning(&text, entry.pane.input_modes().bracketed_paste, &self.settings.paste);
             let title = match warning {
                 None => {

@@ -566,6 +566,7 @@ mod tests {
         ("schemes", "the colour scheme tiles list them, with buttons that import them and a delete button on the user's own"),
         ("font.weight", "the renderer has no base weight yet, so a row would change nothing"),
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
+        ("paste.images", "the row waits for its approved design"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
     ];
 
