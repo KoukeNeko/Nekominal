@@ -405,14 +405,14 @@ texts! {
     // The phone notifications of the Terminal page: the rows, the notes under their labels, and the test row.
     SettingsPushHeading "settings.pushHeading" "手機通知" "Phone notifications";
     SettingsPushUrl "settings.pushUrl" "傳送到" "Send to";
-    NotePushUrl "settings.pushUrlNote" "ntfy 主題網址，或任何接收 POST 的 https 網址" "An ntfy topic, or any https URL taking a POST";
+    NotePushUrl "settings.pushUrlNote" "ntfy 主題，或接收 POST 的 https 網址" "An ntfy topic, or an https URL taking POSTs";
     SettingsPushKind "settings.pushKind" "格式" "Format";
     PushKindNtfy "pushKind.ntfy" "ntfy" "ntfy";
     PushKindWebhook "pushKind.webhook" "Webhook" "Webhook";
     SettingsPushWhen "settings.pushWhen" "何時傳送" "When to send";
     PushWhenAway "pushWhen.away" "不在電腦前" "When away";
     SettingsPushToken "settings.pushToken" "存取權杖" "Access token";
-    NotePushToken "settings.pushTokenNote" "選填；以 Bearer 傳送，不會寫進記錄檔" "Optional; sent as Bearer, never written to the log";
+    NotePushToken "settings.pushTokenNote" "選填，以 Bearer 傳送，不寫進記錄" "Optional, sent as Bearer, never logged";
     SettingsPushEvents "settings.pushEvents" "傳送哪些事件" "Events to send";
     PushEventFailed "pushEvent.failed" "失敗" "Failed";
     PushEventDone "pushEvent.done" "完成" "Finished";

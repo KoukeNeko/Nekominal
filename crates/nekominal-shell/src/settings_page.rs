@@ -37,16 +37,16 @@ const CONTENT_MAX: f32 = 680.0;
 /// Where the rows start below the top of the page: the title of the page is above them.
 const CONTENT_TOP: f32 = 66.0;
 /// The name of a section over what a search finds in it.
-const HEADING: f32 = 34.0;
+const HEADING: f32 = 42.0;
 /// The miniatures of the layouts of the tabs: at most this wide, three in a line, as tall as this share of their width.
 const LAYOUT_THUMB: f32 = 170.0;
 const LAYOUT_RATIO: f32 = 0.6;
 /// The one inset of the page: the title, the labels, the controls, the grids and the reset buttons all keep this far from
 /// the ends of the hairlines between the rows, left and right.
 const INNER: f32 = MARGIN;
-/// The rows touch: a hairline above each separates them, so there is no gap between them.
+/// The items of a section are plates of their own with a gap between them (the approved page section design).
 const ROW: f32 = 48.0;
-const ROW_GAP: f32 = 0.0;
+const ROW_GAP: f32 = 4.0;
 /// Below a grid (the colour schemes, the layouts) before the next row, as much as above the text of a row.
 const GRID_BOTTOM: f32 = INNER;
 const CONTROL: f32 = 28.0;
@@ -309,8 +309,10 @@ pub enum Fill {
     Strip,
     /// A line of the column of the sections: the selected one on a plate.
     Tab { selected: bool, hover: bool },
-    /// A row of the page: a hairline above it, and a plate while it has the keyboard.
+    /// An item of a section: a plate of its own, lighter while it has the keyboard.
     Row { focus: bool },
+    /// A line across the page: where rows scrolled under the title are cut off.
+    Rule,
     Button { selected: bool, hover: bool },
     Field { editing: bool },
     Switch { on: bool, hover: bool },
@@ -678,7 +680,8 @@ fn label(text: impl Into<String>, size: f32, tone: Tone, bold: bool, align: Alig
 
 /// The heading of a section of a page, over its items; its height.
 fn section_heading(items: &mut Vec<Item>, x: f32, y: f32, width: f32, text: &str) -> f32 {
-    item(items, Rect::new(x + INNER, y + 12.0, (width - 2.0 * INNER).max(0.0), HEADING - 12.0), None, label(text, 12.0, Tone::Quiet, true, Align::Left), true);
+    // More room above than below, so that the heading goes with the items under it, not the ones before.
+    item(items, Rect::new(x + INNER, y + HEADING - 24.0, (width - 2.0 * INNER).max(0.0), 18.0), None, label(text, 12.0, Tone::Quiet, true, Align::Left), true);
     HEADING
 }
 
@@ -955,7 +958,9 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             fixed.scrolls = false;
         }
     }
-    let top = oy + CONTENT_TOP;
+    // The Triggers page has a line under its title: its rows start under it.
+    let intro = !searching && Section::ALL.get(page.section) == Some(&Section::Triggers);
+    let top = oy + CONTENT_TOP + if intro { 14.0 } else { 0.0 };
     let viewport = Rect::new(page_x, top, (width - nav.w).max(0.0), (oy + height - top).max(0.0));
     let mut rows = Vec::new();
     let mut y = top;
@@ -975,6 +980,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             y += section_heading(&mut items, x0, y, content_width, entry.section().text().get(lang));
         }
         let start = y;
+        let first = items.len();
         // Where the entry is across the page: all of it, or a half of a pair's line.
         let mut slot = (x0, content_width);
         // The bottom of the entry when it is not where the next one starts (the left of a pair).
@@ -1004,7 +1010,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let places = wrap(&widths, (content_width - 2.0 * INNER).max(0.0), GAP);
                 let lines = places.iter().map(|(line, _)| *line + 1).max().unwrap_or(1);
                 let rect = Rect::new(x0, y, content_width, INNER + lines as f32 * (CONTROL + GAP) - GAP + GRID_BOTTOM);
-                row_plate(&mut items, rect, None, focus);
+                // The ready-made rules are offered on the page itself, under the rules, not as one more item: their plate
+                // shows only while they have the keyboard.
+                if focus {
+                    row_plate(&mut items, rect, None, focus);
+                }
                 for (i, (text, (line, offset))) in texts.iter().zip(&places).enumerate() {
                     let chip = Rect::new(rect.x + INNER + offset, rect.y + INNER + *line as f32 * (CONTROL + GAP), widths[i], CONTROL);
                     icon_button(&mut items, chip, Part::TriggerPreset(i), '\u{E710}', text, false, hover);
@@ -1362,8 +1372,16 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 // A toggle is pressed anywhere on its row.
                 let row_part = (applies && matches!(row.control, Control::Toggle)).then_some(Part::Toggle(id));
                 item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
-                // Beside its control the label (and the note under it) has half the row, or less where the control is wider.
-                let label_room = if stacked { rect.w - 2.0 * INNER - RESET_ROOM } else { ((rect.w - 2.0 * INNER - RESET_ROOM) / 2.0).min(rect.w - 2.0 * INNER - RESET_ROOM - control_width - GAP).max(label_width) };
+                // Beside its control the label has half the row, or less where the control is wider; a note under it, a
+                // sentence rather than a name, has all the room up to the control (and the reset button left of it).
+                let beside = rect.w - 2.0 * INNER - RESET_ROOM - control_width - GAP;
+                let label_room = if stacked {
+                    rect.w - 2.0 * INNER - RESET_ROOM
+                } else if note.is_some() {
+                    beside.max(label_width)
+                } else {
+                    ((rect.w - 2.0 * INNER - RESET_ROOM) / 2.0).min(beside).max(label_width)
+                };
                 let tone = if applies { Tone::Text } else { Tone::Quiet };
                 row_label(&mut items, rect, label_room, row.label(lang), note, tone);
                 // Where the control beside the label starts: the reset button goes left of it. A control under its label (or a
@@ -1509,7 +1527,21 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 }
             }
         }
+        // An item's plate holds all of its lines (the snippets, the saved layouts, the tiles under the colour scheme), not only
+        // the first; an item that lays plates of its own inside it (the profiles) keeps its plate to its first line.
+        let bottom = end.unwrap_or(y) - ROW_GAP;
+        let plates: Vec<usize> = (first..items.len()).filter(|&i| matches!(items[i].visual, Visual::Plate(Fill::Row { .. }))).collect();
+        if let [only] = plates[..]
+            && items[only].rect.y == start
+            && items[only].rect.y + items[only].rect.h < bottom
+        {
+            items[only].rect.h = bottom - start;
+        }
         rows.push(Rect::new(slot.0, start, slot.1, end.unwrap_or(y) - start));
+    }
+    // Rows scrolled under the title are cut off by a line, not at no edge at all.
+    if page.scroll > 0.0 {
+        item(&mut items, Rect::new(x0, top - 1.0, content_width, 1.0), None, Visual::Plate(Fill::Rule), false);
     }
     Frame { items, viewport, content_height: y - top + PAD, rows, entries }
 }

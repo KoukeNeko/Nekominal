@@ -2564,12 +2564,10 @@ impl App {
                             widgets::plate(&mut self.ui, rect, soft);
                         }
                     }
-                    settings_page::Fill::Row { focus } => {
-                        if focus {
-                            widgets::plate(&mut self.ui, rect, soft);
-                        }
-                        self.ui.fill(Rect::new(rect.x, rect.y, rect.w, 1.0), col(g.divider()));
-                    }
+                    // An item of a section is a plate of its own, the gap between items showing the page; the one with the
+                    // keyboard is lighter.
+                    settings_page::Fill::Row { focus } => widgets::plate(&mut self.ui, rect, if focus { col(g.hover()) } else { soft }),
+                    settings_page::Fill::Rule => self.ui.fill(rect, col(g.divider())),
                     settings_page::Fill::Button { selected, hover } => widgets::button(&mut self.ui, &g, rect, State::chosen(selected, hover)),
                     settings_page::Fill::Field { editing } => widgets::field(&mut self.ui, &g, rect, editing),
                     settings_page::Fill::Switch { on, hover } => widgets::switch(&mut self.ui, &g, rect, on, hover),
