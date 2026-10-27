@@ -59,6 +59,10 @@ pub struct Status {
     /// Lines of `git status --porcelain`: changed tracked files (staged or not), and files not tracked.
     pub changed: usize,
     pub untracked: usize,
+    /// Those files with the letter of their state (`M`, `A`, `D`, `R`, `?` for untracked…), in the order git lists them.
+    pub files: Vec<(char, String)>,
+    /// The remote the branch pushes to (its upstream's, else the first one); None when the repository has none.
+    pub remote: Option<String>,
     /// Commits ahead of the upstream, or, with no upstream, on no remote branch; None when git could not tell.
     pub unpushed: Option<usize>,
     /// The default branch (`origin/HEAD`, else `main` or `master`) and whether HEAD is merged into it.
@@ -204,6 +208,17 @@ pub fn parse_porcelain(text: &str) -> (usize, usize) {
     lines.fold((0, 0), |(changed, untracked), line| if line.starts_with("??") { (changed, untracked + 1) } else { (changed + 1, untracked) })
 }
 
+/// The files of `git status --porcelain` with the letter of their state: the first of the two columns that is set, `?` for
+/// a file not tracked. Read after `git` trims the output, which takes the leading space of the first line.
+pub fn parse_files(text: &str) -> Vec<(char, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (code, path) = line.trim_start().split_once(' ')?;
+            Some((code.chars().next()?, path.trim_start().to_owned()))
+        })
+        .collect()
+}
+
 /// (behind, ahead) in the output of `git rev-list --left-right --count @{upstream}...HEAD`.
 pub fn parse_ahead_behind(text: &str) -> Option<(usize, usize)> {
     let mut counts = text.split_whitespace().map(str::parse::<usize>);
@@ -219,7 +234,13 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
     let [top, git_dir, common] = dirs.lines().collect::<Vec<_>>()[..] else { return Err(Error::NotRepo) };
     let path = PathBuf::from(top.replace('/', "\\"));
     let branch = git(&path, ["branch", "--show-current"]).ok().filter(|b| !b.is_empty());
-    let (changed, untracked) = parse_porcelain(&git(&path, ["status", "--porcelain"]).map_err(Error::Git)?);
+    let porcelain = git(&path, ["-c", "core.quotePath=false", "status", "--porcelain"]).map_err(Error::Git)?;
+    let (changed, untracked) = parse_porcelain(&porcelain);
+    let remote = branch
+        .as_ref()
+        .and_then(|b| git(&path, ["config", "--get", &format!("branch.{b}.remote")]).ok())
+        .or_else(|| git(&path, ["remote"]).ok().and_then(|names| names.lines().next().map(str::to_owned)))
+        .filter(|name| !name.is_empty());
     let unpushed = match git(&path, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]) {
         Ok(counts) => parse_ahead_behind(&counts).map(|(_, ahead)| ahead),
         Err(_) => git(&path, ["rev-list", "--count", "HEAD", "--not", "--remotes"]).ok().and_then(|n| n.parse().ok()),
@@ -228,7 +249,7 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
         .ok()
         .or_else(|| ["main", "master"].into_iter().find(|b| git(&path, ["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok()).map(str::to_owned));
     let merged = default_branch.as_ref().map(|b| git(&path, ["merge-base", "--is-ancestor", "HEAD", b]).is_ok());
-    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, unpushed, default_branch, merged })
+    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, files: parse_files(&porcelain), remote, unpushed, default_branch, merged })
 }
 
 /// Paths git wrote, compared as Windows does: either slash, any case, no trailing separator.
@@ -362,6 +383,13 @@ mod tests {
     }
 
     #[test]
+    fn porcelain_files_keep_their_state_letter_and_path() {
+        let files = parse_files("M a.rs\n M b.rs\nA  c.rs\nR  d -> e\n?? 新.txt\n\n");
+        let expected = [('M', "a.rs"), ('M', "b.rs"), ('A', "c.rs"), ('R', "d -> e"), ('?', "新.txt")];
+        assert_eq!(files, expected.map(|(c, p)| (c, p.to_owned())));
+    }
+
+    #[test]
     fn ahead_and_behind_are_read_from_rev_list() {
         assert_eq!(parse_ahead_behind("2\t5"), Some((2, 5)));
         assert_eq!(parse_ahead_behind("0\t0\n"), Some((0, 0)));
@@ -380,7 +408,7 @@ mod tests {
     }
 
     fn status(main: bool, branch: Option<&str>, changed: usize, untracked: usize) -> Status {
-        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, unpushed: Some(0), default_branch: None, merged: None }
+        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, files: Vec::new(), remote: None, unpushed: Some(0), default_branch: None, merged: None }
     }
 
     #[test]
@@ -431,6 +459,7 @@ mod tests {
         std::fs::write(made.join("note.txt"), "x").unwrap();
         let dirty = inspect(&made).unwrap();
         assert_eq!((dirty.changed, dirty.untracked), (0, 1));
+        assert_eq!((&dirty.files[..], &dirty.remote), (&[('?', "note.txt".to_owned())][..], &None));
         assert_eq!(remove(&dirty, false, true), Err(Error::Refused(Refusal::Dirty { changed: 0, untracked: 1 })));
         assert!(made.exists());
 

@@ -366,8 +366,10 @@ enum Confirmation {
     /// The tabs with these uids, closed together.
     CloseTabs(Vec<u64>),
     CloseWindow,
-    /// The git worktree at this path (`workspace.rs`).
-    RemoveWorktree(std::path::PathBuf),
+    /// The git worktree at this path, with its branch or keeping it (`workspace.rs`).
+    RemoveWorktree { path: std::path::PathBuf, delete_branch: bool },
+    /// Show the tab in this folder: a worktree not removed for its changes or its commits not pushed.
+    ShowFolder(std::path::PathBuf),
     /// A notice: nothing to do when it closes.
     Notice,
 }
@@ -1981,18 +1983,34 @@ impl App {
     }
 
     fn dialog(&mut self, title: String, rows: Vec<popup::Row>, action: Confirmation) {
+        self.open_dialog(title, rows, action, None);
+    }
+
+    /// A dialog, with the rich content of Remove this worktree above its buttons when `remove` is given; its buttons then
+    /// sit at the right, and Enter takes the main one.
+    fn open_dialog(&mut self, title: String, rows: Vec<popup::Row>, action: Confirmation, remove: Option<crate::remove_dialog::Dialog>) {
         if self.confirmation.is_some() {
             return;
         }
         self.close_popup();
+        let remove = remove.map(|dialog| {
+            let layout = crate::remove_dialog::place(&mut self.ui, &dialog);
+            (crate::remove_dialog::View { dialog, layout }, crate::remove_dialog::buttons(&mut self.ui, &rows))
+        });
+        let sized = remove.as_ref().map_or((popup::DIALOG_HEADER, popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH, 2).1.1),
+                                           |(view, _)| (view.layout.buttons, view.layout.height));
         let size = self.surface.size();
-        let height = popup::DIALOG_HEADER + popup::dialog_buttons(popup::DIALOG_WIDTH, 2).1.1;
         let anchor = self.screen_point((size.0 as f32 + popup::DIALOG_WIDTH * self.scale) / 2.0,
-                                      (size.1 as f32 - height * self.scale) / 2.0 - 4.0 * self.scale);
-        match popup::open(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark()) {
+                                      (size.1 as f32 - sized.1 * self.scale) / 2.0 - 4.0 * self.scale);
+        match popup::open_sized(self.hwnd, &self.gpu, rows, popup::Kind::Confirm, anchor, self.scale, self.dark(), sized) {
             Ok(mut popup) => {
                 popup.heading = title;
                 popup.hover = Some(0);
+                if let Some((view, rects)) = remove {
+                    popup.hover = None;
+                    popup.rects = rects;
+                    popup.remove = Some(view);
+                }
                 self.confirmation = Some(action);
                 self.text = Utf16Assembler::default();
                 // SAFETY: the owner retains focus and routes input to this confirmation.
@@ -2384,6 +2402,16 @@ impl App {
             heading: if popup.kind == popup::Kind::Confirm { popup.heading.clone() } else { popup.query.clone().unwrap_or_default() },
             rows: popup.rows.iter().filter(|row| !row.is_separator()).map(|row| (row.label.clone(), row.hint.clone())).collect(),
             focused: popup.hover.map(|at| popup.rows[..at].iter().filter(|row| !row.is_separator()).count()),
+        }).map(|view| match self.popup.as_ref().and_then(|popup| popup.remove.as_ref()) {
+            // Remove this worktree: what it says is the heading, its choices come before its buttons and the one taken has
+            // the focus, as the keyboard moves it.
+            Some(remove) => access::PopupView {
+                heading: crate::remove_dialog::spoken(&remove.dialog),
+                rows: remove.dialog.choices.iter().map(|c| (c.label.clone(), c.note.clone())).chain(view.rows).collect(),
+                focused: remove.dialog.chosen,
+                ..view
+            },
+            None => view,
         });
         access::View {
             window: "Nekominal".into(),
@@ -5349,10 +5377,30 @@ impl App {
             popup.has_keys = true;
         }
         let scale = self.scale;
+        let (x, y) = (x as f32 / scale, y as f32 / scale);
+        // A choice of Remove this worktree is taken, and the dialog stays.
+        if let Some(remove) = self.popup.as_mut().and_then(|popup| popup.remove.as_mut())
+            && let Some(i) = remove.layout.choices.iter().position(|rect| rect.contains(x, y))
+        {
+            if remove.dialog.choose(i) {
+                self.remove_choice_changed();
+            }
+            return;
+        }
         let Some(popup) = self.popup.as_ref() else { return };
-        if let Some(row) = popup.row_at_point(x as f32 / scale, y as f32 / scale) {
+        if let Some(row) = popup.row_at_point(x, y) {
             self.choose(row);
         }
+    }
+
+    /// The choice of Remove this worktree changed: what accepting it does follows, and the dialog is drawn again.
+    fn remove_choice_changed(&mut self) {
+        let Some(popup) = self.popup.as_ref() else { return };
+        if let (Some(remove), Some(Confirmation::RemoveWorktree { delete_branch, .. })) = (&popup.remove, &mut self.confirmation) {
+            *delete_branch = remove.dialog.delete_branch();
+        }
+        // SAFETY: invalidating our own window.
+        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
     }
 
     pub fn popup_key(&mut self, vk_code: i32, repeat: bool) {
@@ -5406,6 +5454,23 @@ impl App {
         let Some(popup) = self.popup.as_mut() else { return };
         if popup.kind == popup::Kind::Confirm {
             if repeat {
+                return;
+            }
+            // Remove this worktree: Tab and the arrows move between its two choices, Enter takes the main button.
+            if let Some(remove) = popup.remove.as_mut() {
+                match vk_code {
+                    0x09 | 0x25..=0x28 => {
+                        if remove.dialog.toggle() {
+                            self.remove_choice_changed();
+                        }
+                    }
+                    VK_RETURN | 0x20 => {
+                        if let Some(row) = popup.rows.iter().position(|row| row.action == Some(popup::Action::Confirm)) {
+                            self.choose(row);
+                        }
+                    }
+                    _ => {}
+                }
                 return;
             }
             match vk_code {
@@ -5498,7 +5563,8 @@ impl App {
                 Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
                 Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
-                Some(Confirmation::RemoveWorktree(path)) => self.remove_worktree(&path),
+                Some(Confirmation::RemoveWorktree { path, delete_branch }) => self.remove_worktree(&path, delete_branch),
+                Some(Confirmation::ShowFolder(path)) => self.show_folder(&path),
                 Some(Confirmation::Notice) | None => {}
             },
             Some(popup::Action::Cancel) => {},
@@ -5722,8 +5788,12 @@ impl App {
         ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
         let line = ui.line_height(TEXT_SIZE);
         let header = popup.header;
-        if popup.kind == popup::Kind::Confirm {
+        if let Some(remove) = &popup.remove {
+            crate::remove_dialog::paint(ui, &g, remove, &popup.rows, &popup.rects, popup.hover);
+        } else if popup.kind == popup::Kind::Confirm {
             popup::paint_confirmation(ui, &popup.heading, &popup.rows, popup.hover, popup.size.0, g);
+        }
+        if popup.kind == popup::Kind::Confirm {
             ui.end_frame(&view);
             if popup.surface.present() { post_gpu_lost(owner); }
             return;
