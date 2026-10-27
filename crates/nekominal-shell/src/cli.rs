@@ -80,6 +80,76 @@ pub fn parse(args: &[String]) -> Vec<Action> {
     actions
 }
 
+/// What `nekominal cli <command> [options] [words]` asks the automation API (`api.rs`) for, and the pipe given with
+/// `--pipe` (else the instance of the pane it runs in, or the newest). The pane is `--pane`, else `NEKOMINAL_PANE` (`pane`).
+/// `send-text` sends its words joined by spaces, or `stdin` when it has none; `set-title` and `notify` take their words
+/// as the title (and the body after the first word of `notify`); `subscribe` the names of its events. A program for
+/// `new-tab` and `split` comes after `--`.
+pub fn api_request(args: &[String], pane: Option<String>, stdin: impl FnOnce() -> String) -> Result<(Option<String>, serde_json::Value), String> {
+    use serde_json::{Value, json};
+    let mut words = args.iter().map(String::as_str);
+    let (mut pipe, mut options, mut rest, mut command) = (None, serde_json::Map::new(), Vec::new(), None);
+    let mut cmd = None;
+    while let Some(word) = words.next() {
+        let mut value = |key: &str| words.next().map(str::to_owned).ok_or(format!("{word} needs a value ({key})"));
+        match word {
+            "--pipe" => pipe = Some(value("a pipe name")?),
+            "--pane" | "-p" => {
+                options.insert("pane".into(), value("a pane id")?.into());
+            }
+            "--lines" | "-n" => {
+                let lines = value("a number")?;
+                options.insert("lines".into(), lines.parse::<u64>().map(Value::from).map_err(|_| format!("--lines takes a number, not {lines}"))?);
+            }
+            "--profile" => {
+                options.insert("profile".into(), value("a profile")?.into());
+            }
+            "--cwd" | "-d" => {
+                options.insert("cwd".into(), value("a folder")?.into());
+            }
+            "--direction" => {
+                options.insert("direction".into(), value("right or down")?.into());
+            }
+            "--" => command = Some(words.by_ref().map(str::to_owned).collect::<Vec<_>>()),
+            _ if cmd.is_none() => cmd = Some(word.to_owned()),
+            _ => rest.push(word.to_owned()),
+        }
+    }
+    let cmd = cmd.ok_or("a command is missing: list, send-text, get-text, new-tab, split, focus, close, set-title, notify, subscribe")?;
+    let mut request = json!({ "cmd": cmd });
+    let object = request.as_object_mut().expect("an object");
+    let takes_pane = !matches!(cmd.as_str(), "list" | "new-tab" | "subscribe");
+    if takes_pane && !options.contains_key("pane") && let Some(pane) = pane.filter(|pane| !pane.is_empty()) {
+        options.insert("pane".into(), pane.into());
+    }
+    object.extend(options);
+    if let Some(command) = command {
+        object.insert("command".into(), command.into());
+    }
+    match cmd.as_str() {
+        "send-text" => {
+            let text = if rest.is_empty() { stdin() } else { rest.join(" ") };
+            object.insert("text".into(), text.into());
+        }
+        "set-title" => {
+            object.insert("title".into(), rest.join(" ").into());
+        }
+        "notify" => {
+            let (title, body) = rest.split_first().ok_or("notify needs a title")?;
+            object.insert("title".into(), title.clone().into());
+            object.insert("body".into(), body.join(" ").into());
+        }
+        "subscribe" if !rest.is_empty() => {
+            object.insert("events".into(), rest.into());
+        }
+        _ if !rest.is_empty() => return Err(format!("{cmd} does not take {}", rest.join(" "))),
+        _ => {}
+    }
+    // What the instance would refuse is told without asking it.
+    crate::api::parse(&request.to_string()).1?;
+    Ok((pipe, request))
+}
+
 /// The folder `-d` names, as a path: `D:\x\.` (what Explorer's entry passes) is `D:\x`, and `C:"` is `C:\`, which is what
 /// `"C:\"` becomes on a command line, its backslash escaping the quote (an entry written by an older version).
 fn folder(raw: &str) -> String {
@@ -131,6 +201,38 @@ mod tests {
         assert_eq!(parsed, [Action::Layout("two words".into()), Action::NewTab(Target::default())]);
         // Without a name it is a plain tab.
         assert_eq!(parse(&args("--layout")), [Action::NewTab(Target::default())]);
+    }
+
+    fn request(line: &str, pane: Option<&str>) -> Result<(Option<String>, serde_json::Value), String> {
+        api_request(&args(line), pane.map(str::to_owned), || "from stdin".to_owned())
+    }
+
+    #[test]
+    fn a_cli_command_becomes_the_request_of_the_api_with_the_pane_it_runs_in() {
+        use serde_json::json;
+        assert_eq!(request("list", Some("7-1")), Ok((None, json!({ "cmd": "list" }))), "list names no pane");
+        assert_eq!(request("send-text echo hi", Some("7-1")), Ok((None, json!({ "cmd": "send-text", "pane": "7-1", "text": "echo hi" }))));
+        assert_eq!(request("send-text --pane 9-2", Some("7-1")).unwrap().1, json!({ "cmd": "send-text", "pane": "9-2", "text": "from stdin" }));
+        assert_eq!(request("--pipe P get-text -n 50", Some("7-1")), Ok((Some("P".into()), json!({ "cmd": "get-text", "pane": "7-1", "lines": 50 }))));
+        assert_eq!(
+            request(r"split --direction down -d D:\x -- cmd /k ver", Some("7-1")).unwrap().1,
+            json!({ "cmd": "split", "pane": "7-1", "direction": "down", "cwd": r"D:\x", "command": ["cmd", "/k", "ver"] })
+        );
+        assert_eq!(request("new-tab --profile pwsh", Some("7-1")).unwrap().1, json!({ "cmd": "new-tab", "profile": "pwsh" }));
+        assert_eq!(request("set-title build box", Some("7-1")).unwrap().1, json!({ "cmd": "set-title", "pane": "7-1", "title": "build box" }));
+        assert_eq!(request("notify Done all tests pass", None).unwrap().1, json!({ "cmd": "notify", "title": "Done", "body": "all tests pass" }));
+        assert_eq!(request("subscribe output", None).unwrap().1, json!({ "cmd": "subscribe", "events": ["output"] }));
+    }
+
+    #[test]
+    fn a_cli_command_the_api_would_refuse_fails_before_it_is_sent() {
+        assert_eq!(request("", None).unwrap_err().split(':').next(), Some("a command is missing"));
+        assert_eq!(request("focus", None).unwrap_err(), r#""pane" is missing"#, "outside a pane, the pane must be named");
+        assert_eq!(request("get-text -n many", Some("7-1")).unwrap_err(), "--lines takes a number, not many");
+        assert_eq!(request("get-text --pane", None).unwrap_err(), "--pane needs a value (a pane id)");
+        assert_eq!(request("close extra", Some("7-1")).unwrap_err(), "close does not take extra");
+        assert_eq!(request("split --direction up", Some("7-1")).unwrap_err(), "\"direction\" is right or down, not up");
+        assert_eq!(request("notify", None).unwrap_err(), "notify needs a title");
     }
 
     #[test]

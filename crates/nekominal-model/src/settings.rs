@@ -487,6 +487,13 @@ pub struct Keyboard {
     pub kitty_protocol: bool,
 }
 
+/// The automation API: a named pipe of this user that scripts and agents drive the terminal through (`nekominal cli`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Api {
+    pub enabled: bool,
+}
+
 /// What the status bar does for a pane that runs no agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -553,6 +560,7 @@ pub struct Settings {
     pub bell: Bell,
     pub notifications: Notifications,
     pub keyboard: Keyboard,
+    pub api: Api,
     /// Sets environment variables that make coding-agent CLIs use their full terminal features.
     pub agent_environment: bool,
     pub status_bar: StatusBar,
@@ -615,6 +623,7 @@ impl Default for Settings {
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
             notifications: Notifications { toast: true, long_command: 10, push: Push::default() },
             keyboard: Keyboard { kitty_protocol: true },
+            api: Api { enabled: true },
             agent_environment: true,
             status_bar: StatusBar::default(),
             shell_integration: true,
@@ -1111,6 +1120,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let bell = section(&root, "bell", "", &mut problems);
     let notifications = section(&root, "notifications", "", &mut problems);
     let keyboard = section(&root, "keyboard", "", &mut problems);
+    let api = section(&root, "api", "", &mut problems);
     let status_bar = section(&root, "statusBar", "", &mut problems);
     let tabs = section(&root, "tabs", "", &mut problems);
     let tab_title = section(&tabs, "title", "tabs", &mut problems);
@@ -1232,6 +1242,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
             },
         },
         keyboard: Keyboard { kitty_protocol: boolean(&keyboard, "kittyProtocol", d.keyboard.kitty_protocol, "keyboard", &mut problems) },
+        api: Api { enabled: boolean(&api, "enabled", d.api.enabled, "api", &mut problems) },
         agent_environment: boolean(&root, "agentEnvironment", d.agent_environment, "", &mut problems),
         status_bar: {
             let b = &d.status_bar;
@@ -1685,6 +1696,14 @@ mod tests {
         assert!(!Settings::default().inherit_environment);
         let written = round_trips(Settings { inherit_environment: true, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "inheritEnvironment": true }));
+    }
+
+    #[test]
+    fn the_automation_api_is_on_unless_turned_off() {
+        assert!(Settings::default().api.enabled);
+        assert!(!parsed_ok(r#""api": { "enabled": false }"#).api.enabled);
+        let written = round_trips(Settings { api: Api { enabled: false }, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "api": { "enabled": false } }));
     }
 
     #[test]

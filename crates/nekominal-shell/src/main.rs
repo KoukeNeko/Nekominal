@@ -4,6 +4,7 @@
 
 mod access;
 mod agent;
+mod api;
 mod app;
 mod buffers;
 mod cli;
@@ -55,6 +56,32 @@ mod util {
     }
 }
 
+/// `nekominal cli …`: one request to the automation API of a running instance, its answer printed as JSON.
+fn cli_main(args: &[String]) -> i32 {
+    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE};
+    // The program has no console of its own (it is a window program): the output goes to the console it was started
+    // from, unless it is redirected, to a pipe or a file. A shell does not wait for a window program, so its prompt can
+    // come before the output; `| Out-String` (or any pipe) makes it wait.
+    // SAFETY: plain calls on the handles of this process.
+    unsafe {
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_ok_and(|handle| handle.is_invalid() || handle.0.is_null()) {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+    let stdin = || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut text);
+        text
+    };
+    match cli::api_request(args, std::env::var(api::PANE_VAR).ok(), stdin) {
+        Ok((pipe, request)) => api::run_cli(pipe.as_deref(), &request),
+        Err(e) => {
+            println!("{}", api::reply(&serde_json::Value::Null, &Err(e)));
+            2
+        }
+    }
+}
+
 fn main() {
     // Started from PowerShell 7, the shells and the update window would inherit its module folders, which break Windows
     // PowerShell (and Scoop in it).
@@ -73,6 +100,9 @@ fn main() {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|first| first == "cli") {
+        std::process::exit(cli_main(&args[1..]));
+    }
     cli::set_launch(cli::parse(&args));
     std::thread::spawn(paste_files::clean_old);
     if let Err(e) = win::run()
