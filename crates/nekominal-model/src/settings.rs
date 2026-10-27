@@ -196,6 +196,8 @@ pub struct Cursor {
 pub struct PasteSettings {
     pub warn_multiline: bool,
     pub warn_large_bytes: u64,
+    /// An image (or files) on the clipboard pastes as the path of a file, for agents that take images by path.
+    pub images: bool,
 }
 
 /// When the bell of a program is also heard. Nothing else in the interface makes a sound, whatever this says.
@@ -575,7 +577,7 @@ impl Default for Settings {
             copy_on_select: false,
             sticky_header: true,
             right_click: RightClick::Smart,
-            paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
+            paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120, images: true },
             osc52: Osc52Policy::Write,
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
             notifications: Notifications { toast: true, long_command: 10 },
@@ -1160,6 +1162,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         paste: PasteSettings {
             warn_multiline: boolean(&paste, "warnMultiline", d.paste.warn_multiline, "paste", &mut problems),
             warn_large_bytes: number(&paste, "warnLargeBytes", d.paste.warn_large_bytes as f64, (0.0, 100_000_000.0), "paste", &mut problems) as u64,
+            images: boolean(&paste, "images", d.paste.images, "paste", &mut problems),
         },
         osc52: one_of(
             &root,
