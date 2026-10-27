@@ -33,13 +33,15 @@ const NAV_PAD: f32 = INSET;
 const NAV_ITEM: f32 = 34.0;
 const SEARCH_HEIGHT: f32 = 30.0;
 const PAD: f32 = 32.0;
-const CONTENT_MAX: f32 = 680.0;
+/// The items grow with the window and fill it; only on a very wide screen do they stop, where a label and its control would
+/// stand too far apart to read across.
+const CONTENT_MAX: f32 = 1600.0;
 /// Where the rows start below the top of the page: the title of the page is above them.
 const CONTENT_TOP: f32 = 66.0;
 /// The name of a section over what a search finds in it.
 const HEADING: f32 = 42.0;
 /// The miniatures of the layouts of the tabs: at most this wide, three in a line, as tall as this share of their width.
-const LAYOUT_THUMB: f32 = 170.0;
+const LAYOUT_THUMB: f32 = 320.0;
 const LAYOUT_RATIO: f32 = 0.6;
 /// The one inset of the page: the title, the labels, the controls, the grids and the reset buttons all keep this far from
 /// the ends of the hairlines between the rows, left and right.
@@ -1572,6 +1574,21 @@ mod tests {
         let keymap = keymap();
         let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
+    }
+
+    #[test]
+    fn the_items_grow_with_the_window_up_to_a_readable_width() {
+        let settings = Settings::default();
+        let keymap = keymap();
+        let widest = |width: f32| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+            let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))).map(|item| item.rect.w).fold(0.0, f32::max)
+        };
+        let (small, large, huge) = (widest(900.0), widest(1200.0), widest(2400.0));
+        assert_eq!(small, 900.0 - NAV - 2.0 * PAD, "a narrow window's items fill it");
+        assert_eq!(large, 1200.0 - NAV - 2.0 * PAD, "a larger window has wider items");
+        assert_eq!(huge, CONTENT_MAX, "and no wider than can be read across");
     }
 
     fn row(id: &str) -> &'static Descriptor {
