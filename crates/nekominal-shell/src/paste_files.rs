@@ -88,8 +88,11 @@ fn timestamp() -> String {
 
 /// Removes the pasted images older than a day. Run once at start, off the window's thread.
 pub fn clean_old() {
-    let Ok(entries) = std::fs::read_dir(paste_dir()) else { return };
-    let now = SystemTime::now();
+    clean_old_in(&paste_dir(), SystemTime::now());
+}
+
+fn clean_old_in(dir: &Path, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let modified = entry.metadata().and_then(|meta| meta.modified());
         if modified.is_ok_and(|modified| is_stale(modified, now)) && entry.path().extension().is_some_and(|ext| ext == "png") {
@@ -231,12 +234,126 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_of_windows_path_is_typed_whole() {
+        assert_eq!(path_text(&[], Target::Windows), "", "nothing dropped, nothing typed");
+        assert_eq!(path_text(&paths(&[r"\\server\share\a b.png"]), Target::Windows), r#""\\server\share\a b.png""#);
+        assert_eq!(path_text(&paths(&[r"\\server\share\a.png"]), Target::Windows), r"\\server\share\a.png");
+        let long = format!(r"\\?\C:\{}\a.png", "deep\\".repeat(60));
+        assert_eq!(path_text(&[PathBuf::from(&long)], Target::Windows), long, "a long path keeps its prefix");
+        assert_eq!(path_text(&paths(&[r"C:\it's\(1).png", r"C:\a;b\x"]), Target::Windows), r#""C:\it's\(1).png" "C:\a;b\x""#);
+    }
+
+    #[test]
+    fn a_wsl_pane_gets_a_path_its_shell_reads_back_as_it_was() {
+        let wsl = |path: &str, distro| path_text(&paths(&[path]), Target::Wsl(distro));
+        assert_eq!(wsl(r"C:\圖片\截圖 1.png", None), "'/mnt/c/圖片/截圖 1.png'");
+        assert_eq!(wsl(r"C:\a\$(touch x)`id`.png", None), r"'/mnt/c/a/$(touch x)`id`.png'", "nothing in it runs");
+        assert_eq!(wsl(r"\\?\D:\x\y.png", None), "/mnt/d/x/y.png");
+        assert_eq!(wsl(r"\\wsl.localhost\Ubuntu\home\jo\a b.png", Some("Ubuntu")), "'/home/jo/a b.png'");
+        assert_eq!(path_text(&paths(&[r"C:\a.png", r"D:\b c.png"]), Target::Wsl(None)), "/mnt/c/a.png '/mnt/d/b c.png'", "several, each on its own");
+    }
+
+    #[test]
     fn a_pasted_image_is_cleared_once_it_is_a_day_old_and_not_before() {
         let now = SystemTime::now();
         assert!(!is_stale(now - Duration::from_secs(60), now));
         assert!(!is_stale(now - Duration::from_secs(23 * 3600), now));
         assert!(is_stale(now - Duration::from_secs(25 * 3600), now));
         assert!(!is_stale(now + Duration::from_secs(3600), now), "a file from the future is kept");
+        assert!(!is_stale(now - KEEP, now), "exactly a day is kept");
+        assert!(is_stale(now - KEEP - Duration::from_secs(1), now));
+    }
+
+    #[test]
+    fn the_cleanup_removes_only_old_pngs_and_gets_past_what_it_cannot_remove() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("nekominal-paste-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        clean_old_in(&dir, SystemTime::now());
+        std::fs::create_dir_all(dir.join("old.png")).unwrap();
+        let now = SystemTime::now();
+        let file = |name: &str, age_hours: u64| {
+            std::fs::write(dir.join(name), b"x").unwrap();
+            std::fs::File::options().write(true).open(dir.join(name)).unwrap().set_modified(now - Duration::from_secs(age_hours * 3600)).unwrap();
+        };
+        for (name, hours) in [("a-old.png", 48), ("b-locked.png", 48), ("c-new.png", 1), ("d-old.txt", 48), ("e-OLD.PNG", 48), ("f-old.png", 30)] {
+            file(name, hours);
+        }
+        // Held open by a program that shares nothing: it cannot be removed, and the ones after it still are.
+        let held = std::fs::File::options().read(true).share_mode(0).open(dir.join("b-locked.png")).unwrap();
+        clean_old_in(&dir, now);
+        drop(held);
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["b-locked.png", "c-new.png", "d-old.txt", "e-OLD.PNG", "old.png"], "only the pasted images of the app's own name go");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The header of a DIB: its size, width, height, bits and compression; the rest zero.
+    fn header(size: u32, width: i32, height: i32, bits: u16, compression: u32) -> Vec<u8> {
+        let mut dib = vec![0u8; size as usize];
+        dib[..4].copy_from_slice(&size.to_le_bytes());
+        dib[4..8].copy_from_slice(&width.to_le_bytes());
+        dib[8..12].copy_from_slice(&height.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&bits.to_le_bytes());
+        dib[16..20].copy_from_slice(&compression.to_le_bytes());
+        dib
+    }
+
+    #[test]
+    fn a_bitmap_that_claims_more_than_it_holds_is_refused_before_anything_is_allocated() {
+        for (width, height) in [(i32::MAX, i32::MAX), (i32::MAX, i32::MIN), (1 << 15, 1 << 15), (100_000, 100_000), (1, i32::MAX), (10_000, 10_000)] {
+            assert_eq!(dib_to_rgba(&header(40, width, height, 32, 0)), None, "{width}x{height}");
+        }
+        for (width, height, bits) in [(0, 2, 32), (-2, 2, 32), (2, 0, 32), (2, 2, 16), (2, 2, 8), (2, 2, 1)] {
+            assert_eq!(dib_to_rgba(&[header(40, width, height, bits, 0), vec![0; 64]].concat()), None, "{width}x{height}x{bits}");
+        }
+        assert_eq!(dib_to_rgba(&[header(40, 1, 1, 32, 1), vec![0; 4]].concat()), None, "run-length compression is not read");
+        assert_eq!(dib_to_rgba(&[header(40, 1, 1, 24, 3), vec![0; 16]].concat()), None, "masks only at 32 bits");
+        let mut many_colours = [header(40, 1, 1, 32, 0), vec![0; 4]].concat();
+        many_colours[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(dib_to_rgba(&many_colours), None, "a colour table longer than the data");
+        let mut huge_header = header(40, 1, 1, 32, 0);
+        huge_header[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(dib_to_rgba(&huge_header), None);
+        for cut in 0..40 {
+            assert_eq!(dib_to_rgba(&header(40, 1, 1, 32, 0)[..cut]), None, "a header cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn a_v5_bitmap_with_masks_keeps_its_alpha_and_a_plain_one_takes_masks_after_the_header() {
+        // DIBV5, 32 bits, BI_BITFIELDS: the masks at 40, alpha at 52; one pixel half transparent, stored as ARGB.
+        let mut v5 = header(124, 1, 1, 32, 3);
+        for (n, mask) in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000].iter().enumerate() {
+            v5[40 + 4 * n..44 + 4 * n].copy_from_slice(&mask.to_le_bytes());
+        }
+        v5.extend(0x80_11_22_33u32.to_le_bytes());
+        assert_eq!(dib_to_rgba(&v5), Some((1, 1, vec![0x11, 0x22, 0x33, 0x80])));
+        // A plain header with BI_BITFIELDS: three masks after it (here RGB in the other order), no alpha.
+        let mut plain = header(40, 1, 1, 32, 3);
+        for mask in [0x0000_00FFu32, 0x0000_FF00, 0x00FF_0000] {
+            plain.extend(mask.to_le_bytes());
+        }
+        plain.extend(0x00_11_22_33u32.to_le_bytes());
+        assert_eq!(dib_to_rgba(&plain), Some((1, 1, vec![0x33, 0x22, 0x11, 255])));
+        // BI_ALPHABITFIELDS after a plain header: four masks.
+        let mut alpha = header(40, 1, 1, 32, 6);
+        for mask in [0x00FF_0000u32, 0x0000_FF00, 0x0000_00FF, 0xFF00_0000] {
+            alpha.extend(mask.to_le_bytes());
+        }
+        alpha.extend(0x40_00_00_FFu32.to_le_bytes());
+        assert_eq!(dib_to_rgba(&alpha), Some((1, 1, vec![0, 0, 255, 0x40])));
+    }
+
+    #[test]
+    fn a_large_real_bitmap_is_read_and_encoded() {
+        let (w, h) = (1920, 1080);
+        let dib = [header(40, w, -h, 24, 0), vec![0x7F; (w as usize * 3).div_ceil(4) * 4 * h as usize]].concat();
+        let (width, height, rgba) = dib_to_rgba(&dib).unwrap();
+        assert_eq!((width, height, rgba.len()), (1920, 1080, 1920 * 1080 * 4));
+        assert_eq!(decode(&encode_png(width, height, &rgba).unwrap()).0, 1920);
     }
 
     /// A 2x2 bitmap with a plain header, 32 bits a pixel, bottom row first, and a fourth byte of zero.
