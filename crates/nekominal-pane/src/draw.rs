@@ -131,6 +131,12 @@ impl PaneRenderer {
         Ok(())
     }
 
+    /// Font ligatures (the setting font.ligatures): `=>` drawn as the font's one glyph for it.
+    pub fn set_ligatures(&mut self, on: bool) {
+        self.renderer.set_ligatures(on);
+        self.force_draw = true;
+    }
+
     /// The height of a line as a multiple of the font's own, keeping the size and the scale.
     pub fn set_line_height(&mut self, line_height: f32) -> Result<(), String> {
         let (size_pt, scale) = (self.renderer.cfg.font_size_pt, self.renderer.cfg.scale);

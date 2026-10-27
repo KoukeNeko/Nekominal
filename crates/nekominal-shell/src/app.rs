@@ -850,6 +850,7 @@ impl App {
             font_size_pt: self.settings.font.size as f32,
             scale: self.scale,
             line_height: self.settings.font.line_height as f32,
+            ligatures: self.settings.font.ligatures,
             lcd: self.theme.background_opacity >= 1.0,
             atlas_initial: 512,
             ..Default::default()
@@ -4323,6 +4324,7 @@ impl App {
                     if self.settings.font.family != before.font.family {
                         entry.view.set_font_families(self.settings.font.family.clone())?;
                     }
+                    entry.view.set_ligatures(self.settings.font.ligatures);
                     entry.view.set_font_size(zoomed(entry.font_size.unwrap_or(self.settings.font.size), self.zoom))?;
                     entry.view.set_line_height(self.settings.font.line_height as f32)
                 })();

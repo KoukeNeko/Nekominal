@@ -1196,7 +1196,7 @@ pub fn core_config(settings: &Settings) -> CoreConfig {
 pub struct Effects {
     /// The colour scheme or the backdrop: the chrome and the terminals are painted again.
     pub glass: bool,
-    /// The size, the family or the line height of the font.
+    /// The size, the family, the line height or the ligatures of the font.
     pub font: bool,
     pub osc52: bool,
     /// The shape of the cursor a program that chose none gets, and how many lines of scrollback a pane keeps.
@@ -1213,7 +1213,8 @@ pub fn effects(before: &Settings, now: &Settings) -> Effects {
         glass: before.theme != now.theme || before.appearance.backdrop != now.appearance.backdrop,
         font: before.font.size != now.font.size
             || before.font.family != now.font.family
-            || before.font.line_height != now.font.line_height,
+            || before.font.line_height != now.font.line_height
+            || before.font.ligatures != now.font.ligatures,
         osc52: before.osc52 != now.osc52,
         cursor: before.cursor != now.cursor,
         scrollback: before.scrollback != now.scrollback,
@@ -2644,6 +2645,7 @@ mod tests {
         assert_eq!(after(|s| s.font.size = 16.0), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.font.line_height = 1.3), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.font.family = vec!["Fira Code".into()]), Effects { font: true, ..Effects::default() });
+        assert_eq!(after(|s| s.font.ligatures = true), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.osc52 = Osc52Policy::Off), Effects { osc52: true, ..Effects::default() });
         assert_eq!(after(|s| s.cursor.style = CursorStyle::Bar), Effects { cursor: true, ..Effects::default() });
         assert_eq!(after(|s| s.scrollback = 500), Effects { scrollback: true, ..Effects::default() });
