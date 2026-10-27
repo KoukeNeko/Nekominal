@@ -113,14 +113,14 @@ pub fn path_text(paths: &[PathBuf], target: Target) -> String {
 
 fn one_path(path: &Path, target: Target) -> String {
     let windows = path.to_string_lossy();
+    let single_quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     match target {
-        // A location WSL cannot reach (a network share) is typed as it is: better than nothing typed.
+        // A location WSL cannot reach (a network share) is typed as Windows names it: better than nothing typed. In
+        // single quotes, as in double ones the shell would halve its backslashes and run what `$(…)` names.
         Target::Wsl(distro) => match nekominal_pty::profiles::windows_path_to_wsl(path, distro) {
-            Some(linux) if linux.chars().any(|c| c.is_whitespace() || "'\"\\$`!&()[]{};<>|*?#~^".contains(c)) => {
-                format!("'{}'", linux.replace('\'', r"'\''"))
-            }
+            Some(linux) if linux.chars().any(|c| c.is_whitespace() || "'\"\\$`!&()[]{};<>|*?#~^".contains(c)) => single_quoted(&linux),
             Some(linux) => linux,
-            None => format!("\"{windows}\""),
+            None => single_quoted(&windows),
         },
         // Double quotes are what cmd, PowerShell and the agents' prompts all read as one path; a Windows path cannot hold one.
         Target::Windows if windows.chars().any(|c| c.is_whitespace() || "&()[]{}^=;!'+,`$@#%~".contains(c)) => format!("\"{windows}\""),
@@ -230,7 +230,9 @@ mod tests {
         assert_eq!(path_text(&paths(&[r"C:\Users\jo\AppData\Local\Temp\Nekominal\paste\1.png"]), Target::Wsl(None)), "/mnt/c/Users/jo/AppData/Local/Temp/Nekominal/paste/1.png");
         assert_eq!(path_text(&paths(&[r"D:\Jo's files\a b.png"]), Target::Wsl(None)), r"'/mnt/d/Jo'\''s files/a b.png'");
         assert_eq!(path_text(&paths(&[r"\\wsl$\Ubuntu\home\jo\a.png"]), Target::Wsl(Some("Ubuntu"))), "/home/jo/a.png");
-        assert_eq!(path_text(&paths(&[r"\\server\share\a.png"]), Target::Wsl(None)), r#""\\server\share\a.png""#, "a place WSL cannot reach stays as Windows names it");
+        assert_eq!(path_text(&paths(&[r"\\server\share\a.png"]), Target::Wsl(None)), r"'\\server\share\a.png'", "a place WSL cannot reach stays as Windows names it");
+        assert_eq!(path_text(&paths(&[r"\\server\it's\$(id).png"]), Target::Wsl(None)), r"'\\server\it'\''s\$(id).png'", "and the shell reads it back as it was");
+        assert_eq!(path_text(&paths(&[r"\\wsl$\Debian\a.png"]), Target::Wsl(Some("Ubuntu"))), r"'\\wsl$\Debian\a.png'", "another distribution's files are out of reach");
     }
 
     #[test]
