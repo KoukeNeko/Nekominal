@@ -173,6 +173,8 @@ pub struct Font {
     pub size: f64,
     pub weight: u16,
     pub line_height: f64,
+    /// Draw `=>`, `!=` and the like as the one glyph the font has for them (its `calt` and `liga` features).
+    pub ligatures: bool,
 }
 
 impl Font {
@@ -714,6 +716,8 @@ impl Default for Settings {
                 size: 14.0,
                 weight: 400,
                 line_height: 1.1,
+                // Off as in Windows Terminal: a cursor or a selection inside `=>` reads better as two characters.
+                ligatures: false,
             },
             // The pace Windows gives a text caret by default.
             cursor: Cursor { style: CursorStyle::Block, blink: true, blink_rate: 530 },
@@ -1271,6 +1275,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
             size: number(&font, "size", d.font.size, FONT_SIZE_RANGE, "font", &mut problems),
             weight: number(&font, "weight", d.font.weight as f64, (100.0, 900.0), "font", &mut problems) as u16,
             line_height: number(&font, "lineHeight", d.font.line_height, (1.0, 2.0), "font", &mut problems),
+            ligatures: boolean(&font, "ligatures", d.font.ligatures, "font", &mut problems),
         },
         cursor: Cursor {
             style: one_of(
@@ -1563,6 +1568,15 @@ mod tests {
         let bad = parsed(r#"{ "font": { "family": 3 } }"#);
         assert_eq!(bad.problems.len(), 1);
         assert_eq!(bad.settings.font.family, Settings::default().font.family);
+    }
+
+    #[test]
+    fn font_ligatures_are_off_unless_the_file_turns_them_on() {
+        assert!(!Settings::default().font.ligatures);
+        assert!(parsed(r#"{ "font": { "ligatures": true } }"#).settings.font.ligatures);
+        let bad = parsed(r#"{ "font": { "ligatures": "yes" } }"#);
+        assert_eq!(bad.problems.len(), 1);
+        assert!(!bad.settings.font.ligatures);
     }
 
     #[test]

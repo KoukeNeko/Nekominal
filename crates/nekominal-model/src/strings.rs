@@ -362,6 +362,8 @@ texts! {
     SettingsFontFamily "settings.fontFamily" "字型" "Font";
     SettingsFontSize "settings.fontSize" "字型大小" "Font size";
     SettingsLineHeight "settings.lineHeight" "行高" "Line height";
+    SettingsLigatures "settings.ligatures" "字型連字" "Font ligatures";
+    NoteLigatures "settings.ligaturesNote" "=>、>= 等組合顯示為一個字形" "Show => or >= as one glyph";
     SettingsCursorStyle "settings.cursorStyle" "游標形狀" "Cursor shape";
     CursorBlock "cursor.block" "區塊" "Block";
     CursorBar "cursor.bar" "直線" "Bar";

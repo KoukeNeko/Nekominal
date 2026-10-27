@@ -349,6 +349,7 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
+    toggle!("font.ligatures", Appearance, SettingsLigatures, font.ligatures),
     Descriptor {
         id: "cursor.style",
         section: Section::Appearance,
@@ -605,7 +606,7 @@ pub fn heading_before(id: &str) -> Option<Text> {
 }
 
 /// What a row is for, in smaller words under its label, for the rows whose label alone does not say.
-const NOTES: &[(&str, Text)] = &[("tabs.style", Text::NoteTabStyle), ("notifications.push.url", Text::NotePushUrl), ("notifications.push.token", Text::NotePushToken)];
+const NOTES: &[(&str, Text)] = &[("tabs.style", Text::NoteTabStyle), ("font.ligatures", Text::NoteLigatures),("notifications.push.url", Text::NotePushUrl), ("notifications.push.token", Text::NotePushToken)];
 
 /// The note under the label of the row with this id, if it has one.
 pub fn note_of(id: &str) -> Option<Text> {
@@ -766,7 +767,22 @@ mod tests {
         assert_eq!(ids(Section::Triggers), Vec::<&str>::new(), "the Triggers page lists the rules, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));
-        assert_eq!(ids(Section::Appearance)[..7], ["tabs.layout", "tabs.style", "tabs.sidebarOpen", "tabs.groupByState", "theme", "appearance.backdrop", "appearance.opacity"]);
+        assert_eq!(
+            ids(Section::Appearance)[..11],
+            [
+                "tabs.layout",
+                "tabs.style",
+                "tabs.sidebarOpen",
+                "tabs.groupByState",
+                "theme",
+                "appearance.backdrop",
+                "appearance.opacity",
+                "font.family",
+                "font.size",
+                "font.lineHeight",
+                "font.ligatures"
+            ]
+        );
         assert_eq!(ids(Section::Agents).last(), Some(&"osc52"));
     }
 
