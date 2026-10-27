@@ -1,8 +1,8 @@
 //! The notifications of the window: what `notify` decided, shown as toasts (`toast`), or, with those off, the end of a
-//! long command as the flash of the taskbar button.
+//! long command as the flash of the taskbar button; and pushed to a phone (`push`) when that is set.
 
 use super::*;
-use crate::{notify::Event, toast};
+use crate::{notify::Event, push, toast};
 
 impl App {
     /// After the output of every pane was read: queues the states of the tabs that changed, and tells what is worth it.
@@ -19,16 +19,22 @@ impl App {
         pending.sort_by_key(|(_, event)| event.chatty());
         for (uid, event) in pending {
             let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) else { continue };
-            if !notify::wanted(&event, self.active, index == self.selected) {
-                continue;
-            }
-            if self.settings.notifications.toast {
-                if self.notifier.limiter.allow(now, uid, &event)
-                    && let Err(e) = toast::show(self.hwnd, uid, &self.tab_label(index), &event.body(lang))
-                {
+            let wanted = notify::wanted(&event, self.active, index == self.selected);
+            let push = push::wanted(&self.settings.notifications.push, self.active);
+            let toast = wanted && self.settings.notifications.toast;
+            // The toast and the push are one notification to the limiter: a flood the window drops, the phone does too.
+            if (toast || push) && self.notifier.limiter.allow(now, uid, &event) {
+                let (title, body) = (self.tab_label(index), event.body(lang));
+                if toast && let Err(e) = toast::show(self.hwnd, uid, &title, &body) {
                     util::log(&format!("toast: {e}"));
                 }
-            } else if matches!(event, Event::Command { .. })
+                if push {
+                    push::send(&self.settings.notifications.push, push::Message::new(title, body, &event, uid));
+                }
+            }
+            if wanted
+                && !self.settings.notifications.toast
+                && matches!(event, Event::Command { .. })
                 && bell::flash_for_response(self.settings.bell.taskbar, self.active, self.last_alert.map(|at| at.elapsed()))
             {
                 self.alert(BellEffects { taskbar_flash: true, ..BellEffects::default() });
