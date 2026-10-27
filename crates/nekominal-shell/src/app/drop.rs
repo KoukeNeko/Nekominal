@@ -23,4 +23,14 @@ impl App {
         }
         paste_files::clipboard_text(target(self.focused()?))
     }
+
+    /// Files dropped at a pixel of the window: their paths are pasted into the pane there. A drop elsewhere (the tab strip)
+    /// does nothing.
+    pub fn drop_files(&mut self, x: i32, y: i32, paths: &[std::path::PathBuf]) {
+        let Some(tab) = self.tab() else { return };
+        let Some(entry) = tab.pane_at(x, y).and_then(|id| tab.entry(id)) else { return };
+        if !paths.is_empty() && !entry.exited {
+            entry.pane.paste(&paste_files::path_text(paths, target(entry)));
+        }
+    }
 }

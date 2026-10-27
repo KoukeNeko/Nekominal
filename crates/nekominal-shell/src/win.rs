@@ -453,6 +453,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_DROPFILES => {
+            let drop = windows::Win32::UI::Shell::HDROP(wparam.0 as *mut _);
+            let mut at = POINT::default();
+            // SAFETY: the drop handle of this message, read and then freed once.
+            let paths = unsafe {
+                let _ = windows::Win32::UI::Shell::DragQueryPoint(drop, &mut at);
+                let paths = crate::paste_files::drop_paths(drop);
+                windows::Win32::UI::Shell::DragFinish(drop);
+                paths
+            };
+            with_app(hwnd, |app| app.drop_files(at.x, at.y, &paths));
+            LRESULT(0)
+        }
         crate::toast::WM_TOAST => {
             show_toast_tab(hwnd, wparam.0 as u64);
             LRESULT(0)
@@ -1009,6 +1022,9 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
             let _ = SetWindowPos(hwnd, None, rect.x, rect.y, rect.width as i32, rect.height as i32, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         SetTimer(Some(hwnd), JOB_TIMER, 1000, None);
+        // Files dropped from Explorer come as WM_DROPFILES. shortcut: Windows blocks that message from a program of lower
+        // integrity, so nothing drops on a window run as administrator; an OLE drop target would take those too.
+        windows::Win32::UI::Shell::DragAcceptFiles(hwnd, true);
         let _ = ShowWindow(hwnd, if placement.is_some_and(|placement| placement.maximized) { SW_SHOWMAXIMIZED } else { SW_SHOW });
         with_app(hwnd, |app| app.redraw());
         if with_app(hwnd, App::elevates_later) == Some(true) {
