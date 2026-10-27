@@ -340,6 +340,159 @@ mod tests {
         assert_eq!(config.lines().count(), 7, "no value breaks a line of the config");
     }
 
+    #[test]
+    fn each_kind_of_event_belongs_to_one_choice_and_has_its_tags_and_priority() {
+        // (kind, the choice it is pushed under, ntfy's tags, urgent)
+        let table = [
+            ("blocked", PushEvent::Waiting, "robot,question", true),
+            ("error", PushEvent::Failed, "warning", true),
+            ("done", PushEvent::Done, "robot", false),
+            ("command", PushEvent::LongCommand, "white_check_mark", false),
+            ("commandFailed", PushEvent::LongCommand, "warning", true),
+            ("bell", PushEvent::Message, "bell", false),
+            ("message", PushEvent::Message, "speech_balloon", false),
+        ];
+        for (kind, event, tags, urgent) in table {
+            assert_eq!(event_of(kind), event, "{kind}");
+            let (headers, _) = request(&push(PushKind::Ntfy, ""), &message(kind));
+            let header = |name| headers.iter().find(|(n, _)| *n == name).map(|(_, v)| v.as_str());
+            assert_eq!(header("Tags"), Some(tags), "{kind}");
+            assert_eq!(header("Priority").is_some(), urgent, "{kind}");
+        }
+    }
+
+    #[test]
+    fn with_one_choice_on_only_its_events_are_pushed() {
+        let events = [
+            Event::Agent(TabState::Blocked, None),
+            Event::Agent(TabState::Error, None),
+            Event::Agent(TabState::Done, None),
+            Event::Command { line: None, exit: Some(0), seconds: 30 },
+            Event::Command { line: None, exit: Some(2), seconds: 30 },
+            Event::Bell,
+            Event::Message("hi".into()),
+        ];
+        for chosen in PushEvent::ALL {
+            let target = Push { events: vec![chosen], ..push(PushKind::Webhook, "") };
+            for event in &events {
+                assert_eq!(wanted(&target, false, event), event_of(kind_of(event)) == chosen, "{chosen:?} {event:?}");
+            }
+        }
+        let none = Push { events: vec![], ..push(PushKind::Webhook, "") };
+        assert!(events.iter().all(|event| !wanted(&none, false, event)), "nothing chosen, nothing pushed");
+    }
+
+    /// Text that breaks a careless request: quotes, backslashes, line breaks, a tab, emoji, CJK, an escape sequence, and
+    /// an @ that curl would read as the name of a file.
+    const AWKWARD: &str = "@C:\\x \"quoted\" 'single'\r\nline 2\ttab 😀 構建完成 \u{1b}[31mred\u{1b}[0m";
+
+    #[test]
+    fn awkward_text_reaches_the_webhook_as_it_was_and_ntfy_in_one_title_header() {
+        let long = AWKWARD.repeat(2000);
+        let message = Message { title: AWKWARD.into(), body: long.clone(), ..message("done") };
+        let (_, body) = request(&push(PushKind::Webhook, ""), &message);
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((json["title"].as_str(), json["body"].as_str()), (Some(AWKWARD), Some(long.as_str())));
+        let (headers, body) = request(&push(PushKind::Ntfy, ""), &message);
+        assert_eq!(body, long, "ntfy takes the body as it is");
+        let title = headers.iter().find(|(n, _)| *n == "Title").map(|(_, v)| v.clone()).unwrap();
+        let encoded = title.strip_prefix("=?UTF-8?B?").and_then(|t| t.strip_suffix("?=")).unwrap();
+        let decoded = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(encoded).unwrap()).unwrap();
+        assert_eq!(decoded, AWKWARD.replace(['\r', '\n'], " "), "one line, the rest kept");
+        let config = curl_config("https://ntfy.sh/cat", &headers, &body);
+        assert_eq!(config.lines().count(), 6 + headers.len(), "no value breaks a line of the config");
+    }
+
+    /// A one-shot HTTP server on this computer: answers `status` and hands back the request it got.
+    fn receiver(status: &'static str) -> (String, std::thread::JoinHandle<Vec<u8>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/topic", listener.local_addr().unwrap().port());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let (mut got, mut buffer) = (Vec::new(), [0u8; 65536]);
+            let head_end = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                got.extend_from_slice(&buffer[..n]);
+                if let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break at + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&got[..head_end]).to_ascii_lowercase();
+            let length: usize = head.lines().find_map(|line| line.strip_prefix("content-length:")).map_or(0, |n| n.trim().parse().unwrap());
+            if head.contains("expect: 100-continue") {
+                stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").unwrap();
+            }
+            while got.len() < head_end + length {
+                let n = stream.read(&mut buffer).unwrap();
+                got.extend_from_slice(&buffer[..n]);
+            }
+            stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            got
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn curl_delivers_the_headers_and_the_body_byte_for_byte() {
+        let (url, server) = receiver("200 OK");
+        let target = Push { url: url.clone(), ..push(PushKind::Ntfy, "tk_\"secret\"") };
+        let message = Message { title: "plain title".into(), body: AWKWARD.repeat(50), ..message("blocked") };
+        let (headers, body) = request(&target, &message);
+        post(&curl_config(&url, &headers, &body)).unwrap();
+        let got = server.join().unwrap();
+        let split = got.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&got[..split]);
+        assert!(head.starts_with("POST /topic "), "{head}");
+        for line in ["Authorization: Bearer tk_\"secret\"", "Title: plain title", "Tags: robot,question", "Priority: high", "Content-Type: text/plain; charset=utf-8"] {
+            assert!(head.lines().any(|l| l == line), "{line} in {head}");
+        }
+        assert_eq!(&got[split + 4..], AWKWARD.repeat(50).as_bytes());
+    }
+
+    #[test]
+    fn a_failed_post_says_curls_exit_code_and_not_the_address() {
+        // A port nobody listens on: curl cannot connect (7).
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/tk_secret", closed.local_addr().unwrap().port());
+        drop(closed);
+        let error = post(&curl_config(&url, &[("Authorization", "Bearer tk_secret".into())], "x")).unwrap_err();
+        assert_eq!(error, "curl.exe exited with 7");
+        // An answer of an HTTP error fails too (--fail: 22), instead of counting as sent.
+        let (url, server) = receiver("500 Internal Server Error");
+        assert_eq!(post(&curl_config(&url, &[], "x")).unwrap_err(), "curl.exe exited with 22");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn the_test_button_goes_from_sending_to_what_the_push_came_to() {
+        let wait_for_result = || {
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                match test_status() {
+                    Some((_, Test::Sending)) if Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Some(status) => return status,
+                    None => panic!("no status"),
+                }
+            }
+        };
+        // An address that is refused fails without curl, with the reason the settings page shows.
+        let refused = Push { url: "http://ntfy.sh/cat".into(), ..push(PushKind::Ntfy, "") };
+        send_test(&refused, "t".into(), "b".into());
+        let (asked, _) = test_status().unwrap();
+        let (at, result) = wait_for_result();
+        assert_eq!(result, Test::Failed(check_url(&refused.url).unwrap_err().to_owned()));
+        assert_eq!(at, asked, "the time is when it was asked, not when it ended");
+        assert!(take_test_change(), "the page is told to draw again");
+        assert!(!take_test_change());
+        // One that gets through.
+        let (url, server) = receiver("200 OK");
+        send_test(&Push { url, ..push(PushKind::Webhook, "") }, "t".into(), "b".into());
+        assert_eq!(wait_for_result().1, Test::Sent);
+        server.join().unwrap();
+    }
+
     /// Sends one real push; set NEKOMINAL_PUSH_TEST_URL to an ntfy topic of your own and watch the phone.
     #[test]
     #[ignore = "sends over the network"]
