@@ -1,5 +1,5 @@
-# Builds assets\nekominal.ico from the two drawings of the icon beside it: nekominal-small.svg (a thicker line, larger in its
-# square) up to 32 px, where the title bar and the taskbar show it, and nekominal.svg above that. Each size is rendered by
+# Builds assets\nekominal.ico from the two drawings of the icon beside it: nekominal-small.svg (flat, without the frost and the
+# glow, which cannot be seen that small) up to 24 px, where the title bar and the taskbar show it, and nekominal.svg above that. Each size is rendered by
 # headless Chrome or Edge, then the PNGs are packed into one .ico (PNG entries, which Windows Vista and later read at every
 # size).
 param([string]$Out = (Join-Path $PSScriptRoot '..\assets\nekominal.ico'))
@@ -18,7 +18,7 @@ New-Item -ItemType Directory $work | Out-Null
 try {
     $sizes = 16, 20, 24, 32, 40, 48, 64, 128, 256
     $pngs = foreach ($size in $sizes) {
-        $svg = if ($size -le 32) { 'nekominal-small.svg' } else { 'nekominal.svg' }
+        $svg = if ($size -le 24) { 'nekominal-small.svg' } else { 'nekominal.svg' }
         $source = (Join-Path $root "assets\$svg") -replace '\\', '/'
         $page = Join-Path $work "$size.html"
         Set-Content $page "<!doctype html><html><body style='margin:0;background:transparent'><img src='file:///$source' width='$size' height='$size' style='display:block'></body></html>" -Encoding utf8

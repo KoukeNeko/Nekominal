@@ -1,7 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-  <!-- The icon at 32 px and less: the same outline, larger in its square and with a line thick enough to stay whole at
-       16 px. -->
-  <rect x="4" y="4" width="248" height="248" rx="52" fill="#16171f"/>
-  <path d="M46 118 L56 44 L100 80 Q128 72 156 80 L200 44 L210 118 Q220 142 210 166 Q194 214 128 216 Q62 214 46 166 Q36 142 46 118 Z"
-        fill="none" stroke="#7aa2f7" stroke-width="30" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- C at 16 and 24 px: one flat tile, two flat eyes; the frost and the glow cannot be seen this small. -->
+  <rect x="1" y="1.5" width="14" height="13" rx="3.2" fill="#272b4a"/>
+  <rect x="3.8" y="5.2" width="3" height="5.2" rx="1" fill="#b6f05a"/>
+  <rect x="9.2" y="5.2" width="3" height="5.2" rx="1" fill="#b6f05a"/>
+  <rect x="5" y="6" width="0.7" height="3.6" fill="#16200f"/>
+  <rect x="10.4" y="6" width="0.7" height="3.6" fill="#16200f"/>
 </svg>
