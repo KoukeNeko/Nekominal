@@ -320,6 +320,10 @@ pub struct App {
     tabs: Vec<Tab>,
     selected: usize,
     layout: Layout,
+    /// The state of each tab, and what each last did for the rows of the list, as `read_tab_states` read them for the
+    /// layout and the frame being drawn.
+    states: Vec<logic::TabState>,
+    activities: Vec<Option<String>>,
     /// How far the wheel scrolled the sidebar down, and the tab it was last scrolled to show: a tab selected since (by the
     /// keyboard, a new tab) is scrolled into view once, and the wheel moves freely otherwise.
     side_scroll: f32,
@@ -659,6 +663,8 @@ impl App {
             tabs: Vec::new(),
             selected: 0,
             layout: Layout::new(1.0, 1.0, 0, 0.0, 0, layout::Mode::TOP, 0.0, &[], &[]),
+            states: Vec::new(),
+            activities: Vec::new(),
             side_scroll: 0.0,
             side_scrolled_to: usize::MAX,
             hover: Hit::None,
@@ -822,10 +828,23 @@ impl App {
             return vec![(0..self.tabs.len()).collect()];
         }
         let mut groups = vec![Vec::new(); logic::SIDEBAR_GROUPS];
-        for (i, tab) in self.tabs.iter().enumerate() {
-            groups[logic::sidebar_group(tab.status().state)].push(i);
+        for i in 0..self.tabs.len() {
+            groups[logic::sidebar_group(self.state_of(i))].push(i);
         }
         groups
+    }
+
+    /// Reads the state of every tab, and what each last did when the list shows it, for the layout and the frame to use:
+    /// each read locks the panes of the tab, so it is done once, not at every place that shows it.
+    fn read_tab_states(&mut self) {
+        self.states = self.tabs.iter().map(|tab| tab.status().state).collect();
+        let list = self.settings.tabs.layout == settings::TabLayout::List && self.settings.tabs.style != settings::TabStyle::Repo;
+        self.activities = if list { (0..self.tabs.len()).map(|i| self.read_activity(i)).collect() } else { Vec::new() };
+    }
+
+    /// The state of tab `i` as `read_tab_states` last read it.
+    fn state_of(&self, i: usize) -> logic::TabState {
+        self.states.get(i).copied().unwrap_or(logic::TabState::Idle)
     }
 
     /// Makes the layout again from the size of the window, the settings, the room the right of the bar takes and the
@@ -973,7 +992,7 @@ impl App {
             usage: None,
             usage_stamp: None,
             hook_stamp: None,
-            branch: None,
+            git: None,
             scheme: profile.options.color_scheme.clone(),
             font_size: profile.options.font_size,
             sends: Default::default(),
@@ -1300,6 +1319,7 @@ impl App {
 
     /// Chips, panes and the cells each shown pane has.
     fn relayout(&mut self) {
+        self.read_tab_states();
         self.groups = self.sidebar_groups();
         self.rebuild_layout();
         let area = self.pane_area();
@@ -1822,9 +1842,11 @@ impl App {
     /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
     pub fn on_job_tick(&mut self) {
         let mut changed = false;
+        // One snapshot of the processes of the system for every tab: one a tab was most of the cost of the tick.
+        let processes = nekominal_pty::conpty::process_names().unwrap_or_default();
         for tab in &mut self.tabs {
             let Some(entry) = tab.focused_entry_mut() else { continue };
-            let Some(job) = entry.pane.job() else { continue };
+            let Some(job) = entry.pane.job(&processes) else { continue };
             if crate::hooks::agent_of_program(&job.name).is_some() {
                 entry.agent_seen = true;
                 entry.agent_since.get_or_insert_with(Instant::now);
@@ -1880,9 +1902,9 @@ impl App {
                 entry.usage = usage;
             }
             let folder = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
-            let branch = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
-            if branch != entry.branch {
-                entry.branch = branch;
+            let git = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));
+            if git != entry.git {
+                entry.git = git;
                 changed = true;
             }
         }
@@ -2568,6 +2590,7 @@ impl App {
         self.ui.begin_frame(size, self.scale);
         self.animating = false;
         let sliding = self.advance_chips();
+        self.read_tab_states();
         // Under the chrome: what the sidebar shows beside its rows (the tip of a row) goes over the page.
         if self.page_shown() {
             self.paint_page();
@@ -2796,7 +2819,7 @@ impl App {
         {
             folder = std::path::Path::new(program).file_stem().map_or_else(|| program.to_owned(), |stem| stem.to_string_lossy().into_owned());
         }
-        Some(match &entry.branch {
+        Some(match entry.git.as_ref().map(|git| &git.branch) {
             Some(branch) => format!("{folder} · {branch}"),
             None => folder,
         })
@@ -2842,7 +2865,7 @@ impl App {
         // What the right of the bar says and how wide it is: the layout keeps that room free of tabs. The numbers of the
         // agent give way when the window is narrow; the count of the tabs that wait stays.
         let mut pieces = self.bar_pieces();
-        let waiting = self.tabs.iter().enumerate().filter(|(i, tab)| *i != self.selected && logic::is_urgent(tab.status().state)).count();
+        let waiting = (0..self.tabs.len()).filter(|i| *i != self.selected && logic::is_urgent(self.state_of(*i))).count();
         let badge = (waiting > 0).then(|| Text::TabsWaiting.format(lang, &[&waiting]));
         let badge_width = badge.as_ref().map_or(0.0, |text| 23.0 + self.ui.measure(text, PIECE_SIZE, false) + 10.0);
         let mut widths: Vec<f32> = pieces.iter().map(|piece| piece_width(&mut self.ui, piece)).collect();
@@ -2980,7 +3003,7 @@ impl App {
             let color = if selected || hover { col(g.text()) } else { col(g.text_secondary()) };
             self.ui.push_clip(Rect::new(chip.x, chip.y, (right - chip.x).max(0.0), chip.h));
             let mut x = chip.x + 8.0;
-            if self.state_dot(x, chip.y + chip.h / 2.0, self.tabs[i].status().state) {
+            if self.state_dot(x, chip.y + chip.h / 2.0, self.state_of(i)) {
                 x += ICON_SIZE + 6.0;
             }
             // A narrow tab gives up the icon of its program first, its title only when even a few letters do not fit.
@@ -3022,7 +3045,7 @@ impl App {
         let line = self.ui.line_height(TEXT_SIZE);
         self.ui.push_clip(title);
         let mut x = title.x;
-        if self.state_dot(x, title.y + title.h / 2.0, self.tabs[self.selected].status().state) {
+        if self.state_dot(x, title.y + title.h / 2.0, self.state_of(self.selected)) {
             x += ICON_SIZE + 8.0;
         }
         let label = self.tab_label(self.selected);
@@ -3066,7 +3089,7 @@ impl App {
             let row = self.chip_rects.get(i).copied().unwrap_or(self.layout.chips[i]);
             let selected = i == self.selected;
             let hover = matches!(self.hover, Hit::Chip(n) | Hit::ChipClose(n) if n == i);
-            let state = self.tabs[i].status().state;
+            let state = self.state_of(i);
             match style {
                 settings::TabStyle::Cards => {
                     self.paint_card(i, side, row, selected, hover);
@@ -3154,7 +3177,7 @@ impl App {
         self.ui.pop_clip();
         if let Some((i, row)) = tip {
             // The ring says the state by its colour alone: the tip says it in words.
-            let state = state_text(self.tabs[i].status().state).map(|text| text.get(lang));
+            let state = state_text(self.state_of(i)).map(|text| text.get(lang));
             let text = [Some(self.tab_label(i)), state.map(str::to_owned), self.place_text(i)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
             let line = self.ui.line_height(PIECE_SIZE);
             let rect = Rect::new(row.x + row.w + 10.0, row.y + (row.h - 26.0) / 2.0, self.ui.measure(&text, PIECE_SIZE, false) + 20.0, 26.0);
@@ -3318,7 +3341,7 @@ impl App {
         // Where the pane is, as the settings choose it: the branch of its folder and the folder, the agent's own folder
         // first when it said one. With an agent they follow what it says; without one they are all there is.
         let place = |pieces: &mut Vec<Piece>| {
-            if let Some(branch) = entry.branch.clone().filter(|_| show.branch) {
+            if let Some(branch) = entry.git.as_ref().map(|git| git.branch.clone()).filter(|_| show.branch) {
                 pieces.push(Piece::Glyph('\u{E81C}', branch));
             }
             let cwd = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());

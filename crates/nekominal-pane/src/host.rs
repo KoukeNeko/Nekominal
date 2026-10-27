@@ -555,10 +555,11 @@ impl Pane {
     }
 
     /// The file name of the program the pane is running now (`vim.exe`; the shell when nothing else runs), if it can be told.
-    /// The program the session runs now, with the path of its file.
-    pub fn job(&self) -> Option<nekominal_pty::conpty::Job> {
+    /// The program the session runs now, with the path of its file, from the processes of the system as
+    /// `nekominal_pty::conpty::process_names` listed them once for every pane looked at.
+    pub fn job(&self, processes: &[(u32, String)]) -> Option<nekominal_pty::conpty::Job> {
         let live = self.live.borrow();
-        let job = live.sessions.get(live.id).ok()?.job();
+        let job = live.sessions.get(live.id).ok()?.job_with(processes);
         // The triggers of one program follow what the last look found; a look that failed changes nothing.
         // shortcut: only as fresh as the shell's looks (the focused pane of each tab, once a tick); a look of its own
         // per line of output would be too dear.

@@ -102,6 +102,11 @@ impl Session {
         self.pty.job()
     }
 
+    /// The program the session is running now, from processes listed once for many sessions; see [`Pty::job_with`].
+    pub fn job_with(&self, names: &[(u32, String)]) -> Option<crate::conpty::Job> {
+        self.pty.job_with(names)
+    }
+
     /// Every process of the session's job; see [`Pty::job_process_ids`].
     pub fn job_process_ids(&self) -> Vec<u32> {
         self.pty.job_process_ids()

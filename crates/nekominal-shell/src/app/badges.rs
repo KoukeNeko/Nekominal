@@ -3,7 +3,7 @@
 //! of a row of the list, and for the selected tab in the title bar; a click opens the pull request or the port.
 
 use super::*;
-use crate::{agent, github, ports};
+use crate::{github, ports};
 
 /// The text size and the height of a badge: on a row of the list, and in the title bar.
 pub const SIDE: (f32, f32) = (10.5, 16.0);
@@ -166,15 +166,10 @@ impl App {
             let pids: Vec<u32> = tab.panes.iter().flat_map(|entry| entry.pane.job_process_ids()).collect();
             let found = ports::ports_of(&listeners, &pids);
             changed |= set(&mut badges.ports, tab.uid, (!found.is_empty()).then_some(found), "ports");
-            // git_branch reads only local disks: gh never runs for a share.
-            let key = tab.focused_entry().and_then(|entry| {
-                let dir = super::work_folder(entry.usage.as_ref(), entry.cwd.as_ref())?;
-                let dir = std::path::Path::new(&dir);
-                let branch = agent::git_branch(dir)?;
-                Some((github::repo_root(dir)?, branch))
-            });
-            // git_branch found the repository on a local disk, so its `.git` is read here too.
-            let repo = key.as_ref().map(|(root, _)| repo_of(root, std::fs::read_to_string(root.join(".git")).ok().as_deref()));
+            // The repository `refresh_usage` found this tick (git_branch reads only local disks: gh never runs for a share).
+            let git = tab.focused_entry().and_then(|entry| entry.git.as_ref());
+            let key = git.map(|git| (git.root.clone(), git.branch.clone()));
+            let repo = git.map(|git| repo_of(&git.root, git.git_file.as_deref()));
             changed |= set(&mut badges.repo, tab.uid, repo, "repository");
             let pr = key.as_ref().and_then(|key| badges.prs.get(key, now).cloned());
             changed |= set(&mut badges.pull_request, tab.uid, pr, "pull request");

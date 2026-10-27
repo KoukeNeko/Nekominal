@@ -132,15 +132,25 @@ fn on_local_disk(dir: &Path) -> bool {
     matches!(kind, 2 | 3 | 5 | 6)
 }
 
+/// The repository that holds a folder, as `git_branch` found it: the folder with its `.git`, the branch it is on, and the
+/// text of its `.git` when that is a file (a worktree, a submodule). Kept with the pane, for the badges to use without
+/// looking at the disk again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checkout {
+    pub root: PathBuf,
+    pub branch: String,
+    pub git_file: Option<String>,
+}
+
 /// The branch the repository that holds `dir` is on, or the start of the commit when no branch is checked out.
-pub fn git_branch(dir: &Path) -> Option<String> {
+pub fn git_branch(dir: &Path) -> Option<Checkout> {
     if !on_local_disk(dir) {
         return None;
     }
     for folder in dir.ancestors() {
         let git = folder.join(".git");
-        let head = if git.is_dir() {
-            git.join("HEAD")
+        let (head, git_file) = if git.is_dir() {
+            (git.join("HEAD"), None)
         } else if git.is_file() {
             // A worktree or a submodule: `.git` is a file that says where the repository is.
             let pointer = std::fs::read_to_string(&git).ok()?;
@@ -149,16 +159,17 @@ pub fn git_branch(dir: &Path) -> Option<String> {
             if !on_local_disk(&target) {
                 return None;
             }
-            target.join("HEAD")
+            (target.join("HEAD"), Some(pointer))
         } else {
             continue;
         };
         let head = std::fs::read_to_string(head).ok()?;
         let head = head.trim();
-        return Some(match head.strip_prefix("ref:") {
+        let branch = match head.strip_prefix("ref:") {
             Some(reference) => reference.trim().strip_prefix("refs/heads/").unwrap_or(reference.trim()).to_owned(),
             None => head.chars().take(7).collect(),
-        });
+        };
+        return Some(Checkout { root: folder.to_path_buf(), branch, git_file });
     }
     None
 }
@@ -302,16 +313,18 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/feature/bar\n").unwrap();
-        assert_eq!(git_branch(&deep).as_deref(), Some("feature/bar"));
+        assert_eq!(git_branch(&deep).map(|found| found.branch).as_deref(), Some("feature/bar"));
+        assert_eq!(git_branch(&deep).map(|found| (found.root, found.git_file)), Some((root.clone(), None)), "the folder that holds the .git, found on the way");
         std::fs::write(root.join(".git").join("HEAD"), "0123456789abcdef\n").unwrap();
-        assert_eq!(git_branch(&root).as_deref(), Some("0123456"));
+        assert_eq!(git_branch(&root).map(|found| found.branch).as_deref(), Some("0123456"));
         // A worktree: `.git` names the folder of the repository that holds its HEAD.
         let tree = root.join("tree");
         std::fs::create_dir_all(root.join("wt")).unwrap();
         std::fs::create_dir_all(&tree).unwrap();
         std::fs::write(tree.join(".git"), "gitdir: ../wt\n").unwrap();
         std::fs::write(root.join("wt").join("HEAD"), "ref: refs/heads/side\n").unwrap();
-        assert_eq!(git_branch(&tree).as_deref(), Some("side"));
+        assert_eq!(git_branch(&tree).map(|found| found.branch).as_deref(), Some("side"));
+        assert_eq!(git_branch(&tree).and_then(|found| found.git_file).as_deref(), Some("gitdir: ../wt\n"), "the text of the .git file of a worktree, for the badges");
         assert_eq!(git_branch(Path::new(r"\\nas\share\repo")), None, "a share is not looked at");
         assert_eq!(git_branch(Path::new("//nas/share/repo")), None);
         assert_eq!(git_branch(Path::new("/home/me")), None, "a path of another system");

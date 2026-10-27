@@ -119,6 +119,8 @@ fn answer(output: std::io::Result<std::process::Output>) -> Option<PullRequest> 
 }
 
 /// The folder of the repository that holds `dir`: the nearest one with a `.git` (a folder, or the file of a worktree).
+/// The window takes it from `agent::git_branch`, which finds the same folder on its way; the tests here keep this one.
+#[cfg(test)]
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors().find(|folder| folder.join(".git").exists()).map(Path::to_path_buf)
 }

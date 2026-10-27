@@ -33,8 +33,13 @@ impl App {
         self.settings.tabs.style
     }
 
-    /// What tab `i` last did: what its agent last said, or the last command of its shell.
+    /// What tab `i` last did, as `read_tab_states` read it for this frame.
     fn activity(&self, i: usize) -> Option<String> {
+        self.activities.get(i).cloned().flatten()
+    }
+
+    /// What tab `i` last did: what its agent last said, or the last command of its shell. Locks the pane twice.
+    pub(super) fn read_activity(&self, i: usize) -> Option<String> {
         let entry = self.tabs.get(i)?.focused_entry()?;
         let said = entry.pane.agent_summary().and_then(|record| record.message);
         said.or_else(|| entry.pane.term.lock().last_command_line()).map(|text| text.trim().to_owned()).filter(|text| !text.is_empty())
@@ -105,7 +110,7 @@ impl App {
     /// The second line of an activity row (what it last did, or where it is) and what is under it: the line of the context,
     /// the badges. The words of the row start at `x`.
     pub(super) fn paint_activity_rest(&mut self, i: usize, row: Rect, x: f32) {
-        let state = self.tabs[i].status().state;
+        let state = self.state_of(i);
         let small = self.ui.line_height(SMALL_SIZE);
         let (text, color) = match self.activity(i) {
             Some(text) => (Some(text), self.activity_color(state)),
@@ -131,7 +136,7 @@ impl App {
     pub(super) fn paint_card(&mut self, i: usize, side: Rect, row: Rect, selected: bool, hover: bool) {
         let g = self.glass;
         let lang = self.language();
-        let state = self.tabs[i].status().state;
+        let state = self.state_of(i);
         let fill = if selected || hover { col(g.hover()) } else { soft_hover(g) };
         let edge = if selected { (col(g.accent), 1.0) } else { (col(g.divider()), 1.0) };
         self.ui.rrect(row, 8.0, fill, Some(edge));
@@ -212,7 +217,7 @@ impl App {
     /// and cost; a worktree moved in under the main folder.
     pub(super) fn paint_repo_row(&mut self, i: usize, side: Rect, row: Rect, selected: bool, hover: bool) {
         let g = self.glass;
-        let state = self.tabs[i].status().state;
+        let state = self.state_of(i);
         if selected {
             widgets::plate(&mut self.ui, row, col(g.hover()));
         } else if hover {
@@ -283,7 +288,7 @@ impl App {
             self.paint_badge(&chip, Rect::new(bx, mid - h / 2.0, w, h), size);
             bx += w + 4.0;
         }
-        let name = self.tabs[i].focused_entry().and_then(|entry| entry.branch.clone()).filter(|_| self.badges.repo.contains_key(&uid)).unwrap_or_else(|| self.tab_label(i));
+        let name = self.tabs[i].focused_entry().and_then(|entry| entry.git.as_ref().map(|git| git.branch.clone())).filter(|_| self.badges.repo.contains_key(&uid)).unwrap_or_else(|| self.tab_label(i));
         let line = self.ui.line_height(TEXT_SIZE);
         self.ui.push_clip(Rect::new(x, row.y, (right - used - x).max(0.0), row.h));
         self.ui.text(x, mid - line / 2.0, &name, TEXT_SIZE, name_color, false);

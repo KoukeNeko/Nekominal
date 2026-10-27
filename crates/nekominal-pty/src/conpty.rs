@@ -419,7 +419,12 @@ impl Pty {
     /// The program the user is running now: the process of the job that started last, not counting the helpers of the
     /// console, or the child itself when it started nothing. None when the processes cannot be read.
     pub fn job(&self) -> Option<Job> {
-        let names = process_names()?;
+        self.job_with(&process_names()?)
+    }
+
+    /// `job` from a list of the processes of the system (`process_names`) taken once for every session looked at
+    /// together: a snapshot of the system per session would be the dear part.
+    pub fn job_with(&self, names: &[(u32, String)]) -> Option<Job> {
         let name_of = |pid: u32| names.iter().find(|(id, _)| *id == pid).map(|(_, name)| name.clone());
         let pids = self.job_process_ids();
         // The child is in its job while it lives: an empty list is a query that failed, not a shell alone at its prompt.
@@ -1036,8 +1041,8 @@ mod tests {
     }
 }
 
-/// The name of the program of every process of the system, with its id.
-fn process_names() -> Option<Vec<(u32, String)>> {
+/// The name of the program of every process of the system, with its id. None when the system cannot be read.
+pub fn process_names() -> Option<Vec<(u32, String)>> {
     // SAFETY: the snapshot is owned and closed by `Handle`; the entry is initialised with its size as the calls ask.
     unsafe {
         let snapshot = Handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
