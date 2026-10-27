@@ -383,15 +383,22 @@ fn serve_client(pipe: &File, handler: &Handler) {
     let mut reader = BufReader::new(pipe);
     let mut writer = pipe;
     loop {
-        let mut line = String::new();
-        match reader.by_ref().take(MAX_LINE).read_line(&mut line) {
+        let mut bytes = Vec::new();
+        match reader.by_ref().take(MAX_LINE).read_until(b'\n', &mut bytes) {
             Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
-        if !line.ends_with('\n') && line.len() as u64 >= MAX_LINE {
+        if !bytes.ends_with(b"\n") && bytes.len() as u64 >= MAX_LINE {
             let _ = writeln!(writer, "{}", reply(&Value::Null, &Err(format!("a request is at most {MAX_LINE} bytes"))));
             return;
         }
+        // A line that is not UTF-8 is answered like any other bad line; the client stays.
+        let Ok(line) = String::from_utf8(bytes) else {
+            if writeln!(writer, "{}", reply(&Value::Null, &Err("not UTF-8".to_owned()))).is_err() {
+                return;
+            }
+            continue;
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -732,6 +739,16 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         (&pipe).write_all(&line[cut..]).unwrap();
         assert_eq!(lines.next().unwrap().unwrap(), r#"{"error":"echo: SetTitle { pane: \"1-1\", title: \"é\" }","id":3,"ok":false}"#);
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_is_answered_and_the_client_stays() {
+        let pipe = connect(&served()).unwrap();
+        let mut lines = BufReader::new(&pipe).lines();
+        (&pipe).write_all(b"{\"id\":1,\"cmd\":\"set-title\",\"pane\":\"1-1\",\"title\":\"\xff\xfe\"}\n").unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"error":"not UTF-8","id":null,"ok":false}"#);
+        writeln!(&pipe, r#"{{"id":2,"cmd":"list"}}"#).unwrap();
+        assert_eq!(lines.next().unwrap().unwrap(), r#"{"id":2,"ok":true,"result":"listed"}"#);
     }
 
     #[test]
