@@ -63,6 +63,8 @@ pub enum Hit {
     Sidebar,
     /// The count of the tabs that wait for the user: goes to the next of them.
     Waiting,
+    /// The context meter of the focused pane's agent: the pointer on it shows the context card.
+    Meter,
     /// What of the sidebar is not a row.
     Side,
     Minimize,

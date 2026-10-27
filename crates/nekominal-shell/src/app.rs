@@ -63,6 +63,7 @@ use crate::{
 mod drop;
 mod badges;
 mod tab_rows;
+mod context_card;
 pub(crate) mod automation;
 mod notifications;
 mod settings_tab;
@@ -256,6 +257,8 @@ pub struct App {
     plate_rect: Option<Rect>,
     /// Where the count of the tabs that wait is drawn, when there is one: it goes to the next of them.
     waiting_rect: Option<Rect>,
+    /// The context meter of the right of the bar, as it was drawn last: the pointer on it shows the context card.
+    meter_rect: Option<Rect>,
     /// The badges drawn in the last frame, where and what a click on each opens.
     badge_hits: Vec<(Rect, String)>,
     /// The room the right of the title bar takes (the waiting count and the numbers of the agent), the tabs of the
@@ -628,6 +631,7 @@ impl App {
             drag: None,
             plate_rect: None,
             waiting_rect: None,
+            meter_rect: None,
             badge_hits: Vec::new(),
             right_width: 0.0,
             groups: Vec::new(),
@@ -1149,7 +1153,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Meter | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -1489,6 +1493,9 @@ impl App {
         }
         if self.waiting_rect.is_some_and(|rect| rect.contains(x, y)) {
             return Hit::Waiting;
+        }
+        if self.meter_rect.is_some_and(|rect| rect.contains(x, y)) {
+            return Hit::Meter;
         }
         if let Some(k) = badges::at(&self.badge_hits, x, y) {
             return Hit::Badge(k);
@@ -2596,6 +2603,7 @@ impl App {
             self.paint_page();
         }
         let relaid = self.paint_chrome();
+        self.paint_context_card();
         self.paint_welcome();
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
@@ -2950,6 +2958,7 @@ impl App {
         // The right of the bar: the count of the tabs that wait, then what the focused pane's agent is doing.
         let right = self.layout.right;
         self.waiting_rect = None;
+        self.meter_rect = None;
         self.ui.push_clip(right);
         let mut x = right.x;
         if let Some(text) = &badge {
@@ -3402,6 +3411,13 @@ impl App {
                 self.ui.text(x + 12.0, text_y, text, PIECE_SIZE, col(g.text()), false);
             }
             Piece::Meter(share) => {
+                // The meter and its share are what the pointer goes to for the context card; lit while it is there.
+                let w = METER + 6.0 + self.ui.measure(&format!("{share:.0}%"), PIECE_SIZE, false);
+                let plate = Rect::new(x - 6.0, (bar - 28.0) / 2.0, w + 12.0, 28.0);
+                if self.hover == Hit::Meter {
+                    widgets::plate(&mut self.ui, plate, col(g.hover()));
+                }
+                self.meter_rect = Some(plate);
                 let track = Rect::new(x, (bar - 3.0) / 2.0, METER, 3.0);
                 let fill = meter_color(g, f64::from(*share));
                 self.ui.rrect(track, 1.5, col(g.divider()), None);

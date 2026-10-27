@@ -503,6 +503,22 @@ texts! {
     WindowMaximize "window.maximize" "最大化" "Maximize";
     ClaudeAuto "claude.auto" "在 PowerShell 分頁打開 Claude Code，狀態列就會顯示模型、脈絡用量和費用" "Open Claude Code in a PowerShell tab and the status bar shows its model, context and cost";
     ClaudeBarOff "claude.barOff" "狀態列關閉時，不會向 Claude Code 取得用量" "With the status bar off, nothing is asked of Claude Code";
+    CardContext "card.context" "脈絡" "Context";
+    CardUsed "card.used" "已使用" "used";
+    CardWindow "card.window" "{0} 視窗" "{0} window";
+    CardCacheRead "card.cacheRead" "從快取讀取" "Read from cache";
+    CardCacheWrite "card.cacheWrite" "寫入快取" "Written to cache";
+    CardNewInput "card.newInput" "新的輸入" "New input";
+    CardFree "card.free" "剩餘" "Free";
+    CardSession "card.session" "這個工作階段" "This session";
+    CardCost "card.cost" "費用" "Cost";
+    CardTime "card.time" "時間" "Time";
+    CardTokens "card.tokens" "Token" "Tokens";
+    CardLastReply "card.lastReply" "最後一次回覆" "Last reply";
+    CardLines "card.lines" "行數" "Lines";
+    CardIn "card.in" "{0} 輸入" "{0} in";
+    CardOut "card.out" "{0} 輸出" "{0} out";
+    CardNoStatusLine "card.noStatusLine" "費用與時間來自 Claude Code 的 statusLine，目前由別的外掛使用" "Cost and time come from Claude Code's status line, which another plugin is drawing";
     ClaudeForeign "claude.foreign" "Claude Code 已有自訂的 statusLine，Nekominal 不會取代它" "Claude Code already has a custom statusLine; Nekominal leaves it alone";
     ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
 
