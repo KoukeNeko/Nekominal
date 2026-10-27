@@ -47,6 +47,10 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 **它不信任程式印出的內容。** 程式印出的連結無法透過 Ctrl+點選執行程式；大量的控制碼或組合字元不會讓視窗凍結；程式只能依設定寫入剪貼簿。
 貼上大量或多行文字前會先詢問。
 
+| 內嵌圖片（Sixel、kitty）與連字 | `chafa` 以 Sixel、kitty 與自動偵測顯示 | `yazi` 預覽圖片 |
+| :---: | :---: | :---: |
+| ![一行連字下方的 Sixel 與 kitty 圖片](assets/screenshots/images-and-ligatures.png) | ![chafa 以三種方式顯示同一張圖](assets/screenshots/chafa.png) | ![yazi 的預覽窗格顯示一張圖](assets/screenshots/yazi-preview.png) |
+
 ## 功能
 
 ### 為 agent 而做

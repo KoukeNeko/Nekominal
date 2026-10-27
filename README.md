@@ -50,6 +50,10 @@ branch and the folder.
 escape sequences or combining marks cannot freeze the window, and a program can write to the clipboard only as the settings
 allow. Large and multi-line pastes ask first.
 
+| Inline images (Sixel, kitty) and ligatures | `chafa` in Sixel, kitty and its own detection | `yazi` previewing a picture |
+| :---: | :---: | :---: |
+| ![Sixel and kitty pictures under a line of ligatures](assets/screenshots/images-and-ligatures.png) | ![chafa showing one picture three ways](assets/screenshots/chafa.png) | ![yazi with a picture in its preview pane](assets/screenshots/yazi-preview.png) |
+
 ## What it does
 
 ### Made for agents
