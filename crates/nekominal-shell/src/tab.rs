@@ -90,6 +90,8 @@ pub struct Tab {
     pub color: Option<usize>,
     /// What is typed goes to every pane of the tab, not only the focused one.
     pub broadcast: bool,
+    /// The tab of the settings: it has no pane, and the window shows the settings page (whose state it keeps) in its place.
+    pub settings: bool,
     next: PaneId,
 }
 
@@ -97,7 +99,19 @@ impl Tab {
     /// A tab with one pane; its id is the first one this tab hands out.
     pub fn new(make: impl FnOnce(PaneId) -> Result<PaneEntry, String>) -> Result<Tab, String> {
         let entry = make(1)?;
-        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, next: 2 })
+        Ok(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(1), focused: 1, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, settings: false, next: 2 })
+    }
+
+    /// The tab of the settings: no pane, so whatever looks through the panes of the tabs (agents, notifications, the
+    /// search of every tab) finds nothing in it, and its state is that of a tab at rest.
+    pub fn settings() -> Tab {
+        Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(0), focused: 0, panes: Vec::new(), zoomed: false, name: None, color: None, broadcast: false, settings: true, next: 1 }
+    }
+
+    /// A tab of the terminal with no pane, for the tests of what the window does with its tabs.
+    #[cfg(test)]
+    pub fn empty() -> Tab {
+        Tab { settings: false, ..Tab::settings() }
     }
 
     /// A tab as a saved session had it: the layout with its ratios, a pane for every leaf (make starts it), the pane that
@@ -127,7 +141,7 @@ impl Tab {
         let ids = layout.pane_ids();
         let focused = if ids.contains(&active) { active } else { ids[0] };
         let next = ids.iter().max().map_or(1, |highest| highest + 1);
-        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, broadcast: false, next })
+        Some(Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: layout, focused, panes, zoomed: zoomed && ids.len() > 1, name: None, color: None, broadcast: false, settings: false, next })
     }
 
     pub fn next_id(&mut self) -> PaneId {
@@ -234,7 +248,7 @@ impl Tab {
     /// A tab of one pane taken out of another (see `take`): the pane keeps its id and its session.
     pub fn from_entry(entry: PaneEntry) -> Tab {
         let id = entry.id;
-        Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(id), focused: id, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, next: id + 1 }
+        Tab { uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed), tree: Node::Leaf(id), focused: id, panes: vec![entry], zoomed: false, name: None, color: None, broadcast: false, settings: false, next: id + 1 }
     }
 
     /// The focused pane trades places with its neighbour in `direction`, and keeps the keyboard. False when there is none.

@@ -1624,7 +1624,7 @@ mod tests {
     fn the_search_line_and_the_file_button_stay_in_the_column_and_the_rows_right_of_it() {
         let settings = Settings::default();
         let keymap = keymap();
-        for (width, height) in [crate::settings_window::MIN_SIZE, (900.0, 650.0), (1400.0, 900.0)] {
+        for (width, height) in [(760.0, 480.0), (900.0, 650.0), (1400.0, 900.0)] {
             let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
@@ -2150,7 +2150,7 @@ mod tests {
         settings.triggers[2].name = "a rule with a name far longer than its plate has room for".into();
         settings.triggers[2].pattern = r"Ok to proceed\? \(y\) and a great deal more of a pattern than fits".into();
         let sample = ["  Do you want to proceed?".to_owned(), "error[E0308]: mismatched types".to_owned()];
-        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
+        for width in [760.0, 900.0, 1100.0, 1600.0] {
             let check = |frame: &Frame, what: &str| {
                 for item in frame.items.iter().filter(|item| item.scrolls && item.part.is_some()) {
                     let part = item.part.unwrap();
@@ -2327,8 +2327,8 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let measure = |text: &str, size: f32| text.chars().count() as f32 * size * 0.55;
-        // The window is never narrower than its smallest size, column of the sections included.
-        for width in [crate::settings_window::MIN_SIZE.0, 900.0, 1100.0, 1600.0] {
+        // From the smallest size the window of the settings had, column of the sections included.
+        for width in [760.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
                 let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
