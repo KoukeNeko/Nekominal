@@ -15,9 +15,9 @@ const FIRST_ROW: u64 = 1000;
 pub struct View {
     pub window: String,
     pub tabs_label: String,
-    /// The title of each tab, whether it is the selected one, and where its chip is drawn now (left, top, right, bottom,
-    /// in pixels from the top left of the window).
-    pub tabs: Vec<(String, bool, [f64; 4])>,
+    /// The title of each tab, whether it is the selected one, where its chip is drawn now (left, top, right, bottom, in
+    /// pixels from the top left of the window), and its badges in words (empty without any).
+    pub tabs: Vec<(String, bool, [f64; 4], String)>,
     pub terminal_label: String,
     /// The text on the screen of the terminal that has the keyboard.
     pub terminal_text: String,
@@ -50,10 +50,13 @@ pub fn tree(view: &View) -> TreeUpdate {
     let mut tabs = Node::new(Role::TabList);
     tabs.set_label(view.tabs_label.as_str());
     let mut tab_ids = Vec::new();
-    for (i, (title, selected, [x0, y0, x1, y1])) in view.tabs.iter().enumerate() {
+    for (i, (title, selected, [x0, y0, x1, y1], badges)) in view.tabs.iter().enumerate() {
         let id = NodeId(FIRST_TAB + i as u64);
         let mut tab = Node::new(Role::Tab);
         tab.set_label(title.as_str());
+        if !badges.is_empty() {
+            tab.set_description(badges.as_str());
+        }
         tab.set_selected(*selected);
         tab.set_bounds(accesskit::Rect { x0: *x0, y0: *y0, x1: *x1, y1: *y1 });
         nodes.push((id, tab));
@@ -189,7 +192,7 @@ mod tests {
         View {
             window: "Nekominal".into(),
             tabs_label: "Tabs".into(),
-            tabs: vec![("pwsh".into(), false, [10.0, 8.0, 110.0, 40.0]), ("claude".into(), true, [114.0, 8.0, 214.0, 40.0])],
+            tabs: vec![("pwsh".into(), false, [10.0, 8.0, 110.0, 40.0], String::new()), ("claude".into(), true, [114.0, 8.0, 214.0, 40.0], "#4 open · :3000".into())],
             terminal_label: "Terminal".into(),
             terminal_text: "PS C:\\> echo hi\nhi".into(),
             popup,
@@ -211,6 +214,8 @@ mod tests {
         assert_eq!(node(&update, tabs[0]).is_selected(), Some(false));
         assert_eq!(node(&update, tabs[1]).is_selected(), Some(true));
         assert_eq!(node(&update, tabs[1]).label(), Some("claude"));
+        assert_eq!(node(&update, tabs[1]).description(), Some("#4 open · :3000"), "the badges of a tab");
+        assert_eq!(node(&update, tabs[0]).description(), None);
         let bounds = node(&update, tabs[1]).bounds().expect("a tab has bounds");
         assert_eq!((bounds.x0, bounds.x1), (114.0, 214.0));
     }

@@ -2392,7 +2392,8 @@ impl App {
                 .map(|i| {
                     let chip = self.chip_rects.get(i).copied().or_else(|| self.layout.chips.get(i).copied()).unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
                     let s = f64::from(self.scale);
-                    (self.tab_label(i), i == self.selected, [f64::from(chip.x) * s, f64::from(chip.y) * s, f64::from(chip.x + chip.w) * s, f64::from(chip.y + chip.h) * s])
+                    let badges = self.badges.text(self.tabs[i].uid).unwrap_or_default();
+                    (self.tab_label(i), i == self.selected, [f64::from(chip.x) * s, f64::from(chip.y) * s, f64::from(chip.x + chip.w) * s, f64::from(chip.y + chip.h) * s], badges)
                 })
                 .collect(),
             terminal_label: Text::SettingsTerminal.get(lang).into(),
