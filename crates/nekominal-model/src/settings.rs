@@ -809,6 +809,8 @@ pub enum Expected {
     /// The whole file is not JSON; this is what the parser said.
     Parsable(String),
     JsonObject,
+    /// An address the push can be sent to (`check_push_url`).
+    PushUrl,
 }
 
 impl Expected {
@@ -840,6 +842,7 @@ impl Expected {
             Expected::MostChars(most) => Text::ProblemMostChars.format(lang, &[most]),
             Expected::Parsable(error) => Text::ProblemUnparsable.format(lang, &[error]),
             Expected::JsonObject => Text::ProblemJsonObject.get(lang).to_owned(),
+            Expected::PushUrl => Text::PushBadUrl.get(lang).to_owned(),
         }
     }
 }
@@ -1337,7 +1340,13 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 let push = section(&notifications, "push", "notifications", &mut problems);
                 let (p, path) = (&d.notifications.push, "notifications.push");
                 Push {
-                    url: text(&push, "url", &p.url, path, &mut problems),
+                    url: match text(&push, "url", &p.url, path, &mut problems).trim() {
+                        url if url.is_empty() || check_push_url(url).is_ok() => url.to_owned(),
+                        _ => {
+                            problems.fail(path, "url", Expected::PushUrl);
+                            p.url.clone()
+                        }
+                    },
                     kind: one_of(&push, "kind", &[("ntfy", PushKind::Ntfy), ("webhook", PushKind::Webhook)], p.kind, path, &mut problems),
                     token: text(&push, "token", &p.token, path, &mut problems),
                     when: one_of(&push, "when", &[("always", PushWhen::Always), ("away", PushWhen::Away)], p.when, path, &mut problems),
@@ -2039,6 +2048,18 @@ mod tests {
         assert!(check_push_url("https://").is_err());
         assert!(check_push_url("https://ntfy.sh/a b").is_err());
         assert!(check_push_url("ntfy.sh/mytopic").is_err());
+    }
+
+    #[test]
+    fn a_push_url_in_the_file_the_sender_would_refuse_is_reported_and_left_off() {
+        // Taken as it is, each push would fail at send time with only a line in the log to say so.
+        for bad in ["http://ntfy.sh/cat", "ntfy.sh/cat", "https://"] {
+            let result = parsed(&format!(r#"{{ "notifications": {{ "push": {{ "url": "{bad}" }} }} }}"#));
+            assert_eq!(result.settings.notifications.push.url, "", "{bad}");
+            assert_eq!(result.problems, [Problem::new("notifications.push.url", Expected::PushUrl)], "{bad}");
+        }
+        assert_eq!(parsed_ok(r#""notifications": { "push": { "url": " https://ntfy.sh/cat " } }"#).notifications.push.url, "https://ntfy.sh/cat", "spaces around it are trimmed, as the field does");
+        assert_eq!(parsed_ok(r#""notifications": { "push": { "url": "" } }"#).notifications.push.url, "", "empty is off, not a problem");
     }
 
     #[test]
