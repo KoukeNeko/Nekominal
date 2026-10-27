@@ -1,6 +1,7 @@
 //! The pull request of the branch a tab is on, with its checks and its review, as GitHub's `gh` tells it in the folder of
-//! the repository. `gh` runs on a thread of its own, at most once a minute for a repository and branch (and at once for a
-//! branch not seen before); without `gh`, signed out of it, outside GitHub or without a pull request, there is none.
+//! the repository. `gh` runs on a thread of its own, at most once a minute for a repository and branch with an open pull
+//! request, every ten minutes for one merged, closed or without one (and at once for a branch not seen before), and is
+//! stopped after 30 seconds; without `gh`, signed out of it, outside GitHub or without a pull request, there is none.
 
 use std::{
     collections::HashMap,
@@ -13,8 +14,14 @@ use std::{
 
 /// `CREATE_NO_WINDOW`: gh is a console program, and this one has no console for it to borrow.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// How long what gh said holds before it is asked again.
+/// How long what gh said of an open pull request holds before it is asked again: its checks and review change.
 const FRESH: Duration = Duration::from_secs(60);
+/// How long an answer that rarely changes holds: a pull request merged or closed, or none (gh missing, signed out, not
+/// GitHub, no pull request yet). Each question is a call to GitHub's API, which counts them.
+const SETTLED: Duration = Duration::from_secs(10 * 60);
+/// How long gh may take: one that hangs (the network, a credential helper waiting for nobody) is stopped, which answers
+/// none, so the branch is asked again later instead of never.
+const GH_TIMEOUT: Duration = Duration::from_secs(30);
 const FIELDS: &str = "number,state,isDraft,url,reviewDecision,statusCheckRollup,mergeStateStatus";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,9 +113,40 @@ pub fn parse(json: &str) -> Option<PullRequest> {
     })
 }
 
-/// Asks gh in `repo` for the pull request of the branch checked out there. Blocks: called on a thread of its own.
+/// Asks gh in `repo` for the pull request of the branch checked out there, stopping it after `GH_TIMEOUT`. Blocks: called on
+/// a thread of its own.
 fn ask_gh(repo: &Path) -> Option<PullRequest> {
-    answer(Command::new("gh").args(["pr", "view", "--json", FIELDS]).current_dir(repo).env("GH_PROMPT_DISABLED", "1").stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW).output())
+    let mut child = Command::new("gh")
+        .args(["pr", "view", "--json", FIELDS])
+        .current_dir(repo)
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read while it runs: a large answer would otherwise fill the pipe and hold gh until it is stopped.
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut bytes);
+        bytes
+    });
+    let deadline = Instant::now() + GH_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                crate::util::log(&format!("gh in {}: stopped after {GH_TIMEOUT:?}", repo.display()));
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    answer(Ok(std::process::Output { status, stdout: reader.join().ok()?, stderr: Vec::new() }))
 }
 
 /// What a run of gh came to: a pull request only when gh ran, succeeded and printed one. Not installed, signed out, a
@@ -123,6 +161,14 @@ fn answer(output: std::io::Result<std::process::Output>) -> Option<PullRequest> 
 #[cfg(test)]
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors().find(|folder| folder.join(".git").exists()).map(Path::to_path_buf)
+}
+
+/// How long an answer of gh holds: a minute for an open pull request, ten for one that is done or none.
+fn fresh_for(found: Option<&PullRequest>) -> Duration {
+    match found.map(|pr| pr.state) {
+        Some(State::Open | State::Draft) => FRESH,
+        Some(State::Merged | State::Closed) | None => SETTLED,
+    }
 }
 
 /// A repository and the branch it is on.
@@ -149,7 +195,7 @@ impl Default for PullRequests {
 }
 
 impl PullRequests {
-    /// The pull request known for `key`; asks gh for it again when what it said is older than a minute.
+    /// The pull request known for `key`; asks gh for it again once what it said is no longer fresh (`fresh_for`).
     pub fn get(&mut self, key: &Key, now: Instant) -> Option<&PullRequest> {
         if self.due(key, now) {
             let (sender, key) = (self.sender.clone(), key.clone());
@@ -165,7 +211,7 @@ impl PullRequests {
     fn due(&mut self, key: &Key, now: Instant) -> bool {
         let new = !self.entries.contains_key(key);
         let entry = self.entries.entry(key.clone()).or_insert(Entry { asked: now, running: false, found: None });
-        let due = !entry.running && (new || now.duration_since(entry.asked) >= FRESH);
+        let due = !entry.running && (new || now.duration_since(entry.asked) >= fresh_for(entry.found.as_ref()));
         if due {
             (entry.asked, entry.running) = (now, true);
         }
@@ -349,8 +395,8 @@ mod tests {
         prs.sender.send((key.clone(), None)).unwrap();
         assert!(prs.collect(), "the pull request went away");
         assert_eq!(prs.entries[&key].found, None);
-        // A gh that never answers keeps the branch from being asked again: there is no timeout.
-        assert!(prs.due(&key, t0 + FRESH * 2));
+        // A question that runs is not asked again (gh itself is stopped after GH_TIMEOUT, which answers it).
+        assert!(prs.due(&key, t0 + FRESH + SETTLED), "none holds ten minutes");
         assert!(!prs.due(&key, t0 + FRESH * 100));
     }
 
@@ -383,6 +429,21 @@ mod tests {
         assert!(prs.due(&other, t0 + Duration::from_secs(61)), "a new branch is asked for at once");
         prs.retain(|k| *k == other);
         assert!(!prs.entries.contains_key(&key));
+    }
+
+    #[test]
+    fn a_merged_or_closed_pull_request_or_none_is_asked_for_every_ten_minutes_an_open_one_every_minute() {
+        let t0 = Instant::now();
+        for (answer, fresh) in [(parse(OPEN), FRESH), (parse(DRAFT), FRESH), (parse(MERGED), SETTLED), (parse(&MERGED.replace("MERGED", "CLOSED")), SETTLED), (None, SETTLED)] {
+            let mut prs = PullRequests::default();
+            let key: Key = (PathBuf::from(r"C:\repo"), "main".into());
+            assert!(prs.due(&key, t0));
+            prs.sender.send((key.clone(), answer.clone())).unwrap();
+            prs.collect();
+            assert!(!prs.due(&key, t0 + fresh - Duration::from_secs(1)), "{answer:?}");
+            assert!(prs.due(&key, t0 + fresh), "{answer:?}");
+        }
+        assert_eq!(SETTLED, Duration::from_secs(600));
     }
 
     #[test]
