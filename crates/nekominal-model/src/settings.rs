@@ -2063,6 +2063,65 @@ mod tests {
     }
 
     #[test]
+    fn a_push_url_is_judged_by_its_real_host_whatever_its_spelling() {
+        for ok in [
+            "HTTP://LOCALHOST/hook",
+            "http://127.0.0.1:65535/",
+            "http://[::1]/",
+            "http://user:pw@localhost:8080/x",
+            "https://通知.example/x",
+            &format!("https://ntfy.sh/{}", "a".repeat(4000)),
+        ] {
+            assert!(check_push_url(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "http://evil.com#@localhost/",
+            "http://evil.com?@localhost/",
+            "http://localhost:80@evil.com/",
+            "http://127.0.0.1.nip.io/",
+            "http://127.0.0.2/",
+            "http://0.0.0.0/",
+            "http://[::1/",
+            "http://通知.example/x",
+            "https://:443/",
+            "https://user@/x",
+            "https://ntfy.sh/x ",
+            " https://ntfy.sh/x",
+            "https://ntfy.sh/\u{a0}x",
+            "https://ntfy.sh/x\n",
+            "javascript://localhost/",
+        ] {
+            assert!(check_push_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn every_field_of_the_push_survives_a_round_trip_through_the_file() {
+        let push = Push {
+            url: "https://hooks.example.com/a?b=\"c\"&d=通知".into(),
+            kind: PushKind::Webhook,
+            token: "tk \"quoted\" \\ 😀".into(),
+            when: PushWhen::Always,
+            events: vec![PushEvent::Failed, PushEvent::LongCommand, PushEvent::Message],
+        };
+        round_trips(Settings { notifications: Notifications { push, ..Settings::default().notifications }, ..Settings::default() });
+        let none = Push { events: vec![], ..Push::default() };
+        round_trips(Settings { notifications: Notifications { push: none, ..Settings::default().notifications }, ..Settings::default() });
+    }
+
+    #[test]
+    fn a_push_value_of_the_wrong_type_is_reported_and_its_default_kept() {
+        let result = parsed(r#"{ "notifications": { "push": { "url": 5, "token": true, "kind": 1, "when": null, "events": [1] } } }"#);
+        assert_eq!(result.settings.notifications.push, Push::default());
+        let mut keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["notifications.push.events", "notifications.push.kind", "notifications.push.token", "notifications.push.url", "notifications.push.when"]);
+        let result = parsed(r#"{ "notifications": { "push": "https://ntfy.sh/cat" } }"#);
+        assert_eq!((result.settings.notifications.push, result.problems.len()), (Push::default(), 1), "the push is an object, not its address");
+    }
+
+    #[test]
     fn the_log_names_only_the_host_of_an_address() {
         assert_eq!(url_host("https://user:pw@hooks.example.com:8443/path?token=x#y"), Some("hooks.example.com"));
         assert_eq!(url_host("https://ntfy.sh?auth=x"), Some("ntfy.sh"));
