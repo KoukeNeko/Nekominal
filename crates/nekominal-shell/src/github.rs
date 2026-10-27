@@ -66,7 +66,8 @@ impl PullRequest {
 }
 
 /// Counts the entries of `statusCheckRollup`: check runs (a `status`, then a `conclusion` once completed) and commit
-/// statuses (a `state`).
+/// statuses (a `state`). As `gh pr checks` counts them: what is not a pass or a failure is pending, a check that went stale
+/// or a state GitHub adds later among them.
 fn checks(rollup: &[serde_json::Value]) -> Checks {
     let mut checks = Checks::default();
     for item in rollup {
@@ -78,8 +79,8 @@ fn checks(rollup: &[serde_json::Value]) -> Checks {
         };
         match verdict {
             "SUCCESS" | "NEUTRAL" | "SKIPPED" => checks.passing += 1,
-            "PENDING" | "EXPECTED" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "REQUESTED" => checks.pending += 1,
-            _ => checks.failing += 1,
+            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => checks.failing += 1,
+            _ => checks.pending += 1,
         }
     }
     checks
@@ -242,6 +243,39 @@ mod tests {
         let merged = parse(MERGED).unwrap();
         assert_eq!((merged.state, merged.checks), (State::Merged, Checks::default()));
         assert_eq!(parse(&MERGED.replace("MERGED", "CLOSED")).unwrap().state, State::Closed);
+    }
+
+    /// The rollup of a pull request with the one entry `entry`.
+    fn one(entry: &str) -> Checks {
+        parse(&format!(r#"{{"number":1,"state":"OPEN","url":"u","statusCheckRollup":[{entry}]}}"#)).unwrap().checks
+    }
+
+    #[test]
+    fn every_check_run_and_status_context_state_is_counted_as_gh_counts_it() {
+        let (pass, fail, wait) = (Checks { passing: 1, ..Checks::default() }, Checks { failing: 1, ..Checks::default() }, Checks { pending: 1, ..Checks::default() });
+        let run = |status: &str, conclusion: &str| one(&format!(r#"{{"__typename":"CheckRun","status":"{status}","conclusion":"{conclusion}"}}"#));
+        for conclusion in ["SUCCESS", "NEUTRAL", "SKIPPED"] {
+            assert_eq!(run("COMPLETED", conclusion), pass, "{conclusion}");
+        }
+        for conclusion in ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"] {
+            assert_eq!(run("COMPLETED", conclusion), fail, "{conclusion}");
+        }
+        // A check GitHub gave up on, and what it may add one day: not a red badge.
+        for conclusion in ["STALE", "", "SOMETHING_NEW"] {
+            assert_eq!(run("COMPLETED", conclusion), wait, "{conclusion:?}");
+        }
+        for status in ["QUEUED", "IN_PROGRESS", "PENDING", "REQUESTED", "WAITING", ""] {
+            assert_eq!(run(status, "SUCCESS"), wait, "{status:?}: what has not completed has no verdict yet");
+        }
+        assert_eq!(one(r#"{"__typename":"CheckRun","status":"COMPLETED","conclusion":null}"#), wait);
+        assert_eq!(one(r#"{"__typename":"CheckRun","status":null}"#), wait);
+
+        let context = |state: &str| one(&format!(r#"{{"__typename":"StatusContext","context":"ci","state":"{state}"}}"#));
+        assert_eq!(context("SUCCESS"), pass);
+        assert_eq!((context("FAILURE"), context("ERROR")), (fail, fail));
+        assert_eq!((context("PENDING"), context("EXPECTED"), context("NEW_STATE")), (wait, wait, wait));
+        assert_eq!(one(r#"{"__typename":"StatusContext","context":"ci"}"#), wait, "no state");
+        assert_eq!(one("{}"), wait, "an entry of neither kind");
     }
 
     #[test]
