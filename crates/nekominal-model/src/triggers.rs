@@ -424,4 +424,112 @@ mod tests {
         assert!(!guard.allow(at(9000), 2));
         assert!(guard.allow(at(60_001), 2), "the first went out of the window");
     }
+
+    #[test]
+    fn the_pattern_cap_counts_characters_and_takes_exactly_the_limit() {
+        assert_eq!(pattern_problem(&"a".repeat(MAX_PATTERN_CHARS)), None);
+        // Three bytes a character: the cap is of what the user typed, not of the bytes.
+        assert_eq!(pattern_problem(&"設".repeat(MAX_PATTERN_CHARS)), None);
+        assert_eq!(pattern_problem(&"設".repeat(MAX_PATTERN_CHARS + 1)), Some(Expected::MostChars(MAX_PATTERN_CHARS)));
+    }
+
+    #[test]
+    fn a_pattern_past_the_size_limit_of_the_regex_crate_is_refused() {
+        // Short to type, huge once compiled: the file must refuse it rather than every pane failing to build its matcher.
+        let problem = pattern_problem("a{1000}{1000}");
+        assert!(matches!(&problem, Some(Expected::Regex(why)) if why.contains("size limit")), "{problem:?}");
+        assert_eq!(sample_hits("a{1000}{1000}", &["aaa".to_owned()]), [vec![]]);
+    }
+
+    #[test]
+    fn a_wrong_type_of_an_optional_key_is_reported_and_the_rule_kept() {
+        let result = parse(Some(r#"{ "triggers": [ { "pattern": "x", "action": "bell", "enabled": "yes", "instant": 1, "name": 3 } ] }"#));
+        let rule = &result.settings.triggers[0];
+        assert_eq!((rule.enabled, rule.instant, rule.name.as_str()), (true, false, "x"), "the defaults stand in");
+        let keys: Vec<&str> = result.problems.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(keys, ["triggers[0].name", "triggers[0].enabled", "triggers[0].instant"]);
+    }
+
+    #[test]
+    fn a_highlight_colour_may_be_short_or_upper_case() {
+        let result = parse(Some(r##"{ "triggers": [
+            { "pattern": "a", "action": "highlight", "color": "#F00" },
+            { "pattern": "b", "action": "highlight", "color": "#7A5C00" },
+            { "pattern": "c", "action": "highlight" }
+        ] }"##));
+        assert!(result.problems.is_empty(), "{:?}", result.problems);
+        let colors: Vec<Option<Color>> = result.settings.triggers.iter().map(|t| t.action.highlight()).collect();
+        assert_eq!(colors, [Some(Color::rgb(0xff0000)), Some(Color::rgb(0x7a5c00)), Color::parse_hex(DEFAULT_HIGHLIGHT)]);
+        assert_eq!(Action::Bell.highlight(), None, "only a highlight has a colour");
+    }
+
+    #[test]
+    fn exactly_the_cap_is_read_without_a_problem() {
+        let one = r#"{ "pattern": "x", "action": "bell" }"#;
+        let result = parse(Some(&format!(r#"{{ "triggers": [{}] }}"#, vec![one; MAX_TRIGGERS].join(","))));
+        assert_eq!(result.settings.triggers.len(), MAX_TRIGGERS);
+        assert!(result.problems.is_empty(), "{:?}", result.problems);
+    }
+
+    #[test]
+    fn the_password_preset_matches_a_prompt_that_waits_on_its_line() {
+        let rule = preset(3, Lang::EnUs).unwrap();
+        assert!(rule.instant, "the prompt ends without a line break");
+        let regex = regex::Regex::new(&rule.pattern).unwrap();
+        for prompt in ["Password: ", "[sudo] password for neko: ", "PASSWORD:"] {
+            assert!(regex.is_match(prompt), "{prompt}");
+        }
+        assert!(!regex.is_match("password: changed successfully"), "only a prompt that waits at the end of its line");
+    }
+
+    #[test]
+    fn turning_a_send_off_takes_its_permission_and_changing_it_keeps_the_switch() {
+        let mut rule = preset(1, Lang::EnUs).unwrap();
+        rule.set_action(Action::Send { text: "y\r".into(), allow_send: false });
+        rule.turn(true);
+        rule.turn(false);
+        assert_eq!(rule.action, Action::Send { text: "y\r".into(), allow_send: false }, "off is also not allowed to send");
+        rule.turn(true);
+        rule.set_action(Action::Send { text: "n\r".into(), allow_send: true });
+        assert!(rule.enabled, "a send changed into another send keeps its switch");
+        rule.turn(false);
+        rule.set_action(Action::Bell);
+        assert!(!rule.enabled && !rule.is_on(), "a rule off stays off whatever it does");
+    }
+
+    #[test]
+    fn the_send_limits_hold_up_to_their_exact_edges() {
+        let start = Instant::now();
+        let mut guard = SendGuard::default();
+        assert!(guard.allow(start, 0));
+        assert!(!guard.allow(start + SEND_GAP - Duration::from_millis(1), 0));
+        // The refused try did not count: the gap is still from the first send.
+        assert!(guard.allow(start + SEND_GAP, 0), "at the gap exactly");
+        for k in 1..SEND_BURST as u64 - 1 {
+            assert!(guard.allow(start + SEND_GAP * (k as u32 + 1), 0));
+        }
+        let fifth = start + SEND_GAP * (SEND_BURST as u32 - 1);
+        assert!(!guard.allow(fifth + SEND_GAP, 0), "five in the window");
+        assert!(guard.allow(start + SEND_WINDOW, 0), "the first send is a window old exactly and no longer counts");
+    }
+
+    #[test]
+    fn a_rule_answering_itself_sends_at_most_five_times_a_minute() {
+        // The program prints the prompt again every 100 ms after each answer.
+        let start = Instant::now();
+        let mut guard = SendGuard::default();
+        let sent = (0..600).filter(|k| guard.allow(start + Duration::from_millis(100 * k), 0)).count();
+        assert_eq!(sent, SEND_BURST);
+    }
+
+    #[test]
+    fn a_dollar_not_followed_by_a_digit_or_a_dollar_stays_as_it_is() {
+        let groups = ["m".to_owned(), "one".to_owned()];
+        assert_eq!(substitute("$10", &groups), "one0", "one digit a group");
+        assert_eq!(substitute("$$$1", &groups), "$one");
+        assert_eq!(substitute("$a $", &groups), "$a $");
+        assert_eq!(substitute("$9", &groups), "", "a group the pattern does not have");
+        // The design shows the tab's name as `$TAB`; it is not substituted (yet).
+        assert_eq!(substitute("$TAB: $0", &groups), "$TAB: m");
+    }
 }
