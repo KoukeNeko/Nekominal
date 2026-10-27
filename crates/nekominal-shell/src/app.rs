@@ -300,6 +300,10 @@ pub struct App {
     tabs: Vec<Tab>,
     selected: usize,
     layout: Layout,
+    /// How far the wheel scrolled the sidebar down, and the tab it was last scrolled to show: a tab selected since (by the
+    /// keyboard, a new tab) is scrolled into view once, and the wheel moves freely otherwise.
+    side_scroll: f32,
+    side_scrolled_to: usize,
     hover: Hit,
     pressed: Hit,
     /// Which of the left, middle and right buttons are down in a pane.
@@ -635,6 +639,8 @@ impl App {
             tabs: Vec::new(),
             selected: 0,
             layout: Layout::new(1.0, 1.0, 0, 0.0, 0, layout::Mode::TOP, 0.0, &[], &[]),
+            side_scroll: 0.0,
+            side_scrolled_to: usize::MAX,
             hover: Hit::None,
             pressed: Hit::None,
             buttons: [false; 3],
@@ -807,7 +813,22 @@ impl App {
     /// them.
     fn rebuild_layout(&mut self) {
         let (w, h) = self.surface.size();
-        self.layout = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups, &self.row_extras);
+        let fresh = Layout::new(w as f32 / self.scale, h as f32 / self.scale, self.tabs.len(), layout::CAPTION, self.selected, self.mode(), self.right_width, &self.groups, &self.row_extras);
+        let mut layout = fresh.clone().scrolled(self.side_scroll);
+        if self.selected != self.side_scrolled_to && layout.sidebar.is_some() {
+            self.side_scrolled_to = self.selected;
+            layout = fresh.scrolled(layout.scroll_showing(self.selected));
+        }
+        self.side_scroll = layout.scroll;
+        self.layout = layout;
+    }
+
+    /// The wheel over the sidebar scrolls its rows, three lines of text a notch.
+    fn scroll_sidebar(&mut self, x: i32, y: i32, delta: i16) {
+        self.side_scroll -= f32::from(delta) / 120.0 * 3.0 * 16.0;
+        self.rebuild_layout();
+        self.hover = self.hit_test(x, y);
+        self.redraw();
     }
 
     /// Pixels between the top of the window and the top of the panes.
@@ -1749,6 +1770,9 @@ impl App {
         if self.page_shown() {
             self.page_wheel(delta);
             return;
+        }
+        if self.layout.sidebar.is_some() && matches!(self.hit_test(x, y), Hit::Side | Hit::Chip(_) | Hit::ChipClose(_) | Hit::Badge(_)) {
+            return self.scroll_sidebar(x, y, delta);
         }
         if let Some(id) = self.tab().and_then(|t| t.pane_at(x, y)) {
             self.pointer(id, PointerKind::Wheel { delta: i32::from(delta), horizontal: false }, x, y, time_ms);

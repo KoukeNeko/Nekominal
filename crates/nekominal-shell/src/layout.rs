@@ -137,6 +137,9 @@ pub struct Layout {
     pub title: Rect,
     pub right: Rect,
     pub pane: Rect,
+    /// How far the sidebar is scrolled down (`scrolled`), and where what it lists ends, as scrolled, with its padding.
+    pub scroll: f32,
+    end: f32,
 }
 
 impl Layout {
@@ -182,9 +185,9 @@ impl Layout {
                     y += if list { chips[i].h + gap } else { ICON_ROW };
                 }
             }
-            // shortcut: the sidebar does not scroll; rows past its bottom are not shown (about 14 rows at 720 DIP).
             let shown = if sidebar.is_some() { tabs } else { 0 };
-            return Layout { size: (width, height), mode, chips, first: 0, shown, headings, shield, left, sidebar_button: Some(sidebar_button), new_tab, profiles, menu, caption_buttons, sidebar, title, right, pane };
+            let end = y + SIDE_PAD;
+            return Layout { size: (width, height), mode, chips, first: 0, shown, headings, shield, left, sidebar_button: Some(sidebar_button), new_tab, profiles, menu, caption_buttons, sidebar, title, right, pane, scroll: 0.0, end };
         }
         let strip_end = right.x - DRAG_MIN;
         // The room for the chips: what is between the strip start and the two buttons after the strip.
@@ -200,13 +203,40 @@ impl Layout {
         let after = left + shown as f32 * (chip_width + CHIP_GAP);
         let new_tab = Rect::new(after.min(strip_end - 2.0 * BUTTON).max(left), 0.0, BUTTON, TITLE_HEIGHT);
         let profiles = Rect::new(new_tab.x + BUTTON, 0.0, BUTTON, TITLE_HEIGHT);
-        Layout { size: (width, height), mode, chips, first, shown, headings: Vec::new(), shield, left, sidebar_button: None, new_tab, profiles, menu, caption_buttons, sidebar: None, title: Rect::new(0.0, 0.0, 0.0, 0.0), right, pane }
+        Layout { size: (width, height), mode, chips, first, shown, headings: Vec::new(), shield, left, sidebar_button: None, new_tab, profiles, menu, caption_buttons, sidebar: None, title: Rect::new(0.0, 0.0, 0.0, 0.0), right, pane, scroll: 0.0, end: 0.0 }
     }
 
-    /// Whether tab `i` is on show (in the strip, or in the sidebar while it is open and above its bottom).
+    /// The sidebar scrolled down by `offset` DIP, held between its top and the point where its last row stands at its
+    /// bottom: the rows and the headings move up by as much, and the ones that leave it are no longer shown.
+    pub fn scrolled(mut self, offset: f32) -> Layout {
+        let Some(sidebar) = self.sidebar else { return self };
+        let scroll = offset.clamp(0.0, (self.end - (sidebar.y + sidebar.h)).max(0.0));
+        for rect in self.chips.iter_mut().chain(self.headings.iter_mut().map(|(rect, _)| rect)) {
+            rect.y -= scroll;
+        }
+        self.scroll = scroll;
+        self.end -= scroll;
+        self
+    }
+
+    /// The offset `scrolled` takes for row `i` to stand wholly in the sidebar, moving as little as it can: the offset in
+    /// effect when the row is already there.
+    pub fn scroll_showing(&self, i: usize) -> f32 {
+        let (Some(sidebar), Some(row)) = (self.sidebar, self.chips.get(i).filter(|row| row.w > 0.0)) else { return self.scroll };
+        let (top, bottom) = (sidebar.y + SIDE_PAD, sidebar.y + sidebar.h - SIDE_PAD);
+        if row.y < top {
+            self.scroll - (top - row.y)
+        } else if row.y + row.h > bottom {
+            self.scroll + (row.y + row.h - bottom)
+        } else {
+            self.scroll
+        }
+    }
+
+    /// Whether tab `i` is on show (in the strip, or wholly in the sidebar while it is open, as scrolled).
     pub fn is_shown(&self, i: usize) -> bool {
         if let Some(sidebar) = self.sidebar {
-            return self.chips.get(i).is_some_and(|row| row.w > 0.0 && row.y + row.h <= sidebar.y + sidebar.h);
+            return self.chips.get(i).is_some_and(|row| row.w > 0.0 && row.y >= sidebar.y && row.y + row.h <= sidebar.y + sidebar.h);
         }
         !self.mode.layout.is_side() && (self.first..self.first + self.shown).contains(&i)
     }
@@ -408,6 +438,24 @@ mod tests {
             let first = if layout == TabLayout::Top { with.chips[0].x } else { with.sidebar_button.unwrap().x };
             assert!(first >= shield.x + shield.w, "{layout:?}: nothing under the shield");
         }
+    }
+
+    #[test]
+    fn a_scrolled_sidebar_shows_the_rows_past_its_bottom_and_hits_them_where_they_are_drawn() {
+        let groups = [(0..40).collect::<Vec<usize>>()];
+        let rows = side(TabLayout::List, true, &groups);
+        assert!(rows.is_shown(0) && !rows.is_shown(39), "forty rows do not fit in 720 DIP");
+        let scrolled = rows.clone().scrolled(f32::MAX);
+        assert!(scrolled.is_shown(39) && !scrolled.is_shown(0), "scrolled to its end, the last row shows and the first leaves");
+        let sidebar = scrolled.sidebar.unwrap();
+        assert!(scrolled.chips[39].y + scrolled.chips[39].h <= sidebar.y + sidebar.h && scrolled.scroll < f32::MAX, "no further than the last row");
+        let last = scrolled.chips[39];
+        assert_eq!(scrolled.hit(last.x + 4.0, last.y + 4.0), Hit::Chip(39));
+        assert_eq!(rows.clone().scrolled(-50.0), rows, "never above the top");
+        let to_last = rows.clone().scrolled(rows.scroll_showing(39));
+        assert!(to_last.is_shown(39) && to_last.scroll <= scrolled.scroll);
+        assert_eq!(to_last.clone().scrolled(to_last.scroll_showing(0)).scroll, 0.0, "back up to the first row");
+        assert_eq!(rows.scroll_showing(3), 0.0, "a row on show moves nothing");
     }
 
     #[test]
