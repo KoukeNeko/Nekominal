@@ -516,7 +516,8 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, settings: &Settings) ->
         let agents = (section == Section::Agents).then_some(Entry::Claude);
         let about = if section == Section::About { vec![Entry::About, Entry::Repo, Entry::Contributors] } else { Vec::new() };
         let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
-        let snippets = (section == Section::Terminal).then_some(Entry::Snippets);
+        // The snippets are a section of their own, not the last rows' (the push rows end the Terminal page before them).
+        let snippets = (section == Section::Terminal).then_some([Entry::Heading(Text::SettingsSnippetsHeading), Entry::Snippets]).into_iter().flatten();
         // A row that starts a section of the page comes under its heading; the test of the push comes after its rows.
         let rows = settings_ui::in_section(section).flat_map(|row| {
             let test = (row.id == "notifications.push.events").then_some(Entry::PushTest);
@@ -1511,7 +1512,8 @@ mod tests {
                 Section::Agents => 1,
                 Section::About => 3,
                 // The snippets, and the test of the push.
-                Section::Terminal => 2,
+                // The snippets, under a heading of their own.
+                Section::Terminal => 3,
                 Section::Profiles => 2,
                 // No rules yet: the ready-made ones.
                 Section::Triggers => 1,

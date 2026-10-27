@@ -282,7 +282,8 @@ texts! {
     KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
     KeysPress "keys.press" "按下新的快速鍵（Esc 取消，Delete 清除）" "Press a shortcut (Esc cancels, Delete clears)";
     KeyReserved "keys.reserved" "終端機程式使用此組合鍵，再按一次仍要指定" "Terminal programs use this shortcut: press it again to take it anyway";
-    SettingsSnippets "settings.snippets" "片段：從命令選擇區或建議清單輸入的文字" "Snippets: text the palette and the suggestions type";
+    SettingsSnippetsHeading "settings.snippetsHeading" "文字片段" "Snippets";
+    SettingsSnippets "settings.snippets" "從命令選擇區或建議清單輸入的文字" "Text the palette and the suggestions type";
     SettingsNotificationsHeading "settings.notificationsHeading" "Windows 通知" "Windows notifications";
     SettingsLayouts "settings.layouts" "已儲存的視窗配置" "Saved window layouts";
     SnippetsAdd "snippets.add" "新增片段" "Add snippet";
