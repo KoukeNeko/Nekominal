@@ -236,6 +236,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cli_command_maps_its_options_wherever_they_stand() {
+        use serde_json::json;
+        assert_eq!(request("-p 3-1 -n 5 get-text", None).unwrap().1, json!({ "cmd": "get-text", "pane": "3-1", "lines": 5 }), "options before the command");
+        assert_eq!(request("new-tab -d C:\\ -- wsl -d Ubuntu", None).unwrap().1, json!({ "cmd": "new-tab", "cwd": "C:\\", "command": ["wsl", "-d", "Ubuntu"] }), "after -- the words are the program's");
+        assert_eq!(request("subscribe", Some("7-1")).unwrap().1, json!({ "cmd": "subscribe" }), "no events, the default ones");
+        assert_eq!(request("focus", Some("")).unwrap_err(), r#""pane" is missing"#, "an empty NEKOMINAL_PANE is none");
+        // Text given as words does not read stdin, which may be a terminal waiting for input.
+        let words = api_request(&args("send-text ls"), Some("1-1".into()), || panic!("stdin read")).unwrap().1;
+        assert_eq!(words["text"], "ls");
+        let piped = api_request(&args("send-text"), Some("1-1".into()), || "line 1\r\nline 2\n".to_owned()).unwrap().1;
+        assert_eq!(piped["text"], "line 1\r\nline 2\n", "text from stdin goes as it is, its line breaks too");
+        assert_eq!(api_request(&args("send-text"), Some("1-1".into()), String::new).unwrap_err(), r#""text" is empty"#);
+    }
+
+    #[test]
+    fn a_cli_command_with_a_bad_value_names_it() {
+        assert_eq!(request("get-text -n 0", Some("7-1")).unwrap_err(), r#""lines" must be a whole number above 0"#);
+        assert_eq!(request("get-text -n -1", Some("7-1")).unwrap_err(), "--lines takes a number, not -1");
+        assert_eq!(request("list --pipe", None).unwrap_err(), "--pipe needs a value (a pipe name)");
+        assert_eq!(request("list all", None).unwrap_err(), "list does not take all");
+        assert_eq!(request("reboot", None).unwrap_err(), "unknown command reboot");
+        assert!(request("subscribe keys", None).unwrap_err().starts_with("unknown event \"keys\""));
+    }
+
+    #[test]
     fn more_tabs_and_panes_follow_after_semicolons() {
         let parsed = parse(&args(r"-d D:\a ; nt -p Ubuntu ; sp -H -d D:\b ; split-pane cmd"));
         assert_eq!(parsed.len(), 4);
