@@ -51,7 +51,6 @@ use windows::{core::HSTRING, Win32::{
 use crate::{
     access, agent, buffers, clipboard, design, find, icons, mark, motion, notify, textfield, update, welcome,
     settings_page::{self, Page, Part},
-    settings_window::{self, SettingsWin},
     glass::{self, Glass},
     gpu::{self, Gpu, Surface},
     layout::{self, Hit, Layout},
@@ -62,6 +61,7 @@ use crate::{
 };
 
 mod notifications;
+mod settings_tab;
 mod workspace;
 
 /// Posted by a reader thread when a pane has output to draw.
@@ -203,9 +203,8 @@ pub struct App {
     programs: Vec<Option<std::path::PathBuf>>,
     /// The shells found on the machine at start, which the profiles of the settings are merged over again when they change.
     found: Vec<DiscoveredProfile>,
-    /// What the settings page remembers while its window is open, and that window.
+    /// What the settings page remembers while the settings tab is open.
     page: Option<Page>,
-    settings_win: Option<SettingsWin>,
     /// When the taskbar button last flashed or a sound last played: they are limited to one a second.
     last_alert: Option<Instant>,
     /// What the notifications of Windows are told and when (`notify.rs`, shown by `app/notifications.rs`).
@@ -566,7 +565,6 @@ impl App {
             profiles: all,
             found,
             page: None,
-            settings_win: None,
             last_alert: None,
             notifier: notify::Notifier::default(),
             context_release: false,
@@ -974,6 +972,10 @@ impl App {
         for entry in &tab.panes {
             entry.pane.shutdown();
         }
+        // The page goes with its tab: opened again, it starts afresh.
+        if tab.settings {
+            self.page = None;
+        }
         if self.tabs.is_empty() {
             // SAFETY: closes the window of this thread; the message loop ends with it.
             unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).ok() };
@@ -1101,6 +1103,7 @@ impl App {
         self.maximized = maximized;
         self.surface.resize(&self.gpu, size_px);
         self.relayout();
+        self.fit_page_scroll();
         self.redraw();
     }
 
@@ -1437,10 +1440,19 @@ impl App {
             let (height, width) = (y as f32 / self.scale, self.layout.size.0);
             let outside = drag.active && (height < -TEAR_MARGIN || height > layout::TITLE_HEIGHT + TEAR_MARGIN || pointer < 0.0 || pointer > width);
             let held = (drag.tab, drag.grab * self.scale);
-            if outside && self.detach.is_none() {
+            // The settings stay in the window they were opened in: their chip is moved within the strip only.
+            if outside && self.detach.is_none() && !self.tabs.get(held.0).is_some_and(|tab| tab.settings) {
                 self.detach = Some(Detach { tab: held.0, pointer: self.screen_point(x as f32, y as f32), grab: held.1 });
             }
             self.redraw();
+            return;
+        }
+        if self.page_shown() {
+            // No divider or link of a terminal is under the pointer: the arrow, whatever the tab before showed.
+            self.over_splitter = None;
+            self.refresh_hover_link(x, y, None);
+            let (x, y) = self.point(x, y);
+            self.page_hover(x, y);
             return;
         }
         if let Some(path) = self.dragged_splitter.clone() {
@@ -1516,6 +1528,11 @@ impl App {
             self.hover = Hit::None;
             self.redraw();
         }
+        if let Some(page) = self.page.as_mut()
+            && page.hover.take().is_some()
+        {
+            self.redraw();
+        }
         self.refresh_hover_link(0, 0, None);
     }
 
@@ -1546,6 +1563,10 @@ impl App {
             return Capture::None;
         }
         let hit = self.hit_test(x, y);
+        if self.page_shown() && settings_tab::button_to_page(hit, self.pressed != Hit::None, self.page.as_ref().is_some_and(|page| page.drag.is_some())) {
+            let (x, y) = self.point(x, y);
+            return self.page_button(x, y, button, down);
+        }
         // The right button on a tab opens its menu, as the right button in a pane opens the pane's; its release must not
         // close the menu again.
         if button == MouseButton::Right
@@ -1683,6 +1704,10 @@ impl App {
 
     pub fn on_wheel(&mut self, x: i32, y: i32, delta: i16, time_ms: u32) {
         if self.popup_keeps_owner_active() { return; }
+        if self.page_shown() {
+            self.page_wheel(delta);
+            return;
+        }
         if let Some(id) = self.tab().and_then(|t| t.pane_at(x, y)) {
             self.pointer(id, PointerKind::Wheel { delta: i32::from(delta), horizontal: false }, x, y, time_ms);
         }
@@ -1691,6 +1716,9 @@ impl App {
     /// The mouse capture ended: held buttons are no longer held.
     pub fn on_capture_lost(&mut self) {
         self.buttons = [false; 3];
+        if let Some(page) = self.page.as_mut() {
+            page.drag = None;
+        }
         self.drag = None;
         self.pressed = Hit::None;
         self.redraw();
@@ -1797,7 +1825,10 @@ impl App {
     }
 
     /// Where the cursor cell is in the window, in pixels: left, top and height (the candidate window hangs under it).
-    pub fn ime_anchor(&self) -> Option<(i32, i32, i32)> {
+    pub fn ime_anchor(&mut self) -> Option<(i32, i32, i32)> {
+        if self.ime_in_page() {
+            return self.page_ime_anchor();
+        }
         if let Some(popup) = self.popup.as_ref() {
             popup.query.as_ref()?;
             let mut rect = RECT::default();
@@ -1976,6 +2007,9 @@ impl App {
     // --- keyboard -----------------------------------------------------------------------------------------------
 
     pub fn run(&mut self, command: Command) {
+        if self.page_shown() && settings_tab::needs_pane(command) {
+            return;
+        }
         match command {
             Command::TabNew => {
                 if let Err(e) = self.new_tab() {
@@ -2182,6 +2216,9 @@ impl App {
             if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
             return true;
         }
+        if self.page_shown() {
+            return self.page_tab_key(vk_code, scan, extended, repeat);
+        }
         if self.mark.is_some() && self.mark_key(vk_code) {
             return true;
         }
@@ -2247,6 +2284,11 @@ impl App {
     /// One UTF-16 unit of text from the keyboard or the IME.
     pub fn on_char(&mut self, unit: u16) {
         if self.popup_keeps_owner_active() { self.popup_char(unit); return; }
+        if self.page_shown() {
+            // Backspace comes as a character too; Tab and Enter were taken as keys.
+            if unit >= 0x20 || unit == 0x08 { self.page_text(unit); }
+            return;
+        }
         if unit < 0x20 || unit == 0x7F {
             return;
         }
@@ -2282,30 +2324,12 @@ impl App {
         self.access.as_mut()?.update_window_focus_state(focused)
     }
 
-    /// The window of the settings answers WM_GETOBJECT: a screen reader looks at it.
-    pub fn settings_access_getobject(&mut self, wparam: WPARAM, lparam: LPARAM) -> Option<impl Into<LRESULT> + use<>> {
-        let mut initial = access::Initial(Some(access::page_tree(&self.page_access_view()?)));
-        self.settings_win.as_mut()?.access.as_mut()?.handle_wm_getobject(wparam, lparam, &mut initial)
-    }
-
-    /// Tells the clients that listen to the window of the settings what changed; the caller raises the events with no
-    /// borrow of the application held.
-    pub fn settings_access_update(&mut self) -> Option<QueuedEvents> {
-        let mut adapter = self.settings_win.as_mut()?.access.take()?;
-        let view = self.page_access_view();
-        let events = view.and_then(|view| adapter.update_if_active(|| access::page_tree(&view)));
-        if let Some(win) = self.settings_win.as_mut() {
-            win.access = Some(adapter);
-        }
-        events
-    }
-
-    pub fn settings_access_focus(&mut self, focused: bool) -> Option<QueuedEvents> {
-        self.settings_win.as_mut()?.access.as_mut()?.update_window_focus_state(focused)
-    }
-
+    /// The page, while the settings tab is in view.
     fn page_access_view(&mut self) -> Option<access::PageView> {
-        let scale = f64::from(self.settings_win.as_ref()?.scale);
+        if !self.page_shown() {
+            return None;
+        }
+        let scale = f64::from(self.scale);
         let frame = self.page_frame()?;
         let (lang, page) = (self.language(), self.page.as_ref()?);
         let searching = !page.query.trim().is_empty();
@@ -2314,7 +2338,6 @@ impl App {
             [f64::from(rect.x) * scale, f64::from(rect.y) * scale, f64::from(rect.x + rect.w) * scale, f64::from(rect.y + rect.h) * scale]
         };
         Some(access::PageView {
-            window: Text::AppSettings.get(lang).to_owned(),
             sections_label: Text::AppSettings.get(lang).to_owned(),
             sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section, tab_bounds(i))).collect(),
             search_label: Text::SettingsSearch.get(lang).to_owned(),
@@ -2339,7 +2362,8 @@ impl App {
         })
     }
 
-    fn access_view(&self) -> access::View {
+    fn access_view(&mut self) -> access::View {
+        let page = self.page_access_view();
         let lang = self.language();
         let popup = self.popup.as_ref().map(|popup| access::PopupView {
             kind: match popup.kind {
@@ -2363,6 +2387,7 @@ impl App {
                 .collect(),
             terminal_label: Text::SettingsTerminal.get(lang).into(),
             terminal_text: self.focused().map(|entry| entry.view.snapshot().text()).unwrap_or_default(),
+            page,
             popup,
         }
     }
@@ -2405,6 +2430,10 @@ impl App {
         self.ui.begin_frame(size, self.scale);
         self.animating = false;
         let sliding = self.advance_chips();
+        // Under the chrome: what the sidebar shows beside its rows (the tip of a row) goes over the page.
+        if self.page_shown() {
+            self.paint_page();
+        }
         let relaid = self.paint_chrome();
         self.paint_welcome();
         self.ui.end_frame(&view);
@@ -2412,48 +2441,20 @@ impl App {
         sliding || relaid
     }
 
-    /// Draws a frame of the window of the settings.
-    pub fn settings_paint(&mut self) {
-        let owner = self.hwnd;
+    /// The settings page in the area of the panes.
+    fn paint_page(&mut self) {
         // The About page looks for a newer version the first time it is shown.
         let about = self.page.as_ref().is_some_and(|page| page.query.trim().is_empty() && Section::ALL.get(page.section) == Some(&Section::About));
         if about && self.update_check() == update::Check::Idle {
             self.check_for_update();
         }
-        let Some(win) = self.settings_win.as_mut() else { return };
-        let Some(view) = win.surface.acquire() else { return };
-        let (size, scale) = (win.surface.size(), win.scale);
-        self.gpu.clear(&view, [0.0; 4]);
-        self.ui.begin_frame(size, scale);
-        self.paint_page();
-        self.ui.end_frame(&view);
-        if let Some(win) = self.settings_win.as_mut() {
-            if win.surface.present() { post_gpu_lost(owner); }
-        }
-    }
-
-    /// The settings page over the whole window.
-    fn paint_page(&mut self) {
         let Some(frame) = self.page_frame() else { return };
         let Some(page) = self.page.as_ref() else { return };
         let scroll = page.scroll;
         let g = self.glass;
         let accent = col(g.accent);
         let area = self.page_area();
-        let Some((window_width, hover, pressed, maximized)) = self.settings_win.as_ref().map(|win| (win.area().0, win.hover, win.pressed, win.maximized)) else { return };
-        self.ui.fill(Rect::new(0.0, 0.0, area.w, area.y + area.h), Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
-        // The title row: the band of the tabs goes on above them, the title at the left and the caption buttons at the
-        // right, with the plate of the bar under the one the pointer is on.
-        self.ui.fill(Rect::new(0.0, 0.0, window_width, settings_window::TITLE), col(g.tab_rest()));
-        let title_line = self.ui.line_height(TEXT_SIZE);
-        let title = Text::AppSettings.get(self.language());
-        self.ui.text(design::INSET, (settings_window::TITLE - title_line) / 2.0, title, TEXT_SIZE, col(g.text_secondary()), false);
-        let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
-        for (cell, (button, glyph)) in settings_window::caption_buttons(window_width).into_iter().zip(glyphs) {
-            widgets::bar_button(&mut self.ui, &g, cell, State { hover: hover == button, pressed: pressed == button, chosen: false });
-            self.icon_centered(cell, glyph, ICON_SIZE, col(g.text()));
-        }
-        self.ui.fill(Rect::new(0.0, settings_window::TITLE - 1.0, window_width, 1.0), col(g.divider()));
+        self.ui.fill(area, Color([g.background.r, g.background.g, g.background.b, PAGE_ALPHA]));
         let soft = { let h = col(g.hover()); Color([h.0[0], h.0[1], h.0[2], h.0[3] / 2]) };
         let background = Color([g.background.r, g.background.g, g.background.b, 255]);
         // Owned, as painting a tile borrows the whole app.
@@ -2596,6 +2597,9 @@ impl App {
     /// The icon of the program tab `i` runs, in `square`: the icon of its file, as the automatic icon of iTerm2 has it, or
     /// a glyph for one without.
     fn tab_icon(&mut self, i: usize, square: Rect, color: Color) {
+        if self.tabs[i].settings {
+            return self.icon_centered(square, '\u{E713}', ICON_SIZE, color);
+        }
         let path = self.tabs[i].job_path().map(std::path::Path::to_owned);
         if path.is_some_and(|path| program_icon(&mut self.ui, &path, square)) {
             return;
@@ -3390,9 +3394,6 @@ impl App {
             entry.view.set_theme(theme);
         }
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
-        if let Some(win) = self.settings_win.as_ref() {
-            crate::win::set_backdrop(win.hwnd, backdrop, self.dark());
-        }
     }
 
     fn save_settings(&mut self) {
@@ -3406,261 +3407,6 @@ impl App {
             util::log(&format!("settings: {e}"));
         }
         self.settings_stamp = settings_stamp();
-    }
-
-    // --- the settings window ------------------------------------------------------------------------------------
-
-    /// The area of the page: the client area of the window of the settings below its title row, in DIP.
-    fn page_area(&self) -> Rect {
-        let (w, h) = self.settings_win.as_ref().map_or((0.0, 0.0), |win| win.area());
-        Rect::new(0.0, settings_window::TITLE, w, (h - settings_window::TITLE).max(0.0))
-    }
-
-    /// Asks for a frame of the window of the settings.
-    pub fn page_redraw(&self) {
-        if let Some(win) = self.settings_win.as_ref() {
-            // SAFETY: invalidating a window of this thread.
-            unsafe { let _ = InvalidateRect(Some(win.hwnd), None, false); }
-        }
-    }
-
-    /// The rectangles of the page for the state it is in now.
-    fn page_frame(&mut self) -> Option<settings_page::Frame> {
-        let lang = self.language();
-        let area = self.page_area();
-        let page = self.page.as_ref()?;
-        let ui = &mut self.ui;
-        let update = self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed);
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, scoop: update::scoop_dir().is_some() };
-        Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
-    }
-
-    /// Opens the window of the settings at the section of the row `focus`, with that row under the keyboard. A window that
-    /// is open already is brought to the front, and kept as it was when no row is asked for.
-    fn open_settings_page(&mut self, focus: Option<&str>) {
-        self.close_popup();
-        // Claude Code may have been installed or connected elsewhere since the page last looked.
-        self.claude = agent::claude();
-        let open = self.settings_win.is_some();
-        let mut page = self.page.take().unwrap_or_default();
-        let row = focus.and_then(settings_ui::find);
-        if !open || row.is_some() {
-            page.query.clear();
-            page.cursor = textfield::Cursor::default();
-            page.editing = None;
-            page.scroll = 0.0;
-            page.focus = None;
-        }
-        if let Some(row) = row {
-            page.section = Section::ALL.iter().position(|s| *s == row.section).unwrap_or(0);
-        }
-        page.layouts = workspace::layout_names();
-        self.page = Some(page);
-        if !open {
-            let title = Text::AppSettings.get(self.language());
-            match settings_window::open(self.hwnd, &self.gpu, self.settings.appearance.backdrop, self.dark(), title) {
-                Ok(win) => self.settings_win = Some(win),
-                Err(e) => {
-                    util::log(&format!("settings window: {e}"));
-                    self.page = None;
-                    return;
-                }
-            }
-        }
-        if let Some(row) = row
-            && let Some(frame) = self.page_frame()
-            && let Some(at) = frame.entries.iter().position(|entry| matches!(entry, settings_page::Entry::Setting(r) if r.id == row.id))
-            && let Some(page) = self.page.as_mut()
-        {
-            page.focus = Some(at);
-            page.scroll = frame.reveal(at, 0.0).min(frame.max_scroll());
-        }
-        if let Some(win) = self.settings_win.as_ref() {
-            // SAFETY: a window of this thread.
-            unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(win.hwnd); }
-        }
-        self.page_redraw();
-    }
-
-    /// The window of the settings is to close: asked for by posting the close to it, so that the window goes away outside
-    /// the call that asked.
-    fn request_close_settings(&self) {
-        if let Some(win) = self.settings_win.as_ref() {
-            // SAFETY: posting to a window of this thread.
-            unsafe { let _ = PostMessageW(Some(win.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
-        }
-    }
-
-    /// Lets go of the window of the settings and of what the page remembers. The caller destroys the window once it holds
-    /// no borrow of the application: the windows that are activated by it going away are told then.
-    pub fn close_settings_window(&mut self) -> Option<SettingsWin> {
-        self.page = None;
-        self.settings_win.take()
-    }
-
-    fn settings_point(&self, x: i32, y: i32) -> (f32, f32) {
-        let scale = self.settings_win.as_ref().map_or(self.scale, |win| win.scale);
-        (x as f32 / scale, y as f32 / scale)
-    }
-
-    /// What is under a point of the window of the settings (pixels): a caption button, the title row, or the page.
-    pub fn settings_hit_test(&self, x: i32, y: i32) -> Hit {
-        let Some(win) = self.settings_win.as_ref() else { return Hit::None };
-        let (x, y) = self.settings_point(x, y);
-        settings_window::hit(win.area().0, x, y)
-    }
-
-    pub fn settings_caption_hover(&mut self, hit: Hit) {
-        if let Some(win) = self.settings_win.as_mut()
-            && win.hover != hit
-        {
-            win.hover = hit;
-            self.page_redraw();
-        }
-    }
-
-    pub fn settings_caption_press(&mut self, hit: Hit) {
-        if let Some(win) = self.settings_win.as_mut() {
-            win.pressed = hit;
-            self.page_redraw();
-        }
-    }
-
-    /// A caption button was let go of: whether it is the one that was pressed.
-    pub fn settings_caption_release(&mut self, hit: Hit) -> bool {
-        let Some(win) = self.settings_win.as_mut() else { return false };
-        let pressed = std::mem::replace(&mut win.pressed, Hit::None);
-        self.page_redraw();
-        pressed == hit
-    }
-
-    /// The window of the settings has this size in pixels now.
-    pub fn settings_size(&mut self, size_px: (u32, u32), maximized: bool) {
-        if let Some(win) = self.settings_win.as_mut() {
-            win.surface.resize(&self.gpu, size_px);
-            win.maximized = maximized;
-        }
-        // Rows that were scrolled to the end of a tall page stay inside a page that has grown.
-        if let Some(max) = self.page_frame().map(|frame| frame.max_scroll())
-            && let Some(page) = self.page.as_mut()
-        {
-            page.scroll = page.scroll.min(max);
-        }
-        self.page_redraw();
-    }
-
-    /// The window of the settings moved to a monitor with another scale.
-    pub fn settings_dpi(&mut self, scale: f32) {
-        if let Some(win) = self.settings_win.as_mut() {
-            win.scale = scale;
-        }
-        self.page_redraw();
-    }
-
-    pub fn settings_move(&mut self, x: i32, y: i32) {
-        let (x, y) = self.settings_point(x, y);
-        self.page_hover(x, y);
-    }
-
-    pub fn settings_leave(&mut self) {
-        if let Some(page) = self.page.as_mut()
-            && page.hover.take().is_some()
-        {
-            self.page_redraw();
-        }
-    }
-
-    pub fn settings_button(&mut self, x: i32, y: i32, down: bool) -> Capture {
-        // A click on the settings dismisses a menu open over them, and does nothing else.
-        if self.popup.is_some() {
-            if !down { self.close_popup(); }
-            return Capture::None;
-        }
-        let (x, y) = self.settings_point(x, y);
-        self.page_button(x, y, MouseButton::Left, down)
-    }
-
-    pub fn settings_wheel(&mut self, delta: i16) {
-        self.page_wheel(delta);
-    }
-
-    /// The mouse capture ended: a slider is no longer held.
-    pub fn settings_capture_lost(&mut self) {
-        if let Some(page) = self.page.as_mut() {
-            page.drag = None;
-        }
-    }
-
-    pub fn settings_char(&mut self, unit: u16) {
-        if unit >= 0x20 || unit == 0x08 {
-            self.page_text(unit);
-        }
-    }
-
-    /// A key went down in the window of the settings. `true` when the page took it.
-    pub fn settings_key(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
-        // The menu of the window, opened over the settings, has their keyboard while it is open.
-        if self.popup.is_some() {
-            if vk_code == 0x1B { self.close_popup(); } else { self.popup_key(vk_code, repeat); }
-            return true;
-        }
-        if self.page.is_none() {
-            return false;
-        }
-        let input_method = vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET;
-        if self.page.as_ref().is_some_and(|page| page.capturing.is_some()) && self.capture_chord(vk_code, scan, extended, repeat) {
-            return true;
-        }
-        let held = held();
-        if !input_method && self.page_field_key(vk_code) {
-            return true;
-        }
-        if !input_method && !held.ctrl && !held.alt && self.page_key(vk_code, repeat) {
-            return true;
-        }
-        // Of the shortcuts of the window two mean something here: the one of the settings, which closes them, and the one
-        // that pastes into a line of text.
-        if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
-            && let Some(command) = self.keymap.find(held, name)
-        {
-            match command {
-                Command::AppSettings if !repeat => self.request_close_settings(),
-                Command::EditPaste if !repeat => self.paste_into_page(),
-                _ => return false,
-            }
-            return true;
-        }
-        false
-    }
-
-    /// Puts the first line of the clipboard into the line of text that has the keyboard: the search or the field being edited.
-    fn paste_into_page(&mut self) {
-        let text = clipboard::read_text().unwrap_or_default();
-        let line = text.lines().next().unwrap_or_default().to_owned();
-        for unit in line.encode_utf16() {
-            self.page_text(unit);
-        }
-    }
-
-    /// Where the caret of the line of text being typed in is, in pixels of the window of the settings: left, top and height
-    /// (the candidate window of the input method hangs under it).
-    pub fn settings_ime_anchor(&mut self) -> Option<(i32, i32, i32)> {
-        let scale = self.settings_win.as_ref()?.scale;
-        let page = self.page.as_ref()?;
-        let (scroll, editing, env_row) = (page.scroll, page.editing.as_ref().map(|(id, _)| *id), page.env_row);
-        let frame = self.page_frame()?;
-        let wanted = editing.map_or(Part::Search, |id| match id {
-            profile_edit::ENV_KEY_ID => Part::EnvKey(env_row),
-            profile_edit::ENV_VALUE_ID => Part::EnvValue(env_row),
-            settings_page::SNIPPET_NAME_ID => Part::SnippetName(env_row),
-            settings_page::SNIPPET_INPUT_ID => Part::SnippetInput(env_row),
-            settings_page::LAYOUT_NAME_ID => Part::LayoutName(env_row),
-            _ => profile_edit::Field::from_id(id).map_or(Part::Field(id), Part::ProfileField),
-        });
-        let item = frame.items.iter().find(|item| item.part == Some(wanted))?;
-        let rect = frame.on_screen(item, scroll);
-        let left = rect.x + if editing.is_some() { 10.0 } else { 40.0 };
-        Some(((left * scale) as i32, ((rect.y + 4.0) * scale) as i32, ((rect.h - 8.0) * scale) as i32))
     }
 
     fn set_setting(&mut self, row: &'static Descriptor, value: Value) {
@@ -4076,8 +3822,7 @@ impl App {
             Part::ProfileField(_) => {}
             Part::Browse(field) => {
                 let Some(current) = self.edited_profile().map(|p| profile_edit::text(p, field)) else { return };
-                let owner = self.settings_win.as_ref().map_or(self.hwnd, |win| win.hwnd);
-                let chosen = if field == profile_edit::Field::Program { crate::pick::program(owner, &current) } else { crate::pick::folder(owner, &current) };
+                let chosen = if field == profile_edit::Field::Program { crate::pick::program(self.hwnd, &current) } else { crate::pick::folder(self.hwnd, &current) };
                 self.wake_after_dialog();
                 if let Some(path) = chosen {
                     self.edit_profile(|settings, profile| profile_edit::set(settings, profile, field, &path));
@@ -4565,17 +4310,11 @@ impl App {
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
             entry.view.recreate_gpu(gpu)?;
         }
-        if let Some(win) = self.settings_win.as_mut() {
-            let size = win.surface.size();
-            win.surface.detach();
-            win.surface = gpu::create_surface(gpu, win.hwnd, size)?;
-        }
         // Last: a rebuild that failed halfway leaves the window on the lost device, so that the next frame says so again
         // and the rebuild is tried once more.
         self.gpu = gpu.clone();
         self.relayout();
         self.redraw();
-        self.page_redraw();
         Ok(())
     }
 
@@ -4880,7 +4619,10 @@ impl App {
         self.select(index);
         let lang = self.language();
         let row = |command: Command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None, program: None };
-        let mut rows = vec![row(Command::TabRename), row(Command::TabColor), row(Command::TabDuplicate), popup::Row::separator()];
+        // The settings tab cannot be renamed or copied.
+        let settings = self.tabs.get(index).is_some_and(|tab| tab.settings);
+        let mut rows: Vec<popup::Row> = [Command::TabRename, Command::TabColor, Command::TabDuplicate].into_iter().filter(|c| !(settings && settings_tab::needs_pane(*c))).map(row).collect();
+        rows.push(popup::Row::separator());
         if self.tabs.len() > 1 {
             rows.push(row(Command::TabCloseOthers));
         }
@@ -5519,8 +5261,8 @@ impl App {
         let buffer_dir = if self.settings.restore_session { buffers::dir() } else { None };
         let stamp = buffers::stamp();
         let mut kept = Vec::new();
-        let tabs = self.tab_records(|entry| buffer_dir.as_deref().and_then(|dir| buffers::save(dir, stamp, &mut kept, &mut entry.pane.term.lock())));
-        let session = Session { window: self.window_placement(), tabs, active_tab: self.selected };
+        let (tabs, active_tab) = self.tab_records(|entry| buffer_dir.as_deref().and_then(|dir| buffers::save(dir, stamp, &mut kept, &mut entry.pane.term.lock())));
+        let session = Session { window: self.window_placement(), tabs, active_tab };
         if let Err(e) = store::save(&path, &session.to_json()) {
             util::log(&format!("session: {e}"));
         }
@@ -5637,6 +5379,9 @@ impl App {
 
     /// What tab `i` shows: what the title format of the settings makes of the focused pane.
     fn tab_label(&self, i: usize) -> String {
+        if self.tabs[i].settings {
+            return Text::AppSettings.get(self.language()).to_owned();
+        }
         // A name the user gave the tab wins over whatever its program says.
         if let Some(name) = &self.tabs[i].name {
             return name.clone();

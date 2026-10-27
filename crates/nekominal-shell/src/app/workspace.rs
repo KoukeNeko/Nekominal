@@ -89,7 +89,8 @@ impl App {
             Entry::Branch(folder) => self.open_worktree_tab(&folder, typed),
             Entry::SaveLayout => {
                 let Some(name) = workspaces::name(typed) else { return };
-                let layout = Session { window: self.window_placement(), tabs: self.tab_records(|_| None), active_tab: self.selected };
+                let (tabs, active_tab) = self.tab_records(|_| None);
+                let layout = Session { window: self.window_placement(), tabs, active_tab };
                 if let Err(e) = write_layouts(|layouts| { layouts.insert(name, layout); }) {
                     self.layout_failed(e);
                 }
@@ -278,10 +279,12 @@ impl App {
         added
     }
 
-    /// The tabs of the window as the session and the layouts keep them; `buffer` names the saved text of a pane, if any.
-    pub(super) fn tab_records(&self, mut buffer: impl FnMut(&PaneEntry) -> Option<String>) -> Vec<TabRecord> {
-        self.tabs
-            .iter()
+    /// The tabs of the window as the session and the layouts keep them (not the settings), and the place of the one in view
+    /// among them; `buffer` names the saved text of a pane, if any.
+    pub(super) fn tab_records(&self, mut buffer: impl FnMut(&PaneEntry) -> Option<String>) -> (Vec<TabRecord>, usize) {
+        let (tabs, active) = settings_tab::kept(&self.tabs, self.selected);
+        let records = tabs
+            .into_iter()
             .map(|tab| TabRecord {
                 layout: tab.tree.clone(),
                 panes: tab
@@ -294,7 +297,8 @@ impl App {
                 name: tab.name.clone(),
                 color: tab.color,
             })
-            .collect()
+            .collect();
+        (records, active)
     }
 
     /// Where the window is when it is not maximized or minimized, and whether it is maximized.

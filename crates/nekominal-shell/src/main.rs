@@ -27,7 +27,6 @@ mod pick;
 mod popup;
 mod search_tabs;
 mod settings_page;
-mod settings_window;
 mod spend;
 mod status;
 mod tab;

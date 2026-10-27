@@ -570,7 +570,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let time = unsafe { GetMessageTime() } as u32;
             with_app(hwnd, |app| app.on_wheel(p.x, p.y, delta, time));
             LRESULT(0)
-        }        // The input method composes into the terminal: its text is drawn inline at the cursor by the pane, so the
+        }
+        // On the settings page the system draws the composition, at the caret of the line being typed in, and what it
+        // finishes arrives as characters.
+        WM_IME_STARTCOMPOSITION | WM_IME_COMPOSITION | WM_IME_ENDCOMPOSITION if with_app(hwnd, |app| app.ime_in_page()).unwrap_or(false) => {
+            place_ime(hwnd);
+            // SAFETY: default handling.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        // The input method composes into the terminal: its text is drawn inline at the cursor by the pane, so the
         // system's own composition window stays hidden (these messages are not passed on), and the candidate window
         // is placed under the cursor cell.
         WM_IME_STARTCOMPOSITION => {
@@ -758,211 +766,6 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
         }
         WM_CLOSE => {
             with_app(hwnd, App::close_popup);
-            LRESULT(0)
-        }
-        // SAFETY: default handling of every other message.
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-/// Puts the composition and candidate windows of the input method at the caret of the line of text being typed in.
-fn place_settings_ime(hwnd: HWND) {
-    let Some((x, y, height)) = with_app(hwnd, |app| app.settings_ime_anchor()).flatten() else { return };
-    // SAFETY: the context belongs to this window and is released below; the forms live through the calls.
-    unsafe {
-        let himc = ImmGetContext(hwnd);
-        if himc.is_invalid() {
-            return;
-        }
-        let composition = COMPOSITIONFORM { dwStyle: CFS_POINT, ptCurrentPos: POINT { x, y }, rcArea: RECT::default() };
-        let _ = ImmSetCompositionWindow(himc, &composition);
-        let candidates = CANDIDATEFORM { dwIndex: 0, dwStyle: CFS_CANDIDATEPOS, ptCurrentPos: POINT { x, y: y + height }, rcArea: RECT::default() };
-        let _ = ImmSetCandidateWindow(himc, &candidates);
-        let _ = ImmReleaseContext(hwnd, himc);
-    }
-}
-
-/// The messages of the window of the settings. They go to `App`, which owns the page; while `App` is busy (a message sent
-/// from inside one of its own calls) `with_app` finds it taken and the message is dropped. The frame and the title bar are
-/// the system's at the sides and below, the title row is ours. The input method draws its own composition; what it finishes
-/// arrives as characters.
-pub(crate) unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    match msg {
-        // As in the window of the shell: the client area is the whole window but for the frame at the sides and below, and
-        // the title row is ours.
-        WM_NCCALCSIZE if wparam.0 != 0 => {
-            // SAFETY: with wParam set, lParam points to an NCCALCSIZE_PARAMS.
-            unsafe {
-                let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
-                let top = params.rgrc[0].top;
-                let result = DefWindowProcW(hwnd, msg, wparam, lparam);
-                params.rgrc[0].top = if is_maximized(hwnd) { top + border(hwnd) } else { top };
-                result
-            }
-        }
-        WM_NCHITTEST => {
-            let (x, y) = (lo(lparam), hi(lparam));
-            if let Some(edge) = edge_hit(hwnd, x, y) {
-                return LRESULT(edge as isize);
-            }
-            let mut point = POINT { x, y };
-            // SAFETY: a window handle of this thread.
-            unsafe { let _ = ScreenToClient(hwnd, &mut point); };
-            match with_app(hwnd, |app| app.settings_hit_test(point.x, point.y)) {
-                Some(Hit::Drag) => LRESULT(HTCAPTION as isize),
-                Some(Hit::Minimize) => LRESULT(HTMINBUTTON as isize),
-                Some(Hit::Maximize) => LRESULT(HTMAXBUTTON as isize),
-                Some(Hit::Close) => LRESULT(HTCLOSE as isize),
-                _ => LRESULT(HTCLIENT as isize),
-            }
-        }
-        WM_NCMOUSEMOVE => {
-            let hit = caption_hit(wparam.0 as u32);
-            if hit.is_some() {
-                let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
-                // SAFETY: a valid request for this window.
-                unsafe { let _ = TrackMouseEvent(&mut track); };
-            }
-            with_app(hwnd, |app| app.settings_caption_hover(hit.unwrap_or(Hit::None)));
-            if hit.is_some() { LRESULT(0) } else { unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } }
-        }
-        WM_NCMOUSELEAVE => {
-            with_app(hwnd, |app| {
-                app.settings_caption_hover(Hit::None);
-                app.settings_caption_press(Hit::None);
-            });
-            LRESULT(0)
-        }
-        // The button is pressed here and acts when let go of over the same button (no modal loop of the system).
-        WM_NCLBUTTONDOWN if caption_hit(wparam.0 as u32).is_some() => {
-            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
-            with_app(hwnd, |app| app.settings_caption_press(hit));
-            LRESULT(0)
-        }
-        WM_NCLBUTTONUP if caption_hit(wparam.0 as u32).is_some() => {
-            let hit = caption_hit(wparam.0 as u32).unwrap_or(Hit::None);
-            if with_app(hwnd, |app| app.settings_caption_release(hit)) == Some(true) {
-                let command = match hit {
-                    Hit::Minimize => SC_MINIMIZE,
-                    Hit::Maximize if is_maximized(hwnd) => SC_RESTORE,
-                    Hit::Maximize => SC_MAXIMIZE,
-                    _ => SC_CLOSE,
-                };
-                // SAFETY: posting to our own window.
-                unsafe { let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); }
-            }
-            LRESULT(0)
-        }
-        WM_NCRBUTTONDOWN if wparam.0 as u32 == HTCAPTION => LRESULT(0),
-        // The same menu of the window as the shell's, without the settings: this is them.
-        WM_NCRBUTTONUP if wparam.0 as u32 == HTCAPTION => {
-            with_app(hwnd, |app| app.open_window_menu(hwnd, lo(lparam), hi(lparam)));
-            LRESULT(0)
-        }
-        WM_PAINT => {
-            with_app(hwnd, App::settings_paint);
-            // SAFETY: the swap chain is the content; only the update region is cleared.
-            unsafe { let _ = ValidateRect(Some(hwnd), None); };
-            raise_access_events(hwnd, App::settings_access_update);
-            LRESULT(0)
-        }
-        WM_ERASEBKGND => LRESULT(1),
-        // As for the window of the application: the result is turned into a message result with no borrow held.
-        WM_GETOBJECT => match with_app(hwnd, |app| app.settings_access_getobject(wparam, lparam)).flatten() {
-            Some(result) => result.into(),
-            None => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-        },
-        WM_ACTIVATE => {
-            let active = (wparam.0 & 0xFFFF) != 0;
-            // A menu opened over the settings goes when they lose the activation, as one over the shell does.
-            if !active {
-                with_app(hwnd, App::close_popup);
-            } else {
-                // The file may have been edited by hand while the settings were open: the page shows and saves what it holds now.
-                with_app(hwnd, |app| {
-                    app.reload_if_changed();
-                    app.page_redraw();
-                });
-            }
-            raise_access_events(hwnd, |app| app.settings_access_focus(active));
-            // SAFETY: default handling.
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-        WM_SIZE => {
-            let size = client_size(hwnd);
-            with_app(hwnd, |app| app.settings_size(size, wparam.0 == SIZE_MAXIMIZED as usize));
-            LRESULT(0)
-        }
-        WM_DPICHANGED => {
-            // SAFETY: lParam is the suggested new rectangle.
-            unsafe {
-                let r = &*(lparam.0 as *const RECT);
-                let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-            let scale = scale_of(hwnd);
-            with_app(hwnd, |app| app.settings_dpi(scale));
-            LRESULT(0)
-        }
-        WM_GETMINMAXINFO => {
-            let scale = scale_of(hwnd);
-            let (w, h) = crate::settings_window::MIN_SIZE;
-            // SAFETY: lParam points to a MINMAXINFO.
-            unsafe { (*(lparam.0 as *mut MINMAXINFO)).ptMinTrackSize = POINT { x: (w * scale) as i32, y: (h * scale) as i32 } };
-            LRESULT(0)
-        }
-        WM_MOUSEMOVE => {
-            let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
-            // SAFETY: a valid request for this window.
-            unsafe { let _ = TrackMouseEvent(&mut track); };
-            with_app(hwnd, |app| app.settings_move(lo(lparam), hi(lparam)));
-            LRESULT(0)
-        }
-        WM_MOUSELEAVE => {
-            with_app(hwnd, App::settings_leave);
-            LRESULT(0)
-        }
-        WM_LBUTTONDOWN | WM_LBUTTONUP => {
-            let down = msg == WM_LBUTTONDOWN;
-            // The capture keeps the moves coming while a slider is held outside the window.
-            match with_app(hwnd, |app| app.settings_button(lo(lparam), hi(lparam), down)) {
-                // SAFETY: calls on this window from its own thread.
-                Some(Capture::Take) => unsafe { SetCapture(hwnd); },
-                Some(Capture::Release) => unsafe { let _ = ReleaseCapture(); },
-                _ => {}
-            }
-            LRESULT(0)
-        }
-        WM_CAPTURECHANGED => {
-            with_app(hwnd, App::settings_capture_lost);
-            LRESULT(0)
-        }
-        WM_MOUSEWHEEL => {
-            let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
-            with_app(hwnd, |app| app.settings_wheel(delta));
-            LRESULT(0)
-        }
-        // Alt chords (Alt+F4, Alt+Space) are the system's.
-        WM_KEYDOWN => {
-            let (scan, extended, repeat) = (((lparam.0 >> 16) & 0xFF) as u16, (lparam.0 >> 24) & 1 == 1, (lparam.0 >> 30) & 1 == 1);
-            let (scan, extended) = key_scan(wparam.0 as i32, scan, extended);
-            let handled = with_app(hwnd, |app| app.settings_key(wparam.0 as i32, scan, extended, repeat)).unwrap_or(false);
-            if handled { LRESULT(0) } else { unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) } }
-        }
-        WM_CHAR => {
-            with_app(hwnd, |app| app.settings_char(wparam.0 as u16));
-            LRESULT(0)
-        }
-        WM_IME_STARTCOMPOSITION => {
-            place_settings_ime(hwnd);
-            // SAFETY: default handling shows the composition of the system at the place just set.
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-        // The window is destroyed here, with no borrow of the application held: the window that is activated by it going away
-        // is told then.
-        WM_CLOSE => {
-            if let Some(Some(window)) = with_app(hwnd, App::close_settings_window) {
-                window.close();
-            }
             LRESULT(0)
         }
         // SAFETY: default handling of every other message.
