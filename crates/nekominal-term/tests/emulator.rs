@@ -244,6 +244,22 @@ fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
 }
 
 #[test]
+fn a_flood_of_combining_marks_after_an_sgr_a_carriage_return_or_a_cursor_move_is_capped_too() {
+    // Each of these ends the cluster, so the marks went straight to alacritty, which stacked them all on one cell.
+    for prefix in ["e\x1b[0m", "e\r", "e\x1b[D", "e\x1b[1;2H"] {
+        let mut core = core(20, 3);
+        let flood = format!("{prefix}{}", "\u{0301}".repeat(100_000));
+        let started = std::time::Instant::now();
+        feed(&mut core, &flood);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{prefix:?} took {:?}", started.elapsed());
+        let s = snap(&mut core);
+        assert_eq!(s.cell(0, 0).ch, 'e', "{prefix:?}");
+        let marks = s.cell(0, 0).zerowidth.as_ref().map_or(0, |marks| marks.len());
+        assert!((1..=16).contains(&marks), "{prefix:?} left {marks} marks on the cell");
+    }
+}
+
+#[test]
 fn a_flood_of_spacing_marks_or_skin_tones_is_capped_too() {
     // These have a width, so the cap on zero-width characters alone let them join forever.
     for (base, mark) in [('\u{0915}', '\u{0903}'), ('\u{1f44d}', '\u{1f3fb}')] {

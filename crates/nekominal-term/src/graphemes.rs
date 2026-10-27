@@ -100,6 +100,21 @@ impl<T: EventListener> Clusters<'_, T> {
         }
         true
     }
+
+    /// The zero-width characters already on the cell `Term::input` would stack the next one on: the one left of
+    /// the cursor (the cursor's own when it waits to wrap, column 0 at the start of a line), or the wide glyph
+    /// behind a spacer.
+    fn zerowidth_before_cursor(&self) -> usize {
+        let grid = self.term.grid();
+        let (line, mut column) = (grid.cursor.point.line, grid.cursor.point.column);
+        if !grid.cursor.input_needs_wrap {
+            column.0 = column.0.saturating_sub(1);
+        }
+        if grid[line][column].flags.contains(Flags::WIDE_CHAR_SPACER) {
+            column.0 = column.0.saturating_sub(1);
+        }
+        grid[line][column].zerowidth().map_or(0, <[char]>::len)
+    }
 }
 
 /// Every other call ends the cluster and goes to `Term` unchanged.
@@ -115,6 +130,11 @@ macro_rules! forward {
 /// The most bytes a cluster grows to; the longest real ones (a ZWJ family with skin tones) are about half this.
 /// Joining scans the whole cluster, so without a cap a base and N combining marks cost N² under the terminal lock.
 const MAX_CLUSTER_BYTES: usize = 64;
+
+/// The most zero-width characters `Term` may stack on one cell. The cluster cap above holds only while a cluster
+/// is open; any other call (SGR, `\r`, a cursor move) closes it, and from then on every mark went to `Term`,
+/// which stacks them without limit and costs the renderer each one on every frame.
+const MAX_CELL_ZEROWIDTH: usize = 16;
 
 impl<T: EventListener> Handler for Clusters<'_, T> {
     fn input(&mut self, c: char) {
@@ -135,6 +155,8 @@ impl<T: EventListener> Handler for Clusters<'_, T> {
         }
         if c.width().is_some_and(|w| w > 0) {
             self.cluster.push(c);
+        } else if c.width() == Some(0) && self.zerowidth_before_cursor() >= MAX_CELL_ZEROWIDTH {
+            return;
         }
         if self.touched.is_some() {
             let (mut line, mut column) = self.cursor();
