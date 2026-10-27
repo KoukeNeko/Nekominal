@@ -240,6 +240,39 @@ pub struct Notifications {
     pub toast: bool,
     /// A command that ran at least this many seconds tells when it ends out of sight; 0 turns that off.
     pub long_command: u32,
+    /// The same notifications sent on to a phone.
+    pub push: Push,
+}
+
+/// Where a notification is pushed to: an ntfy topic or a webhook of the user's own. An empty `url` turns it off.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Push {
+    pub url: String,
+    pub kind: PushKind,
+    /// Sent as `Authorization: Bearer`; empty sends none.
+    pub token: String,
+    pub when: PushWhen,
+}
+
+/// What the target of the push speaks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushKind {
+    /// The text as the body, the rest in ntfy's headers.
+    #[default]
+    Ntfy,
+    /// A JSON object for any receiver.
+    Webhook,
+}
+
+/// When a notification is also pushed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PushWhen {
+    Always,
+    /// Only while the window is not in the foreground: at the desk the toast is enough.
+    #[default]
+    Away,
 }
 
 /// Valid range of `notifications.longCommand`, in seconds: up to a day.
@@ -578,7 +611,7 @@ impl Default for Settings {
             paste: PasteSettings { warn_multiline: true, warn_large_bytes: 5120 },
             osc52: Osc52Policy::Write,
             bell: Bell { visual: true, taskbar: true, sound: BellSound::None },
-            notifications: Notifications { toast: true, long_command: 10 },
+            notifications: Notifications { toast: true, long_command: 10, push: Push::default() },
             keyboard: Keyboard { kitty_protocol: true },
             agent_environment: true,
             status_bar: StatusBar::default(),
@@ -1184,6 +1217,16 @@ pub fn parse(source: Option<&str>) -> Parsed {
         notifications: Notifications {
             toast: boolean(&notifications, "toast", d.notifications.toast, "notifications", &mut problems),
             long_command: number(&notifications, "longCommand", f64::from(d.notifications.long_command), LONG_COMMAND_RANGE, "notifications", &mut problems).round() as u32,
+            push: {
+                let push = section(&notifications, "push", "notifications", &mut problems);
+                let (p, path) = (&d.notifications.push, "notifications.push");
+                Push {
+                    url: text(&push, "url", &p.url, path, &mut problems),
+                    kind: one_of(&push, "kind", &[("ntfy", PushKind::Ntfy), ("webhook", PushKind::Webhook)], p.kind, path, &mut problems),
+                    token: text(&push, "token", &p.token, path, &mut problems),
+                    when: one_of(&push, "when", &[("always", PushWhen::Always), ("away", PushWhen::Away)], p.when, path, &mut problems),
+                }
+            },
         },
         keyboard: Keyboard { kitty_protocol: boolean(&keyboard, "kittyProtocol", d.keyboard.kitty_protocol, "keyboard", &mut problems) },
         agent_environment: boolean(&root, "agentEnvironment", d.agent_environment, "", &mut problems),
@@ -1806,16 +1849,36 @@ mod tests {
 
     #[test]
     fn notifications_are_on_by_default_and_a_long_command_is_ten_seconds() {
-        assert_eq!(Settings::default().notifications, Notifications { toast: true, long_command: 10 });
+        assert_eq!(Settings::default().notifications, Notifications { toast: true, long_command: 10, push: Push::default() });
         let result = parsed(r#"{ "notifications": { "toast": false, "longCommand": 0 } }"#);
         assert!(result.problems.is_empty(), "{:?}", result.problems);
-        assert_eq!(result.settings.notifications, Notifications { toast: false, long_command: 0 });
+        assert_eq!(result.settings.notifications, Notifications { toast: false, long_command: 0, push: Push::default() });
         // A time out of range keeps the default and is reported.
         let result = parsed(r#"{ "notifications": { "longCommand": -5 } }"#);
         assert_eq!(result.settings.notifications.long_command, 10);
         assert_eq!(result.problems.len(), 1);
-        let written = round_trips(Settings { notifications: Notifications { toast: true, long_command: 30 }, ..Settings::default() });
+        let written = round_trips(Settings { notifications: Notifications { toast: true, long_command: 30, push: Push::default() }, ..Settings::default() });
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "notifications": { "longCommand": 30 } }));
+    }
+
+    #[test]
+    fn the_push_is_off_until_it_has_a_url_and_waits_for_the_user_to_be_away() {
+        assert_eq!(Settings::default().notifications.push, Push { url: String::new(), kind: PushKind::Ntfy, token: String::new(), when: PushWhen::Away });
+        let result = parsed(r#"{ "notifications": { "push": { "url": "https://example.com/hook", "kind": "webhook", "token": "t0k", "when": "always" } } }"#);
+        assert!(result.problems.is_empty(), "{:?}", result.problems);
+        let push = Push { url: "https://example.com/hook".into(), kind: PushKind::Webhook, token: "t0k".into(), when: PushWhen::Always };
+        assert_eq!(result.settings.notifications.push, push);
+        // An unknown kind or time keeps the default and is reported, each.
+        let result = parsed(r#"{ "notifications": { "push": { "kind": "pager", "when": "never" } } }"#);
+        assert_eq!(result.settings.notifications.push, Push::default());
+        assert_eq!(result.problems.len(), 2);
+        let written = round_trips(Settings { notifications: Notifications { push: push.clone(), ..Settings::default().notifications }, ..Settings::default() });
+        assert_eq!(
+            serde_json::from_str::<Value>(&written).unwrap(),
+            serde_json::json!({ "notifications": { "push": { "url": "https://example.com/hook", "kind": "webhook", "token": "t0k", "when": "always" } } })
+        );
+        let written = round_trips(Settings { notifications: Notifications { push: Push { url: "https://ntfy.sh/cat".into(), ..Push::default() }, ..Settings::default().notifications }, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "notifications": { "push": { "url": "https://ntfy.sh/cat" } } }));
     }
 
     #[test]
