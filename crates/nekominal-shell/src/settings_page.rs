@@ -1461,15 +1461,16 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                             }
                         }
                         y += theme_names.len().div_ceil(columns) as f32 * (TILE.1 + TILE_GAP) - TILE_GAP + 12.0;
-                        // Schemes come in from Windows Terminal's settings and from iTerm2 presets here, as from the palette.
-                        let mut at = x0 + INNER;
-                        for (part, text) in [(Part::ImportSchemes, Text::AppImportSchemes), (Part::ImportItermColors, Text::AppImportItermColors)] {
-                            let text = text.get(lang);
-                            let button = Rect::new(at, y, measure(text, 13.0, false) + 28.0, CONTROL);
-                            text_button(&mut items, button, part, text, false, hover);
-                            at = button.x + button.w + GAP;
+                        // Schemes come in from Windows Terminal's settings and from iTerm2 presets here, as from the palette; the
+                        // second button goes under the first where they do not fit side by side.
+                        let buttons = [(Part::ImportSchemes, Text::AppImportSchemes.get(lang)), (Part::ImportItermColors, Text::AppImportItermColors.get(lang))];
+                        let widths: Vec<f32> = buttons.iter().map(|(_, text)| measure(text, 13.0, false) + 28.0).collect();
+                        let places = wrap(&widths, inner, GAP);
+                        for ((part, text), (&(line, offset), w)) in buttons.into_iter().zip(places.iter().zip(&widths)) {
+                            text_button(&mut items, Rect::new(x0 + INNER + offset, y + line as f32 * (CONTROL + GAP), *w, CONTROL), part, text, false, hover);
                         }
-                        y += CONTROL + GRID_BOTTOM;
+                        let lines = places.iter().map(|(line, _)| *line + 1).max().unwrap_or(1);
+                        y += lines as f32 * (CONTROL + GAP) - GAP + GRID_BOTTOM;
                     }
                     (Control::Profiles, Value::Text(current)) => {
                         y += ROW;
