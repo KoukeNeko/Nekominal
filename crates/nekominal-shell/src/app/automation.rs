@@ -23,6 +23,9 @@ thread_local! {
     static STATES: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
 }
 
+/// The answer to a request that would ask the user while the window already asks something.
+const QUESTION_OPEN: &str = "a question is already open in the window";
+
 fn state_name(state: Option<AgentState>) -> &'static str {
     match state {
         None => "none",
@@ -135,6 +138,10 @@ impl App {
                     Some(logic::PasteWarning::Lines(lines)) => Text::DialogPasteLines.format(self.language(), &[&lines]),
                     Some(logic::PasteWarning::Bytes(bytes)) => Text::DialogPasteSize.format(self.language(), &[&logic::size_label(bytes)]),
                 };
+                // The window asks one question at a time: this one would not be shown, and the text never sent.
+                if self.confirmation.is_some() {
+                    return Err(QUESTION_OPEN.to_owned());
+                }
                 self.show_pane(self.tabs[t].uid, id);
                 self.confirm(title, Text::EditPaste, Confirmation::Paste { tab: t, pane: id, text: text.clone() });
                 Ok(json!({ "sent": false, "asked": true }))
@@ -161,10 +168,14 @@ impl App {
                 self.show_pane(self.tabs[t].uid, id);
                 Ok(json!({}))
             }
-            Request::Close { .. } => {
+            Request::Close { pane } => {
                 let asking = self.confirmation.is_some();
-                // As the close button does: a pane whose program is busy asks first, as the settings say.
+                // As the close button does: a pane whose program is busy asks first, as the settings say. While another
+                // question is open that one is not asked, and the pane stays.
                 self.request_close_pane(t, id);
+                if asking && self.api_find(pane).is_some() {
+                    return Err(QUESTION_OPEN.to_owned());
+                }
                 Ok(json!({ "asked": !asking && self.confirmation.is_some() }))
             }
             Request::SetTitle { title, .. } => {

@@ -119,6 +119,10 @@ pub fn api_request(args: &[String], pane: Option<String>, stdin: impl FnOnce() -
     let mut request = json!({ "cmd": cmd });
     let object = request.as_object_mut().expect("an object");
     let takes_pane = !matches!(cmd.as_str(), "list" | "new-tab" | "subscribe");
+    // Refused, not dropped: `new-tab -p pwsh` means a profile, which is `--profile`.
+    if !takes_pane && options.contains_key("pane") {
+        return Err(format!("{cmd} takes no pane (-p, --pane); a profile is --profile"));
+    }
     if takes_pane && !options.contains_key("pane") && let Some(pane) = pane.filter(|pane| !pane.is_empty()) {
         options.insert("pane".into(), pane.into());
     }
@@ -233,6 +237,10 @@ mod tests {
         assert_eq!(request("close extra", Some("7-1")).unwrap_err(), "close does not take extra");
         assert_eq!(request("split --direction up", Some("7-1")).unwrap_err(), "\"direction\" is right or down, not up");
         assert_eq!(request("notify", None).unwrap_err(), "notify needs a title");
+        for cmd in ["list", "new-tab", "subscribe"] {
+            assert_eq!(request(&format!("{cmd} -p pwsh"), Some("7-1")).unwrap_err(), format!("{cmd} takes no pane (-p, --pane); a profile is --profile"));
+        }
+        assert!(request("new-tab", Some("7-1")).is_ok(), "the pane it runs in is not given to it");
     }
 
     #[test]

@@ -25,7 +25,7 @@ use std::{
     os::windows::io::FromRawHandle,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use serde_json::{Value, json};
@@ -225,11 +225,13 @@ pub fn event_line(topic: Topic, pane: &str, more: Value) -> String {
 
 // --- events --------------------------------------------------------------------------------------------------------
 
-type Subscriber = (Vec<Topic>, mpsc::Sender<String>);
+type Subscriber = (Vec<Topic>, mpsc::SyncSender<String>);
 static SUBSCRIBERS: Mutex<Vec<Subscriber>> = Mutex::new(Vec::new());
+/// The events that wait for a subscriber that does not read them; past that it is dropped, not the memory of the window.
+const BACKLOG: usize = 1024;
 
 fn subscribe(topics: Vec<Topic>) -> mpsc::Receiver<String> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(BACKLOG);
     SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner()).push((topics, sender));
     receiver
 }
@@ -239,10 +241,11 @@ pub fn wants(topic: Topic) -> bool {
     SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(topics, _)| topics.contains(&topic))
 }
 
-/// Sends an event to everyone who follows its topic; a subscriber whose client went is dropped.
+/// Sends an event to everyone who follows its topic, without waiting: a subscriber whose client went, or that is `BACKLOG`
+/// events behind (a client that stopped reading), is dropped, which ends its connection.
 pub fn publish(topic: Topic, pane: &str, more: Value) {
     let line = event_line(topic, pane, more);
-    SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(topics, sender)| !topics.contains(&topic) || sender.send(line.clone()).is_ok());
+    SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(topics, sender)| !topics.contains(&topic) || sender.try_send(line.clone()).is_ok());
 }
 
 // --- the security of the pipe --------------------------------------------------------------------------------------
@@ -432,33 +435,52 @@ fn serve_client(pipe: &File, handler: &Handler) {
 
 // --- the UI thread -------------------------------------------------------------------------------------------------
 
-type Job = (Request, mpsc::Sender<Result<Value, String>>);
+/// A request waiting for the UI thread: its number, when it was asked, what it asks and where the answer goes.
+struct Job {
+    id: u64,
+    asked: Instant,
+    request: Request,
+    answer: mpsc::Sender<Result<Value, String>>,
+}
 static QUEUE: Mutex<VecDeque<Job>> = Mutex::new(VecDeque::new());
+static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The message-only window of the UI thread, the pipe's name, and the file that tells `nekominal cli` about it.
 static WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static NAME: OnceLock<String> = OnceLock::new();
 
-/// Hands a request to the UI thread and waits for its answer.
+/// Hands a request to the UI thread and waits for its answer. A request the client stopped waiting for is never done
+/// later: one that could not be posted leaves the queue at once, and one that waited past the timeout is dropped by
+/// `drain`, so a script told "did not answer" can try again without it happening twice.
 fn to_ui(request: Request) -> Result<Value, String> {
     let (sender, answer) = mpsc::channel();
-    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).push_back((request, sender));
+    let id = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    QUEUE.lock().unwrap_or_else(|e| e.into_inner()).push_back(Job { id, asked: Instant::now(), request, answer: sender });
     let window = WINDOW.load(std::sync::atomic::Ordering::Acquire);
     // SAFETY: posting to a window from another thread is allowed.
-    unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_API, WPARAM(0), LPARAM(0)) }.map_err(|e| e.to_string())?;
+    if let Err(e) = unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_API, WPARAM(0), LPARAM(0)) } {
+        QUEUE.lock().unwrap_or_else(|e| e.into_inner()).retain(|job| job.id != id);
+        return Err(e.to_string());
+    }
     answer.recv_timeout(ANSWER_TIMEOUT).map_err(|_| "the window did not answer in time".to_owned())?
+}
+
+/// Whether a job asked at `asked` is one its client no longer waits for at `now`.
+fn expired(asked: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(asked) >= ANSWER_TIMEOUT
 }
 
 /// Answers what is queued; false when a window was busy and something waits for the next try.
 fn drain() -> bool {
-    let jobs: Vec<Job> = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
+    let now = Instant::now();
+    let jobs: Vec<Job> = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).drain(..).filter(|job| !expired(job.asked, now)).collect();
     let windows = crate::win::apps();
     let mut waiting = VecDeque::new();
-    for (request, sender) in jobs {
-        match crate::app::automation::answer(&windows, &request) {
+    for job in jobs {
+        match crate::app::automation::answer(&windows, &job.request) {
             Some(answer) => {
-                let _ = sender.send(answer);
+                let _ = job.answer.send(answer);
             }
-            None => waiting.push_back((request, sender)),
+            None => waiting.push_back(job),
         }
     }
     let mut queue = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
@@ -554,8 +576,9 @@ pub fn pane_environment(pane: &str) -> Vec<(String, String)> {
 pub fn connect(name: &str) -> std::io::Result<File> {
     const ERROR_PIPE_BUSY: i32 = 231;
     // Only a pipe of this computer: any other name (a broken instance file, a slip in --pipe) would open that file and
-    // write the request into it.
-    if !name.get(..9).is_some_and(|start| start.eq_ignore_ascii_case(r"\\.\pipe\")) {
+    // write the request into it. Nor a separator after the prefix: `\\.\pipe\..\C:\x` is a file again.
+    let is_pipe = name.get(..9).is_some_and(|start| start.eq_ignore_ascii_case(r"\\.\pipe\"));
+    if !is_pipe || name[9..].is_empty() || name[9..].contains(['\\', '/']) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, r"not the name of a pipe (\\.\pipe\…)"));
     }
     for _ in 0..100 {
@@ -847,6 +870,11 @@ mod tests {
         assert!(BufReader::new(&pipe).lines().next().unwrap().unwrap().contains("listed"));
         assert!(!dir.join("6").exists() && dir.join("5").exists());
         assert!(connect(victim.to_str().unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidInput), "--pipe with a path is refused too");
+        let dotted = format!(r"\\.\pipe\..\{}", victim.display());
+        for name in [dotted.as_str(), r"\\.\pipe\a/b", r"\\.\pipe\"] {
+            assert!(connect(name).is_err_and(|e| e.kind() == std::io::ErrorKind::InvalidInput), "{name}: a way out of the pipes is refused");
+        }
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
         std::fs::remove_dir_all(&dir).unwrap();
         std::fs::remove_file(&victim).unwrap();
     }
@@ -858,6 +886,28 @@ mod tests {
         let this = elevated_process(unsafe { GetCurrentProcess() });
         assert!(this.is_some(), "a process can read its own token");
         assert_eq!(server_elevated(&connect(&served()).unwrap()), this == Some(true));
+    }
+
+    #[test]
+    fn a_subscriber_that_stops_reading_is_dropped_once_its_backlog_is_full() {
+        // Agent states only: the other tests follow other events, and see none of these.
+        let events = subscribe(vec![Topic::AgentState]);
+        for _ in 0..BACKLOG {
+            publish(Topic::AgentState, "1-1", json!({ "state": "working" }));
+        }
+        assert!(wants(Topic::AgentState), "a full backlog is still kept");
+        publish(Topic::AgentState, "1-1", json!({ "state": "idle" }));
+        assert!(!wants(Topic::AgentState), "one more and it is dropped, the window never waits");
+        assert_eq!(events.iter().count(), BACKLOG, "what it had stays readable, then the stream ends");
+    }
+
+    #[test]
+    fn a_request_older_than_the_timeout_is_dropped_not_done_late() {
+        let now = Instant::now();
+        assert!(!expired(now, now));
+        assert!(!expired(now - ANSWER_TIMEOUT + Duration::from_millis(1), now), "the client still waits");
+        assert!(expired(now - ANSWER_TIMEOUT, now));
+        assert!(!expired(now + Duration::from_secs(1), now), "asked after now is not old");
     }
 
     #[test]
