@@ -38,6 +38,8 @@ pub struct PaneRenderer {
     labelled: Vec<r::Cell>,
     find_lines: Vec<(i32, bool)>,
     marks: Vec<r::ScrollMark>,
+    /// The pictures in view, from the last snapshot.
+    images: Vec<r::ImageView>,
 }
 
 /// What `prepare` did, for logs and tests.
@@ -83,6 +85,7 @@ impl PaneRenderer {
             labelled: Vec::new(),
             find_lines: Vec::new(),
             marks: Vec::new(),
+            images: Vec::new(),
         })
     }
 
@@ -223,6 +226,9 @@ impl PaneRenderer {
     pub fn prepare(&mut self, term: &FairMutex<TerminalCore>) -> Prepared {
         let dirty = {
             let mut core = term.lock();
+            // Programs ask for the cell size in pixels (`CSI 16 t`, `CSI 14 t`) to size pictures; the font decides it.
+            let m = self.renderer.metrics();
+            core.set_cell_size_px(u16::try_from(m.width).unwrap_or(u16::MAX), u16::try_from(m.height).unwrap_or(u16::MAX));
             core.flush_expired_sync(Instant::now());
             if core.take_dirty() {
                 core.snapshot(&mut self.snapshot);
@@ -236,6 +242,7 @@ impl PaneRenderer {
         if dirty {
             view::fill_cells(&self.snapshot, &mut self.cells);
             view::selection_spans(&self.snapshot, &mut self.selection);
+            view::images(&self.snapshot, &mut self.images);
         }
         if self.snapshot.columns == 0 || (!dirty && !self.force_draw) {
             return Prepared::default();
@@ -280,6 +287,7 @@ impl PaneRenderer {
             scrollbar,
             marks: &self.marks,
             sticky_header: sticky,
+            images: &self.images,
         };
         let started = Instant::now();
         let stats = self.renderer.update_pane(&mut self.state, &grid);

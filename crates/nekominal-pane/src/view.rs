@@ -12,6 +12,23 @@ use nekominal_term::{
     alacritty_terminal::{term::cell::Flags, vte::ansi::CursorShape},
 };
 
+/// The pictures in view (Sixel, kitty graphics), as the renderer takes them: the pixels are shared, not copied.
+pub fn images(snapshot: &Snapshot, out: &mut Vec<r::ImageView>) {
+    out.clear();
+    out.extend(snapshot.images.iter().map(|image| r::ImageView {
+        key: image.key,
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels.clone(),
+        src: image.src,
+        row: image.row,
+        col: image.column,
+        offset: image.offset,
+        cells: image.cells,
+        z: image.z,
+    }));
+}
+
 /// The scrollbar of a pane: only while the view is scrolled up from the bottom, or while the find bar has matches to
 /// mark, so that it never covers the last column at the prompt. None without a scrollback.
 pub fn scrollbar(snapshot: &Snapshot, finding: bool) -> Option<r::Scrollbar> {

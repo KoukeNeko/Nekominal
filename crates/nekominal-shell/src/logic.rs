@@ -1180,6 +1180,8 @@ pub fn core_config(settings: &Settings) -> CoreConfig {
         kitty_keyboard: settings.keyboard.kitty_protocol,
         sticky_header: settings.sticky_header,
         triggers: crate::triggers::rules(&settings.triggers),
+        // Says Sixel, so programs that draw pictures (chafa, timg, yazi) use it.
+        da1_reply: Some(nekominal_term::DA1_WITH_SIXEL.to_owned()),
         ..CoreConfig::default()
     }
 }
