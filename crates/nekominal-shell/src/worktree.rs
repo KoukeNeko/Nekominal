@@ -306,7 +306,15 @@ pub fn remove(status: &Status, force: bool, delete_branch: bool) -> Result<Optio
         args.push("--force".into());
     }
     args.push(status.path.clone().into());
-    git(&root, args).map_err(Error::Git)?;
+    if let Err(said) = git(&root, args) {
+        // A folder a process still has as its working directory: git removed the files and the worktree, then failed on
+        // the folder itself. The worktree is gone (its `.git` file with it), so the branch goes on as asked; the empty
+        // folder stays while the process holds it.
+        if status.path.join(".git").exists() {
+            return Err(Error::Git(said));
+        }
+        let _ = std::fs::remove_dir(&status.path);
+    }
     match &status.branch {
         Some(branch) if delete_branch => Ok(git(&root, ["branch", if force { "-D" } else { "-d" }, branch]).err()),
         _ => Ok(None),
@@ -489,6 +497,24 @@ mod tests {
         let merged = create(&repo, "agent/three").unwrap();
         assert_eq!(remove(&inspect(&merged).unwrap(), false, true), Ok(None));
         assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/three"]).is_err(), "a merged branch goes");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The shell of a pane that has not exited yet: Windows keeps a folder that is a process's working directory.
+    #[test]
+    fn a_worktree_a_process_still_sits_in_loses_its_branch_as_asked() {
+        let Some((base, repo)) = temp_repo("held") else { return };
+        let made = create(&repo, "agent/held").unwrap();
+        let status = inspect(&made).unwrap();
+        // ping, not cmd running it: killing cmd would leave its ping in the folder.
+        let mut shell = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).current_dir(&made).creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
+        let removed = remove(&status, false, true);
+        shell.kill().unwrap();
+        shell.wait().unwrap();
+        assert_eq!(removed, Ok(None), "git removed the worktree and only failed on the folder itself");
+        assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/held"]).is_err(), "the branch goes as asked");
+        assert!(!git(&repo, ["worktree", "list"]).unwrap().contains("agent/held"));
+        assert!(std::fs::read_dir(&made).map_or(true, |mut entries| entries.next().is_none()), "at most an empty folder is left");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

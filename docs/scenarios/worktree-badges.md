@@ -58,7 +58,7 @@ when git is not on the PATH; nothing here uses the network.
 | Remove with the branch, branch merged | Folder and branch go | `a_dirty_worktree_is_refused_until_clean_then_removed_with_its_merged_branch` |
 | Remove with the branch, branch not merged | Folder goes, `git branch -d` keeps the branch and what git said is returned | same |
 | Archive | Folder goes, branch and its commits stay | `an_archive_keeps_the_branch_and_refuses_changes` |
-| A process (a pane's shell) still has the folder as its working directory | git removes the files and the worktree, then fails on the folder; the branch still goes as asked and the empty folder is removed once it can be | `a_worktree_a_process_still_sits_in_loses_its_branch_as_asked` |
+| A process (a pane's shell) still has the folder as its working directory | git removes the files and the worktree, then fails on the folder; the branch still goes as asked; the empty folder stays while the process holds it | `a_worktree_a_process_still_sits_in_loses_its_branch_as_asked` |
 | git fails | The last line git wrote (the `fatal:` line, not the progress before it) | `git_failures_report_the_last_line_git_wrote` |
 | git fails in another language | The line is passed on as git wrote it | Not testable automatically: the language of git follows `LANG`/`LC_ALL`, which are process-wide and would change every test running beside it; the extraction is the same as above |
 | git is not on the PATH | Every call is `Error::NotRepo` ("not a git repository (or git is not installed)") | Not testable automatically: `PATH` is process-wide, and the tests run in parallel; every git test skips itself instead |
