@@ -210,11 +210,17 @@ pub fn parse_porcelain(text: &str) -> (usize, usize) {
 
 /// The files of `git status --porcelain` with the letter of their state: the first of the two columns that is set, `?` for
 /// a file not tracked. Read after `git` trims the output, which takes the leading space of the first line.
+///
+/// git puts a path with a space in quotes (`"my file.txt"`, and each side of a rename); they are taken off. The escapes
+/// inside such quotes are for `"`, `\` and control characters, none of which a Windows file name holds, nor the `>` of
+/// the ` -> ` of a rename.
 pub fn parse_files(text: &str) -> Vec<(char, String)> {
+    let unquote = |path: &str| path.strip_prefix('"').and_then(|p| p.strip_suffix('"')).unwrap_or(path).to_owned();
     text.lines()
         .filter_map(|line| {
             let (code, path) = line.trim_start().split_once(' ')?;
-            Some((code.chars().next()?, path.trim_start().to_owned()))
+            let path = path.trim_start().split(" -> ").map(unquote).collect::<Vec<_>>().join(" -> ");
+            Some((code.chars().next()?, path))
         })
         .collect()
 }
@@ -386,6 +392,14 @@ mod tests {
     fn porcelain_files_keep_their_state_letter_and_path() {
         let files = parse_files("M a.rs\n M b.rs\nA  c.rs\nR  d -> e\n?? 新.txt\n\n");
         let expected = [('M', "a.rs"), ('M', "b.rs"), ('A', "c.rs"), ('R', "d -> e"), ('?', "新.txt")];
+        assert_eq!(files, expected.map(|(c, p)| (c, p.to_owned())));
+    }
+
+    #[test]
+    fn porcelain_paths_lose_the_quotes_git_puts_around_spaces() {
+        // What git 2.56 writes for these, with core.quotePath=false.
+        let files = parse_files("?? \"my file.txt\"\nR  \"old name.rs\" -> \"new name.rs\"\nR  a.rs -> \"b c.rs\"\n M 金.txt");
+        let expected = [('?', "my file.txt"), ('R', "old name.rs -> new name.rs"), ('R', "a.rs -> b c.rs"), ('M', "金.txt")];
         assert_eq!(files, expected.map(|(c, p)| (c, p.to_owned())));
     }
 
