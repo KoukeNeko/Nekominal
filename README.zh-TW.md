@@ -65,7 +65,8 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - **手機通知。** 原本會跳出 Windows 通知的事件，也可以在你不在電腦前（或一律）時傳到 ntfy 主題或任何 https webhook，
   可以選擇要傳哪些事件。
 - **標題列上的 Claude Code。** 在你沒有自己的 status line 時，Nekominal 會交給 Claude Code 一個自己的 status line，
-  並顯示模型、context 用量、費用與時間，還有分支與資料夾。
+  另外再加上 hooks，並顯示模型、context 用量、費用與時間，還有分支與資料夾。用你自己或外掛的 status line 時，
+  hooks 仍會從工作階段的對話紀錄取得模型與 context 用量。
 - **Codex、Gemini CLI 與 Aider 也一樣。** 在 PowerShell 分頁輸入它們時，Nekominal 只在這次執行交給它們自己的 hook
   （不寫入它們的設定檔，你已經自己設定該 hook 時也不會取代），分頁就會顯示工作中、等待或已完成。
 - **代理程式面板（Ctrl+Shift+J）。** 列出每個視窗中執行 agent 的窗格：狀態、時間、模型、context 與費用，

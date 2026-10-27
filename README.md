@@ -67,8 +67,9 @@ allow. Large and multi-line pastes ask first.
   running, draft, merged), and every port its programs listen on. A click opens the PR or `localhost` (`gh` for the PR).
 - **Phone notifications.** What would raise a Windows notification can also go to an ntfy topic or any https webhook,
   while you are away from the PC or always, for the events you pick.
-- **Claude Code in the title bar.** Nekominal hands Claude Code a status line of its own (only when you have none), and shows
-  the model, the context meter, the cost and the time, with the branch and the folder.
+- **Claude Code in the title bar.** Nekominal hands Claude Code a status line of its own (only when you have none) and hooks,
+  and shows the model, the context meter, the cost and the time, with the branch and the folder. With your own status line
+  or a plugin's, the hooks still give the model and the context, read from the session's transcript.
 - **Codex, Gemini CLI and Aider too.** Typed in a PowerShell tab, each gets Nekominal as its hook for that run (never written
   to its own config, and not where you set that hook yourself), so its tab says when it works, waits or is done.
 - **Agents panel (Ctrl+Shift+J).** Every pane that runs an agent, in every window: its state, time, model, context and cost,
