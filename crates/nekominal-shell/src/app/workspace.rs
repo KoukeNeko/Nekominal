@@ -39,18 +39,47 @@ fn read_layouts() -> workspaces::Layouts {
     layouts
 }
 
-/// The names of the saved layouts, in the order `App::layout_action` counts them in.
+/// The names of the saved layouts, in their order.
 pub(super) fn layout_names() -> Vec<String> {
     read_layouts().into_keys().collect()
 }
 
-/// Changes the saved layouts with `change` and writes them. A file a newer version wrote is left as it is.
-fn write_layouts(change: impl FnOnce(&mut workspaces::Layouts)) -> Result<(), String> {
-    let path = workspaces::path().ok_or("APPDATA is not set")?;
-    if store::load(&path).ok().flatten().is_some_and(|text| session::written_by_newer(&text)) {
+thread_local! {
+    /// The names the rows of the palette were made from: a row holds a place among them, and the file may change while
+    /// the palette is open.
+    static PALETTE_LAYOUTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The names of the saved layouts for the rows of the palette, kept for `App::palette_layout_action` to find by place.
+pub(super) fn palette_layout_names() -> Vec<String> {
+    let names = layout_names();
+    PALETTE_LAYOUTS.with(|kept| kept.borrow_mut().clone_from(&names));
+    names
+}
+
+/// The layouts in the file as it was `loaded`, to be changed and written back; refused (the reason) when writing would
+/// lose some: a file that cannot be read, that is not whole (each layout it drops would go), or that a newer version wrote.
+/// The same rule as the settings: a file the user is in the middle of editing is not replaced.
+fn layouts_to_change(path: &std::path::Path, loaded: std::io::Result<Option<String>>) -> Result<workspaces::Layouts, String> {
+    let text = match loaded {
+        Ok(Some(text)) if !text.trim().is_empty() => text,
+        Ok(_) => return Ok(workspaces::Layouts::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if session::written_by_newer(&text) {
         return Err(format!("{} was written by a newer version", path.display()));
     }
-    let mut layouts = read_layouts();
+    let (layouts, problems) = workspaces::parse(&text);
+    match problems.first() {
+        Some(problem) => Err(format!("{}: {problem}", path.display())),
+        None => Ok(layouts),
+    }
+}
+
+/// Changes the saved layouts with `change` and writes them, unless that would lose layouts (`layouts_to_change`).
+fn write_layouts(change: impl FnOnce(&mut workspaces::Layouts)) -> Result<(), String> {
+    let path = workspaces::path().ok_or("APPDATA is not set")?;
+    let mut layouts = layouts_to_change(&path, store::load(&path))?;
     change(&mut layouts);
     store::save(&path, &workspaces::to_json(&layouts)).map_err(|e| e.to_string())
 }
@@ -273,9 +302,18 @@ impl App {
         self.open_entry(Entry::SaveLayout, String::new());
     }
 
-    /// An entry of a saved layout was chosen: `index` is its place among the names, read again from the file.
-    pub(super) fn layout_action(&mut self, action: LayoutAction, index: usize) {
-        let Some((name, layout)) = read_layouts().into_iter().nth(index) else { return };
+    /// A row of a saved layout was chosen in the palette: `index` is its place among the names its rows were made from.
+    pub(super) fn palette_layout_action(&mut self, action: LayoutAction, index: usize) {
+        if let Some(name) = PALETTE_LAYOUTS.with(|kept| kept.borrow().get(index).cloned()) {
+            self.layout_action(action, &name);
+        }
+    }
+
+    /// An entry of the saved layout `name` was chosen, by its name: a place among the names, read again from a file
+    /// changed meanwhile, could be another layout's. Nothing when it is gone.
+    pub(super) fn layout_action(&mut self, action: LayoutAction, name: &str) {
+        let Some(layout) = read_layouts().remove(name) else { return };
+        let name = name.to_owned();
         match action {
             LayoutAction::Open => {
                 self.open_session(&layout);
@@ -427,5 +465,24 @@ impl App {
                 maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layouts_that_cannot_be_read_or_are_not_whole_are_not_rewritten_and_none_is_a_fresh_start() {
+        let path = std::path::Path::new(r"C:\x\layouts.json");
+        let good = r#"{ "version": 1, "layouts": { "good": { "version": 1, "tabs": [ { "layout": { "profile": "cmd" } } ] } } }"#;
+        assert_eq!(layouts_to_change(path, Ok(Some(good.to_owned()))).unwrap().keys().collect::<Vec<_>>(), ["good"]);
+        assert!(layouts_to_change(path, Ok(None)).unwrap().is_empty(), "no file");
+        assert!(layouts_to_change(path, Ok(Some(" \r\n".to_owned()))).unwrap().is_empty(), "an empty file holds nothing to lose");
+        assert!(layouts_to_change(path, Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))).is_err(), "not text");
+        assert!(layouts_to_change(path, Ok(Some("{ \"layouts\": ".to_owned()))).is_err(), "half written: not JSON");
+        let one_bad = r#"{ "version": 1, "layouts": { "bad": { "version": 1, "tabs": "no" }, "good": { "version": 1, "tabs": [ { "layout": { "profile": "cmd" } } ] } } }"#;
+        let refused = layouts_to_change(path, Ok(Some(one_bad.to_owned()))).unwrap_err();
+        assert!(refused.contains("layouts.json") && refused.contains("bad"), "{refused}");
     }
 }

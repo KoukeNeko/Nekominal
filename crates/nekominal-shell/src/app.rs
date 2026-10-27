@@ -3556,7 +3556,7 @@ impl App {
         let tabs: Vec<PaletteTab> = (0..self.tabs.len()).map(|i| PaletteTab { id: i as u32, title: self.tab_label(i) }).collect();
         let mut items = palette::items(self.language(), &self.keymap, &self.profiles, &tabs, &self.settings.schemes);
         items.extend(palette::snippet_items(self.language(), &self.settings.snippets));
-        let layouts = workspace::layout_names();
+        let layouts = workspace::palette_layout_names();
         items.extend(palette::layout_items(self.language(), &layouts.iter().map(String::as_str).collect::<Vec<_>>()));
         palette::search(items, query)
             .into_iter()
@@ -4130,8 +4130,13 @@ impl App {
                 let name = self.page.as_ref().and_then(|page| page.layouts.get(i)).cloned();
                 self.start_profile_edit(settings_page::LAYOUT_NAME_ID, name, i);
             }
-            Part::LayoutOpen(i) => self.layout_action(nekominal_model::palette::LayoutAction::Open, i),
-            Part::LayoutDelete(i) => self.layout_action(nekominal_model::palette::LayoutAction::Delete, i),
+            // By the name the page shows at `i`, which the file may no longer have there.
+            Part::LayoutOpen(i) | Part::LayoutDelete(i) => {
+                let action = if matches!(part, Part::LayoutOpen(_)) { nekominal_model::palette::LayoutAction::Open } else { nekominal_model::palette::LayoutAction::Delete };
+                if let Some(name) = self.page.as_ref().and_then(|page| page.layouts.get(i)).cloned() {
+                    self.layout_action(action, &name);
+                }
+            }
             _ => {}
         }
         if let Some(page) = self.page.as_mut() {
@@ -5539,7 +5544,7 @@ impl App {
                     self.entered(entry, &text);
                 }
             }
-            Some(popup::Action::Layout(action, index)) => self.layout_action(action, index),
+            Some(popup::Action::Layout(action, index)) => self.palette_layout_action(action, index),
             Some(popup::Action::Agent { window, tab, pane }) => self.show_agent(window, tab, pane),
             Some(popup::Action::Suggestion(index)) => {
                 if let Some((_, input)) = suggestions.as_ref().and_then(|list| list.get(index)) {
