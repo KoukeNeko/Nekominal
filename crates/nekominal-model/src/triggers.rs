@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::settings::{boolean, text, Expected, Problems};
+use crate::strings::{Lang, Text};
 use crate::themes::Color;
 
 /// The most triggers read: every line of output runs through all of them.
@@ -95,20 +96,97 @@ pub(crate) fn read(source: &Map<String, Value>, problems: &mut Problems) -> Vec<
     triggers
 }
 
-fn read_one(map: &Map<String, Value>, path: &str, problems: &mut Problems) -> Option<Trigger> {
-    let pattern = text(map, "pattern", "", path, problems);
+/// Why `pattern` cannot be the pattern of a trigger, if it cannot: empty, too long, or not a regular expression.
+pub fn pattern_problem(pattern: &str) -> Option<Expected> {
     if pattern.is_empty() {
-        problems.fail(path, "pattern", Expected::Required);
-        return None;
+        return Some(Expected::Required);
     }
     if pattern.chars().count() > MAX_PATTERN_CHARS {
-        problems.fail(path, "pattern", Expected::MostChars(MAX_PATTERN_CHARS));
-        return None;
+        return Some(Expected::MostChars(MAX_PATTERN_CHARS));
     }
-    if let Err(error) = regex::Regex::new(&pattern) {
-        // The parser's message draws the pattern with a caret over several lines; its last line says what is wrong.
-        let error = error.to_string();
-        problems.fail(path, "pattern", Expected::Regex(error.lines().last().unwrap_or_default().trim().to_owned()));
+    // The parser's message draws the pattern with a caret over several lines; its last line says what is wrong.
+    regex::Regex::new(pattern).err().map(|error| Expected::Regex(error.to_string().lines().last().unwrap_or_default().trim().to_owned()))
+}
+
+/// Where `pattern` matches each of `lines`, as byte ranges: what the form of a rule shows of the last lines of the pane.
+/// A pattern that is not valid matches nothing.
+pub fn sample_hits(pattern: &str, lines: &[String]) -> Vec<Vec<(usize, usize)>> {
+    let regex = pattern_problem(pattern).is_none().then(|| regex::Regex::new(pattern).ok()).flatten();
+    lines.iter().map(|line| regex.as_ref().map_or_else(Vec::new, |regex| regex.find_iter(line).filter(|m| !m.is_empty()).map(|m| (m.start(), m.end())).collect())).collect()
+}
+
+/// The colours a highlight is chosen from on the settings page, the default first.
+pub const HIGHLIGHTS: [&str; 5] = [DEFAULT_HIGHLIGHT, "#7a1f2b", "#1f4f7a", "#2b6b3a", "#5b2b7a"];
+
+/// The ready-made rules the settings page adds, by their names.
+pub const PRESETS: [Text; 4] = [Text::TriggerPresetErrors, Text::TriggerPresetTests, Text::TriggerPresetDeploy, Text::TriggerPresetPassword];
+
+/// The ready-made rule at `index` of [`PRESETS`], named in `lang`.
+pub fn preset(index: usize, lang: Lang) -> Option<Trigger> {
+    let (pattern, action, instant) = match index {
+        0 => (r"error(\[E\d+\])?:", Action::Highlight { color: HIGHLIGHTS[1].to_owned() }, false),
+        1 => ("test result: FAILED", Action::Badge, false),
+        2 => (r"(?i)deploy(ment)? (complete|finished|succeeded)", Action::Notify { text: "$0".to_owned() }, false),
+        // A password prompt waits on its own line without a line break.
+        3 => (r"(?i)password( for [^:]+)?:\s*$", Action::Bell, true),
+        _ => return None,
+    };
+    Some(Trigger { name: PRESETS[index].get(lang).to_owned(), pattern: pattern.to_owned(), enabled: true, action, program: None, instant })
+}
+
+impl Action {
+    /// The actions in the order the settings page offers them.
+    pub fn index(&self) -> usize {
+        match self {
+            Action::Highlight { .. } => 0,
+            Action::Notify { .. } => 1,
+            Action::Badge => 2,
+            Action::Send { .. } => 3,
+            Action::Bell => 4,
+        }
+    }
+
+    /// The action at `index` of [`Action::index`], as it starts when it is chosen.
+    pub fn at(index: usize) -> Option<Action> {
+        Some(match index {
+            0 => Action::Highlight { color: DEFAULT_HIGHLIGHT.to_owned() },
+            1 => Action::Notify { text: "$0".to_owned() },
+            2 => Action::Badge,
+            // The answer most prompts take; a send needs text, and starts not allowed to send.
+            3 => Action::Send { text: "y\r".to_owned(), allow_send: false },
+            4 => Action::Bell,
+            _ => return None,
+        })
+    }
+}
+
+impl Trigger {
+    /// Whether the rule acts: on, and a send also allowed to send.
+    pub fn is_on(&self) -> bool {
+        self.enabled && !matches!(self.action, Action::Send { allow_send: false, .. })
+    }
+
+    /// Turns the rule on or off: the switch of a send rule is also what allows it to send.
+    pub fn turn(&mut self, on: bool) {
+        self.enabled = on;
+        if let Action::Send { allow_send, .. } = &mut self.action {
+            *allow_send = on;
+        }
+    }
+
+    /// Changes what the rule does; a send starts off, so that it never types into a program before the user says so.
+    pub fn set_action(&mut self, action: Action) {
+        if matches!(action, Action::Send { .. }) && !matches!(self.action, Action::Send { .. }) {
+            self.enabled = false;
+        }
+        self.action = action;
+    }
+}
+
+fn read_one(map: &Map<String, Value>, path: &str, problems: &mut Problems) -> Option<Trigger> {
+    let pattern = text(map, "pattern", "", path, problems);
+    if let Some(problem) = pattern_problem(&pattern) {
+        problems.fail(path, "pattern", problem);
         return None;
     }
     let action = match map.get("action").and_then(Value::as_str) {
@@ -207,7 +285,40 @@ impl SendGuard {
 mod tests {
     use super::*;
     use crate::settings::{parse, serialize};
-    use crate::strings::Lang;
+
+    #[test]
+    fn a_pattern_is_checked_as_the_file_checks_it_and_matches_the_sample_lines() {
+        assert_eq!(pattern_problem(""), Some(Expected::Required));
+        assert!(matches!(pattern_problem("(unclosed"), Some(Expected::Regex(_))));
+        assert_eq!(pattern_problem(&"a".repeat(MAX_PATTERN_CHARS + 1)), Some(Expected::MostChars(MAX_PATTERN_CHARS)));
+        assert_eq!(pattern_problem(r"Do you want to (proceed|make this edit)"), None);
+        let lines = ["  Do you want to proceed?".to_owned(), "nothing here".to_owned()];
+        assert_eq!(sample_hits("Do you want to (proceed|make this edit)", &lines), [vec![(2, 24)], vec![]]);
+        assert_eq!(sample_hits("(unclosed", &lines), [vec![], vec![]], "a bad pattern matches nothing");
+        assert_eq!(sample_hits("x*", &lines), [vec![], vec![]], "an empty match marks nothing");
+    }
+
+    #[test]
+    fn the_presets_are_valid_rules_and_a_send_starts_off_until_its_switch_allows_it() {
+        for index in 0..PRESETS.len() {
+            let rule = preset(index, Lang::ZhTw).unwrap();
+            assert_eq!(pattern_problem(&rule.pattern), None, "{}", rule.name);
+            assert!(rule.is_on());
+        }
+        assert!(preset(PRESETS.len(), Lang::EnUs).is_none());
+        let mut rule = preset(1, Lang::EnUs).unwrap();
+        rule.set_action(Action::at(3).unwrap());
+        assert!(!rule.enabled && !rule.is_on(), "a rule that becomes a send is off");
+        rule.turn(true);
+        assert_eq!(rule.action, Action::Send { text: "y\r".into(), allow_send: true });
+        assert!(rule.is_on());
+        rule.enabled = true;
+        rule.action = Action::Send { text: "y\r".into(), allow_send: false };
+        assert!(!rule.is_on(), "on but not allowed to send does nothing");
+        for index in 0..5 {
+            assert_eq!(Action::at(index).unwrap().index(), index);
+        }
+    }
 
     #[test]
     fn a_trigger_is_read_with_its_defaults_and_written_back_the_same() {
