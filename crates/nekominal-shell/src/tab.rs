@@ -63,6 +63,8 @@ pub struct PaneEntry {
     /// The scheme and the font size of its profile, when the profile sets its own.
     pub scheme: Option<String>,
     pub font_size: Option<f64>,
+    /// What the send triggers of the pane sent lately (`triggers.rs`).
+    pub sends: nekominal_model::triggers::SendGuard,
 }
 
 impl Drop for PaneEntry {

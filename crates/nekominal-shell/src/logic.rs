@@ -1179,6 +1179,7 @@ pub fn core_config(settings: &Settings) -> CoreConfig {
         scrollback_lines: settings.scrollback as usize,
         kitty_keyboard: settings.keyboard.kitty_protocol,
         sticky_header: settings.sticky_header,
+        triggers: crate::triggers::rules(&settings.triggers),
         ..CoreConfig::default()
     }
 }
