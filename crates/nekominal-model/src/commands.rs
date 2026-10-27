@@ -97,6 +97,8 @@ pub enum Command {
     AppImportItermColors,
     /// Makes a git worktree on a new branch beside the repository of the focused pane, and opens a tab in it.
     TabNewWorktree,
+    /// Removes the git worktree of the focused pane and its branch when merged; never the main checkout or one with changes.
+    TabRemoveWorktree,
     /// Keeps the tabs of the window under a name, for the palette to open again (`workspaces`).
     AppSaveLayout,
     AppearanceBackdropNext,
@@ -188,6 +190,7 @@ impl Command {
         Command::AppImportSchemes,
         Command::AppImportItermColors,
         Command::TabNewWorktree,
+        Command::TabRemoveWorktree,
         Command::AppSaveLayout,
         Command::AppearanceBackdropNext,
         Command::AppearanceOpacityUp,
@@ -279,6 +282,7 @@ impl Command {
             Command::AppImportSchemes => "app.importSchemes",
             Command::AppImportItermColors => "app.importItermColors",
             Command::TabNewWorktree => "tab.newWorktree",
+            Command::TabRemoveWorktree => "tab.removeWorktree",
             Command::AppSaveLayout => "app.saveLayout",
             Command::AppearanceBackdropNext => "appearance.backdrop.next",
             Command::AppearanceOpacityUp => "appearance.opacity.up",
@@ -370,6 +374,7 @@ impl Command {
             Command::AppImportSchemes => Text::AppImportSchemes,
             Command::AppImportItermColors => Text::AppImportItermColors,
             Command::TabNewWorktree => Text::TabNewWorktree,
+            Command::TabRemoveWorktree => Text::TabRemoveWorktree,
             Command::AppSaveLayout => Text::AppSaveLayout,
             Command::AppearanceBackdropNext => Text::AppearanceBackdropNext,
             Command::AppearanceOpacityUp => Text::AppearanceOpacityUp,
@@ -461,6 +466,7 @@ impl Command {
             | Command::AppImportSchemes
             | Command::AppImportItermColors
             | Command::TabNewWorktree
+            | Command::TabRemoveWorktree
             | Command::AppSaveLayout
             | Command::AppearanceBackdropNext
             | Command::AppearanceOpacityUp
@@ -653,9 +659,10 @@ mod tests {
             Command::AppSaveLayout => 65,
             Command::EditSearchTabs => 66,
             Command::ViewAgents => 67,
+            Command::TabRemoveWorktree => 68,
         }
     }
-    const VARIANTS: usize = 68;
+    const VARIANTS: usize = 69;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

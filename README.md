@@ -66,7 +66,10 @@ allow. Large and multi-line pastes ask first.
   tab and raised to the taskbar when the window is in the background.
 - **A tab in a new git worktree.** Type a branch name in the palette: Nekominal runs `git worktree add` beside the
   repository (branch `fix/login` of `app` goes to `app-fix-login`) and opens a tab there named after the branch, so each
-  agent has files of its own.
+  agent has files of its own. The ignored files that a `.worktreeinclude` at the root names (one `.gitignore` pattern a
+  line, such as `.env`) are copied into it, and the tab starts by running `.nekominal\setup.ps1` (or
+  `.nekominal\setup.cmd`) when the repository has one. "Remove this worktree" removes the worktree of the focused pane
+  and its branch if merged, and refuses for the main checkout or while it has changes not committed.
 
 ### Commands and their output
 

@@ -126,10 +126,9 @@ impl App {
     fn open_worktree_tab(&mut self, folder: &str, branch: &str) {
         let path = match crate::worktree::create(std::path::Path::new(folder), branch) {
             Ok(path) => path.display().to_string(),
-            Err(crate::worktree::Error::NotRepo) => return self.inform(Text::WorktreeNotRepo.get(self.language()).to_owned()),
-            Err(crate::worktree::Error::Git(said)) => {
-                util::log(&format!("worktree {branch} in {folder}: {said}"));
-                return self.inform(Text::WorktreeFailed.format(self.language(), &[&said]));
+            Err(e) => {
+                util::log(&format!("worktree {branch} in {folder}: {e:?}"));
+                return self.inform(self.worktree_error(Text::WorktreeFailed, e));
             }
         };
         util::log(&format!("worktree {branch}: {path}"));
@@ -142,6 +141,10 @@ impl App {
         match Tab::new(|id| self.make_entry_with(id, size, &profile, Some(&path))) {
             Ok(mut tab) => {
                 tab.name = Some(branch.to_owned());
+                // Typed before the shell is up: the console keeps it until the shell reads its first line.
+                if let (Some(setup), Some(entry)) = (crate::worktree::setup_command(std::path::Path::new(&path)), tab.focused_entry()) {
+                    entry.pane.send_text(&format!("{setup}\r"));
+                }
                 self.tabs.push(tab);
                 self.selected = self.tabs.len() - 1;
                 self.relayout();
@@ -149,6 +152,89 @@ impl App {
                 self.redraw();
             }
             Err(e) => util::log(&format!("worktree tab: {e}")),
+        }
+    }
+
+    /// The panes of the window whose folder is in the worktree at `path`, by the uid of their tab.
+    fn panes_in(&self, path: &std::path::Path) -> Vec<(u64, PaneId)> {
+        let inside = |entry: &&PaneEntry| entry.cwd.as_deref().is_some_and(|cwd| crate::worktree::contains(path, cwd));
+        self.tabs.iter().flat_map(|tab| tab.panes.iter().filter(inside).map(|entry| (tab.uid, entry.id))).collect()
+    }
+
+    /// "Remove this worktree": what the worktree of the focused pane holds, and the question whether to remove it, or why not.
+    // shortcut: the notice and confirm dialogs stand in for the remove/archive UI still being designed.
+    pub(super) fn ask_remove_worktree(&mut self) {
+        let lang = self.language();
+        let Some(cwd) = self.focused().and_then(|entry| entry.cwd.clone()) else {
+            return self.inform(Text::WorktreeNotRepo.get(lang).to_owned());
+        };
+        let status = match crate::worktree::inspect(std::path::Path::new(&cwd)) {
+            Ok(status) => status,
+            Err(e) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, e)),
+        };
+        if let Err(refusal) = crate::worktree::check_archive(&status) {
+            return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal)));
+        }
+        let default = status.default_branch.clone().unwrap_or_default();
+        let merged = match status.merged {
+            Some(true) => Text::WorktreeMerged.format(lang, &[&default]),
+            Some(false) => Text::WorktreeNotMerged.format(lang, &[&default]),
+            None => Text::WorktreeMergeUnknown.get(lang).to_owned(),
+        };
+        let unpushed = status.unpushed.map_or("?".to_owned(), |n| n.to_string());
+        let path = status.path.display().to_string();
+        let mut title = Text::DialogRemoveWorktree.format(lang, &[&path, &status.branch.clone().unwrap_or_default(), &unpushed, &merged]);
+        let mut tabs: Vec<u64> = self.panes_in(&status.path).into_iter().map(|(uid, _)| uid).collect();
+        tabs.dedup();
+        if !tabs.is_empty() {
+            let names: Vec<String> = tabs.iter().filter_map(|uid| self.tabs.iter().position(|tab| tab.uid == *uid)).map(|i| self.tab_label(i)).collect();
+            title = format!("{title} {}", Text::WorktreeClosesTabs.format(lang, &[&names.join(", ")]));
+        }
+        self.confirm(title, Text::WorktreeRemove, Confirmation::RemoveWorktree(status.path));
+    }
+
+    /// Removes the worktree at `path` (asked by `ask_remove_worktree`): inspected again, as it may have changed since, then
+    /// the panes in it close, the folder goes, and the branch goes with it when it is merged.
+    pub(super) fn remove_worktree(&mut self, path: &std::path::Path) {
+        let lang = self.language();
+        let status = match crate::worktree::inspect(path) {
+            Ok(status) => status,
+            Err(e) => return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, e)),
+        };
+        if let Err(refusal) = crate::worktree::check_archive(&status) {
+            return self.inform(self.worktree_error(Text::WorktreeRemoveFailed, crate::worktree::Error::Refused(refusal)));
+        }
+        let panes = self.panes_in(&status.path);
+        for (uid, id) in &panes {
+            if let Some(index) = self.tabs.iter().position(|tab| tab.uid == *uid) {
+                self.close_pane(index, *id);
+            }
+        }
+        if !panes.is_empty() {
+            // shortcut: the shells of the closed panes end on another thread, and Windows keeps a folder that is a process's
+            // working directory; a fixed wait on the thread of the window, until the UI removes the folder after they exit.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        match crate::worktree::remove(&status, false, true) {
+            Ok(None) => util::log(&format!("worktree removed: {}", status.path.display())),
+            Ok(Some(said)) => self.inform(Text::WorktreeBranchKept.format(lang, &[&status.branch.unwrap_or_default(), &said])),
+            Err(e) => {
+                util::log(&format!("worktree {}: {e:?}", status.path.display()));
+                self.inform(self.worktree_error(Text::WorktreeRemoveFailed, e));
+            }
+        }
+    }
+
+    /// What to tell the user of `error`; `failed` holds what git said.
+    fn worktree_error(&self, failed: Text, error: crate::worktree::Error) -> String {
+        use crate::worktree::{Error, Refusal};
+        let lang = self.language();
+        match error {
+            Error::NotRepo => Text::WorktreeNotRepo.get(lang).to_owned(),
+            Error::Git(said) => failed.format(lang, &[&said]),
+            Error::Refused(Refusal::Main) => Text::WorktreeIsMain.get(lang).to_owned(),
+            Error::Refused(Refusal::Dirty { changed, untracked }) => Text::WorktreeDirty.format(lang, &[&changed, &untracked]),
+            Error::Refused(Refusal::Detached) => Text::WorktreeDetached.get(lang).to_owned(),
         }
     }
 

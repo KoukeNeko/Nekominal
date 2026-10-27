@@ -359,6 +359,8 @@ enum Confirmation {
     /// The tabs with these uids, closed together.
     CloseTabs(Vec<u64>),
     CloseWindow,
+    /// The git worktree at this path (`workspace.rs`).
+    RemoveWorktree(std::path::PathBuf),
     /// A notice: nothing to do when it closes.
     Notice,
 }
@@ -420,6 +422,7 @@ fn wired(command: Command) -> bool {
             | Command::AppImportSchemes
             | Command::AppImportItermColors
             | Command::TabNewWorktree
+            | Command::TabRemoveWorktree
             | Command::AppSaveLayout
             | Command::TabProfiles
             | Command::AppNewWindow
@@ -2120,6 +2123,7 @@ impl App {
             Command::AppImportSchemes => self.import_schemes(),
             Command::AppImportItermColors => self.import_itermcolors(),
             Command::TabNewWorktree => self.open_worktree_entry(),
+            Command::TabRemoveWorktree => self.ask_remove_worktree(),
             Command::AppSaveLayout => self.open_layout_entry(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
@@ -5454,6 +5458,7 @@ impl App {
                 Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
                 Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
+                Some(Confirmation::RemoveWorktree(path)) => self.remove_worktree(&path),
                 Some(Confirmation::Notice) | None => {}
             },
             Some(popup::Action::Cancel) => {},
