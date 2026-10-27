@@ -581,6 +581,10 @@ mod tests {
         ("appearance.tabBarDensity", "the tab strip has one density yet, so a row would change nothing"),
         ("paste.images", "the row waits for its approved design"),
         ("welcomed", "the welcome of the first start sets it; there is nothing to choose"),
+        ("notifications.push.url", "the push row waits for its approved design"),
+        ("notifications.push.kind", "the push row waits for its approved design"),
+        ("notifications.push.token", "the push row waits for its approved design"),
+        ("notifications.push.when", "the push row waits for its approved design"),
     ];
 
     /// The dotted path of every value of `json` that is not an object with members.
