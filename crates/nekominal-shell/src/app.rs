@@ -4107,16 +4107,9 @@ impl App {
                     page.cursor = textfield::Cursor::default();
                 }
             }
-            // Nothing to move to: a search that found nothing.
-            VK_UP | VK_DOWN if frame.entries.is_empty() => {}
             VK_UP | VK_DOWN => {
-                let last = frame.entries.len().saturating_sub(1);
-                let next = match (focus, vk_code == VK_DOWN) {
-                    (None, true) => 0,
-                    (None, false) => last,
-                    (Some(i), true) => (i + 1).min(last),
-                    (Some(i), false) => i.saturating_sub(1),
-                };
+                // Nothing to move to: a search that found nothing.
+                let Some(next) = settings_page::step_focus(&frame.entries, focus, vk_code == VK_DOWN) else { return true };
                 if let Some(page) = self.page.as_mut() {
                     page.focus = Some(next);
                     page.scroll = frame.reveal(next, page.scroll).clamp(0.0, frame.max_scroll());

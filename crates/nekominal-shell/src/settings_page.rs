@@ -413,6 +413,18 @@ pub fn enter_part(entry: &Entry) -> Option<Part> {
     }
 }
 
+/// The row the keyboard moves to from `focus`, down or up, over the headings: a heading has no plate to show it has the
+/// keyboard, nor anything to press. At either end it stays; None when there is no row.
+pub fn step_focus(entries: &[Entry], focus: Option<usize>, down: bool) -> Option<usize> {
+    let rows = || entries.iter().enumerate().filter(|(_, entry)| !matches!(entry, Entry::Heading(_))).map(|(i, _)| i);
+    match (focus, down) {
+        (None, true) => rows().next(),
+        (None, false) => rows().last(),
+        (Some(at), true) => rows().find(|i| *i > at).or_else(|| rows().last()),
+        (Some(at), false) => rows().filter(|i| *i < at).last().or_else(|| rows().next()),
+    }
+}
+
 /// What the About page says of the look for a newer version.
 pub fn update_note(check: &crate::update::Check, lang: Lang) -> String {
     use crate::update::Check;
@@ -2123,6 +2135,29 @@ mod tests {
             }
         });
         assert!(checked >= 8, "the rows that are buttons were on the pages: {checked}");
+    }
+
+    #[test]
+    fn the_keyboard_focus_skips_the_headings() {
+        let frame = frame(&Page { section: section_of(Section::Terminal), ..Page::default() }, &Settings::default());
+        let entries = &frame.entries;
+        let headings: Vec<usize> = entries.iter().enumerate().filter(|(_, e)| matches!(e, Entry::Heading(_))).map(|(i, _)| i).collect();
+        assert!(headings.len() >= 3, "the Terminal page has its headings");
+        // Down from the first row to the last, then up again: never on a heading, every other row once.
+        let mut seen = Vec::new();
+        let mut focus = None;
+        while let Some(next) = step_focus(entries, focus, true).filter(|next| Some(*next) != focus) {
+            seen.push(next);
+            focus = Some(next);
+        }
+        assert_eq!(seen.len(), entries.len() - headings.len());
+        assert!(seen.iter().all(|i| !headings.contains(i)));
+        assert_eq!(step_focus(entries, focus, true), focus, "the last row stays");
+        let up = step_focus(entries, Some(headings[1] + 1), false);
+        assert_eq!(up, Some(headings[1] - 1), "up over a heading to the row above it");
+        assert_eq!(step_focus(entries, Some(seen[0]), false), Some(seen[0]), "the first row stays");
+        assert_eq!(step_focus(&[], None, true), None, "a search that found nothing has no row");
+        assert_eq!(step_focus(&[Entry::Heading(Text::SettingsSnippetsHeading)], None, false), None);
     }
 
     #[test]
