@@ -714,6 +714,32 @@ fn option_button(items: &mut Vec<Item>, rect: Rect, part: Part, text: &str, chos
     item(items, rect, None, label(text, 13.0, if chosen { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
 }
 
+/// A switch, placed by `controls`, pressed on its own (`part`) or with its whole row (none); its rectangle.
+fn switch(items: &mut Vec<Item>, controls: &mut Controls, part: Option<Part>, on: bool, hover: bool) -> Rect {
+    let rect = controls.take(SWITCH.0, SWITCH.1);
+    item(items, rect, part, Visual::Plate(Fill::Switch { on, hover }), true);
+    rect
+}
+
+/// A number between a minus and a plus button, placed by `controls`; the rectangle of the minus button, the leftmost.
+fn stepper(items: &mut Vec<Item>, controls: &mut Controls, (minus, plus): (Part, Part), text: &str, tone: Tone, hover: Option<Part>) -> Rect {
+    glyph_button(items, controls.take(CONTROL, CONTROL), plus, '\u{E710}', hover);
+    // The number sits between the buttons with no gap of its own.
+    controls.right += GAP;
+    let value = controls.take(72.0, CONTROL);
+    controls.right += GAP;
+    item(items, value, None, label(text, 13.0, tone, false, Align::Center), true);
+    let rect = controls.take(CONTROL, CONTROL);
+    glyph_button(items, rect, minus, '\u{E738}', hover);
+    rect
+}
+
+/// A shortcut as a small chip of its own: pressed, it waits for the chord that takes its place.
+fn chip_button(items: &mut Vec<Item>, rect: Rect, part: Part, text: &str, hover: Option<Part>) {
+    item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
+    item(items, rect, None, label(text, 12.0, Tone::Quiet, false, Align::Center), true);
+}
+
 /// A square button with a glyph: add, delete, open, put back.
 fn glyph_button(items: &mut Vec<Item>, rect: Rect, part: Part, ch: char, hover: Option<Part>) {
     item(items, rect, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
@@ -790,8 +816,7 @@ fn trigger_entry(items: &mut Vec<Item>, page: &Page, view: &View, measure: &mut 
     // The line of the name opens and closes the form; a press on the form between its fields does nothing.
     item(items, Rect::new(head.x + INNER, head.y, (head.w - 2.0 * INNER).max(0.0), head.h), Some(Part::TriggerOpen(index)), label("", 13.0, Tone::Quiet, false, Align::Left), true);
     let mut controls = Controls::new(head);
-    let switch = controls.take(SWITCH.0, SWITCH.1);
-    item(items, switch, Some(Part::TriggerSwitch(index)), Visual::Plate(Fill::Switch { on: rule.is_on(), hover: hover == Some(Part::TriggerSwitch(index)) }), true);
+    switch(items, &mut controls, Some(Part::TriggerSwitch(index)), rule.is_on(), hover == Some(Part::TriggerSwitch(index)));
     let tag_text = action_text(&rule.action, lang);
     let tag = controls.take(measure(&tag_text, 12.0, false) + 18.0, 22.0);
     let look = match rule.action {
@@ -1039,8 +1064,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     let text = shortcut.to_string();
                     let chip = controls.take(measure(&text, 12.0, false) + 20.0, 24.0);
                     let part = Part::Chip(command, index);
-                    item(&mut items, chip, Some(part), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(part) }), true);
-                    item(&mut items, chip, None, label(text, 12.0, Tone::Quiet, false, Align::Center), true);
+                    chip_button(&mut items, chip, part, &text, hover);
                 }
                 glyph_button(&mut items, controls.take(RESET, RESET), Part::AddKey(command), '\u{E710}', hover);
                 // The reset button left of the shortcuts it puts back.
@@ -1052,7 +1076,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             Entry::Claude => {
                 let claude = view.claude;
                 let rect = Rect::new(x0, y, content_width, CLAUDE_ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, None, focus);
                 let mark = Rect::new(rect.x + INNER, rect.y + (rect.h - 28.0) / 2.0, 28.0, 28.0);
                 item(&mut items, mark, None, Visual::Program { path: claude.exe.clone(), mark: Mark::Badge { label: "C", color: (217, 119, 87) } }, true);
                 let text_x = mark.x + 28.0 + 2.0 * MARK_GAP;
@@ -1069,7 +1093,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
             Entry::About => {
                 use crate::update::Check;
                 let rect = Rect::new(x0, y, content_width, ABOUT_ROW - ROW_GAP);
-                item(&mut items, rect, None, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, None, focus);
                 let mark = Rect::new(rect.x + INNER, rect.y + 16.0, 36.0, 36.0);
                 item(&mut items, mark, None, Visual::Program { path: std::env::current_exe().ok(), mark: Mark::Badge { label: "N", color: (122, 162, 247) } }, true);
                 let text_x = mark.x + 36.0 + 2.0 * MARK_GAP;
@@ -1222,21 +1246,20 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let mid = y + (ROW - ROW_GAP - CONTROL) / 2.0;
                 // The plate goes under what the row holds; its height is known once they are placed.
                 let plate = items.len();
-                item(&mut items, Rect::new(x0, y, content_width, 0.0), (field == Field::Elevate).then_some(part), Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, Rect::new(x0, y, content_width, 0.0), (field == Field::Elevate).then_some(part), focus);
                 item(&mut items, Rect::new(x0 + INNER, y, room / 3.0, ROW - ROW_GAP), None, label(field.label().get(lang), 13.0, Tone::Text, false, Align::Left), true);
                 let mut height = ROW;
                 let error_of = |id: &str| page.error.filter(|(error_id, _)| *error_id == id).map(|(_, text)| text.get(lang));
                 match field {
                     Field::Elevate => {
-                        let switch = Rect::new(right - SWITCH.0, y + (ROW - ROW_GAP - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
                         let on = profile.is_some_and(|p| p.options.elevate);
-                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on, hover: hover == Some(part) }), true);
+                        switch(&mut items, &mut Controls::new(Rect::new(x0, y, content_width, ROW - ROW_GAP)), None, on, hover == Some(part));
                     }
                     Field::Scheme => {
                         // The window's scheme beside the label, then the schemes as tiles, as on the Appearance page.
                         let current = profile.and_then(|p| p.options.color_scheme.as_deref());
                         let text = Text::ProfileSameAsWindow.get(lang);
-                        let same = Rect::new(right - measure(text, 13.0, false) - 28.0, mid, measure(text, 13.0, false) + 28.0, CONTROL);
+                        let same = Controls::new(Rect::new(x0, y, content_width, ROW - ROW_GAP)).button(measure, text);
                         option_button(&mut items, same, Part::ProfileScheme(None), text, current.is_none(), hover);
                         let columns = (((room + TILE_GAP) / (TILE.0 + TILE_GAP)).floor() as usize).max(1);
                         let tile_w = ((room - TILE_GAP * (columns - 1) as f32) / columns as f32).max(0.0);
@@ -1251,18 +1274,11 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     Field::FontSize => {
                         // The number steps like the font size of the window; while the profile has none, the window's shows greyed.
                         let own = profile.and_then(|p| p.options.font_size);
-                        let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
-                        let value_box = Rect::new(plus.x - 72.0, mid, 72.0, CONTROL);
-                        let minus = Rect::new(value_box.x - CONTROL, mid, CONTROL, CONTROL);
-                        for (button, step, ch) in [(minus, Part::ProfileFont(false), '\u{E738}'), (plus, Part::ProfileFont(true), '\u{E710}')] {
-                            item(&mut items, button, Some(step), Visual::Plate(Fill::Button { selected: false, hover: hover == Some(step) }), true);
-                            item(&mut items, button, None, Visual::Glyph { ch, size: 11.0, tone: Tone::Text }, true);
-                        }
                         let size = own.unwrap_or(view.settings.font.size);
-                        item(&mut items, value_box, None, label(format!("{size:.0}"), 13.0, if own.is_some() { Tone::Text } else { Tone::Quiet }, false, Align::Center), true);
+                        let mut controls = Controls::new(Rect::new(x0, y, content_width, ROW - ROW_GAP));
+                        let minus = stepper(&mut items, &mut controls, (Part::ProfileFont(false), Part::ProfileFont(true)), &format!("{size:.0}"), if own.is_some() { Tone::Text } else { Tone::Quiet }, hover);
                         if own.is_some() {
-                            let reset = Rect::new(minus.x - GAP - RESET, y + (ROW - ROW_GAP - RESET) / 2.0, RESET, RESET);
-                            glyph_button(&mut items, reset, Part::ProfileFontReset, '\u{E777}', hover);
+                            glyph_button(&mut items, controls.take(RESET, RESET), Part::ProfileFontReset, '\u{E777}', hover);
                         } else {
                             let x = x0 + INNER + room / 3.0;
                             item(&mut items, Rect::new(x, y, (minus.x - GAP - x).max(0.0), ROW - ROW_GAP), None, label(Text::ProfileSameAsWindow.get(lang), 12.0, Tone::Quiet, false, Align::Right), true);
@@ -1270,7 +1286,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     }
                     Field::Env => {
                         let text = Text::ProfileAddVariable.get(lang);
-                        let add = Rect::new(right - measure(text, 13.0, false) - 40.0, mid, measure(text, 13.0, false) + 40.0, CONTROL);
+                        let add = Controls::new(Rect::new(x0, y, content_width, ROW - ROW_GAP)).take(measure(text, 13.0, false) + 40.0, CONTROL);
                         icon_button(&mut items, add, Part::EnvAdd, '\u{E710}', text, false, hover);
                         // A line a variable: its name, its value and the button that deletes it.
                         let mut line_y = y + ROW - ROW_GAP;
@@ -1371,7 +1387,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let value = (row.get)(view.settings);
                 // A toggle is pressed anywhere on its row.
                 let row_part = (applies && matches!(row.control, Control::Toggle)).then_some(Part::Toggle(id));
-                item(&mut items, rect, row_part, Visual::Plate(Fill::Row { focus }), true);
+                row_plate(&mut items, rect, row_part, focus);
                 // Beside its control the label has half the row, or less where the control is wider; a note under it, a
                 // sentence rather than a name, has all the room up to the control (and the reset button left of it).
                 let beside = rect.w - 2.0 * INNER - RESET_ROOM - control_width - GAP;
@@ -1389,9 +1405,8 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let mut control_left = right;
                 match (row.control, value.clone()) {
                     (Control::Toggle, Value::Bool(on)) => {
-                        let switch = Rect::new(right - SWITCH.0, line.y + (line.h - SWITCH.1) / 2.0, SWITCH.0, SWITCH.1);
-                        item(&mut items, switch, None, Visual::Plate(Fill::Switch { on: on && applies, hover: hover == Some(Part::Toggle(id)) }), true);
-                        control_left = switch.x;
+                        let mut controls = Controls::new(line);
+                        control_left = switch(&mut items, &mut controls, None, on && applies, hover == Some(Part::Toggle(id))).x;
                         y += ROW + drop;
                     }
                     (Control::Choice(options), Value::Index(_)) | (Control::Flags(options), Value::Flags(_)) => {
@@ -1426,18 +1441,12 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         y += ROW + drop;
                     }
                     (Control::Number(range), Value::Number(n)) => {
-                        let plus = Rect::new(right - CONTROL, mid, CONTROL, CONTROL);
-                        let value_box = Rect::new(plus.x - 72.0, mid, 72.0, CONTROL);
-                        let minus = Rect::new(value_box.x - CONTROL, mid, CONTROL, CONTROL);
-                        glyph_button(&mut items, minus, Part::Minus(id), '\u{E738}', hover);
-                        glyph_button(&mut items, plus, Part::Plus(id), '\u{E710}', hover);
-                        item(&mut items, value_box, None, label(number_text(range, n), 13.0, Tone::Text, false, Align::Center), true);
-                        control_left = minus.x;
+                        let mut controls = Controls::new(line);
+                        control_left = stepper(&mut items, &mut controls, (Part::Minus(id), Part::Plus(id)), &number_text(range, n), Tone::Text, hover).x;
                         y += ROW + drop;
                     }
                     (Control::Text | Control::Secret, Value::Text(text)) => {
-                        let field_width = control_width.min(room - RESET_ROOM);
-                        let field = Rect::new(right - field_width, mid, field_width, CONTROL);
+                        let field = Controls::new(line).take(control_width.min(room - RESET_ROOM), CONTROL);
                         control_left = field.x;
                         let editing = page.editing.as_ref().filter(|(edit_id, _)| *edit_id == id).map(|(_, text)| text.clone());
                         // A secret shows masked unless it is being edited.
@@ -1496,7 +1505,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                         for (i, profile) in view.profiles.iter().enumerate() {
                             let line = Rect::new(x0, y, content_width, RADIO_ROW - ROW_GAP);
                             let part = Part::Profile(i);
-                            item(&mut items, line, Some(part), Visual::Plate(Fill::Row { focus: false }), true);
+                            row_plate(&mut items, line, Some(part), false);
                             let radio = Rect::new(line.x + INNER, line.y + (line.h - 16.0) / 2.0, 16.0, 16.0);
                             item(&mut items, radio, None, Visual::Plate(Fill::Radio { on: i == chosen, hover: hover == Some(part) }), true);
                             // The logo of the shell, then its name.
