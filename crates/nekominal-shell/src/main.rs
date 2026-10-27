@@ -23,6 +23,7 @@ mod mark;
 mod motion;
 mod notify;
 mod open;
+mod paste_files;
 mod pick;
 mod popup;
 mod search_tabs;
@@ -70,6 +71,7 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     cli::set_launch(cli::parse(&args));
+    std::thread::spawn(paste_files::clean_old);
     if let Err(e) = win::run()
         && e != app::HANDED_OFF
     {

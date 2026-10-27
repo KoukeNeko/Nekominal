@@ -8,7 +8,8 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::UI::Shell::HDROP;
 
 use crate::util::log;
 
@@ -61,6 +62,44 @@ pub fn read_text() -> Option<String> {
         })();
         let _ = CloseClipboard();
         text
+    }
+}
+
+/// The bytes of the first of `formats` the clipboard holds, with that format. `None` when it holds none of them or is
+/// held by another program.
+pub fn read_bytes(formats: &[u32]) -> Option<(u32, Vec<u8>)> {
+    // SAFETY: as in `read_text`; the block is copied out whole, no further than its size.
+    unsafe {
+        let format = *formats.iter().find(|&&format| format != 0 && IsClipboardFormatAvailable(format).is_ok())?;
+        if !open() {
+            return None;
+        }
+        let bytes = (|| {
+            let global = HGLOBAL(GetClipboardData(format).ok()?.0);
+            let data = GlobalLock(global).cast::<u8>();
+            if data.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(data, GlobalSize(global)).to_vec();
+            let _ = GlobalUnlock(global);
+            Some(bytes)
+        })();
+        let _ = CloseClipboard();
+        bytes.map(|bytes| (format, bytes))
+    }
+}
+
+/// The files on the clipboard (copied in Explorer, `CF_HDROP`). `None` when there are none.
+pub fn read_files() -> Option<Vec<std::path::PathBuf>> {
+    // SAFETY: the clipboard owns the drop handle; it is read while the clipboard is open and not freed here.
+    unsafe {
+        IsClipboardFormatAvailable(u32::from(CF_HDROP.0)).ok()?;
+        if !open() {
+            return None;
+        }
+        let paths = GetClipboardData(u32::from(CF_HDROP.0)).ok().map(|handle| crate::paste_files::drop_paths(HDROP(handle.0)));
+        let _ = CloseClipboard();
+        paths.filter(|paths| !paths.is_empty())
     }
 }
 

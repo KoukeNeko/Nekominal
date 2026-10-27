@@ -484,6 +484,7 @@ dependencies = [
  "nekominal-render",
  "nekominal-term",
  "nekominal-ui",
+ "png",
  "serde_json",
  "windows",
 ]
