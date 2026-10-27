@@ -7,6 +7,13 @@
 //! an ignore rule in every repository, or the `git status`, the searches and the file watchers of the main checkout all see
 //! the second one.
 //!
+//! A new worktree gets the files git ignores that `.worktreeinclude` names (`.env`…: see [`copy_included`]), and its tab
+//! starts by running the setup script of the repository, `.nekominal\setup.ps1` or `.nekominal\setup.cmd`, if there is
+//! one ([`setup_command`]).
+//!
+//! A worktree is removed (`git worktree remove`, then its branch with `git branch -d`) or archived (the folder goes, the
+//! branch stays): never the main checkout, and never with changes not committed unless forced ([`check_remove`]).
+//!
 //! git runs as a process with its arguments, never through a shell, and without a console window.
 
 use std::{
@@ -132,7 +139,63 @@ pub fn create(dir: &Path, branch: &str) -> Result<PathBuf, Error> {
     git(&root, ["check-ref-format", "--branch", branch]).map_err(Error::Git)?;
     let path = worktree_path(&root, branch, Path::exists);
     git(&root, add_args(&path, branch)).map_err(Error::Git)?;
+    match copy_included(&root, &path) {
+        Ok(copied) if !copied.is_empty() => crate::util::log(&format!("worktree: copied {}", copied.join(", "))),
+        Ok(_) => {}
+        Err(e) => crate::util::log(&format!("worktree: .worktreeinclude: {e}")),
+    }
     Ok(path)
+}
+
+/// Copies into the new worktree `dest` the files of the main checkout `root` that `.worktreeinclude` names and git ignores
+/// (`.env` and the like, which a checkout does not bring); a file already there is left alone. The files copied, as git
+/// names them.
+///
+/// `.worktreeinclude` is the convention of Claude Code: patterns in the syntax of `.gitignore`, relative to the root of the
+/// repository. git matches them: the files not tracked that the patterns take, and of those the ones git ignores.
+pub fn copy_included(root: &Path, dest: &Path) -> Result<Vec<String>, String> {
+    let include = root.join(".worktreeinclude");
+    if !include.is_file() {
+        return Ok(Vec::new());
+    }
+    let mut exclude_from = OsString::from("--exclude-from=");
+    exclude_from.push(&include);
+    let listed = git(root, [OsString::from("ls-files"), "-z".into(), "--others".into(), "--ignored".into(), exclude_from])?;
+    let candidates: Vec<&str> = listed.split('\0').filter(|p| !p.is_empty()).collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    // shortcut: the paths go on the command line, which holds about 32 000 characters; feed them on stdin if a
+    // .worktreeinclude ever names that many files.
+    // Exit status 1 is "none of them is ignored". `-z` needs `--stdin`, so these come back a line each, not quoted.
+    let ignored = git(root, ["-c", "core.quotePath=false", "check-ignore", "--"].into_iter().chain(candidates.iter().copied())).unwrap_or_default();
+    let mut copied = Vec::new();
+    for file in ignored.lines().filter(|p| !p.is_empty()) {
+        let to = dest.join(file);
+        if to.exists() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{file}: {e}"))?;
+        }
+        std::fs::copy(root.join(file), &to).map_err(|e| format!("{file}: {e}"))?;
+        copied.push(file.to_owned());
+    }
+    Ok(copied)
+}
+
+/// What to type in the first tab of a new worktree to set it up, when the repository has a setup script: `.nekominal\setup.ps1`
+/// (run by Windows PowerShell, whatever the execution policy) or else `.nekominal\setup.cmd`. Typed into the shell, not run
+/// hidden, so the user sees it work. The command line suits cmd and PowerShell.
+pub fn setup_command(worktree: &Path) -> Option<String> {
+    let dir = worktree.join(".nekominal");
+    if dir.join("setup.ps1").is_file() {
+        Some(r"powershell.exe -NoProfile -ExecutionPolicy Bypass -File .nekominal\setup.ps1".to_owned())
+    } else if dir.join("setup.cmd").is_file() {
+        Some(r"cmd.exe /c .nekominal\setup.cmd".to_owned())
+    } else {
+        None
+    }
 }
 
 /// Changed and untracked files in the output of `git status --porcelain`.
@@ -400,5 +463,52 @@ mod tests {
         assert!(!made.exists());
         assert_eq!(git(&repo, ["log", "-1", "--format=%s", "agent/four"]).unwrap(), "work", "the commit is kept on its branch");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_ignored_files_worktreeinclude_names_are_copied_into_a_new_worktree() {
+        let Some((base, repo)) = temp_repo("include") else { return };
+        let write = |rel: &str, text: &str| {
+            let path = repo.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(".gitignore", ".env*\nsecrets/\nbuild/\n");
+        write(".worktreeinclude", "# the local settings\n.env\n.env.local\nsecrets/*.key\nnotes.txt\n");
+        git(&repo, ["add", ".gitignore", ".worktreeinclude"]).unwrap();
+        commit(&repo, "ignore");
+        write(".env", "A=1");
+        write(".env.local", "B=2");
+        write(".env.other", "not named");
+        write("secrets/a.key", "k");
+        write("secrets/b.txt", "not a key");
+        write("build/out.bin", "ignored, not named");
+        write("notes.txt", "named but not ignored");
+
+        let made = create(&repo, "agent/five").unwrap();
+        let read = |rel: &str| std::fs::read_to_string(made.join(rel)).ok();
+        assert_eq!(read(".env").as_deref(), Some("A=1"));
+        assert_eq!(read(".env.local").as_deref(), Some("B=2"));
+        assert_eq!(read("secrets/a.key").as_deref(), Some("k"));
+        for absent in [".env.other", "secrets/b.txt", "build/out.bin", "notes.txt"] {
+            assert_eq!(read(absent), None, "{absent}");
+        }
+        write(".env", "A=2");
+        assert_eq!(copy_included(&repo, &made).unwrap(), Vec::<String>::new(), "a file already there is kept");
+        assert_eq!(read(".env").as_deref(), Some("A=1"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_setup_script_is_found_and_powershell_comes_first() {
+        let dir = std::env::temp_dir().join(format!("nekominal-setup-{}", std::process::id()));
+        let scripts = dir.join(".nekominal");
+        std::fs::create_dir_all(&scripts).unwrap();
+        assert_eq!(setup_command(&dir), None);
+        std::fs::write(scripts.join("setup.cmd"), "").unwrap();
+        assert_eq!(setup_command(&dir).as_deref(), Some(r"cmd.exe /c .nekominal\setup.cmd"));
+        std::fs::write(scripts.join("setup.ps1"), "").unwrap();
+        assert!(setup_command(&dir).unwrap().ends_with(r"-File .nekominal\setup.ps1"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
