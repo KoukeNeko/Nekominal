@@ -683,11 +683,12 @@ mod tests {
         assert_eq!(sddl(&sid), format!("O:{sid}D:P(A;;GA;;;{sid})"));
         // What Windows made of it: the owner, a protected DACL and one entry, which allows, for the user.
         let made = Descriptor::new(&sddl(&sid)).unwrap().to_sddl();
-        let dacl = made.split_once("D:").map(|(_, dacl)| dacl).unwrap();
-        assert!(made.starts_with(&format!("O:{sid}")), "{made}");
+        let (owner, dacl) = made.strip_prefix("O:").and_then(|rest| rest.split_once("D:")).unwrap();
+        // Windows writes a well-known account by its alias: the built-in Administrator (a CI runner) is `LA`, not its SID.
+        assert!(owner == sid || (owner == "LA" && sid.ends_with("-500")), "the owner is the user: {made}");
         assert!(dacl.starts_with("P("), "the DACL inherits nothing: {made}");
         assert_eq!(dacl.matches('(').count(), 1, "one entry: {made}");
-        assert!(dacl.starts_with("P(A;;") && dacl.ends_with(&format!(";;;{sid})")), "{made}");
+        assert!(dacl.starts_with("P(A;;") && dacl.ends_with(&format!(";;;{owner})")), "the one entry allows the owner: {made}");
         assert!(Descriptor::new("not sddl").is_err());
     }
 
