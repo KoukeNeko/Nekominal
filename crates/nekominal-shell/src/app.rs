@@ -2797,7 +2797,7 @@ impl App {
                     settings_page::Entry::Snippets => (Text::SettingsSnippets.get(lang).to_owned(), self.settings.snippets.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
                     settings_page::Entry::ProfileHeader => (Text::ProfileBack.get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| p.name.clone())),
                     settings_page::Entry::ProfileField(field) => (field.label().get(lang).to_owned(), page.profile.as_deref().and_then(|id| self.profiles.iter().find(|p| p.id == id)).map_or(String::new(), |p| if *field == profile_edit::Field::Elevate { (if p.options.elevate { Text::ToggleOn } else { Text::ToggleOff }).get(lang).to_owned() } else { profile_edit::text(p, *field) })),
-                    settings_page::Entry::PushTest => (Text::PushTestSend.get(lang).to_owned(), String::new()),
+                    settings_page::Entry::PushTest | settings_page::Entry::ToastTest => (Text::PushTestSend.get(lang).to_owned(), String::new()),
                     settings_page::Entry::Trigger(i) => {
                         let rule = settings_page::trigger_at(&self.settings, *i);
                         (settings_page::trigger_title(&rule, lang), format!("{} · {}", rule.pattern, settings_page::action_text(&rule.action, lang)))
@@ -4321,6 +4321,7 @@ impl App {
             Part::SnippetAdd | Part::SnippetName(_) | Part::SnippetInput(_) | Part::SnippetDelete(_) => self.press_snippet_part(part),
             Part::LayoutSave | Part::LayoutName(_) | Part::LayoutOpen(_) | Part::LayoutDelete(_) => self.press_layout_part(part),
             Part::PushTest => self.send_test_push(),
+            Part::ToastTest => self.send_test_toast(),
             Part::TriggerAdd
             | Part::TriggerOpen(_)
             | Part::TriggerSwitch(_)
@@ -4375,11 +4376,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         // What Enter presses on a row that is not a setting or a command: the button it stands for.
         let focused_part = focus.and_then(|i| frame.entries.get(i)).and_then(settings_page::enter_part);

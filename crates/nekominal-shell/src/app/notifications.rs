@@ -48,6 +48,17 @@ impl App {
         push::send_test(&self.settings.notifications.push, nekominal_model::strings::APP_NAME.to_owned(), Text::PushTestBody.get(lang).to_owned());
     }
 
+    /// The test button of the settings: a toast now, whatever the switch says, so that its look (the icon) can be checked.
+    /// What went wrong is told in the window, not only in the log.
+    pub(super) fn send_test_toast(&mut self) {
+        let lang = self.language();
+        let uid = self.tabs.get(self.selected).map_or(0, |tab| tab.uid);
+        if let Err(e) = toast::show(self.hwnd, uid, nekominal_model::strings::APP_NAME, Text::PushTestBody.get(lang)) {
+            util::log(&format!("toast: {e}"));
+            self.inform(e);
+        }
+    }
+
     /// A toast of the tab with this uid was clicked: selects the tab when this window has it.
     pub fn show_tab(&mut self, uid: u64) -> bool {
         let Some(index) = self.tabs.iter().position(|tab| tab.uid == uid) else { return false };

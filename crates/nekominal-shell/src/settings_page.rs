@@ -185,6 +185,8 @@ pub enum Part {
     LayoutDelete(usize),
     /// Sends a test push with the settings of the Terminal page.
     PushTest,
+    /// Shows a test notification of Windows, whatever the switch of the notifications says.
+    ToastTest,
     /// The Triggers page: adding a rule, and of the rule at this index its plate (which opens and closes it), its switch,
     /// the fields of its form, its "before the line ends" chip, the action and the colour at an index, and the ready-made
     /// rule at an index of `triggers::PRESETS`.
@@ -377,6 +379,8 @@ pub enum Entry {
     Layouts,
     /// Under the phone notifications: the button that sends a test, and what the last one came to.
     PushTest,
+    /// Under the switch of the notifications of Windows: the button that shows one.
+    ToastTest,
     /// The rule of the Triggers page at this index (one past the last is the one being added), and the ready-made ones.
     Trigger(usize),
     TriggerPresets,
@@ -389,7 +393,7 @@ impl Entry {
             Entry::Setting(row) => row.section,
             Entry::Key(_) => Section::Keys,
             Entry::Claude => Section::Agents,
-            Entry::Snippets | Entry::PushTest => Section::Terminal,
+            Entry::Snippets | Entry::PushTest | Entry::ToastTest => Section::Terminal,
             Entry::Trigger(_) | Entry::TriggerPresets => Section::Triggers,
             Entry::Layouts => Section::Profiles,
             Entry::About | Entry::Repo | Entry::Contributors => Section::About,
@@ -410,6 +414,7 @@ pub fn enter_part(entry: &Entry) -> Option<Part> {
         Entry::ProfileField(Field::Scheme | Field::FontSize) => None,
         Entry::ProfileField(field) => Some(Part::ProfileField(*field)),
         Entry::PushTest => Some(Part::PushTest),
+        Entry::ToastTest => Some(Part::ToastTest),
         Entry::Trigger(i) => Some(Part::TriggerOpen(*i)),
         _ => None,
     }
@@ -554,10 +559,10 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, settings: &Settings) ->
         let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
         // The snippets are a section of their own, not the last rows' (the push rows end the Terminal page before them).
         let snippets = (section == Section::Terminal).then_some([Entry::Heading(Text::SettingsSnippetsHeading), Entry::Snippets]).into_iter().flatten();
-        // A row that starts a section of the page comes under its heading; the test of the push comes after its rows.
+        // A row that starts a section of the page comes under its heading; a test comes after the rows it tries.
         // The styles of the list are shown only while the tabs are a list: three pictures of nothing else are noise.
         let rows = settings_ui::in_section(section).filter(|row| row.id != "tabs.style" || row.applies(settings)).flat_map(|row| {
-            let test = (row.id == "notifications.push.events").then_some(Entry::PushTest);
+            let test = match row.id { "notifications.push.events" => Some(Entry::PushTest), "notifications.toast" => Some(Entry::ToastTest), _ => None };
             settings_ui::heading_before(row.id).map(Entry::Heading).into_iter().chain([Entry::Setting(row)]).chain(test)
         });
         agents.into_iter().chain(about).chain(rows).chain(new_profile).chain(snippets).collect()
@@ -1037,6 +1042,16 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                     item(&mut items, at, None, label(status, 13.0, tone, false, Align::Right), true);
                 }
                 row_label(&mut items, rect, (controls.right - rect.x - INNER).max(0.0), Text::PushTest.get(lang), note.as_deref(), Tone::Text);
+                y += ROW;
+            }
+            Entry::ToastTest => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                row_plate(&mut items, rect, None, focus);
+                let mut controls = Controls::new(rect);
+                let text = Text::PushTestSend.get(lang);
+                let button = controls.take(measure(text, 13.0, false) + 40.0, CONTROL);
+                icon_button(&mut items, button, Part::ToastTest, '\u{E7E7}', text, false, hover);
+                row_label(&mut items, rect, (controls.right - rect.x - INNER).max(0.0), Text::PushTest.get(lang), None, Tone::Text);
                 y += ROW;
             }
             Entry::Trigger(i) => y += trigger_entry(&mut items, page, view, measure, i, Rect::new(x0, y, content_width, 0.0), focus),
@@ -1614,9 +1629,8 @@ mod tests {
             let own = match section {
                 Section::Agents => 1,
                 Section::About => 3,
-                // The snippets, and the test of the push.
-                // The snippets, under a heading of their own.
-                Section::Terminal => 3,
+                // The snippets under a heading of their own, and the tests of the push and of the notifications of Windows.
+                Section::Terminal => 4,
                 Section::Profiles => 2,
                 // No rules yet: the ready-made ones.
                 Section::Triggers => 1,
@@ -2030,6 +2044,20 @@ mod tests {
 
     fn at_entry(frame: &Frame, wanted: impl Fn(&Entry) -> bool) -> Rect {
         frame.rows[frame.entries.iter().position(wanted).expect("the entry is on the page")]
+    }
+
+    #[test]
+    fn the_test_of_the_notifications_of_windows_is_under_their_switch_and_enter_shows_one() {
+        let terminal = Page { section: section_of(Section::Terminal), ..Page::default() };
+        let on = frame(&terminal, &Settings::default());
+        let switch = on.entries.iter().position(|e| matches!(e, Entry::Setting(row) if row.id == "notifications.toast")).expect("the switch");
+        assert!(matches!(on.entries[switch + 1], Entry::ToastTest), "the test row right under the switch");
+        assert_eq!(enter_part(&Entry::ToastTest), Some(Part::ToastTest));
+        assert!(parts(&on).contains(&Part::ToastTest), "its button is on the page");
+        // Shown with the switch off too: the test is how to see what a notification looks like before turning them on.
+        let mut off = Settings::default();
+        off.notifications.toast = false;
+        assert!(frame(&terminal, &off).entries.iter().any(|e| matches!(e, Entry::ToastTest)));
     }
 
     #[test]
