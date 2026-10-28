@@ -20,6 +20,9 @@ struct State {
     taker: Option<u32>,
     /// The sessions the taker adopted, once it said so.
     adopted: Option<Vec<String>>,
+    /// No more windows are taken: the new Nekominal is being started, or the update gave up. One that comes now would
+    /// not reach it and would end with this process, so it is refused and keeps its own tabs.
+    closed: bool,
 }
 
 pub struct Holder {
@@ -55,15 +58,28 @@ impl Holder {
         let mut reader = BufReader::new(&pipe);
         let reply = match handoff::read_message(&mut reader) {
             Ok(Message::Give { v, bundle }) if v == PROTOCOL => {
-                self.state.lock().unwrap().bundles.push(bundle);
-                self.changed.notify_all();
-                Message::Ok
+                let mut state = self.state.lock().unwrap();
+                if state.closed {
+                    Message::Error { message: "the update no longer takes windows".into() }
+                } else {
+                    state.bundles.push(bundle);
+                    drop(state);
+                    self.changed.notify_all();
+                    Message::Ok
+                }
             }
             Ok(Message::Give { v, .. }) | Ok(Message::Take { v }) if v != PROTOCOL => Message::Error { message: format!("this updater speaks version {PROTOCOL}, not {v}") },
             Ok(Message::Take { .. }) => match self.give_to(&pipe) {
-                Ok(()) => match handoff::read_message(&mut reader) {
+                Ok(pid) => match handoff::read_message(&mut reader) {
+                    // Taken as the taker's word only while it is still the taker: one that answered as its time ran out
+                    // was ended, and its list is not the next one's.
                     Ok(Message::Adopted { sessions }) => {
-                        self.state.lock().unwrap().adopted = Some(sessions);
+                        let mut state = self.state.lock().unwrap();
+                        if state.taker != Some(pid) {
+                            return;
+                        }
+                        state.adopted = Some(sessions);
+                        drop(state);
                         self.changed.notify_all();
                         Message::Ok
                     }
@@ -78,7 +94,8 @@ impl Holder {
     }
 
     /// Answers `Take`: the windows of every bundle, their handles duplicated into the client, which must be the taker.
-    fn give_to(&self, pipe: &File) -> io::Result<()> {
+    /// The client's pid.
+    fn give_to(&self, pipe: &File) -> io::Result<u32> {
         let pid = handoff::peer_pid(pipe, true)?;
         let bundles = {
             let state = self.state.lock().unwrap();
@@ -99,7 +116,13 @@ impl Holder {
                 window
             })
             .collect();
-        handoff::write_message(pipe, &Message::Windows { v: PROTOCOL, windows })
+        handoff::write_message(pipe, &Message::Windows { v: PROTOCOL, windows })?;
+        Ok(pid)
+    }
+
+    /// From now on a window that hands over is refused (it keeps its tabs): the new Nekominal is about to be started.
+    pub fn close(&self) {
+        self.state.lock().unwrap().closed = true;
     }
 
     /// Waits until `count` bundles came, or `timeout` passed; how many came.
@@ -290,6 +313,12 @@ mod tests {
         handoff::write_message(&client, &Message::Adopted { sessions: vec!["1-1".into()] }).unwrap();
         assert_eq!(handoff::read_message(&mut reader).unwrap(), Message::Ok);
         assert_eq!(holder.wait_adopted(Duration::from_secs(5), || false), Some(vec!["1-1".to_owned()]));
+
+        // A window that hands over once the new Nekominal is starting is refused, and keeps its tabs.
+        holder.close();
+        let late = Bundle { pid: 2, exe: r"C:\x\Nekominal.exe".into(), version: "0.2.3".into(), windows: Vec::new() };
+        assert!(matches!(ask(&pipe, &Message::Give { v: PROTOCOL, bundle: late }), Message::Error { .. }));
+        assert_eq!(holder.givers().len(), 1);
 
         assert_eq!(holder.finish(&["1-1".to_owned()]), (1, 1));
         for pid in dropped_pids {

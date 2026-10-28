@@ -182,6 +182,8 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
         v.to = installed.clone().or_else(|| args.to.clone()).or_else(|| Some(args.version.clone()));
     });
 
+    // What is held now is what the new Nekominal gets: a window handing over later keeps its own tabs.
+    holder.close();
     let (all, live) = holder.panes();
     log(&format!("holding {all} panes, {live} of them running"));
     let candidates = scoop::candidates(args.app.as_deref(), &first.2, Path::new(&first.1));
