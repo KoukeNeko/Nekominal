@@ -216,12 +216,17 @@ unsafe fn paint(hwnd: HWND) {
         let font = |size: f32, weight: i32| CreateFontW(-px(size), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, w!("Segoe UI"));
         let (big, small) = (font(17.0, 600), font(13.0, 400));
         let text = |text: &str, font, color: u32, top: f32, height: f32, wrap: bool| {
+            // Nothing to draw is not drawn: an empty Vec's pointer is dangling, and DrawTextW with an ellipsis reads it
+            // even for a length of 0, which crashed the window, and with it every tab the updater held.
+            if text.is_empty() {
+                return;
+            }
             let old = SelectObject(dc, font);
             SetTextColor(dc, color);
             let mut rect = RECT { left: px(20.0), top: px(top), right: client.right - px(20.0), bottom: px(top + height) };
-            let mut units: Vec<u16> = text.encode_utf16().collect();
+            let mut units = wide(text);
             let flags = DT_LEFT | DT_NOPREFIX | if wrap { DT_WORDBREAK | DT_END_ELLIPSIS } else { DT_SINGLELINE | DT_END_ELLIPSIS };
-            DrawTextW(dc, units.as_mut_ptr(), units.len() as i32, &mut rect, flags);
+            DrawTextW(dc, units.as_mut_ptr(), units.len() as i32 - 1, &mut rect, flags);
             SelectObject(dc, old);
         };
         let versions = format!("Nekominal {} \u{2192} {}", view.from, view.to.as_deref().unwrap_or("\u{2026}"));
