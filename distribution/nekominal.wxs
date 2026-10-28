@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The installer of Nekominal, for WiX 5 (scripts\package-msi.ps1 builds it from the files scripts\package.ps1 stages).
+
+  It installs for the user, into %LOCALAPPDATA%\Programs\Nekominal, so it asks for no administrator and the program can
+  replace its own files when it updates. The UpgradeCode never changes: it is how a newer installer finds the one it replaces.
+  Settings live in %LOCALAPPDATA%\Nekominal and are left alone by an uninstall.
+
+  Variables, given with -d: Version (three numbers, as Cargo.toml has it), Source (the folder with the files), Icon.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Nekominal" Manufacturer="KoukeNeko" Version="$(Version)" UpgradeCode="39CEC0CD-8417-4D9F-99BB-DFA8F8588D46" Scope="perUser" Language="1033">
+    <SummaryInformation Description="Nekominal, a light terminal for Windows" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Nekominal is installed already." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="Nekominal.ico" SourceFile="$(Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="Nekominal.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/KoukeNeko/Nekominal" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Nekominal">
+          <!-- a fixed GUID: a component with files and a registry key path cannot have one made from its parts -->
+          <Component Id="Program" Guid="5304D083-3BFD-41F2-AD3B-853A035B5280">
+            <File Id="NekominalExe" Source="$(Source)\Nekominal.exe" KeyPath="no" />
+            <File Id="ConptyDll" Source="$(Source)\conpty.dll" KeyPath="no" />
+            <File Id="OpenConsoleExe" Source="$(Source)\OpenConsole.exe" KeyPath="no" />
+            <File Id="Readme" Source="$(Source)\README.md" KeyPath="no" />
+            <File Id="License" Source="$(Source)\LICENSE" KeyPath="no" />
+            <File Id="ThirdParty" Source="$(Source)\THIRD-PARTY-NOTICES.md" KeyPath="no" />
+            <!-- a file in the profile cannot be the key path of its component (ICE38): a value of the user's registry is -->
+            <RegistryValue Root="HKCU" Key="Software\KoukeNeko\Nekominal" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+            <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+          </Component>
+        </Directory>
+        <Component Id="ProgramsFolderCleanup" Guid="*">
+          <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\KoukeNeko\Nekominal" Name="ProgramsFolder" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="NekominalShortcut" Name="Nekominal" Description="A light terminal for Windows" Target="[INSTALLFOLDER]Nekominal.exe" WorkingDirectory="INSTALLFOLDER" Icon="Nekominal.ico" />
+        <RegistryValue Root="HKCU" Key="Software\KoukeNeko\Nekominal" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

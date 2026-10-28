@@ -1,8 +1,9 @@
 name: Release
 
-# Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds the Windows archives (x64, tested, and
-# ARM64, cross-compiled), publishes them as a release, and then writes the Scoop manifest into KoukeNeko/scoop-bucket. Run by
-# hand it does everything up to publishing and keeps the archives as an artifact, which is how to try the pipeline.
+# Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds the Windows archives and installers (MSI) for
+# x64, tested, and ARM64, cross-compiled, publishes them as a release, and then writes the Scoop manifest into
+# KoukeNeko/scoop-bucket. Run by hand it does everything up to publishing and keeps the files as an artifact, which is how to
+# try the pipeline.
 #
 # This repository is private and Scoop downloads without credentials, so the archives are attached to a release of the bucket
 # (a public repository), tagged nekominal-vX.Y.Z, as well as to the release of this repository. SCOOP_BUCKET_TOKEN is a token
@@ -75,12 +76,24 @@ jobs:
       # Cross-compiled with the MSVC ARM64 tools of the image; an ARM64 binary cannot run here, so the tests above are x64's.
       - name: Package ARM64
         run: scripts\package.ps1 -Arch arm64
+      # The installers (MSI) are made from the folders the two steps above staged in dist/. The tool is pinned, like the actions:
+      # this job builds what is published.
+      - name: Install WiX
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+      - name: Package the installers
+        run: |
+          scripts\package-msi.ps1
+          scripts\package-msi.ps1 -Arch arm64
       - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: |
             dist/*.zip
             dist/*.zip.sha256
+            dist/*.msi
+            dist/*.msi.sha256
           if-no-files-found: error
 
   publish:
@@ -138,7 +151,8 @@ jobs:
               fi
             done
           else
-            gh release create "$tag" dist/* -R "$BUCKET" --title "Nekominal $VERSION" \
+            # Only the archives: the manifest names them, the installers are for the release of this repository.
+            gh release create "$tag" dist/*.zip dist/*.zip.sha256 -R "$BUCKET" --title "Nekominal $VERSION" \
               --notes "The Windows archives of Nekominal $VERSION for the Scoop manifest." --latest=false
           fi
       - uses: actions/checkout@v7
