@@ -146,6 +146,9 @@ pub(crate) fn elevated() -> bool {
 /// Opens an address in the browser, or a file with its program; what goes wrong goes to the log.
 /// Seconds (job ticks) in a row the shell must be alone before what its agent said is dropped from the bar.
 const ALONE_TICKS: u8 = 3;
+/// The oldest the snapshot of the system's processes gets while no pane prints anything: what it finds (an agent a
+/// shell started, a server's port) mostly prints when it starts, and that takes a snapshot at the next tick.
+const PROCESS_SNAPSHOT_AGE: Duration = Duration::from_secs(30);
 
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
@@ -273,6 +276,10 @@ pub struct App {
     /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
     card_rect: Option<Rect>,
     remote_buttons: Option<[Rect; 2]>,
+    /// The processes of the system as the last snapshot had them, when it was taken, and whether a pane printed since.
+    processes: Vec<(u32, u32, String)>,
+    processes_at: Option<Instant>,
+    output_seen: bool,
     /// The edge of the sidebar is being dragged: the settings as they were before, for the change to be saved once.
     side_drag: Option<Settings>,
     /// The badges drawn in the last frame, where and what a click on each opens.
@@ -652,6 +659,9 @@ impl App {
             meter_rect: None,
             card_rect: None,
             remote_buttons: None,
+            processes: Vec::new(),
+            processes_at: None,
+            output_seen: false,
             side_drag: None,
             badge_hits: Vec::new(),
             right_width: 0.0,
@@ -1430,6 +1440,7 @@ impl App {
         }
         // The find bar searches the focused pane: only its output can change the matches.
         let focused_woke = self.focused().is_some_and(|entry| entry.wake.pending.load(Ordering::Acquire));
+        self.output_seen |= self.tabs.iter().flat_map(|tab| &tab.panes).any(|entry| entry.wake.pending.load(Ordering::Acquire));
         self.api_observe();
         for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
             entry.wake.pending.store(false, Ordering::Release);
@@ -1964,8 +1975,16 @@ impl App {
     /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
     pub fn on_job_tick(&mut self) {
         let mut changed = false;
-        // One snapshot of the processes of the system for every tab: one a tab was most of the cost of the tick.
-        let processes = nekominal_pty::conpty::process_names().unwrap_or_default();
+        // One snapshot of the processes of the system for every tab, and not at every tick: it costs the kernel some
+        // milliseconds for a system of hundreds of processes, nearly all of a window's time at rest. It is taken again
+        // when a pane printed since the last one (a program that starts mostly says something) or it is old.
+        if self.output_seen || self.processes_at.is_none_or(|at| at.elapsed() >= PROCESS_SNAPSHOT_AGE) {
+            if let Some(list) = nekominal_pty::conpty::process_names() {
+                (self.processes, self.processes_at) = (list, Some(Instant::now()));
+            }
+            self.output_seen = false;
+        }
+        let processes = std::mem::take(&mut self.processes);
         for tab in &mut self.tabs {
             let Some(entry) = tab.focused_entry_mut() else { continue };
             let Some(job) = entry.pane.job(&processes) else { continue };
@@ -1994,6 +2013,7 @@ impl App {
         }
         changed |= self.refresh_usage();
         changed |= self.refresh_badges(&processes);
+        self.processes = processes;
         if changed {
             self.redraw();
         }
