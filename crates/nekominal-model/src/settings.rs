@@ -722,7 +722,7 @@ impl Default for Settings {
                 weight: 400,
                 line_height: 1.1,
                 // Off as in Windows Terminal: a cursor or a selection inside `=>` reads better as two characters.
-                ligatures: false,
+                ligatures: true,
             },
             // The pace Windows gives a text caret by default.
             cursor: Cursor { style: CursorStyle::Block, blink: true, blink_rate: 530 },
@@ -1578,12 +1578,12 @@ mod tests {
     }
 
     #[test]
-    fn font_ligatures_are_off_unless_the_file_turns_them_on() {
-        assert!(!Settings::default().font.ligatures);
-        assert!(parsed(r#"{ "font": { "ligatures": true } }"#).settings.font.ligatures);
+    fn font_ligatures_are_on_unless_the_file_turns_them_off() {
+        assert!(Settings::default().font.ligatures);
+        assert!(!parsed(r#"{ "font": { "ligatures": false } }"#).settings.font.ligatures);
         let bad = parsed(r#"{ "font": { "ligatures": "yes" } }"#);
         assert_eq!(bad.problems.len(), 1);
-        assert!(!bad.settings.font.ligatures);
+        assert!(bad.settings.font.ligatures, "a value that cannot be read keeps the default");
     }
 
     #[test]
