@@ -115,8 +115,11 @@ impl App {
         let card = Rect::new((mid - 70.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0)), layout::TITLE_HEIGHT + 4.0, WIDTH, height);
         // The gap between the meter and the card is the card's too: the pointer crosses it on the way down.
         self.card_rect = Some(Rect::new(card.x, meter.y + meter.h, card.w, card.y + card.h - (meter.y + meter.h)));
-        self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
-        self.ui.rrect(card, CORNER_RADIUS, Color([g.background.r, g.background.g, g.background.b, 252]), Some((col(g.divider()), 1.0)));
+        if self.panels_failed {
+            self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
+        }
+        self.ui.rrect(card, CORNER_RADIUS, self.panel_fill(252), Some((col(g.divider()), 1.0)));
+        self.panel_shapes.push((card, CORNER_RADIUS));
         let (x, right) = (card.x + PAD, card.x + card.w - PAD);
         let mut y = card.y + PAD;
 

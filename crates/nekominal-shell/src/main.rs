@@ -28,6 +28,7 @@ mod notify;
 mod open;
 mod paste_files;
 mod pick;
+mod panels;
 mod popup;
 mod push;
 mod ports;

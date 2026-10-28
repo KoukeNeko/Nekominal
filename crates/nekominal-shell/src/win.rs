@@ -585,7 +585,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
-            with_app(hwnd, App::on_mouse_leave);
+            // Onto a panel of this window (`panels.rs`) is not away: the panel hands the pointer back.
+            if !with_app(hwnd, |app| app.pointer_on_panels()).unwrap_or(false) {
+                with_app(hwnd, App::on_mouse_leave);
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {

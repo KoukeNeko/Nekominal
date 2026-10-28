@@ -297,6 +297,12 @@ pub struct App {
     drawer_hits: Vec<(Rect, subagents_drawer::Action)>,
     sub_phase: Option<usize>,
     sub_detail: Option<subagents_drawer::Cached>,
+    /// The window the floating panels are drawn in, made when the first one opens (`panels.rs`); whether it could not be,
+    /// in which case they are drawn in the window, opaque; where the panels of the frame are, and the tip of a sidebar row.
+    panels: Option<crate::panels::Layer>,
+    panels_failed: bool,
+    panel_shapes: Vec<(Rect, f32)>,
+    row_tip: Option<(usize, Rect)>,
     /// The processes of the system as the last snapshot had them, when it was taken, and whether a pane printed since.
     processes: Vec<(u32, u32, String)>,
     processes_at: Option<Instant>,
@@ -692,6 +698,10 @@ impl App {
             drawer_hits: Vec::new(),
             sub_phase: None,
             sub_detail: None,
+            panels: None,
+            panels_failed: false,
+            panel_shapes: Vec::new(),
+            row_tip: None,
             processes: Vec::new(),
             processes_at: None,
             output_seen: false,
@@ -1400,6 +1410,10 @@ impl App {
                 }
             }
             self.origin = Some(origin);
+        }
+        // The panels lie on the client area: they go where it went.
+        if let Some(layer) = self.panels.as_ref().filter(|layer| layer.shown()) {
+            layer.follow(self.hwnd, None);
         }
     }
 
@@ -2868,6 +2882,7 @@ impl App {
 
         self.ui.begin_frame(size, self.scale);
         self.animating = false;
+        self.row_tip = None;
         let sliding = self.advance_chips();
         self.read_tab_states();
         // Under the chrome: what the sidebar shows beside its rows (the tip of a row) goes over the page.
@@ -2877,13 +2892,89 @@ impl App {
             self.field_lights.clear();
         }
         let relaid = self.paint_chrome();
-        self.paint_context_card();
-        self.paint_subagents_card();
-        self.paint_subagents_drawer();
+        if self.panels_failed {
+            self.paint_panels();
+        }
         self.paint_welcome();
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
+        if !self.panels_failed {
+            self.paint_panel_layer();
+        }
         sliding || relaid
+    }
+
+    /// The floating panels, each telling where it is in `panel_shapes`; they also leave where they are for the hit tests.
+    fn paint_panels(&mut self) {
+        self.panel_shapes.clear();
+        self.paint_context_card();
+        self.paint_subagents_card();
+        self.paint_subagents_drawer();
+        self.paint_row_tip();
+    }
+
+    /// Draws the panels in their own window, over the acrylic of the system like the pop-ups (`panels.rs`), and hides that
+    /// window when none is open. A layer that cannot be made leaves them to the window's frame, opaque, from the next one.
+    fn paint_panel_layer(&mut self) {
+        let size = self.surface.size();
+        self.ui.begin_frame(size, self.scale);
+        self.paint_panels();
+        if self.panel_shapes.is_empty() {
+            if let Some(layer) = self.panels.as_mut() {
+                layer.hide(&self.gpu);
+            }
+            return;
+        }
+        if self.panels.is_none() {
+            match crate::panels::open(self.hwnd, &self.gpu, !self.glass.light) {
+                Ok(layer) => self.panels = Some(layer),
+                Err(e) => {
+                    crate::util::log(&format!("panels drawn in the window: {e}"));
+                    self.panels_failed = true;
+                    self.redraw();
+                    return;
+                }
+            }
+        }
+        let Some(layer) = self.panels.as_mut() else { return };
+        layer.place(self.hwnd, &self.gpu, size);
+        let Some(view) = layer.surface.acquire() else { return };
+        self.gpu.clear(&view, [0.0; 4]);
+        self.ui.end_frame(&view);
+        let lost = layer.surface.present();
+        layer.shape(&self.panel_shapes, self.scale);
+        if lost {
+            self.report_gpu_lost();
+        }
+    }
+
+    /// What a panel is filled with: the tint of the pop-ups over the acrylic of its layer, or the scheme's background,
+    /// nearly opaque, when it is drawn in the window.
+    fn panel_fill(&self, opaque: u8) -> Color {
+        let b = self.glass.background;
+        Color([b.r, b.g, b.b, if self.panels_failed { opaque } else { popup::ACRYLIC_TINT }])
+    }
+
+    /// The window under the pointer is this window's panel layer: the pointer left the window for a panel.
+    pub fn pointer_on_panels(&self) -> bool {
+        self.panels.as_ref().is_some_and(|layer| layer.shown() && crate::panels::cursor_on_layer(layer.hwnd))
+    }
+
+    /// The tip beside a row of the collapsed sidebar, which says what the ring of the row says by its colour.
+    fn paint_row_tip(&mut self) {
+        let Some((i, row)) = self.row_tip else { return };
+        let g = self.glass;
+        let lang = self.language();
+        let state = state_text(self.state_of(i)).map(|text| text.get(lang));
+        let text = [Some(self.tab_label(i)), state.map(str::to_owned), self.place_text(i)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let line = self.ui.line_height(PIECE_SIZE);
+        let rect = Rect::new(row.x + row.w + 10.0, row.y + (row.h - 26.0) / 2.0, self.ui.measure(&text, PIECE_SIZE, false) + 20.0, 26.0);
+        if self.panels_failed {
+            self.ui.shadow(rect, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
+        }
+        self.ui.rrect(rect, CORNER_RADIUS, self.panel_fill(250), Some((col(g.divider()), 1.0)));
+        self.ui.text(rect.x + 10.0, rect.y + (rect.h - line) / 2.0, &text, PIECE_SIZE, col(g.text()), false);
+        self.panel_shapes.push((rect, CORNER_RADIUS));
     }
 
     /// The settings page in the area of the panes.
@@ -3492,16 +3583,8 @@ impl App {
             self.paint_activity_rest(i, row, x);
         }
         self.ui.pop_clip();
-        if let Some((i, row)) = tip {
-            // The ring says the state by its colour alone: the tip says it in words.
-            let state = state_text(self.state_of(i)).map(|text| text.get(lang));
-            let text = [Some(self.tab_label(i)), state.map(str::to_owned), self.place_text(i)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-            let line = self.ui.line_height(PIECE_SIZE);
-            let rect = Rect::new(row.x + row.w + 10.0, row.y + (row.h - 26.0) / 2.0, self.ui.measure(&text, PIECE_SIZE, false) + 20.0, 26.0);
-            self.ui.shadow(rect, CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
-            self.ui.rrect(rect, CORNER_RADIUS, Color([g.background.r, g.background.g, g.background.b, 250]), Some((col(g.divider()), 1.0)));
-            self.ui.text(rect.x + 10.0, rect.y + (rect.h - line) / 2.0, &text, PIECE_SIZE, col(g.text()), false);
-        }
+        // The ring says the state by its colour alone: the tip says it in words, drawn with the panels.
+        self.row_tip = tip;
     }
 
     // --- the first start ----------------------------------------------------------------------------------------
@@ -4934,6 +5017,8 @@ impl App {
     /// renderer and the renderers of the panes. The sessions in the panes go on as they were; a menu that was open closes.
     pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
         self.close_popup();
+        // Made again on the new device by the next frame that has a panel.
+        self.panels = None;
         let size = self.surface.size();
         self.surface.detach();
         self.surface = gpu::create_surface(gpu, self.hwnd, size)?;
@@ -6089,7 +6174,7 @@ impl App {
         let ui = &mut self.ui;
         ui.begin_frame(popup.surface.size(), scale);
         // The acrylic is the window; a tint over it keeps the text readable on any wallpaper.
-        let tint = Color([g.background.r, g.background.g, g.background.b, 140]);
+        let tint = Color([g.background.r, g.background.g, g.background.b, popup::ACRYLIC_TINT]);
         ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
         let line = ui.line_height(TEXT_SIZE);
         let header = popup.header;

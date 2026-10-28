@@ -106,8 +106,11 @@ impl App {
         let (width, height) = self.layout.size;
         let drawer = Rect::new(width - WIDTH, layout::TITLE_HEIGHT, WIDTH, height - layout::TITLE_HEIGHT);
         self.drawer_rect = Some(drawer);
-        self.ui.shadow(drawer, 0.0, 18.0, Color([0, 0, 0, 90]));
-        self.ui.fill(drawer, Color([g.background.r, g.background.g, g.background.b, 255]));
+        if self.panels_failed {
+            self.ui.shadow(drawer, 0.0, 18.0, Color([0, 0, 0, 90]));
+        }
+        self.ui.fill(drawer, self.panel_fill(255));
+        self.panel_shapes.push((drawer, 0.0));
         self.ui.fill(Rect::new(drawer.x, drawer.y, 1.0, drawer.h), col(g.divider()));
         let (text, quiet) = (col(g.text()), col(g.text_secondary()));
         let small = self.ui.line_height(SMALL_SIZE);

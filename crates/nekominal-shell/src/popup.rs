@@ -292,9 +292,12 @@ pub enum Kind {
     Wide,
 }
 
+/// How much of the scheme's background lies over the acrylic of a pop-up or a panel: enough for text on any wallpaper.
+pub const ACRYLIC_TINT: u8 = 140;
+
 /// Blurs what is behind the window. The system backdrop attribute does not do it for these windows: they never take the
 /// focus, and the backdrop of a window that is not the active one is a flat colour. The accent policy keeps blurring.
-fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
+pub(crate) fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
     #[repr(C)]
     struct AccentPolicy {
         state: u32,
