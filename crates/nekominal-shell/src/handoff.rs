@@ -37,12 +37,13 @@ thread_local! {
     static GIVE_TO: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
-/// `args` without `--adopt <pipe>`, which is kept for [`adopt_pipe`].
+/// `args` without `--adopt <pipe>`, which is kept for [`adopt_pipe`]. Only as the first argument, as the updater
+/// passes it, and only a pipe's name: `--adopt` further on is a tab's own command (`-- stow --adopt pkg`).
 pub fn strip_adopt(args: Vec<String>) -> Vec<String> {
-    match args.iter().position(|arg| arg == "--adopt") {
-        Some(at) if at + 1 < args.len() => {
-            let _ = ADOPT.set(args[at + 1].clone());
-            args.into_iter().enumerate().filter(|(i, _)| *i != at && *i != at + 1).map(|(_, arg)| arg).collect()
+    match args.as_slice() {
+        [flag, pipe, ..] if flag == "--adopt" && pipe.starts_with(r"\\.\pipe\") => {
+            let _ = ADOPT.set(pipe.clone());
+            args.into_iter().skip(2).collect()
         }
         _ => args,
     }
@@ -240,6 +241,9 @@ mod tests {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(strip_adopt(args(&["new-tab", "-d", "C:\\"])), args(&["new-tab", "-d", "C:\\"]));
         assert_eq!(strip_adopt(args(&["--adopt"])), args(&["--adopt"]), "no pipe: left for the command line to refuse");
+        let tab = args(&["--", "stow", "--adopt", "pkg"]);
+        assert_eq!(strip_adopt(tab.clone()), tab, "a tab's own command keeps its --adopt");
+        assert_eq!(strip_adopt(args(&["--adopt", "pkg"])), args(&["--adopt", "pkg"]), "not a pipe: not the updater's");
         assert_eq!(strip_adopt(args(&["--adopt", r"\\.\pipe\nekominal-update-x"])), Vec::<String>::new());
         assert_eq!(adopt_pipe(), Some(r"\\.\pipe\nekominal-update-x"));
     }
