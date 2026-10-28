@@ -66,15 +66,34 @@ if (window.gsap && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
   // pointing at a layer lifts it and puts the others back
   const stack = document.querySelector('.stack'), cap = document.getElementById('cap');
   const capKeys = ['cap.g', 'cap.1', 'cap.2', 'cap.3', 'cap.4'];
+  const hvs = layers.map(g => g.querySelector('.pl-hv'));
+  let leaveTimer;
+  cap.dataset.key = 'cap.0';
+  // the text changes with a short fade, not with a cut
+  const setCap = key => {
+    if (cap.dataset.key === key) return;
+    cap.dataset.key = key;
+    gsap.killTweensOf(cap);
+    gsap.to(cap, { opacity: 0, duration: .12, ease: 'power1.in', onComplete() { cap.innerHTML = i18n.say(key); gsap.to(cap, { opacity: 1, duration: .35, ease: 'power1.out' }); } });
+  };
+  // the layers part from the one pointed at: the nearest ones the most, a ripple that runs through the stack
+  const part = i => hvs.forEach((el, j) => {
+    const d = j - i, y = d === 0 ? -6 : Math.sign(d) * Math.max(8, 22 - (Math.abs(d) - 1) * 6);
+    gsap.to(el, { y, duration: .7, ease: 'power3.out', delay: Math.abs(d) * .04, overwrite: 'auto' });
+  });
+  const settle = () => gsap.to(hvs, { y: 0, duration: 1, ease: 'power2.out', stagger: .04, overwrite: 'auto' });
   layers.forEach((g, i) => {
-    const lift = g.querySelector('.pl-hv');
     g.addEventListener('pointerenter', () => {
-      stack.classList.add('hovering'); g.classList.add('on'); cap.classList.add('on'); cap.innerHTML = i18n.say(capKeys[i]);
-      gsap.to(lift, { y: -16, duration: .3, ease: 'power2.out' });
+      clearTimeout(leaveTimer);
+      stack.classList.add('hovering'); layers.forEach((l, j) => l.classList.toggle('on', j === i)); cap.classList.add('on');
+      setCap(capKeys[i]); part(i);
     });
+    // a short wait, so that passing from one layer to the next does not close and open the stack in between
     g.addEventListener('pointerleave', () => {
-      stack.classList.remove('hovering'); g.classList.remove('on'); cap.classList.remove('on'); cap.innerHTML = i18n.say('cap.0');
-      gsap.to(lift, { y: 0, duration: .45, ease: 'power3.out' });
+      leaveTimer = setTimeout(() => {
+        stack.classList.remove('hovering'); layers.forEach(l => l.classList.remove('on')); cap.classList.remove('on');
+        setCap('cap.0'); settle();
+      }, 160);
     });
   });
   // scrolling away from the hero pulls the layers further apart

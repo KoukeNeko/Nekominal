@@ -47,8 +47,9 @@ h1{font-size:clamp(36px,4.2vw,60px);line-height:1.12;font-weight:700;letter-spac
 .stack .term .pr{fill:var(--eye)}.stack .term .cur{fill:var(--text)}
 .stack .term .o.g{fill:var(--eye)}.stack .term .o.b{fill:#6c9cff}.stack .term .o.a{fill:#e5a94b}
 .stack .flash{fill:var(--eye);opacity:0;pointer-events:none}
-.stack .pl{transition:opacity .25s;cursor:default}
-.stack .pl .plate{transition:stroke .2s}
+.stack .pl{transition:opacity .4s ease;cursor:default}
+.stack .hit{fill:transparent;pointer-events:all}
+.stack .pl .plate{transition:stroke .35s ease}
 .stack .pl.on .plate{stroke:var(--eye)}
 .stack.hovering .pl:not(.on){opacity:.4}
 .stack .pl.on text.t1:not(.hot){fill:var(--eye)}
