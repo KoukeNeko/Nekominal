@@ -206,23 +206,43 @@ fn hook_transcript(record: &serde_json::Value) -> Option<PathBuf> {
 /// What the status line last said of a pane's session, with what the transcript says filling in a context it has not
 /// said: no status line ran (another took its place), or it ran before the first answer.
 pub fn read_usage(session: &str) -> Option<Usage> {
-    let line = std::fs::read_to_string(usage_file(session)?).ok().and_then(|json| parse_usage(&json));
-    if line.as_ref().is_some_and(|usage| usage.context.is_some()) {
-        return line;
-    }
+    let line_file = usage_file(session)?;
+    let line_json = std::fs::read_to_string(&line_file).ok();
+    let line = line_json.as_deref().and_then(parse_usage);
     let hook = read_hook(&session_file(session, HOOK_EXTENSION)?);
     if line.is_none() && hook.is_none() {
         return None;
     }
-    let hook_text = |key: &str| hook.as_ref().and_then(|h| h.get(key)).and_then(|v| v.as_str()).map(str::to_owned);
-    let mut usage = line.unwrap_or_default();
-    usage.cwd = usage.cwd.or_else(|| hook_text("cwd"));
-    if let Some(turn) = hook.as_ref().and_then(hook_transcript).and_then(|t| read_tail(&t)).and_then(|(tail, cut)| last_turn(&tail, cut)) {
-        let window = usage.context_window.unwrap_or_else(|| window_size(known_window(&turn.model), turn.context()));
-        fill_from_turn(&mut usage, &turn, window);
-    }
-    usage.model = usage.model.or_else(|| hook_text("model").map(|m| model_name(&m)));
+    let text = |value: Option<&serde_json::Value>, key: &str| value.and_then(|v| v.get(key)).and_then(|v| v.as_str()).map(str::to_owned);
+    let line_value: Option<serde_json::Value> = line_json.as_deref().and_then(|json| serde_json::from_str(json.trim_start_matches('\u{feff}')).ok());
+    let transcript = hook.as_ref().and_then(hook_transcript);
+    let turn = transcript.as_ref().and_then(|t| read_tail(t)).and_then(|(tail, cut)| last_turn(&tail, cut));
+    let line = line.map(|usage| (usage, text(line_value.as_ref(), "session_id"), modified(&line_file)));
+    let mut usage = combine(line, text(hook.as_ref(), "session_id"), turn.map(|turn| (turn, transcript.as_deref().and_then(modified))));
+    usage.cwd = usage.cwd.or_else(|| text(hook.as_ref(), "cwd"));
+    usage.model = usage.model.or_else(|| text(hook.as_ref(), "model").map(|m| model_name(&m)));
     Some(usage)
+}
+
+/// What the bar shows from the two sources: the status line, which runs only now and then when another one (a plugin's)
+/// takes its place, and the transcript the hooks named, which is written at every answer. The context comes from the
+/// newer of them; what only the status line knows (cost, time, lines, totals, the window) is kept from its last run. A
+/// status line of another session than the one the hooks follow is the history of the pane, and left out.
+fn combine(line: Option<(Usage, Option<String>, Option<SystemTime>)>, session: Option<String>, turn: Option<(Turn, Option<SystemTime>)>) -> Usage {
+    let line = line.filter(|(_, of, _)| session.is_none() || of.is_none() || *of == session);
+    let line_at = line.as_ref().and_then(|(_, _, at)| *at);
+    let mut usage = line.map(|(usage, _, _)| usage).unwrap_or_default();
+    if let Some((turn, at)) = turn {
+        let newer = usage.context.is_none() || match (at, line_at) {
+            (Some(at), Some(line_at)) => at > line_at,
+            _ => true,
+        };
+        if newer {
+            let window = usage.context_window.unwrap_or_else(|| window_size(known_window(&turn.model), turn.context()));
+            fill_from_turn(&mut usage, &turn, window);
+        }
+    }
+    usage
 }
 
 /// The last answer of a session's main conversation, as its transcript has it.
@@ -279,7 +299,8 @@ fn last_turn(tail: &str, cut: bool) -> Option<Turn> {
 
 /// What the status bar shows of an answer, against a window of `window` tokens.
 fn fill_from_turn(usage: &mut Usage, turn: &Turn, window: u64) {
-    usage.model = usage.model.take().or_else(|| Some(model_name(&turn.model)));
+    // The newer answer's model: the session may have changed it since the status line last ran.
+    usage.model = Some(model_name(&turn.model));
     usage.context = Some((turn.context() as f64 * 100.0 / window as f64).min(100.0));
     usage.context_window = Some(window);
     usage.input_tokens = Some(turn.input);
@@ -554,6 +575,27 @@ mod tests {
             assert_eq!(hooks["hooks"].as_object().unwrap().len(), HOOK_EVENTS.len());
             assert!(hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"].as_str().unwrap().ends_with(" --claude-hook"));
         }
+    }
+
+    #[test]
+    fn the_newer_source_gives_the_context_and_the_last_status_line_of_the_session_its_cost() {
+        use std::time::Duration;
+        let (old, new) = (SystemTime::UNIX_EPOCH + Duration::from_secs(100), SystemTime::UNIX_EPOCH + Duration::from_secs(200));
+        let line = Usage { model: Some("Opus 5.5".into()), context: Some(10.0), context_window: Some(1_000_000), cost: Some(1.25), duration_ms: Some(60_000), lines_added: Some(3), ..Default::default() };
+        let turn = Turn { model: "claude-opus-5-5".into(), input: 1, cache_creation: 9_999, cache_read: 290_000, output: 40 };
+
+        // The status line ran long ago; the transcript has a later answer: its context, the status line's cost.
+        let both = combine(Some((line.clone(), Some("s1".into()), Some(old))), Some("s1".into()), Some((turn.clone(), Some(new))));
+        assert_eq!((both.context, both.cache_read_tokens, both.context_window), (Some(30.0), Some(290_000), Some(1_000_000)));
+        assert_eq!((both.cost, both.duration_ms, both.lines_added), (Some(1.25), Some(60_000), Some(3)), "kept from the last run");
+
+        // The status line is the newer: it stands as it is.
+        let fresh = combine(Some((line.clone(), Some("s1".into()), Some(new))), Some("s1".into()), Some((turn.clone(), Some(old))));
+        assert_eq!((fresh.context, fresh.cache_read_tokens), (Some(10.0), None));
+
+        // A status line of an earlier session in the pane is left out: no cost of another session.
+        let other = combine(Some((line, Some("s0".into()), Some(old))), Some("s1".into()), Some((turn, Some(new))));
+        assert_eq!((other.cost, other.context_window, other.context), (None, Some(1_000_000), Some(30.0)), "the window remembered for the model, not the old line's");
     }
 
     #[test]
