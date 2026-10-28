@@ -4,8 +4,8 @@
 //! command (`agent::statusline_main`) notes it in `%LOCALAPPDATA%\Nekominal\spend.json` under the local date and the id of
 //! the session: the highest seen that day. What a day cost is what each of its sessions grew by that day: its highest
 //! then, less the highest of the last earlier day it was seen (a session resumed from yesterday counts only today's
-//! part). Every window of every process reads the same file; the commands that write it run one at a time per session,
-//! and a write two sessions race over is made good by the next one, since each holds a running total.
+//! part). Every window of every process reads the same file; the commands that write it take `spend.lock` first, so the
+//! writes of two sessions that end together do not undo one another.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -63,6 +63,9 @@ fn read() -> Ledger {
 pub fn record(status: &serde_json::Value) {
     let session = status.get("session_id").and_then(serde_json::Value::as_str).unwrap_or_default();
     let Some(cost) = status.pointer("/cost/total_cost_usd").and_then(serde_json::Value::as_f64) else { return };
+    // One writer at a time: two agents that finish together would each write the ledger they read, and the session of
+    // the one written over, if it ended, would never be told again. Held until the write is done.
+    let _lock = ledger_file().and_then(|file| lock(&file.with_extension("lock")));
     let mut ledger = read();
     if note(&mut ledger, &today(), session, cost)
         && let Some(file) = ledger_file()
@@ -70,6 +73,19 @@ pub fn record(status: &serde_json::Value) {
     {
         crate::agent::write_whole(&file, &text);
     }
+}
+
+/// `file` opened for this process alone (no sharing), waited for a little while another holds it; None when it stays held,
+/// and the write goes on without it rather than not at all.
+fn lock(file: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    for _ in 0..50 {
+        match std::fs::OpenOptions::new().write(true).create(true).truncate(false).share_mode(0).open(file) {
+            Ok(held) => return Some(held),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+    None
 }
 
 /// What the sessions cost today, as far as the ledger knows.
@@ -80,6 +96,18 @@ pub fn today_total() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lock_is_one_holders_at_a_time_and_free_again_once_dropped() {
+        let file = std::env::temp_dir().join(format!("nekominal-spend-{}.lock", std::process::id()));
+        let held = lock(&file).expect("free");
+        let started = std::time::Instant::now();
+        assert!(lock(&file).is_none(), "held by the first");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(400), "it waited before giving up");
+        drop(held);
+        assert!(lock(&file).is_some(), "free again");
+        let _ = std::fs::remove_file(&file);
+    }
 
     #[test]
     fn a_day_costs_what_its_sessions_grew_by_that_day() {
