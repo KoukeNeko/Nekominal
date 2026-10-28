@@ -85,6 +85,20 @@ pub fn window_done(window: &WindowState, made: bool) -> Vec<String> {
     if made { adopted } else { Vec::new() }
 }
 
+/// The place of pane `id` in the tree `layout` of its tab: what names a handed-over pane on both sides. Its id does not:
+/// a tab numbers its panes from 1, while reading the session again numbers them across the window (the first pane of
+/// the second tab is 2), so by id only the panes of the first tab were found, and every other came back a fresh shell.
+pub fn place(layout: &nekominal_model::layout::Node, id: nekominal_model::layout::PaneId) -> Option<u32> {
+    layout.pane_ids().iter().position(|pane| *pane == id).map(|at| at as u32)
+}
+
+/// Where among `panes` the pane handed over as pane `id` of tab `tab` is (`id` and `layout` as the session read again
+/// has them).
+pub fn find(panes: &[wire::PaneState], tab: usize, layout: &nekominal_model::layout::Node, id: nekominal_model::layout::PaneId) -> Option<usize> {
+    let place = place(layout, id)?;
+    panes.iter().position(|state| state.tab == tab && state.pane == place)
+}
+
 /// Copies `updater.exe` (beside this program) out of the app's folder and starts it for the Scoop install in `app`: the
 /// name of the pipe it serves.
 pub fn start_updater(app: &Path) -> Result<String, String> {
@@ -230,6 +244,61 @@ mod tests {
         assert_eq!(strip_adopt(args(&["--adopt"])), args(&["--adopt"]), "no pipe: left for the command line to refuse");
         assert_eq!(strip_adopt(args(&["--adopt", r"\\.\pipe\nekominal-update-x"])), Vec::<String>::new());
         assert_eq!(adopt_pipe(), Some(r"\\.\pipe\nekominal-update-x"));
+    }
+
+    #[test]
+    fn every_pane_of_every_tab_is_found_again_though_reading_the_session_numbers_the_panes_across_the_window() {
+        use std::collections::BTreeMap;
+
+        use nekominal_model::{
+            layout::{Axis, Node, Split},
+            session::{PaneRecord, Session, TabRecord},
+        };
+        // The window of the sandbox run: four tabs of one pane (cmd, then three PowerShells), each pane 1 of its tab as
+        // `Tab::new` numbers it, and a fifth tab split twice, whose ids are not in tree order after closing and splitting.
+        let tab = |layout: Node| TabRecord {
+            panes: layout.pane_ids().into_iter().map(|id| (id, PaneRecord::default())).collect::<BTreeMap<_, _>>(),
+            active: layout.pane_ids()[0],
+            layout,
+            zoomed: None,
+            name: None,
+            color: None,
+        };
+        let split = |first, second| Node::Split(Box::new(Split { axis: Axis::Row, ratio: 0.5, first, second }));
+        let given = vec![tab(Node::Leaf(1)), tab(Node::Leaf(1)), tab(Node::Leaf(1)), tab(Node::Leaf(1)), tab(split(Node::Leaf(3), split(Node::Leaf(1), Node::Leaf(4))))];
+        // As `hand_off_window` names them, the session's name telling them apart.
+        let panes: Vec<wire::PaneState> = given
+            .iter()
+            .enumerate()
+            .flat_map(|(index, record)| {
+                record.layout.pane_ids().into_iter().map(move |id| wire::PaneState {
+                    tab: index,
+                    pane: place(&record.layout, id).unwrap(),
+                    session: format!("{index}-{id}"),
+                    title: String::new(),
+                    cols: 80,
+                    rows: 24,
+                    screen: String::new(),
+                    parts: None,
+                })
+            })
+            .collect();
+        let value = Session { window: None, tabs: given.clone(), active_tab: 0 }.to_value();
+
+        // As `open_handed_over` reads them back.
+        let read = Session::parse(&value.to_string()).session;
+        assert_eq!(read.tabs[1].layout, Node::Leaf(2), "the second tab's pane is 2 once read: by id it was not found");
+        let mut found = Vec::new();
+        for (index, record) in read.tabs.iter().enumerate() {
+            for (id, given_id) in record.layout.pane_ids().into_iter().zip(given[index].layout.pane_ids()) {
+                let at = find(&panes, index, &record.layout, id).unwrap_or_else(|| panic!("tab {index} pane {id} not found"));
+                assert_eq!(panes[at].session, format!("{index}-{given_id}"));
+                found.push(at);
+            }
+        }
+        found.sort();
+        assert_eq!(found, (0..panes.len()).collect::<Vec<_>>(), "each pane once");
+        assert_eq!(find(&panes, 5, &Node::Leaf(1), 1), None, "a tab that was not handed over");
     }
 
     #[test]

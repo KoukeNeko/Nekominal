@@ -453,7 +453,7 @@ impl App {
                 let pane = record.panes.get(&id);
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
                 let cwd = pane.and_then(|pane| pane.cwd.as_deref());
-                let Some(at) = panes.iter().position(|state| state.tab == index && state.pane == id) else {
+                let Some(at) = crate::handoff::find(&panes, index, &record.layout, id) else {
                     util::log(&format!("update: tab {index} pane {id} was not handed over: a fresh shell"));
                     return self.make_entry_with(id, size, profile, cwd);
                 };
@@ -496,7 +496,7 @@ impl App {
                 let mut core = entry.pane.term.lock();
                 panes.push(nekominal_pty::handoff::PaneState {
                     tab: index,
-                    pane: entry.id,
+                    pane: crate::handoff::place(&tab.tree, entry.id).unwrap_or(u32::MAX),
                     session: entry.session.clone(),
                     title: entry.title.clone(),
                     cols: core.columns() as u16,

@@ -75,7 +75,22 @@ fn replies(text: &str) -> usize {
     text.matches("TTL=").count()
 }
 
-/// Starts `ping -t` under `cmd /k`, gives it to `parent` and exits on the spot.
+/// The PowerShell 7 profile the app offers (on this machine often the Store's, an MSIX app whose children run outside
+/// the session's job); none where it is not installed, and that part of the test is skipped.
+fn pwsh() -> Option<SpawnConfig> {
+    nekominal_pty::profiles::discover().into_iter().find(|profile| profile.id == "pwsh").map(|profile| profile.spawn_config(None, 100, 30))
+}
+
+/// Pauses `session` and duplicates its handles into `target`, as a pane gives its session to the updater.
+fn give(session: &Session, target: &Process) -> Result<Parts, String> {
+    if !session.pause(Duration::from_secs(5)) {
+        return Err("the session did not pause".into());
+    }
+    let parts = session.parts().map_err(|e| format!("parts: {e}"))?;
+    handoff::duplicate_into(target, &parts).map_err(|e| e.to_string())
+}
+
+/// Starts `ping -t` under `cmd /k`, and PowerShell 7 with a variable set, gives both to `parent` and exits on the spot.
 fn child(parent: u32) -> Result<(), String> {
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     let config = SpawnConfig {
@@ -88,17 +103,20 @@ fn child(parent: u32) -> Result<(), String> {
         width_model: WidthModel::default(),
         inherit_environment: true,
     };
+    let target = Process::open(parent).map_err(|e| e.to_string())?;
     let sessions = Sessions::default();
     let (session, rx) = started(&sessions, |sessions, sink| sessions.spawn(&config, sink))?;
     read_until(&session, &rx, Duration::from_secs(20), |text| replies(text) >= 2)?;
     let running = session.job_process_ids();
-    if !session.pause(Duration::from_secs(5)) {
-        return Err("the session did not pause".into());
+    let given = give(&session, &target)?;
+    let mut line = serde_json::json!({ "parts": given, "running": running });
+    if let Some(config) = pwsh() {
+        let (shell, rx) = started(&sessions, |sessions, sink| sessions.spawn(&config, sink))?;
+        // The quotes keep the echo of the command from reading as its answer.
+        shell.write(b"$nekoHandoff = 21; 'set-' + 'done'\r").map_err(|e| e.to_string())?;
+        read_until(&shell, &rx, Duration::from_secs(60), |text| text.contains("set-done")).map_err(|e| format!("pwsh: {e}"))?;
+        line["pwsh"] = serde_json::to_value(give(&shell, &target)?).map_err(|e| e.to_string())?;
     }
-    let parts = session.parts().map_err(|e| format!("parts: {e}"))?;
-    let target = Process::open(parent).map_err(|e| e.to_string())?;
-    let given = handoff::duplicate_into(&target, &parts).map_err(|e| e.to_string())?;
-    let line = serde_json::json!({ "parts": given, "running": running });
     let mut out = std::io::stdout();
     writeln!(out, "{line}").and_then(|()| out.flush()).map_err(|e| e.to_string())?;
     // As the Nekominal that is replaced does: no destructor runs, no pseudoconsole is closed.
@@ -159,6 +177,27 @@ fn parent() -> Result<(), String> {
             Event::Exit(5) => break,
             Event::Exit(code) => return Err(format!("cmd exited with {code}, not 5")),
         }
+    }
+
+    // PowerShell 7 is the same shell, its variable still set, however it was installed.
+    match given.get("pwsh") {
+        Some(pwsh) => {
+            let parts: Parts = serde_json::from_value(pwsh.clone()).map_err(|e| e.to_string())?;
+            let (shell, rx) = started(&sessions, |sessions, sink| sessions.adopt(&parts, sink))?;
+            shell.write(b"'v=' + ($nekoHandoff * 2)\r").map_err(|e| e.to_string())?;
+            read_until(&shell, &rx, Duration::from_secs(30), |text| text.contains("v=42")).map_err(|e| format!("adopted pwsh: {e}"))?;
+            shell.write(b"exit 6\r").map_err(|e| e.to_string())?;
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                let left = deadline.checked_duration_since(Instant::now()).ok_or("pwsh did not exit")?;
+                match rx.recv_timeout(left).map_err(|_| "pwsh did not exit".to_owned())? {
+                    Event::Data(bytes) => shell.ack(bytes.len()),
+                    Event::Exit(6) => break,
+                    Event::Exit(code) => return Err(format!("pwsh exited with {code}, not 6")),
+                }
+            }
+        }
+        None => println!("handoff: no PowerShell 7 here, its part skipped"),
     }
     Ok(())
 }

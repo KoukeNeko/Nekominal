@@ -69,7 +69,8 @@ impl Parts {
 /// One pane of a window that is handed over.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PaneState {
-    /// The place of its tab among the tabs of the window's session, and its id in that tab.
+    /// The place of its tab among the tabs of the window's session, and its place among the panes of that tab in the
+    /// order of its tree (not its id: reading the session numbers the panes afresh across the window).
     pub tab: usize,
     pub pane: u32,
     /// The name of the pane (`NEKOMINAL_SESSION` in its shell), which the files of its agent are named by.
