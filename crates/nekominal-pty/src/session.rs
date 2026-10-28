@@ -10,7 +10,7 @@ use std::{
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicU32, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
     thread,
     time::{Duration, Instant},
@@ -69,19 +69,25 @@ impl Flow {
         !state.closed
     }
 
-    fn done_reading(&self) {
-        self.state.lock().unwrap().reading = false;
-        self.changed.notify_all();
-    }
-
-    fn add(&self, bytes: usize) {
-        self.state.lock().unwrap().unacked += bytes;
+    /// Ends a read that took `bytes`, which now await acknowledgement. Only a pause waits for the end of a read; the
+    /// reader runs this hundreds of thousands of times a second in a flood, so nobody else is woken.
+    fn done_reading(&self, bytes: usize) {
+        let mut state = self.state.lock().unwrap();
+        state.reading = false;
+        state.unacked += bytes;
+        if state.paused {
+            self.changed.notify_all();
+        }
     }
 
     fn ack(&self, bytes: usize) {
         let mut state = self.state.lock().unwrap();
+        // Only a reader stopped at the watermark, or a pause waiting for everything to be taken in, waits on this.
+        let waited = state.unacked >= HIGH_WATERMARK || state.paused;
         state.unacked = state.unacked.saturating_sub(bytes);
-        self.changed.notify_all();
+        if waited {
+            self.changed.notify_all();
+        }
     }
 
     fn close(&self) {
@@ -266,16 +272,19 @@ fn read_loop(mut output: File, flow: &Flow, tx: &Sender<Message>) {
     loop {
         let open = flow.wait_for_room();
         let result = output.read(&mut buffer);
-        flow.done_reading();
+        // After close the stream is still drained so ClosePseudoConsole cannot block on it.
+        let forward = open && forwarding;
+        flow.done_reading(match result {
+            Ok(read) if forward => read,
+            _ => 0,
+        });
         let read = match result {
             // A pause cancelled the read, which took nothing: wait for the resume, or for the hand-off to end the process.
             Err(_) if flow.paused() => continue,
             Ok(0) | Err(_) => break, // a broken pipe is the normal end of the stream
             Ok(read) => read,
         };
-        // After close the stream is still drained so ClosePseudoConsole cannot block on it.
-        if open && forwarding {
-            flow.add(read);
+        if forward {
             forwarding = tx.send(Message::Data(buffer[..read].to_vec())).is_ok();
         }
     }
@@ -314,16 +323,16 @@ fn forward_loop(rx: &Receiver<Message>, mut sink: Sink, pty: &Pty, flow: &Flow) 
             Err(_) => finished = true,
         }
 
-        // Merge whatever else arrives within the window into the same frame.
-        let deadline = Instant::now() + FRAME_WINDOW;
+        // Merge whatever else arrives within the window into the same frame. The window is slept through rather than
+        // waited on: ConPTY writes about a line at a time, and waking for each read cost more than taking it in.
+        if !finished {
+            thread::sleep(FRAME_WINDOW);
+        }
         while !finished && frame.data.len() < FRAME_MAX {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
-            match rx.recv_timeout(remaining) {
+            match rx.try_recv() {
                 Ok(message) => frame.apply(message),
-                Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => finished = true,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => finished = true,
             }
         }
 
