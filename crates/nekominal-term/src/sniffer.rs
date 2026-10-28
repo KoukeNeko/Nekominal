@@ -139,6 +139,39 @@ struct Collector {
     /// DECRST 1070: the colour registers are shared, and a picture starts with the ones the last one left.
     shared_registers: bool,
     shared_palette: Option<Vec<[u8; 4]>>,
+    sixel_budget: SixelBudget,
+}
+
+/// The pixel writes Sixel pictures may make, refilled with time: a few bytes of Sixel can ask for millions of pixels, and
+/// a stream of such pictures would hold the terminal for minutes. A whole 4096 x 4096 picture fits several times over.
+struct SixelBudget {
+    left: f64,
+    at: Option<std::time::Instant>,
+}
+
+const SIXEL_PIXELS_PER_SECOND: f64 = 64.0 * 1024.0 * 1024.0;
+const SIXEL_PIXELS_AT_ONCE: f64 = 128.0 * 1024.0 * 1024.0;
+
+impl Default for SixelBudget {
+    fn default() -> Self {
+        Self { left: SIXEL_PIXELS_AT_ONCE, at: None }
+    }
+}
+
+impl SixelBudget {
+    /// What a picture starting now may write.
+    fn allowance(&mut self) -> usize {
+        let now = std::time::Instant::now();
+        if let Some(at) = self.at {
+            self.left = (self.left + now.duration_since(at).as_secs_f64() * SIXEL_PIXELS_PER_SECOND).min(SIXEL_PIXELS_AT_ONCE);
+        }
+        self.at = Some(now);
+        self.left as usize
+    }
+
+    fn spend(&mut self, cost: usize) {
+        self.left = (self.left - cost as f64).max(0.0);
+    }
 }
 
 impl Collector {
@@ -284,7 +317,7 @@ impl Perform for Collector {
             ([], 'q') => {
                 let p2 = params.iter().nth(1).and_then(|p| p.first().copied()).unwrap_or(0);
                 let palette = self.shared_palette.take().filter(|_| self.shared_registers).unwrap_or_else(default_palette);
-                self.sixel = Some(SixelDecoder::new(p2, palette));
+                self.sixel = Some(SixelDecoder::with_allowance(p2, palette, self.sixel_budget.allowance()));
             }
             ([b'$'], 'q') => self.push(Sniffed::DecrqssQuery),
             ([b'+'], 'q') => self.push(Sniffed::XtgettcapQuery),
@@ -303,6 +336,7 @@ impl Perform for Collector {
         if self.shared_registers {
             self.shared_palette = Some(decoder.palette().to_vec());
         }
+        self.sixel_budget.spend(decoder.cost());
         if let Some(image) = decoder.finish() {
             self.push(Sniffed::Sixel(image));
         }

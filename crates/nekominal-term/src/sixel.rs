@@ -117,12 +117,21 @@ pub struct SixelDecoder {
     params: [u32; 5],
     count: usize,
     transparent_background: bool,
+    /// Pixels the picture may write, its final copy included, and how many it has: a repeat count with a tall aspect
+    /// draws millions of pixels for a few bytes, so a stream of such pictures is cut off here, not drawn.
+    allowance: usize,
+    written: usize,
 }
 
 impl SixelDecoder {
     /// A picture of a `DCS P1 ; P2 ; P3 q` string with `palette` (`default_palette`, or the one the last picture left
     /// when the registers are shared). P1 (an aspect ratio) is ignored as xterm does: the raster attributes give it.
-    pub fn new(p2: u16, mut palette: Vec<[u8; 4]>) -> Self {
+    pub fn new(p2: u16, palette: Vec<[u8; 4]>) -> Self {
+        Self::with_allowance(p2, palette, usize::MAX)
+    }
+
+    /// Like `new`, with at most `allowance` pixel writes (see [`SixelDecoder::cost`]).
+    pub fn with_allowance(p2: u16, mut palette: Vec<[u8; 4]>, allowance: usize) -> Self {
         palette.resize(REGISTERS, [0, 0, 0, 255]);
         let color = palette[0];
         Self {
@@ -138,7 +147,15 @@ impl SixelDecoder {
             params: [0; 5],
             count: 0,
             transparent_background: p2 == 1,
+            allowance,
+            written: 0,
         }
+    }
+
+    /// The pixel writes the picture has cost and will cost when it is finished (its pixels copied once more).
+    pub fn cost(&self) -> usize {
+        let width = self.rows.iter().map(Vec::len).max().unwrap_or(0).max(self.declared.0);
+        self.written.saturating_add(width * self.rows.len().max(self.declared.1))
     }
 
     /// The palette as the picture left it (for shared registers).
@@ -228,6 +245,12 @@ impl SixelDecoder {
         if bits == 0 || start >= end {
             return;
         }
+        // Half the allowance for drawing, half kept for the copy `finish` makes.
+        let writes = (end - start) * bits.count_ones() as usize * tall;
+        if self.written.saturating_add(writes) > self.allowance / 2 {
+            return;
+        }
+        self.written += writes;
         for bit in 0..6 {
             if bits & (1 << bit) == 0 {
                 continue;
@@ -254,7 +277,7 @@ impl SixelDecoder {
         self.end_parameters();
         let width = self.rows.iter().map(Vec::len).max().unwrap_or(0).max(self.declared.0);
         let height = self.rows.len().max(self.declared.1);
-        if width == 0 || height == 0 {
+        if width == 0 || height == 0 || self.written.saturating_add(width * height) > self.allowance {
             return None;
         }
         let mut pixels = vec![0; width * height * 4];
@@ -354,6 +377,24 @@ mod tests {
             }
             let _ = decoder.finish();
         }
+    }
+
+    #[test]
+    fn a_picture_stops_drawing_past_its_allowance_and_is_dropped_when_it_cannot_be_copied() {
+        // "16;1: each sixel pixel 16 tall; !4096~: 4096 columns of six of them, about 400 000 pixels for 7 bytes.
+        let flood: Vec<u8> = b"\"16;1".iter().copied().chain(b"!4096~$".repeat(1000)).collect();
+        let mut decoder = SixelDecoder::with_allowance(0, default_palette(), 1_000_000);
+        for byte in &flood {
+            decoder.put(*byte);
+        }
+        assert!(decoder.written <= 1_000_000, "{}", decoder.written);
+        assert!(decoder.finish().is_some(), "what fit is the picture");
+        let mut big = SixelDecoder::with_allowance(0, default_palette(), 1_000);
+        for byte in b"\"1;1;4096;4096#0@" {
+            big.put(*byte);
+        }
+        assert!(big.cost() > 1_000);
+        assert!(big.finish().is_none(), "a declared 4096 x 4096 is not allocated past the allowance");
     }
 
     #[test]
