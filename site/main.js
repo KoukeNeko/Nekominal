@@ -69,11 +69,11 @@ if (window.gsap && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
   layers.forEach((g, i) => {
     const lift = g.querySelector('.pl-hv');
     g.addEventListener('pointerenter', () => {
-      stack.classList.add('hovering'); g.classList.add('on'); cap.classList.add('on'); cap.textContent = i18n.say(capKeys[i]);
+      stack.classList.add('hovering'); g.classList.add('on'); cap.classList.add('on'); cap.innerHTML = i18n.say(capKeys[i]);
       gsap.to(lift, { y: -16, duration: .3, ease: 'power2.out' });
     });
     g.addEventListener('pointerleave', () => {
-      stack.classList.remove('hovering'); g.classList.remove('on'); cap.classList.remove('on'); cap.textContent = i18n.say('cap.0');
+      stack.classList.remove('hovering'); g.classList.remove('on'); cap.classList.remove('on'); cap.innerHTML = i18n.say('cap.0');
       gsap.to(lift, { y: 0, duration: .45, ease: 'power3.out' });
     });
   });

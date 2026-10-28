@@ -1,6 +1,6 @@
 @font-face{font-family:"LINE Seed TW";src:url(fonts/LINESeedTW-Regular.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"LINE Seed TW";src:url(fonts/LINESeedTW-Bold.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
-:root{--bg:#0b1118;--text:#e8eef4;--mute:#8fa0b2;--plate:#131c27;--side:#1d2937;--line:#2b3a4b;--edge:#cdd8e3;--hot:#ff6a1f;--eye:#9bf05b;--gutter:clamp(16px,4vw,56px)}
+:root{--bg:#0b1118;--text:#e8eef4;--mute:#8fa0b2;--plate:#131c27;--side:#1d2937;--line:#2b3a4b;--edge:#cdd8e3;--hot:#ff6a1f;--eye:#9bf05b;--gutter:clamp(16px,4vw,56px);--wrap:1200px}
 *{box-sizing:border-box;margin:0}
 html{scroll-behavior:smooth;background:var(--bg)}
 body{background:var(--bg);color:var(--text);font-family:"LINE Seed TW","Microsoft JhengHei UI","Segoe UI",sans-serif;line-height:1.7;overflow-x:hidden}
@@ -9,25 +9,30 @@ code,kbd,.mono{font-family:"IBM Plex Mono","Cascadia Mono",Consolas,monospace}
 code{font-size:.92em;color:var(--text)}
 :focus-visible{outline:2px solid var(--eye);outline-offset:3px}
 
-.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:30px;padding:0 max(var(--gutter),calc((100% - 1440px)/2 + var(--gutter)));height:68px;background:var(--bg);border-bottom:1px solid transparent;font-size:15px}
+.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:30px;padding:0 max(var(--gutter),calc((100% - var(--wrap))/2));height:68px;background:var(--bg);border-bottom:1px solid transparent;font-size:15px}
 .nav.scrolled{border-bottom-color:var(--line)}
 .nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-right:auto;text-decoration:none}
 .nav a{text-decoration:none}.nav a:not(.brand){color:var(--text)}
 .nav .lang{font:inherit;color:var(--text);background:none;border:0;padding:0;cursor:pointer}
 .nav .dl{border-bottom:2px solid var(--eye);padding-bottom:1px;font-weight:700}
 
-.hero{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:8px;padding:0 var(--gutter);max-width:1440px;margin:0 auto;min-height:calc(100vh - 68px);max-height:900px}
-.hero .copy{display:flex;flex-direction:column;padding:56px 0 54px}
+.hero{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:8px;width:min(100% - 2 * var(--gutter),var(--wrap));margin:0 auto}
+.hero .copy{display:flex;flex-direction:column;padding:44px 0 40px}
 h1{font-size:clamp(36px,4.2vw,60px);line-height:1.12;font-weight:700;letter-spacing:-.02em}
-.sub{margin-top:24px;font-size:18px;line-height:1.7;color:var(--mute);max-width:470px}
-.cmd{margin-top:26px;display:inline-flex;align-items:center;gap:14px;align-self:flex-start;background:var(--text);color:var(--bg);padding:11px 12px 11px 18px;font:500 15px "IBM Plex Mono",Consolas,monospace;max-width:100%}
+.sub{margin-top:18px;font-size:18px;line-height:1.7;color:var(--mute);max-width:470px}
+.cmd{margin-top:20px;display:inline-flex;align-items:center;gap:14px;align-self:flex-start;background:var(--text);color:var(--bg);padding:11px 12px 11px 18px;font:500 15px "IBM Plex Mono",Consolas,monospace;max-width:100%}
 .cmd code{color:var(--bg);overflow-wrap:anywhere;flex:1}
 .cmd button{font:700 13px "LINE Seed TW",sans-serif;color:var(--text);background:var(--bg);border:0;padding:6px 12px;cursor:pointer;flex:none}
 .cmd button:hover{background:#000}
-.cap{margin-top:30px;min-height:4.4em;max-width:470px;font-size:16px;line-height:1.7;color:var(--mute);transition:color .2s}
+.cap{margin-top:26px;min-height:345px;max-width:500px;font-size:15px;line-height:1.7;color:var(--mute);transition:color .2s}
 .cap.on{color:var(--text)}
-.total{margin-top:auto}
-.total b{display:block;font:500 clamp(64px,7vw,96px)/1 "IBM Plex Mono",monospace;letter-spacing:-.05em;color:var(--eye)}
+.cap h3{font-size:17px;color:var(--text);margin-bottom:6px}
+.cap h3 span{margin-left:8px;font:500 13px "IBM Plex Mono",monospace;color:var(--mute)}
+.cap p{margin-top:4px}.cap ul,.cap ol{margin:8px 0 0 20px}.cap li{margin-top:4px}
+.cap a{display:inline-block;margin-top:10px;color:var(--eye);text-underline-offset:3px}
+.cap .hint{margin-top:12px;color:var(--mute)}
+.total{margin-top:auto;padding-top:28px}
+.total b{display:block;font:500 clamp(56px,5.6vw,80px)/1 "IBM Plex Mono",monospace;letter-spacing:-.05em;color:var(--eye)}
 .total span{font-size:16px;color:var(--mute)}
 .stack{width:100%;height:auto;align-self:center;overflow:visible}
 .stack text{font-family:"LINE Seed TW","Microsoft JhengHei UI",sans-serif;fill:var(--text)}
@@ -48,7 +53,7 @@ h1{font-size:clamp(36px,4.2vw,60px);line-height:1.12;font-weight:700;letter-spac
 .stack.hovering .pl:not(.on){opacity:.4}
 .stack .pl.on text.t1:not(.hot){fill:var(--eye)}
 
-.sec{max-width:1120px;margin:0 auto;padding:112px var(--gutter) 0}
+.sec{width:min(100% - 2 * var(--gutter),var(--wrap));margin:0 auto;padding:112px 0 0}
 h2{font-size:clamp(28px,3.6vw,42px);line-height:1.25;font-weight:700;letter-spacing:-.01em}
 h3{font-size:19px;font-weight:700;line-height:1.4}
 .lead{margin-top:18px;max-width:720px;font-size:17px;color:var(--mute)}
@@ -85,13 +90,15 @@ figcaption{padding:10px 0 0;font-size:14px;color:var(--mute)}
 .install .cmd{display:flex;margin-top:24px;padding:14px 14px 14px 20px}
 .btn{display:inline-block;margin-top:26px;padding:13px 28px;background:var(--eye);color:var(--bg);font-weight:700;text-decoration:none}
 .btn:hover{filter:brightness(1.08)}
-footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;max-width:1120px;margin:112px auto 0;padding:24px var(--gutter) 40px;border-top:1px solid var(--line);font-size:14px;color:var(--mute)}
+footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:min(100% - 2 * var(--gutter),var(--wrap));margin:112px auto 0;padding:24px 0 40px;border-top:1px solid var(--line);font-size:14px;color:var(--mute)}
 footer img{vertical-align:-4px}footer a{text-decoration:none}footer a:hover{color:var(--text)}
 
 @media (max-width:860px){
-  .hero{grid-template-columns:1fr;padding:0 var(--gutter);min-height:0;max-height:none}
+  .hero{grid-template-columns:1fr}
   .hero .copy{padding:36px 0 0}
   .total{margin-top:36px}
+  .cap{min-height:0}
+
   .stack{margin-top:24px}
   .stack .t1{font-size:34px}.stack .t1.hot{font-size:24px}.stack .t2{font-size:25px}.stack .t2[data-i18n]{display:none}
   .nav a.hide-s{display:none}.nav{gap:20px}
