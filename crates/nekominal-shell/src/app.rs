@@ -156,6 +156,9 @@ const TYPING_GRACE: Duration = Duration::from_millis(150);
 /// The oldest the snapshot of the system's processes gets while no pane prints anything: what it finds (an agent a
 /// shell started, a server's port) mostly prints when it starts, and that takes a snapshot at the next tick.
 const PROCESS_SNAPSHOT_AGE: Duration = Duration::from_secs(30);
+/// How long the cursor blinks after the last key, or after the window became the active one; then it stays on until the
+/// next. Each phase of the blink draws a whole frame: a window nobody types in would do it twice a second for nothing.
+const BLINK_IDLE: Duration = Duration::from_secs(5);
 
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
@@ -357,6 +360,8 @@ pub struct App {
     /// The phase of the blink of the cursor, and the pace of the timer the window runs for it (none while it does not blink).
     blink_on: bool,
     blink_armed: Option<u32>,
+    /// The last key, or the window becoming the active one: the cursor blinks for `BLINK_IDLE` after it.
+    blink_since: Instant,
     /// What the last look for a newer version found, and whether the About page has not shown it yet: a thread fills it.
     update: Arc<std::sync::Mutex<(update::Check, bool)>>,
     /// Claude Code as the Agent page last found it.
@@ -733,6 +738,7 @@ impl App {
             elevate_later: Vec::new(),
             blink_on: true,
             blink_armed: None,
+            blink_since: Instant::now(),
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
             claude: agent::claude(),
             settings_readable,
@@ -1349,14 +1355,16 @@ impl App {
     /// Whether the cursor of the focused pane blinks now: the setting is on, the program did not ask for a steady one, and
     /// the window has the keyboard (an inactive window keeps a steady, hollow cursor).
     fn blink_wanted(&self) -> bool {
+        let fresh = self.blink_since.elapsed() < BLINK_IDLE;
         // The caret of a field of the settings page blinks as the terminal's cursor does.
         let page_caret = self.page_shown()
             && self.page.as_ref().is_some_and(|page| page.editing.is_some() || (page.focus.is_none() && (page.searching || !page.query.is_empty())));
         if page_caret {
-            return self.settings.cursor.blink && self.active && self.welcome.is_none();
+            return self.settings.cursor.blink && self.active && fresh && self.welcome.is_none();
         }
         self.settings.cursor.blink
             && self.active
+            && fresh
             && self.welcome.is_none()
             && self.focused().is_some_and(|entry| {
                 let cursor = &entry.view.snapshot().cursor;
@@ -1382,7 +1390,10 @@ impl App {
 
     /// Typing shows the cursor and starts its blink over, so that it is never off under the keys.
     fn show_cursor(&mut self) {
-        if !self.blink_on || self.blink_armed.is_some() {
+        // A blink that had stopped for want of keys starts again: its timer is set by a frame.
+        let stopped = self.blink_since.elapsed() >= BLINK_IDLE;
+        self.blink_since = Instant::now();
+        if !self.blink_on || self.blink_armed.is_some() || stopped {
             self.blink_on = true;
             // The timer is started again by the next frame, a whole phase from now.
             self.blink_armed = None;
@@ -1443,6 +1454,8 @@ impl App {
         // changes and writes its own copy.
         if active {
             self.reload_if_changed();
+            // Coming back to the window shows where the cursor is: it blinks again for a while.
+            self.blink_since = Instant::now();
         }
         self.active = active;
         self.update_window_title();

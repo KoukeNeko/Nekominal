@@ -943,7 +943,9 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
             let rect = placement.rect;
             let _ = SetWindowPos(hwnd, None, rect.x, rect.y, rect.width as i32, rect.height as i32, SWP_NOZORDER | SWP_NOACTIVATE);
         }
-        SetTimer(Some(hwnd), JOB_TIMER, 1000, None);
+        // Coalescable by half a second: nothing it looks at needs the exact second, and Windows can wake the processor once
+        // for it and the timers of other programs.
+        SetCoalescableTimer(Some(hwnd), JOB_TIMER, 1000, None, 500);
         // An updater, which is not elevated, may ask an elevated window to close: Windows lets that one message through.
         if crate::app::elevated() {
             let _ = ChangeWindowMessageFilterEx(hwnd, update_close_message(), MSGFLT_ALLOW, None);
