@@ -212,12 +212,15 @@ fn deletable(path: &std::path::Path) -> bool {
     path.to_string_lossy().contains("tty-graphics-protocol") && inside(&temp)
 }
 
-/// Reads the bytes a `t=f` / `t=t` transmission names. Only an absolute path to a regular file is read: not a share
-/// (a `\\server` path would make Windows connect to it and send the user's credentials), not a device or a pipe.
+/// Reads the bytes a `t=f` / `t=t` transmission names. Only a file the protocol itself makes is read: in the temporary
+/// folder, with `tty-graphics-protocol` in its path. A program is output, possibly from another machine (ssh): with any
+/// path, the answers (no such file, a folder, too large, read) would tell it which of the user's files exist and how big
+/// they are, so every other path gets the same refusal before anything is looked at. Never a share either (a `\\server`
+/// path would make Windows connect to it and send the user's credentials).
 fn read_file(path: &str, command: &Command) -> Result<Vec<u8>, Failure> {
     let path_ref = std::path::Path::new(path);
-    if path.starts_with("\\\\") || path.starts_with("//") || !path_ref.is_absolute() {
-        return fail("EBADF", "only an absolute path to a local file is read");
+    if path.starts_with("\\\\") || path.starts_with("//") || !path_ref.is_absolute() || !deletable(path_ref) {
+        return fail("EPERM", "only the protocol's own temporary files are read");
     }
     let metadata = std::fs::metadata(path_ref).or_else(|e| fail("ENOENT", format!("cannot read the file: {e}")))?;
     if !metadata.is_file() {
@@ -301,27 +304,30 @@ mod tests {
     }
 
     #[test]
-    fn files_are_read_only_when_they_are_local_regular_files_and_only_protocol_temp_files_are_deleted() {
+    fn only_the_protocols_own_temp_files_are_read_and_every_other_path_is_refused_alike() {
         let folder = std::env::temp_dir().join(format!("nekominal-kitty-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
-        let kept = folder.join("pixels.rgba");
-        std::fs::write(&kept, [1, 2, 3, 4]).unwrap();
+        let other = folder.join("pixels.rgba");
+        std::fs::write(&other, [1, 2, 3, 4]).unwrap();
+        let mine = folder.join("tty-graphics-protocol-0.rgba");
+        std::fs::write(&mine, [1, 2, 3, 4]).unwrap();
         let temp = folder.join("tty-graphics-protocol-1.rgba");
         std::fs::write(&temp, [5, 6, 7, 8]).unwrap();
         let path = |p: &std::path::Path| b64(p.to_str().unwrap().as_bytes());
 
         let file = Command::parse(b"f=32,s=1,v=1,t=f").unwrap();
-        assert_eq!(decode(&file, &path(&kept)).unwrap().rgba, [1, 2, 3, 4]);
+        assert_eq!(decode(&file, &path(&mine)).unwrap().rgba, [1, 2, 3, 4]);
+        assert!(mine.exists(), "a file transmission leaves the file");
         let as_temp = Command::parse(b"f=32,s=1,v=1,t=t").unwrap();
-        assert!(decode(&as_temp, &path(&kept)).is_ok());
-        assert!(kept.exists(), "a temp transmission of a file without the marker in its name leaves it");
         assert_eq!(decode(&as_temp, &path(&temp)).unwrap().rgba, [5, 6, 7, 8]);
         assert!(!temp.exists(), "the protocol's own temp file is deleted after the read");
 
-        assert_eq!(decode(&file, &b64(b"\\\\server\\share\\x.png")).err().unwrap().code, "EBADF", "no network paths");
-        assert_eq!(decode(&file, &b64(b"relative.png")).err().unwrap().code, "EBADF");
-        assert_eq!(decode(&file, &path(&folder)).err().unwrap().code, "EBADF", "a folder is not a regular file");
-        assert_eq!(decode(&file, &path(&folder.join("missing"))).err().unwrap().code, "ENOENT");
+        // A file that exists, one that does not, a folder, a share, a relative path: one answer, nothing to tell apart.
+        let refused = [path(&other), path(&folder.join("missing")), path(&folder), b64(b"\\\\server\\share\\x.png"), b64(b"relative.png")];
+        for payload in refused {
+            assert_eq!(decode(&file, &payload).err().unwrap().code, "EPERM");
+        }
+        assert!(other.exists());
         let shm = Command::parse(b"t=s,f=32,s=1,v=1").unwrap();
         assert_eq!(decode(&shm, &b64(b"name")).err().unwrap().code, "EINVAL");
         let _ = std::fs::remove_dir_all(&folder);
