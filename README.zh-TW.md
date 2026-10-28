@@ -1,12 +1,10 @@
 <p align="center">
-  <img src="assets/nekominal.svg" width="128" alt="Nekominal">
+  <img src="assets/banner.png" alt="Nekominal：一個輕量的 Windows 終端機">
 </p>
 
-<h1 align="center">Nekominal</h1>
-
 <p align="center">
-  <strong>為 coding agent 打造的 Windows 終端機。</strong><br>
-  一眼看出哪些分頁正在工作、哪些在等你。
+  <strong>一個輕量的 Windows 終端機。</strong><br>
+  原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。
 </p>
 
 <p align="center">
@@ -32,6 +30,7 @@ scoop install koukeneko/nekominal
 
 ## 功能
 
+- **不佔資源。** 單一原生程式：Rust、Direct3D 11 與 ConPTY，沒有 Electron 或 web view。視窗只在畫面有變化時才重繪。
 - **每個分頁都有 agent 狀態。** 工作中、等你回應、已完成或失敗。Ctrl+Shift+U 跳到下一個等你的分頁。
 - **標題列顯示 Claude Code 狀態。** 模型、context 用量、費用與時間；滑鼠移到計量條上可看詳細資訊。
 - **也支援 Codex、Gemini CLI 與 Aider**，不用另外設定。
@@ -43,9 +42,11 @@ scoop install koukeneko/nekominal
 - 內嵌圖片（Sixel、kitty）、字型連字、Mica 與壓克力背景，可匯入 Windows Terminal 與 iTerm2 的配色。
 - 透過 ntfy 或 webhook 傳送手機通知，並提供 `nekominal cli` 給腳本使用。
 
-| 內嵌圖片與連字 | `chafa` | `yazi` |
-| :---: | :---: | :---: |
-| ![一行連字下方的 Sixel 與 kitty 圖片](assets/screenshots/images-and-ligatures.png) | ![chafa 以三種方式顯示同一張圖](assets/screenshots/chafa.png) | ![yazi 的預覽窗格顯示一張圖](assets/screenshots/yazi-preview.png) |
+![Nekominal 側邊欄依狀態分組的五個 agent 分頁：等待中、執行中、已完成](assets/screenshots/agents.png)
+
+| Agent 卡片 | 依 repository 分組 |
+| :---: | :---: |
+| ![每個分頁一張卡片，顯示狀態、資料夾與分支](assets/screenshots/cards.png) | ![分頁依所在的 repository 分組並顯示狀態](assets/screenshots/repos.png) |
 
 ## 快速鍵
 

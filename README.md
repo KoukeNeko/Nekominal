@@ -1,12 +1,10 @@
 <p align="center">
-  <img src="assets/nekominal.svg" width="128" alt="Nekominal">
+  <img src="assets/banner.png" alt="Nekominal: a Windows terminal that stays light">
 </p>
 
-<h1 align="center">Nekominal</h1>
-
 <p align="center">
-  <strong>A Windows terminal made for coding agents.</strong><br>
-  See at a glance which tabs are working and which wait for you.
+  <strong>A Windows terminal that stays light.</strong><br>
+  Native Rust and Direct3D, no web runtime inside, and every tab tells you when an agent needs you.
 </p>
 
 <p align="center">
@@ -32,6 +30,8 @@ Windows 11, x64 or ARM64.
 
 ## What it does
 
+- **Light on your machine.** A single native program: Rust, Direct3D 11 and ConPTY, with no Electron or web view. A window
+  draws only when something on it changes.
 - **Agent state on every tab.** Working, waiting for you, done or failed. Ctrl+Shift+U jumps to the next tab that waits.
 - **Claude Code in the title bar.** The model, the context used, the cost and the time. Hover the meter for the details.
 - **Works with Codex, Gemini CLI and Aider too**, with nothing to set up.
@@ -43,9 +43,11 @@ Windows 11, x64 or ARM64.
 - Inline images (Sixel, kitty), font ligatures, Mica and acrylic, colour schemes from Windows Terminal and iTerm2.
 - Phone notifications through ntfy or a webhook, and a `nekominal cli` for scripts.
 
-| Inline images and ligatures | `chafa` | `yazi` |
-| :---: | :---: | :---: |
-| ![Sixel and kitty pictures under a line of ligatures](assets/screenshots/images-and-ligatures.png) | ![chafa showing one picture three ways](assets/screenshots/chafa.png) | ![yazi with a picture in its preview pane](assets/screenshots/yazi-preview.png) |
+![Nekominal's sidebar with five agent tabs grouped by state: waiting, running and done](assets/screenshots/agents.png)
+
+| Agent cards | By repository |
+| :---: | :---: |
+| ![Each tab as a card with its state, folder and branch](assets/screenshots/cards.png) | ![The tabs under the repository they work in, with their state](assets/screenshots/repos.png) |
 
 ## Shortcuts
 
