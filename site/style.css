@@ -7,14 +7,14 @@ code,kbd,.mono{font-family:"IBM Plex Mono","Cascadia Mono",Consolas,monospace}
 code{font-size:.92em;color:var(--text)}
 :focus-visible{outline:2px solid var(--eye);outline-offset:3px}
 
-.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:30px;padding:0 var(--gutter);height:68px;background:var(--bg);border-bottom:1px solid transparent;font-size:15px}
+.nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:30px;padding:0 max(var(--gutter),calc((100% - 1440px)/2 + var(--gutter)));height:68px;background:var(--bg);border-bottom:1px solid transparent;font-size:15px}
 .nav.scrolled{border-bottom-color:var(--line)}
 .nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-right:auto;text-decoration:none}
 .nav a{text-decoration:none}.nav a:not(.brand){color:var(--text)}
 .nav .lang{font:inherit;color:var(--text);background:none;border:0;padding:0;cursor:pointer}
 .nav .dl{border-bottom:2px solid var(--eye);padding-bottom:1px;font-weight:700}
 
-.hero{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:8px;padding:0 0 0 var(--gutter);min-height:calc(100vh - 68px);max-height:900px}
+.hero{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:8px;padding:0 var(--gutter);max-width:1440px;margin:0 auto;min-height:calc(100vh - 68px);max-height:900px}
 .hero .copy{display:flex;flex-direction:column;padding:56px 0 54px}
 h1{font-size:clamp(38px,4.6vw,66px);line-height:1.12;font-weight:700;letter-spacing:-.02em}
 .sub{margin-top:24px;font-size:18px;line-height:1.7;color:var(--mute);max-width:470px}
