@@ -40,7 +40,7 @@ use windows::{core::HSTRING, Win32::{
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
         WindowsAndMessaging::{
-            DestroyWindow, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
+            DestroyWindow, KillTimer, SetTimer, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
             SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
             SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
             SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND, WS_OVERLAPPEDWINDOW,
@@ -146,6 +146,10 @@ pub(crate) fn elevated() -> bool {
 /// Opens an address in the browser, or a file with its program; what goes wrong goes to the log.
 /// Seconds (job ticks) in a row the shell must be alone before what its agent said is dropped from the bar.
 const ALONE_TICKS: u8 = 3;
+/// The shortest time between two frames that output asks for (60 a second), and how long after a key output still draws
+/// at once (the echo of what was typed).
+const OUTPUT_FRAME: Duration = Duration::from_micros(16_667);
+const TYPING_GRACE: Duration = Duration::from_millis(150);
 /// The oldest the snapshot of the system's processes gets while no pane prints anything: what it finds (an agent a
 /// shell started, a server's port) mostly prints when it starts, and that takes a snapshot at the next tick.
 const PROCESS_SNAPSHOT_AGE: Duration = Duration::from_secs(30);
@@ -280,6 +284,10 @@ pub struct App {
     processes: Vec<(u32, u32, String)>,
     processes_at: Option<Instant>,
     output_seen: bool,
+    /// When the last frame was drawn and the last key pressed, and whether a frame output asked for is put off.
+    painted_at: Option<Instant>,
+    typed_at: Option<Instant>,
+    frame_timer: bool,
     /// The edge of the sidebar is being dragged: the settings as they were before, for the change to be saved once.
     side_drag: Option<Settings>,
     /// The badges drawn in the last frame, where and what a click on each opens.
@@ -662,6 +670,9 @@ impl App {
             processes: Vec::new(),
             processes_at: None,
             output_seen: false,
+            painted_at: None,
+            typed_at: None,
+            frame_timer: false,
             side_drag: None,
             badge_hits: Vec::new(),
             right_width: 0.0,
@@ -1528,6 +1539,31 @@ impl App {
             self.find_at = Some(Instant::now());
             self.find_refresh();
         }
+        self.redraw_output();
+    }
+
+    /// Output asks for a frame: at once, or `OUTPUT_FRAME` after the last one while it streams. A flood of output on a
+    /// 165 Hz screen drew at every refresh, more than anyone reads, and that was most of the window's CPU while it lasted.
+    /// Right after a key the frame comes at once, so what is typed shows without delay.
+    fn redraw_output(&mut self) {
+        let typing = self.typed_at.is_some_and(|at| at.elapsed() < TYPING_GRACE);
+        let wait = self.painted_at.map_or(Duration::ZERO, |at| OUTPUT_FRAME.saturating_sub(at.elapsed()));
+        if typing || wait.is_zero() {
+            self.redraw();
+        } else if !self.frame_timer {
+            // SAFETY: a timer of our own window, from its thread.
+            self.frame_timer = unsafe { SetTimer(Some(self.hwnd), crate::win::FRAME_TIMER, wait.as_millis().max(1) as u32, None) } != 0;
+            if !self.frame_timer {
+                self.redraw();
+            }
+        }
+    }
+
+    /// The frame `redraw_output` put off is due.
+    pub fn on_frame_timer(&mut self) {
+        self.frame_timer = false;
+        // SAFETY: a timer of our own window, from its thread.
+        unsafe { let _ = KillTimer(Some(self.hwnd), crate::win::FRAME_TIMER); }
         self.redraw();
     }
 
@@ -2524,6 +2560,7 @@ impl App {
 
     /// A key went down. `true` when the window handled it (a shortcut, or the terminal encoded it).
     pub fn on_key_down(&mut self, vk_code: i32, scan: u16, extended: bool, repeat: bool) -> bool {
+        self.typed_at = Some(Instant::now());
         self.show_cursor();
         if self.popup_keeps_owner_active() {
             if vk_code == vk::VK_PROCESSKEY || vk_code == vk::VK_PACKET { return false; }
@@ -2726,6 +2763,7 @@ impl App {
 
     /// Draws a frame. True when another one is due at once: a tab chip is still sliding to its place.
     pub fn paint(&mut self) -> bool {
+        self.painted_at = Some(Instant::now());
         let size = self.surface.size();
         let Some(view) = self.surface.acquire() else {
             self.redraw();
