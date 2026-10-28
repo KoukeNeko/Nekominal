@@ -1147,18 +1147,19 @@ impl App {
         }
     }
 
-    /// Takes a tab out of this window with its sessions running, for another window to adopt. The window closes
-    /// when it was the last tab.
-    pub fn take_tab(&mut self, index: usize) -> Option<Tab> {
+    /// Takes a tab out of this window with its sessions running, for another window to adopt; the settings tab takes
+    /// its page with it. The window closes when it was the last tab.
+    pub fn take_tab(&mut self, index: usize) -> Option<(Tab, Option<settings_page::Page>)> {
         if index >= self.tabs.len() {
             return None;
         }
         self.forget_tab_positions();
         let tab = self.tabs.remove(index);
+        let page = if tab.settings { self.page.take() } else { None };
         if self.tabs.is_empty() {
             // SAFETY: closes the window of this thread; nothing is left in it to ask about.
             unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).ok() };
-            return Some(tab);
+            return Some((tab, page));
         }
         if self.selected > index || self.selected >= self.tabs.len() {
             self.selected = self.selected.saturating_sub(1);
@@ -1166,11 +1167,24 @@ impl App {
         self.relayout();
         self.sync_focus();
         self.redraw();
-        Some(tab)
+        Some((tab, page))
     }
 
-    /// Shows a tab another window gave up, selected.
-    pub fn adopt_tab(&mut self, mut tab: Tab) {
+    /// Shows a tab another window gave up, selected. The settings dropped on a window that has them already select those.
+    pub fn adopt_tab(&mut self, (mut tab, page): (Tab, Option<settings_page::Page>)) {
+        if tab.settings {
+            if let Some(own) = self.tabs.iter().position(|t| t.settings) {
+                self.selected = own;
+            } else {
+                self.page = Some(page.unwrap_or_default());
+                self.tabs.push(tab);
+                self.selected = self.tabs.len() - 1;
+            }
+            self.relayout();
+            self.sync_focus();
+            self.redraw();
+            return;
+        }
         for entry in &mut tab.panes {
             // The reader threads now wake this window; output that came in during the move gets one message.
             entry.wake.hwnd.store(self.hwnd.0 as isize, Ordering::Release);
@@ -1603,8 +1617,7 @@ impl App {
             let (height, width) = (y as f32 / self.scale, self.layout.size.0);
             let outside = drag.active && (height < -TEAR_MARGIN || height > layout::TITLE_HEIGHT + TEAR_MARGIN || pointer < 0.0 || pointer > width);
             let held = (drag.tab, drag.grab * self.scale);
-            // The settings stay in the window they were opened in: their chip is moved within the strip only.
-            if outside && self.detach.is_none() && !self.tabs.get(held.0).is_some_and(|tab| tab.settings) {
+            if outside && self.detach.is_none() {
                 self.detach = Some(Detach { tab: held.0, pointer: self.screen_point(x as f32, y as f32), grab: held.1 });
             }
             self.redraw();
