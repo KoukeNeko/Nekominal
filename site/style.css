@@ -21,6 +21,7 @@ p code{white-space:nowrap}
 .nav.scrolled{border-bottom-color:var(--line)}
 .nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-right:auto;text-decoration:none}
 .nav a{text-decoration:none}.nav a:not(.brand){color:var(--text)}
+.nav a,.nav .lang{white-space:nowrap}
 .nav .lang{font:inherit;color:var(--text);background:none;border:0;padding:0;cursor:pointer}
 .nav .dl{border-bottom:2px solid var(--eye);padding-bottom:1px;font-weight:700}
 
@@ -98,6 +99,8 @@ figcaption{padding:10px 0 0;font-size:14px;color:var(--mute)}
 .install .cmd{display:flex;margin-top:24px;padding:14px 14px 14px 20px}
 .btn{display:inline-block;margin-top:26px;padding:13px 28px;background:var(--eye);color:var(--bg);font-weight:700;text-decoration:none}
 .btn:hover{filter:brightness(1.08)}
+.get{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:20px}
+.get .cmd{margin-top:0}.get .btn{margin-top:0;padding:11px 22px}
 footer{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;width:min(100% - 2 * var(--gutter),var(--wrap));margin:112px auto 0;padding:24px 0 40px;border-top:1px solid var(--line);font-size:14px;color:var(--mute)}
 footer img{vertical-align:-4px}footer a{text-decoration:none}footer a:hover{color:var(--text)}
 
