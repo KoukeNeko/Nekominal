@@ -76,6 +76,9 @@ pub enum Hit {
     Subagents,
     SubCard,
     SubRow(usize),
+    /// A part of the subagents drawer that does something (`App::drawer_hits`), or the rest of it.
+    Drawer(usize),
+    DrawerBody,
     /// What of the sidebar is not a row.
     Side,
     /// The right edge of the sidebar as a list, which is dragged to make it wider or narrower.

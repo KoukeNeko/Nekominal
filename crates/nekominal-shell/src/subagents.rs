@@ -225,6 +225,102 @@ fn last_reply(transcript: &Path) -> Option<String> {
     })
 }
 
+/// A tool a subagent called: its name and what it was called on, and whether its answer is still to come.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    pub tool: String,
+    pub arg: String,
+    pub open: bool,
+}
+
+/// What the drawer shows of one subagent, from its transcript.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Detail {
+    pub prompt: Option<String>,
+    /// The last few tool calls, oldest first, and how many it made in all.
+    pub calls: Vec<Call>,
+    pub total_calls: usize,
+    pub reply: Option<String>,
+}
+
+/// How many of the last tool calls the drawer lists.
+const LAST_CALLS: usize = 5;
+
+/// The transcript of a subagent, or of an agent of workflow `run`.
+pub fn transcript_of(folder: &Path, run: Option<&str>, id: &str) -> PathBuf {
+    let dir = folder.join("subagents");
+    match run {
+        Some(run) => dir.join("workflows").join(run).join(format!("agent-{id}.jsonl")),
+        None => dir.join(format!("agent-{id}.jsonl")),
+    }
+}
+
+/// The journal of workflow `run`.
+pub fn journal_of(folder: &Path, run: &str) -> PathBuf {
+    folder.join("subagents").join("workflows").join(run).join("journal.jsonl")
+}
+
+/// Reads what a subagent was asked, the tools it called and what it said last, from its transcript.
+pub fn detail(transcript: &Path) -> Detail {
+    let Ok(text) = std::fs::read_to_string(transcript) else { return Detail::default() };
+    let mut detail = Detail::default();
+    let mut calls: Vec<(String, Call)> = Vec::new();
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let content = entry.pointer("/message/content");
+        match entry.get("type").and_then(|t| t.as_str()) {
+            Some("user") => {
+                if detail.prompt.is_none() {
+                    let asked = content.and_then(|c| c.as_str().map(str::to_owned).or_else(|| Some(texts(c))));
+                    detail.prompt = asked.map(|a| unframe(&a)).filter(|a| !a.is_empty());
+                }
+                for answered in content.and_then(|c| c.as_array()).into_iter().flatten().filter_map(|c| c.get("tool_use_id")?.as_str()) {
+                    if let Some((_, call)) = calls.iter_mut().rev().find(|(id, _)| id == answered) {
+                        call.open = false;
+                    }
+                }
+            }
+            Some("assistant") => {
+                for part in content.and_then(|c| c.as_array()).into_iter().flatten() {
+                    if part.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                        let field = |k: &str| part.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+                        calls.push((field("id"), Call { tool: field("name"), arg: main_arg(part.get("input")), open: true }));
+                    }
+                }
+                let said = content.map(texts).map(|t| first_line(&t)).filter(|t| !t.is_empty());
+                detail.reply = said.or(detail.reply.take());
+            }
+            _ => {}
+        }
+    }
+    detail.total_calls = calls.len();
+    detail.calls = calls.into_iter().rev().take(LAST_CALLS).rev().map(|(_, call)| call).collect();
+    detail
+}
+
+/// The text parts of a message's content.
+fn texts(content: &serde_json::Value) -> String {
+    content.as_array().into_iter().flatten().filter_map(|c| c.get("text")?.as_str()).collect::<Vec<_>>().join("\n")
+}
+
+/// The task of a workflow agent without the frame the workflow puts around it (its lines are indented after a header).
+fn unframe(asked: &str) -> String {
+    match asked.split_once("The computed task text follows:") {
+        Some((_, task)) => task.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n"),
+        None => asked.trim().to_owned(),
+    }
+}
+
+/// What a tool was called on: the path, pattern, command, address or question of its input.
+fn main_arg(input: Option<&serde_json::Value>) -> String {
+    let Some(input) = input else { return String::new() };
+    ["file_path", "path", "pattern", "command", "url", "query", "description", "prompt"]
+        .iter()
+        .find_map(|k| input.get(*k)?.as_str())
+        .map(|s| first_line(s))
+        .unwrap_or_default()
+}
+
 fn first_line(text: &str) -> String {
     text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned()
 }
@@ -315,6 +411,24 @@ mod tests {
         assert_eq!(phases[1].steps[0].result.as_deref(), Some("ok"), "the first line");
         let outcome = serde_json::json!({"workflowProgress":[{"type":"workflow_agent","agentId":"c","state":"failed"}]});
         assert_eq!(parse_journal(&journal, Some(&outcome))[1].steps[1].state, State::Failed);
+    }
+
+    #[test]
+    fn a_transcript_gives_the_task_the_last_calls_and_the_last_words() {
+        let file = std::env::temp_dir().join(format!("nekominal-subagent-{}.jsonl", crate::agent::new_session()));
+        let lines = [
+            r#"{"type":"user","message":{"role":"user","content":"[Workflow harness — computed task] blah. The computed task text follows:\n  Verify the claim\n  about timers"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"C:\\a.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Grep","input":{"pattern":"SetTimer"}}]}}"#,
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+        let got = detail(&file);
+        assert_eq!(got.prompt.as_deref(), Some("Verify the claim\nabout timers"), "without the workflow's frame");
+        assert_eq!(got.total_calls, 2);
+        assert_eq!(got.calls, [Call { tool: "Read".into(), arg: "C:\\a.rs".into(), open: false }, Call { tool: "Grep".into(), arg: "SetTimer".into(), open: true }]);
+        assert_eq!(got.reply.as_deref(), Some("Looking."), "a turn of only tool calls keeps the words before it");
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

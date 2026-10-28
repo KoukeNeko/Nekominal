@@ -19,11 +19,12 @@ const PHASE_COUNT: f32 = 44.0;
 /// The most subagents the card lists; the others are counted.
 const MOST_AGENTS: usize = 8;
 
-/// What a row of the card opens in the drawer.
+/// What a row of the card opens in the drawer: a subagent, a workflow, or an agent of a workflow (its run and id).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Agent(String),
     Workflow(String),
+    Step(String, String),
 }
 
 /// How long ago `since` was, as the bar says times.

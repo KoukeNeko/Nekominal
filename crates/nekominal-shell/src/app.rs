@@ -65,6 +65,7 @@ mod badges;
 mod tab_rows;
 mod context_card;
 mod subagents_card;
+mod subagents_drawer;
 pub(crate) mod automation;
 mod notifications;
 mod settings_tab;
@@ -290,6 +291,12 @@ pub struct App {
     sub_card_rect: Option<Rect>,
     sub_rows: Vec<(Rect, subagents_card::Target)>,
     sub_drawer: Option<subagents_card::Target>,
+    /// The drawer as it was drawn last, what its parts do, the phase of a workflow picked in it, and the transcript it
+    /// read last.
+    drawer_rect: Option<Rect>,
+    drawer_hits: Vec<(Rect, subagents_drawer::Action)>,
+    sub_phase: Option<usize>,
+    sub_detail: Option<subagents_drawer::Cached>,
     /// The processes of the system as the last snapshot had them, when it was taken, and whether a pane printed since.
     processes: Vec<(u32, u32, String)>,
     processes_at: Option<Instant>,
@@ -681,6 +688,10 @@ impl App {
             sub_card_rect: None,
             sub_rows: Vec::new(),
             sub_drawer: None,
+            drawer_rect: None,
+            drawer_hits: Vec::new(),
+            sub_phase: None,
+            sub_detail: None,
             processes: Vec::new(),
             processes_at: None,
             output_seen: false,
@@ -1644,6 +1655,9 @@ impl App {
         if self.sub_card_rect.is_some_and(|card| card.contains(x, y)) {
             return self.sub_rows.iter().position(|(row, _)| row.contains(x, y)).map_or(Hit::SubCard, Hit::SubRow);
         }
+        if self.drawer_rect.is_some_and(|drawer| drawer.contains(x, y)) {
+            return self.drawer_hits.iter().position(|(part, _)| part.contains(x, y)).map_or(Hit::DrawerBody, Hit::Drawer);
+        }
         // The card drawn last, over the panes: its buttons, or the card itself, which keeps it open.
         if self.card_rect.is_some_and(|card| card.contains(x, y)) {
             return match self.remote_buttons {
@@ -1913,6 +1927,12 @@ impl App {
                         }
                     }
                     Hit::Sidebar => self.run(Command::ViewSidebar),
+                    Hit::SubRow(k) => {
+                        if let Some((_, target)) = self.sub_rows.get(k).cloned() {
+                            self.open_drawer(target);
+                        }
+                    }
+                    Hit::Drawer(k) => self.drawer_action(k),
                     Hit::RemoteOpen | Hit::RemoteCopy => {
                         if let Some(link) = self.focused().and_then(|e| e.usage.as_ref()).and_then(|u| u.remote.as_deref()).map(agent::remote_link) {
                             if hit == Hit::RemoteOpen {
@@ -2607,6 +2627,11 @@ impl App {
         if self.page_shown() {
             return self.page_tab_key(vk_code, scan, extended, repeat);
         }
+        // Esc goes back a level of the subagents drawer before it reaches the terminal.
+        if vk_code == 0x1B && self.sub_drawer.is_some() {
+            self.drawer_back();
+            return true;
+        }
         if self.mark.is_some() && self.mark_key(vk_code) {
             return true;
         }
@@ -2854,6 +2879,7 @@ impl App {
         let relaid = self.paint_chrome();
         self.paint_context_card();
         self.paint_subagents_card();
+        self.paint_subagents_drawer();
         self.paint_welcome();
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }

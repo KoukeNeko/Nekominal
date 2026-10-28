@@ -532,6 +532,18 @@ texts! {
     SubagentsRunning "subagents.running" "{0} 個執行中" "{0} running";
     SubagentsDone "subagents.done" "{0} 個已完成" "{0} done";
     SubagentsMore "subagents.more" "還有 {0} 個" "{0} more";
+    SubagentsRunningFor "subagents.runningFor" "執行中 {0}" "Running {0}";
+    SubagentsFinishedAfter "subagents.finishedAfter" "已完成 · {0}" "Finished · {0}";
+    SubagentsFailedCount "subagents.failedCount" "{0} 個失敗" "{0} failed";
+    SubagentsReply "subagents.reply" "回覆" "Reply";
+    SubagentsResult "subagents.result" "結果" "Result";
+    SubagentsPrompt "subagents.prompt" "任務" "Prompt";
+    SubagentsToolCalls "subagents.toolCalls" "{0} 次工具呼叫" "{0} tool calls";
+    SubagentsEarlier "subagents.earlier" "更早的 {0} 次" "{0} earlier";
+    SubagentsCopyReply "subagents.copyReply" "複製回覆" "Copy reply";
+    SubagentsOpenTranscript "subagents.openTranscript" "開啟紀錄" "Open transcript";
+    SubagentsOpenJournal "subagents.openJournal" "開啟日誌" "Open journal";
+    SubagentsEscBack "subagents.escBack" "Esc 返回" "Esc to go back";
     CardNoStatusLine "card.noStatusLine" "statusLine 由其他外掛使用，沒有費用與時間" "No cost or time: a plugin has the status line";
     ClaudeForeign "claude.foreign" "Claude Code 已有自訂的 statusLine，Nekominal 不會取代它；模型與脈絡用量改由 hooks 取得，費用則不會顯示" "Claude Code has a custom statusLine, which Nekominal leaves alone; the model and context come from its hooks instead, without the cost";
     ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
