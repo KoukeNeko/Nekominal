@@ -398,6 +398,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             // SAFETY: a window handle of this thread.
             unsafe { let _ = ScreenToClient(hwnd, &mut point); };
             match with_app(hwnd, |app| app.hit_test(point.x, point.y)) {
+                // A window in full screen stays where it is, as on macOS.
+                Some(Hit::Drag) if with_app(hwnd, |app| app.is_fullscreen()) == Some(true) => LRESULT(HTCLIENT as isize),
                 Some(Hit::Drag) => LRESULT(HTCAPTION as isize),
                 // The window answers for its own caption buttons; the maximize one is what shows the snap layouts.
                 Some(Hit::Minimize) => LRESULT(HTMINBUTTON as isize),

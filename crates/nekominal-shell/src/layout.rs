@@ -87,10 +87,12 @@ pub struct Mode {
     pub admin: bool,
     /// The width the edge of the list was dragged to, in DIP; 0 is the width of its style.
     pub width: f32,
+    /// Full screen, as on macOS: minimize and close, no maximize, and the bar does not move the window.
+    pub full_screen: bool,
 }
 
 impl Mode {
-    pub const TOP: Mode = Mode { layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
+    pub const TOP: Mode = Mode { layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0, full_screen: false };
 
     /// The width of the sidebar on show; 0 with the tabs on top or the sidebar hidden.
     pub fn side_width(self) -> f32 {
@@ -159,8 +161,15 @@ impl Layout {
     /// is the last of them or earlier. `tall` is what each row of the list adds under its two lines (the lines of its
     /// badges), by tab; a tab past its end adds nothing.
     pub fn new(width: f32, height: f32, tabs: usize, caption: f32, selected: usize, mode: Mode, right: f32, groups: &[Vec<usize>], tall: &[f32]) -> Layout {
+        let cell = caption / 3.0;
+        // In full screen there is no maximize: minimize and close, and the maximize one is nowhere (no width, never hit).
+        let caption = if mode.full_screen { 2.0 * cell } else { caption };
         let menu = Rect::new((width - caption - BUTTON).max(0.0), 0.0, BUTTON, TITLE_HEIGHT);
-        let caption_buttons = [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * caption / 3.0, 0.0, caption / 3.0, TITLE_HEIGHT));
+        let caption_buttons = if mode.full_screen {
+            [Rect::new(width - 2.0 * cell, 0.0, cell, TITLE_HEIGHT), Rect::new(width - cell, 0.0, 0.0, TITLE_HEIGHT), Rect::new(width - cell, 0.0, cell, TITLE_HEIGHT)]
+        } else {
+            [0.0, 1.0, 2.0].map(|i| Rect::new(width - caption + i * cell, 0.0, cell, TITLE_HEIGHT))
+        };
         let shield = mode.admin.then(|| Rect::new(STRIP_LEFT, 0.0, SHIELD, TITLE_HEIGHT));
         let left = STRIP_LEFT + if mode.admin { SHIELD } else { 0.0 };
         let right_room = right.clamp(0.0, (menu.x - left - 3.0 * BUTTON).max(0.0));
@@ -311,7 +320,7 @@ mod tests {
 
     fn side(layout: TabLayout, open: bool, groups: &[Vec<usize>]) -> Layout {
         let tabs = groups.iter().map(Vec::len).sum();
-        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, style: TabStyle::Activity, sidebar_open: open, admin: false, width: 0.0 }, 200.0, groups, &[])
+        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, style: TabStyle::Activity, sidebar_open: open, admin: false, width: 0.0, full_screen: false }, 200.0, groups, &[])
     }
 
     #[test]
@@ -336,6 +345,17 @@ mod tests {
         assert_eq!(layout.hit(minimize.x + 1.0, 1.0), Hit::Minimize);
         assert_eq!(layout.hit(maximize.x + 1.0, TITLE_HEIGHT - 1.0), Hit::Maximize);
         assert_eq!(layout.hit(999.0, 16.0), Hit::Close);
+    }
+
+    #[test]
+    fn full_screen_has_minimize_and_close_and_no_maximize() {
+        let full = Layout::new(1000.0, 700.0, 3, CAPTION, 0, Mode { full_screen: true, ..Mode::TOP }, 0.0, &[vec![0, 1, 2]], &[]);
+        let [minimize, maximize, close] = full.caption_buttons;
+        assert_eq!((minimize.x, minimize.w, close.x + close.w), (1000.0 - 2.0 * CAPTION / 3.0, CAPTION / 3.0, 1000.0));
+        assert_eq!(maximize.w, 0.0);
+        assert_eq!(full.hit(minimize.x + 1.0, 1.0), Hit::Minimize);
+        assert_eq!(full.hit(close.x + 1.0, 1.0), Hit::Close);
+        assert_eq!(full.menu.x + full.menu.w, minimize.x, "the menu moves up to minimize");
     }
 
     #[test]
@@ -398,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_row_with_badges_is_taller_and_the_rows_under_it_move_down_by_as_much() {
-        let mode = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
+        let mode = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0, full_screen: false };
         let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
         let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[0.0, 20.0]);
         assert_eq!((tall.chips[0], tall.chips[1].h), (plain.chips[0], LIST_ROW + 20.0));
@@ -445,12 +465,12 @@ mod tests {
     #[test]
     fn the_strip_and_the_icons_take_no_room_for_badges() {
         for layout in [TabLayout::Top, TabLayout::Icons] {
-            let mode = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
+            let mode = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0, full_screen: false };
             let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
             let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[20.0, 40.0, 20.0]);
             assert_eq!(tall.chips, plain.chips, "{layout:?}");
         }
-        let list = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
+        let list = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0, full_screen: false };
         let short = Layout::new(1200.0, 720.0, 1, CAPTION, 0, list, 0.0, &[vec![0]], &[20.0, 40.0]);
         assert_eq!(short.chips.len(), 1, "heights past the last tab are left");
     }
@@ -458,7 +478,7 @@ mod tests {
     #[test]
     fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
         for layout in [TabLayout::Top, TabLayout::List] {
-            let plain = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
+            let plain = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0, full_screen: false };
             let admin = Mode { admin: true, ..plain };
             let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]], &[]);
             let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]], &[]);

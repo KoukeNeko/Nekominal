@@ -842,7 +842,7 @@ impl App {
 
     /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated(), width: self.settings.tabs.sidebar_width as f32 }
+        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated(), width: self.settings.tabs.sidebar_width as f32, full_screen: self.fullscreen.is_some() }
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, under their repositories
@@ -2672,6 +2672,13 @@ impl App {
         }
         let cursor_on = self.blink_on;
         let mut first = true;
+        // Full screen has no frame, so DWM puts nothing behind the window, Mica or none: whatever is drawn with alpha would
+        // show the desktop. The frame starts from the scheme's background, opaque.
+        if self.fullscreen.is_some() {
+            let b = self.glass.background;
+            self.gpu.clear(&view, [f32::from(b.r) / 255.0, f32::from(b.g) / 255.0, f32::from(b.b) / 255.0, 1.0]);
+            first = false;
+        }
         if let Some(tab) = self.tabs.get_mut(self.selected) {
             let focused = tab.focused;
             for id in tab.shown() {
@@ -3031,7 +3038,7 @@ impl App {
 
         // The caption buttons: square plates as tall as the bar, the glyph in the middle of the plate.
         let glyphs = [(Hit::Minimize, '\u{E921}'), (Hit::Maximize, if self.maximized { '\u{E923}' } else { '\u{E922}' }), (Hit::Close, '\u{E8BB}')];
-        for (cell, (hit, glyph)) in self.layout.caption_buttons.into_iter().zip(glyphs) {
+        for (cell, (hit, glyph)) in self.layout.caption_buttons.into_iter().zip(glyphs).filter(|(cell, _)| cell.w > 0.0) {
             let pressed = self.pressed == hit;
             let color = if self.active { col(g.text()) } else { col(g.text_secondary()) };
             if self.hover == hit || pressed {
