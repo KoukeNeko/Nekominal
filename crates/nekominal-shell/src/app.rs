@@ -961,7 +961,8 @@ impl App {
             line_height: self.settings.font.line_height as f32,
             ligatures: self.settings.font.ligatures,
             lcd: self.theme.background_opacity >= 1.0,
-            atlas_initial: 512,
+            // The atlases grow on demand: a pane of ASCII text fits in 256 x 256, and an emoji atlas is often never used.
+            atlas_initial: 256,
             ..Default::default()
         }
     }

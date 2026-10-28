@@ -84,8 +84,9 @@ pub enum UiEvent {
 }
 
 /// How many events a pane's queue to the UI holds. When it is full the reader waits for the UI to take some, so a
-/// program that floods titles or notifications is slowed instead of growing the queue without limit.
-const UI_QUEUE: usize = 4096;
+/// program that floods titles or notifications is slowed instead of growing the queue without limit. The queue holds
+/// every slot from the start (about 110 bytes each), so a few hundred, which the UI empties at each wake.
+const UI_QUEUE: usize = 256;
 
 /// How long a hand-off waits for the output read so far to be shown.
 const HAND_OFF_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
