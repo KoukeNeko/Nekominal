@@ -12,7 +12,9 @@ html:lang(zh) body{word-break:keep-all;overflow-wrap:anywhere}
 h1,h2,h3,.sub{text-wrap:balance}
 p,li,figcaption,.total span,.note,.cap{text-wrap:pretty}
 code,kbd,.mono{font-family:"IBM Plex Mono","Cascadia Mono",Consolas,monospace}
-code{font-size:.92em;color:var(--text);white-space:nowrap}
+code{font-size:.92em;color:var(--text)}
+/* A command or a name inside a sentence stays whole; the commands of the install boxes wrap. */
+p code{white-space:nowrap}
 :focus-visible{outline:2px solid var(--eye);outline-offset:3px}
 
 .nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:30px;padding:0 max(var(--gutter),calc((100% - var(--wrap))/2));height:68px;background:var(--bg);border-bottom:1px solid transparent;font-size:15px}
@@ -70,12 +72,11 @@ kbd{display:inline-block;min-width:26px;padding:1px 8px;margin:0 2px;border:1px 
 
 .meas{margin-top:40px;display:grid;gap:30px}
 .m h3{font-size:15px;color:var(--mute);font-weight:500;margin-bottom:8px}
-.m .r{display:grid;grid-template-columns:150px 1fr;align-items:center;gap:16px;margin-top:6px;font-size:14px}
+.m .r{display:grid;grid-template-columns:150px 1fr 96px;align-items:center;gap:16px;margin-top:6px;font-size:14px}
 .track{position:relative;height:34px;background:var(--plate)}
 .track i{position:absolute;inset:0 auto 0 0;width:var(--w);background:#3a4a5c;transform-origin:left}
 .track i.us{background:var(--text)}
-.track b{position:absolute;left:12px;top:0;bottom:0;display:flex;align-items:center;font:500 15px/1 "IBM Plex Mono","LINE Seed TW",monospace;color:var(--bg)}
-.track i:not(.us)+b{color:var(--text)}
+.m .r b{font:500 15px/1 "IBM Plex Mono","LINE Seed TW",monospace;color:var(--text);white-space:nowrap;padding-right:2px}
 .diff{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(135deg,transparent 0 4px,var(--eye) 4px 5px);border:1px solid var(--eye);opacity:.9}
 
 .shots{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:40px 0}
@@ -111,5 +112,5 @@ footer img{vertical-align:-4px}footer a{text-decoration:none}footer a:hover{colo
   .nav a.hide-s{display:none}.nav{gap:20px}
   .shots,.keys,.feature,.feature.flip,.rows article{grid-template-columns:1fr}
   .feature.flip .txt{order:0}
-  .m .r{grid-template-columns:1fr}
+  .m .r{grid-template-columns:1fr auto;grid-template-areas:"name value" "bar bar";gap:4px 12px}.m .r>span{grid-area:name}.m .r .track{grid-area:bar}.m .r b{grid-area:value}
 }
