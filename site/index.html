@@ -70,11 +70,13 @@
   <p class="lead rv" data-i18n="light.lead">Nekominal.exe 約 9 MB，是用 Rust 與 Direct3D 11 寫的原生程式；ConPTY 的兩個檔案放在旁邊，整個資料夾約 10 MB。沒有 Electron、沒有 web view，也不用另外安裝執行環境。視窗只在畫面有變化時才重繪，你沒在看的終端機幾乎不花資源。</p>
   <div class="meas">
     <div class="m rv"><h3 data-i18n="light.t1">一個分頁的記憶體</h3>
-      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:72.57%"></i><b>82 MB</b></div></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b>113 MB</b></div></div></div>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:14.70%"></i><b>82 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:20.25%"></i><b>113 MB</b></div></div>
+      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>558 MB</b></div></div></div>
     <div class="m rv"><h3 data-i18n="light.t2">五個分頁的記憶體</h3>
-      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:70.47%"></i><b>136 MB</b></div></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b>193 MB</b></div></div></div>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:21.09%"></i><b>136 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:29.92%"></i><b>193 MB</b></div></div>
+      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>645 MB</b></div></div></div>
     <div class="m rv"><h3 data-i18n="light.t3">啟動到 shell 開始執行</h3>
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:92.11%"></i><b data-i18n="light.n3">0.70 秒</b></div></div>
       <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b data-i18n="light.v3">0.76 秒</b></div></div></div>
@@ -82,7 +84,7 @@
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:22.22%"></i><b data-i18n="light.n4">0.02 秒</b></div></div>
       <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b data-i18n="light.v4">0.09 秒</b></div></div></div>
   </div>
-  <p class="note rv" data-i18n="light.note">在 Windows 11 上與 Windows Terminal 1.24 比較，兩者皆為預設設定並執行 <code>pwsh -NoProfile</code>，取三次的中位數。記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。</p>
+  <p class="note rv" data-i18n="light.note">在 Windows 11 上與 Windows Terminal 1.24 比較，兩者皆為預設設定並執行 <code>pwsh -NoProfile</code>，取三次的中位數。記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。Warp 0.2026.10.14 在同一台機器上以同樣方法實測，預設設定，只關閉「啟動時還原視窗」。</p>
 </section>
 
 <section class="sec" id="agents">
