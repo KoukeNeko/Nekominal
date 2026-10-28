@@ -16,6 +16,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+use crate::relocate::relocate;
+
 use windows_sys::{
     Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
@@ -225,9 +227,18 @@ fn api() -> io::Result<&'static Api> {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));
-        exe_dir
+        // From a copy outside the app's folder: Scoop refuses to update while any program runs from that folder, and the
+        // OpenConsole of every pane would be one. conpty.dll starts the OpenConsole.exe beside it, so the copy has both.
+        let relocated = exe_dir.as_deref().and_then(|dir| {
+            let files = ["conpty.dll", "OpenConsole.exe", "VERSION"].map(|name| dir.join(name));
+            files[..2].iter().all(|file| file.is_file()).then(|| relocate("conpty", &files)).and_then(|copied| {
+                copied.map_err(|e| eprintln!("conpty: not copied out of {}: {e}", dir.display())).ok()
+            })
+        });
+        relocated
             .as_deref()
             .and_then(load_bundled)
+            .or_else(|| exe_dir.as_deref().and_then(load_bundled))
             .or_else(load_system)
     })
     .as_ref()
@@ -940,6 +951,24 @@ mod tests {
     }
 
     #[test]
+    fn the_bundled_conpty_is_loaded_from_a_copy_outside_the_programs_folder() {
+        if !backend().is_ok_and(|backend| backend.is_bundled()) {
+            return;
+        }
+        let name = wide(OsStr::new("conpty.dll"));
+        let mut path = [0u16; 1024];
+        // SAFETY: the module is loaded for good; the buffer is as long as the length given.
+        let len = unsafe {
+            let module = GetModuleHandleW(name.as_ptr());
+            windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW(module, path.as_mut_ptr(), path.len() as u32)
+        };
+        let loaded = PathBuf::from(String::from_utf16_lossy(&path[..len as usize]));
+        let copies = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Nekominal").join("conpty");
+        assert!(loaded.starts_with(&copies), "{} is not under {}", loaded.display(), copies.display());
+        assert!(loaded.with_file_name("OpenConsole.exe").is_file(), "conpty.dll starts the OpenConsole beside it");
+    }
+
+    #[test]
     fn only_the_bundled_backend_is_free_of_degradations() {
         let backend = |kind| Backend {
             kind,
@@ -1177,3 +1206,4 @@ pub(crate) mod test_support {
         }
     }
 }
+

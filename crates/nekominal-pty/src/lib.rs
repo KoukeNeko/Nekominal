@@ -3,4 +3,5 @@
 
 pub mod conpty;
 pub mod profiles;
+pub mod relocate;
 pub mod session;
