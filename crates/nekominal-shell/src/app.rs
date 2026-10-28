@@ -2144,7 +2144,12 @@ impl App {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x10;
         let Some(app_dir) = update::scoop_dir() else {
-            util::log("update: this copy was not installed with Scoop, so there is nothing to update");
+            // A copy from a zip (or built here) has nothing to update it: the page of the release to download it from.
+            let to = match self.update_check() {
+                update::Check::Newer(version) => Some(version),
+                _ => None,
+            };
+            open_link(&update::release_page(to.as_deref()));
             return;
         };
         if !elevated() {

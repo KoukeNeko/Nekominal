@@ -1099,14 +1099,15 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 use crate::update::Check;
                 let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
                 row_plate(&mut items, rect, None, focus);
-                // The buttons at the right: look again, and update when a newer version is out and Scoop can put it in.
+                // The buttons at the right: look again, and when a newer version is out, update with Scoop, or open the
+                // page of the release for a copy Scoop did not install.
                 let newer = matches!(view.update, Check::Newer(_));
                 let mut controls = Controls::new(rect);
                 let check = Text::UpdateCheck.get(lang);
                 let check_rect = controls.button(measure, check);
                 // Placed from the right, drawn from the left: the update comes first to the keyboard and to a screen reader.
-                if newer && view.scoop {
-                    let update = Text::AppUpdate.get(lang);
+                if newer {
+                    let update = if view.scoop { Text::AppUpdate } else { Text::UpdateDownload }.get(lang);
                     let update_rect = controls.button(measure, update);
                     text_button(&mut items, update_rect, Part::Update, update, true, hover);
                 }
@@ -1765,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn the_about_page_offers_the_update_only_when_a_newer_version_is_out_and_scoop_can_install_it() {
+    fn the_about_page_offers_the_update_only_when_a_newer_version_is_out_by_scoop_or_by_its_release_page() {
         use crate::update::Check;
         let settings = Settings::default();
         let keymap = keymap();
@@ -1790,7 +1791,8 @@ mod tests {
         let people = crate::update::contributors().len();
         assert_eq!(all.iter().filter(|p| matches!(p, Part::Contributor(_))).count(), people, "a chip for each contributor");
         let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), false);
-        assert_eq!(elsewhere, [Part::CheckUpdate], "a copy Scoop did not install is not updated by it");
+        assert_eq!(elsewhere, [Part::Update, Part::CheckUpdate], "a copy Scoop did not install opens the page of the release");
+        assert!(texts.iter().any(|t| t == Text::UpdateDownload.get(Lang::EnUs)), "and says so on its button");
         assert!(texts.iter().any(|t| t.contains(Text::UpdateNotScoop.get(Lang::EnUs))), "said in the note of the row");
     }
 

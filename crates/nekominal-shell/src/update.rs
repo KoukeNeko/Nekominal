@@ -116,6 +116,14 @@ pub fn encoded(script: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// The GitHub page of release `version`, or of the latest one when it is not known.
+pub fn release_page(version: Option<&str>) -> String {
+    match version {
+        Some(version) => format!("{REPO}/releases/tag/v{}", version.trim_start_matches('v')),
+        None => format!("{REPO}/releases/latest"),
+    }
+}
+
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
 /// `...\apps\nekominal\<version or current>\Nekominal.exe`.
 pub fn scoop_dir() -> Option<PathBuf> {
@@ -131,6 +139,13 @@ fn scoop_dir_of(exe: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_release_page_is_the_tag_of_the_version_or_the_latest() {
+        assert_eq!(release_page(Some("0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
+        assert_eq!(release_page(Some("v0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
+        assert_eq!(release_page(None), "https://github.com/KoukeNeko/Nekominal/releases/latest");
+    }
 
     #[test]
     fn versions_compare_by_number_not_by_text() {
