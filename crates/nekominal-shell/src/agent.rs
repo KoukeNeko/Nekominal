@@ -492,10 +492,11 @@ fn has_status_line(text: &str) -> bool {
 }
 
 /// This program run with `flag` by Claude Code in a pane. Forward slashes, because Claude Code runs the command through
-/// Git Bash when it can, which eats backslashes; quotes for a path with spaces.
-fn command(exe: &Path, flag: &str) -> String {
+/// Git Bash when it can, which eats backslashes; always in double quotes, so that a `'` (`C:/Users/O'Brien`) ends no
+/// string. None for a path bash would still expand inside them (`$`, `` ` ``): an unusable hook would block every prompt.
+fn command(exe: &Path, flag: &str) -> Option<String> {
     let exe = exe.to_string_lossy().replace('\\', "/");
-    if exe.contains(' ') { format!("\"{exe}\" {flag}") } else { format!("{exe} {flag}") }
+    (!exe.contains(['$', '`', '"'])).then(|| format!("\"{exe}\" {flag}"))
 }
 
 /// The same command for Claude Code of a WSL distribution, which a Linux shell runs through interop at the path `wslpath`
@@ -508,15 +509,15 @@ fn wsl_command(exe: &Path, flag: &str) -> String {
 /// The settings Claude Code takes with `--settings` in a pane: this program as the hooks that note the session, and as
 /// the status line unless the user has one of their own. `wsl` for the twin the `claude` function of the bash integration
 /// picks, beside the other, inside WSL.
-fn settings_json(exe: &Path, wsl: bool, status_line: bool) -> String {
-    let command = |flag: &str| if wsl { wsl_command(exe, flag) } else { command(exe, flag) };
-    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command(HOOK_FLAG) }] }]);
+fn settings_json(exe: &Path, wsl: bool, status_line: bool) -> Option<String> {
+    let command = |flag: &str| if wsl { Some(wsl_command(exe, flag)) } else { command(exe, flag) };
+    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command(HOOK_FLAG)? }] }]);
     let hooks: serde_json::Map<String, serde_json::Value> = HOOK_EVENTS.iter().map(|event| ((*event).to_owned(), hook.clone())).collect();
     let mut settings = serde_json::json!({ "hooks": hooks });
     if status_line {
-        settings["statusLine"] = serde_json::json!({ "type": "command", "command": command(FLAG) });
+        settings["statusLine"] = serde_json::json!({ "type": "command", "command": command(FLAG)? });
     }
-    settings.to_string()
+    Some(settings.to_string())
 }
 
 /// Writes `text` to `file` unless it holds it already: whole, as every window that starts writes it too.
@@ -532,8 +533,8 @@ pub fn claude_settings_file(own_status_line: bool) -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal");
     let exe = std::env::current_exe().ok()?;
     for (name, status_line) in [("claude-settings", true), ("claude-hooks", false)] {
-        write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line))?;
-        write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line))?;
+        write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line)?)?;
+        write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line)?)?;
     }
     Some(dir.join(if own_status_line { "claude-hooks.json" } else { "claude-settings.json" }))
 }
@@ -583,13 +584,16 @@ mod tests {
     }
 
     fn settings(exe: &str, wsl: bool, status_line: bool) -> serde_json::Value {
-        serde_json::from_str(&settings_json(Path::new(exe), wsl, status_line)).unwrap()
+        serde_json::from_str(&settings_json(Path::new(exe), wsl, status_line).unwrap()).unwrap()
     }
 
     #[test]
     fn the_settings_of_a_pane_run_this_program_with_forward_slashes() {
         let plain = settings(r"C:\n\nekominal.exe", false, true);
-        assert_eq!(plain["statusLine"]["command"], "C:/n/nekominal.exe --statusline");
+        assert_eq!(plain["statusLine"]["command"], "\"C:/n/nekominal.exe\" --statusline");
+        let quote = settings(r"C:\Users\O'Brien\scoop\apps\nekominal\current\Nekominal.exe", false, true);
+        assert_eq!(quote["hooks"]["Stop"][0]["hooks"][0]["command"], "\"C:/Users/O'Brien/scoop/apps/nekominal/current/Nekominal.exe\" --claude-hook", "a ' in double quotes ends nothing");
+        assert_eq!(settings_json(Path::new(r"C:\Users\$x\n.exe"), false, true), None, "a path bash would expand gets no hooks at all");
         assert_eq!(plain["statusLine"]["type"], "command");
         let spaced = settings(r"C:\Program Files\N\n.exe", false, true);
         assert_eq!(spaced["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline");

@@ -98,7 +98,10 @@ pub fn poll(session: &str, stamp: &mut Option<std::time::SystemTime>) -> Option<
 /// written next to the files of the panes. Empty when this program cannot say where it is.
 pub fn environment() -> Vec<(String, String)> {
     let Ok(exe) = std::env::current_exe() else { return Vec::new() };
-    let mut env = vec![("NEKOMINAL_AIDER_NOTIFY".to_owned(), aider_command(&exe))];
+    let mut env = Vec::new();
+    if let Some(notify) = aider_command(&exe) {
+        env.push(("NEKOMINAL_AIDER_NOTIFY".to_owned(), notify));
+    }
     if let Some(notify) = codex_notify(&exe) {
         env.push(("NEKOMINAL_CODEX_NOTIFY".to_owned(), notify));
     }
@@ -116,17 +119,18 @@ fn codex_notify(exe: &Path) -> Option<String> {
     (!exe.contains('\'')).then(|| format!("notify=['{exe}','{FLAG}','codex']"))
 }
 
-/// Aider's `--notifications-command`, which it runs through `cmd.exe`: quoted for a path with spaces.
-fn aider_command(exe: &Path) -> String {
+/// Aider's `--notifications-command`, which it runs through `cmd.exe`: always in double quotes (`&` or `^` in a path
+/// is then plain). None for a path with `%`, which cmd expands even there.
+fn aider_command(exe: &Path) -> Option<String> {
     let exe = exe.to_string_lossy();
-    if exe.contains(' ') { format!("\"{exe}\" {FLAG} aider") } else { format!("{exe} {FLAG} aider") }
+    (!exe.contains(['%', '"'])).then(|| format!("\"{exe}\" {FLAG} aider"))
 }
 
 /// The settings Gemini CLI takes as its system defaults in a pane: this program as the hook of the events that tell its
-/// state. Gemini runs a hook through PowerShell on Windows, where a quoted path needs the call operator.
+/// state. Gemini runs a hook through PowerShell on Windows: the path single-quoted (`$` and every quote PowerShell takes
+/// are then plain) and run with the call operator.
 fn gemini_settings(exe: &Path) -> String {
-    let exe = exe.to_string_lossy();
-    let command = if exe.contains([' ', '\'']) { format!("& '{}' {FLAG} gemini", exe.replace('\'', "''")) } else { format!("{exe} {FLAG} gemini") };
+    let command = format!("& {} {FLAG} gemini", crate::update::ps_quote(&exe.to_string_lossy()));
     let hook = serde_json::json!([{ "hooks": [{ "name": "nekominal", "type": "command", "command": command }] }]);
     serde_json::json!({ "hooks": { "BeforeAgent": hook, "AfterAgent": hook, "Notification": hook } }).to_string()
 }
@@ -191,15 +195,19 @@ mod tests {
         let spaced = Path::new(r"C:\Program Files\N\n.exe");
         assert_eq!(codex_notify(plain).as_deref(), Some(r"notify=['C:\n\nekominal.exe','--agent-hook','codex']"));
         assert_eq!(codex_notify(Path::new(r"C:\O'Neil\n.exe")), None, "a TOML literal string cannot hold a quote");
-        assert_eq!(aider_command(plain), r"C:\n\nekominal.exe --agent-hook aider");
-        assert_eq!(aider_command(spaced), r#""C:\Program Files\N\n.exe" --agent-hook aider"#);
+        assert_eq!(aider_command(plain).as_deref(), Some(r#""C:\n\nekominal.exe" --agent-hook aider"#));
+        assert_eq!(aider_command(spaced).as_deref(), Some(r#""C:\Program Files\N\n.exe" --agent-hook aider"#));
+        assert_eq!(aider_command(Path::new(r"C:\a&b\n.exe")).as_deref(), Some(r#""C:\a&b\n.exe" --agent-hook aider"#), "an & in quotes is plain");
+        assert_eq!(aider_command(Path::new(r"C:\100%\n.exe")), None, "cmd expands % even in quotes");
+        let dollar: serde_json::Value = serde_json::from_str(&gemini_settings(Path::new(r"C:\$x\n.exe"))).unwrap();
+        assert_eq!(dollar["hooks"]["AfterAgent"][0]["hooks"][0]["command"], r"& 'C:\$x\n.exe' --agent-hook gemini", "a $ in single quotes is plain");
         let settings: serde_json::Value = serde_json::from_str(&gemini_settings(spaced)).unwrap();
         for event in ["BeforeAgent", "AfterAgent", "Notification"] {
             assert_eq!(settings["hooks"][event][0]["hooks"][0]["command"], r"& 'C:\Program Files\N\n.exe' --agent-hook gemini", "{event}");
             assert_eq!(settings["hooks"][event][0]["hooks"][0]["type"], "command");
         }
         let plain: serde_json::Value = serde_json::from_str(&gemini_settings(plain)).unwrap();
-        assert_eq!(plain["hooks"]["AfterAgent"][0]["hooks"][0]["command"], r"C:\n\nekominal.exe --agent-hook gemini");
+        assert_eq!(plain["hooks"]["AfterAgent"][0]["hooks"][0]["command"], r"& 'C:\n\nekominal.exe' --agent-hook gemini");
     }
 
     #[test]
