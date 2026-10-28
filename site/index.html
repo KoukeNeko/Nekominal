@@ -83,22 +83,22 @@
   <div class="meas">
     <div class="m rv"><h3 data-i18n="light.t1">一個分頁的記憶體</h3>
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:14.08%"></i></div><b>78 MB</b></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:20.76%"></i></div><b>115 MB</b></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:20.58%"></i></div><b>114 MB</b></div>
       <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i></div><b>554 MB</b></div></div>
     <div class="m rv"><h3 data-i18n="light.t2">五個分頁的記憶體</h3>
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:21.09%"></i></div><b>135 MB</b></div>
       <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:30%"></i></div><b>192 MB</b></div>
       <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i></div><b>640 MB</b></div></div>
     <div class="m rv"><h3 data-i18n="light.t3">啟動到 shell 就緒</h3>
-      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:54.03%"></i></div><b data-i18n="light.n3">1.34 秒</b></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:49.6%"></i></div><b data-i18n="light.v3">1.23 秒</b></div>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:55.65%"></i></div><b data-i18n="light.n3">1.38 秒</b></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:60.48%"></i></div><b data-i18n="light.v3">1.50 秒</b></div>
       <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i></div><b data-i18n="light.w3">2.48 秒</b></div></div>
     <div class="m rv"><h3 data-i18n="light.t4">閒置時每 20 秒的 CPU</h3>
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:12.4%"></i></div><b data-i18n="light.n4">0.031 秒</b></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:18.8%"></i></div><b data-i18n="light.v4">0.047 秒</b></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:31.2%"></i></div><b data-i18n="light.v4">0.078 秒</b></div>
       <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i></div><b data-i18n="light.w4">0.25 秒</b></div></div>
   </div>
-  <p class="note rv" data-i18n="light.note">三個終端機都在同一台 Windows 11 機器上，用同一種方法量測：預設設定、冷啟動、執行 <code>pwsh</code>，Windows Terminal 與 Warp 取五輪的中位數，Nekominal 取兩輪的平均。記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。「就緒」指 shell 啟動完成、開始等待輸入；閒置 CPU 是開著一個分頁、不操作時每 20 秒的處理器時間，每輪量三個窗口取中位數。版本為 Nekominal（0.2.14 之後的開發版本）、Windows Terminal 1.24、Warp 0.2026.10.14（Warp 預設設定，只關閉「啟動時還原視窗」）。</p>
+  <p class="note rv" data-i18n="light.note">三個終端機都在同一台 Windows 11 機器上，用同一種方法量測：預設設定、冷啟動、執行 <code>pwsh</code>，各取五輪的中位數；Warp 是另一個時段量的。記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。「就緒」指 shell 啟動完成、開始等待輸入；閒置 CPU 是開著一個分頁、不操作時每 20 秒的處理器時間，每輪量三個窗口取中位數。版本為 Nekominal（0.2.14 之後的開發版本）、Windows Terminal 1.24、Warp 0.2026.10.14（Warp 預設設定，只關閉「啟動時還原視窗」）。</p>
 </section>
 
 <section class="sec" id="agents">
