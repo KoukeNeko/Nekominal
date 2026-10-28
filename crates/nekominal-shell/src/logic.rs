@@ -1360,7 +1360,7 @@ mod tests {
         assert_eq!(after(|s| s.font.size = 16.0), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.font.line_height = 1.3), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.font.family = vec!["Fira Code".into()]), Effects { font: true, ..Effects::default() });
-        assert_eq!(after(|s| s.font.ligatures = true), Effects { font: true, ..Effects::default() });
+        assert_eq!(after(|s| s.font.ligatures = false), Effects { font: true, ..Effects::default() });
         assert_eq!(after(|s| s.osc52 = Osc52Policy::Off), Effects { osc52: true, ..Effects::default() });
         assert_eq!(after(|s| s.cursor.style = CursorStyle::Bar), Effects { cursor: true, ..Effects::default() });
         assert_eq!(after(|s| s.scrollback = 500), Effects { scrollback: true, ..Effects::default() });
