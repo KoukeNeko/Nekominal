@@ -35,11 +35,11 @@ next to nothing.
 
 |  | Nekominal | Windows Terminal |
 | --- | ---: | ---: |
-| Memory, one tab | **81 MB** | 114 MB |
-| Memory, five tabs | **138 MB** | 193 MB |
-| Launch to a running shell | **0.70 s** | 0.77 s |
-| CPU at rest, one tab | 0.06 s per 20 s | 0.05 s per 20 s |
-| Printing a 20 MB text file | 11.1 s | 11.1 s |
+| Memory, one tab | **82 MB** | 113 MB |
+| Memory, five tabs | **136 MB** | 193 MB |
+| Launch to a running shell | **0.70 s** | 0.76 s |
+| CPU at rest, one tab | 0.02 s per 20 s | 0.09 s per 20 s |
+| Printing a 20 MB text file | 10.6 s | 10.5 s |
 
 <sub>Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and `pwsh -NoProfile`;
 the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out.</sub>
