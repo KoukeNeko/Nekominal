@@ -138,6 +138,22 @@ const MAX_CELL_ZEROWIDTH: usize = 16;
 
 impl<T: EventListener> Handler for Clusters<'_, T> {
     fn input(&mut self, c: char) {
+        // Printable ASCII never continues a cluster (it is no mark, joiner or selector, and no ZWJ sequence goes on to
+        // it) and is one column wide: it starts its own, at the cost of no segmentation. Most text is this, and
+        // segmenting each character was most of the time output took.
+        if matches!(c, ' '..='~') {
+            self.cluster.clear();
+            self.cluster.push(c);
+            if self.touched.is_some() {
+                let (mut line, mut column) = self.cursor();
+                if self.term.grid().cursor.input_needs_wrap {
+                    (line, column) = (line + 1, 0);
+                }
+                self.touch(line, column, column + 1);
+            }
+            self.term.input(c);
+            return;
+        }
         if self.cluster.len() > MAX_CLUSTER_BYTES {
             // Past the cap nothing joins. A zero-width character is dropped: neither joined nor handed to `Term`,
             // which would stack it on the same cell. Any other (a spacing mark, a skin tone) starts a new cell.

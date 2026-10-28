@@ -231,6 +231,17 @@ fn variation_selector_16_makes_a_text_emoji_wide() {
 }
 
 #[test]
+fn an_ascii_character_still_starts_a_cluster_that_marks_and_keycaps_join() {
+    let mut core = core(20, 3);
+    feed(&mut core, "e\u{301}x #\u{fe0f}\u{20e3}y");
+    let s = snap(&mut core);
+    assert_eq!((s.cell(0, 0).ch, s.cell(0, 0).zerowidth.as_deref()), ('e', Some(&['\u{301}'][..])), "the accent is on the e");
+    assert_eq!(s.cell(0, 1).ch, 'x');
+    assert_eq!((s.cell(0, 3).ch, s.cell(0, 3).zerowidth.as_deref()), ('#', Some(&['\u{fe0f}', '\u{20e3}'][..])), "a keycap is one cluster");
+    assert_eq!(s.cell(0, 5).ch, 'y', "and two columns wide, as ConPTY makes it");
+}
+
+#[test]
 fn a_flood_of_combining_marks_is_capped_and_takes_no_time() {
     let mut core = core(20, 3);
     let flood = format!("e{}x", "\u{0301}".repeat(100_000));
