@@ -2,6 +2,7 @@
 //! back-pressured output delivery, and discovery of the shells a user can launch.
 
 pub mod conpty;
+pub mod handoff;
 pub mod profiles;
 pub mod relocate;
 pub mod session;

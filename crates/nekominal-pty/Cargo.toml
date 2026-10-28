@@ -7,10 +7,17 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Re-runs itself as a child to exercise a real process exit (see the file header).
 [[test]]
 name = "close_at_exit"
+harness = false
+
+# Hands a running session to a second process (itself again), as an update does.
+[[test]]
+name = "handoff"
 harness = false
 
 [target.'cfg(windows)'.dependencies.windows-sys]
@@ -19,10 +26,13 @@ features = [
     "Wdk_System_SystemServices",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Environment",
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",

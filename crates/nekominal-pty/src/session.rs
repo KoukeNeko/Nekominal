@@ -45,6 +45,10 @@ enum Message {
 struct FlowState {
     unacked: usize,
     closed: bool,
+    /// The session is being handed to another process: the reader reads no more until it is resumed.
+    paused: bool,
+    /// The reader is inside a read of the pipe, which only `CancelSynchronousIo` gets it out of.
+    reading: bool,
 }
 
 #[derive(Default)]
@@ -54,13 +58,20 @@ struct Flow {
 }
 
 impl Flow {
-    /// Blocks while too much output is unacknowledged. Returns `false` once the session is closed.
+    /// Blocks while too much output is unacknowledged or the session is paused. Returns `false` once the session is
+    /// closed. Otherwise the reader is marked as reading, under the same lock, so a pause cannot slip in between.
     fn wait_for_room(&self) -> bool {
         let mut state = self.state.lock().unwrap();
-        while state.unacked >= HIGH_WATERMARK && !state.closed {
+        while (state.unacked >= HIGH_WATERMARK || state.paused) && !state.closed {
             state = self.changed.wait(state).unwrap();
         }
+        state.reading = !state.closed;
         !state.closed
+    }
+
+    fn done_reading(&self) {
+        self.state.lock().unwrap().reading = false;
+        self.changed.notify_all();
     }
 
     fn add(&self, bytes: usize) {
@@ -77,14 +88,65 @@ impl Flow {
         self.state.lock().unwrap().closed = true;
         self.changed.notify_all();
     }
+
+    fn paused(&self) -> bool {
+        self.state.lock().unwrap().paused
+    }
+
+    /// Stops the reader (a read under way is cancelled on `reader`, the thread doing it, which loses nothing: a
+    /// cancelled read took no bytes) and waits until all it read was acknowledged, that is, taken in by the consumer.
+    /// False when that did not happen within `timeout`; the session stays paused either way.
+    fn pause(&self, reader: windows_sys::Win32::Foundation::HANDLE, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap();
+        state.paused = true;
+        loop {
+            if !state.reading && state.unacked == 0 {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            if state.reading {
+                // SAFETY: the handle of the reader thread, which lives while its session does. Cancelling when no read
+                // is under way yet does nothing; the next round tries again.
+                unsafe { windows_sys::Win32::System::IO::CancelSynchronousIo(reader) };
+            }
+            state = self.changed.wait_timeout(state, Duration::from_millis(10)).unwrap().0;
+        }
+    }
+
+    fn resume(&self) {
+        self.state.lock().unwrap().paused = false;
+        self.changed.notify_all();
+    }
 }
 
 pub struct Session {
     pty: Arc<Pty>,
     flow: Arc<Flow>,
+    /// The thread that reads the output, for [`Session::pause`] to cancel its read.
+    reader: thread::JoinHandle<()>,
 }
 
 impl Session {
+    /// Stops reading the output until [`Session::resume`], with everything read so far taken in by the consumer, so
+    /// that what the consumer shows is all the program wrote: the session can then be handed to another process
+    /// ([`Session::parts`]), which reads on from there. False when the consumer did not take it all within `timeout`.
+    pub fn pause(&self, timeout: Duration) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        self.flow.pause(self.reader.as_raw_handle(), timeout)
+    }
+
+    pub fn resume(&self) {
+        self.flow.resume();
+    }
+
+    /// The handles of the session, to hand it over; see [`Pty::parts`].
+    pub fn parts(&self) -> io::Result<crate::handoff::Parts> {
+        self.pty.parts()
+    }
+
     pub fn write(&self, bytes: &[u8]) -> io::Result<()> {
         self.pty.write(bytes)
     }
@@ -123,18 +185,29 @@ impl Sessions {
     /// Starts a child process. Returns the session id and the child's pid.
     pub fn spawn(&self, config: &SpawnConfig, sink: Sink) -> io::Result<(u32, u32)> {
         let (pty, output) = Pty::spawn(config)?;
+        self.start(pty, output, sink)
+    }
+
+    /// Takes over a session another process handed to this one (`parts` are handles of this process, which the session
+    /// owns from now on, closed if this fails). Output the program wrote meanwhile waits in the pipe and comes first.
+    pub fn adopt(&self, parts: &crate::handoff::Parts, sink: Sink) -> io::Result<(u32, u32)> {
+        let (pty, output) = Pty::adopt(parts)?;
+        self.start(pty, output, sink)
+    }
+
+    fn start(&self, pty: Pty, output: std::fs::File, sink: Sink) -> io::Result<(u32, u32)> {
         let pid = pty.pid;
         let pty = Arc::new(pty);
         let flow = Arc::new(Flow::default());
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
 
         let (tx, rx) = mpsc::channel();
-        {
+        let reader = {
             let (flow, tx) = (flow.clone(), tx.clone());
             thread::Builder::new()
                 .name(format!("pty-{id}-read"))
-                .spawn(move || read_loop(output, &flow, &tx))?;
-        }
+                .spawn(move || read_loop(output, &flow, &tx))?
+        };
         {
             let pty = pty.clone();
             thread::Builder::new()
@@ -153,7 +226,7 @@ impl Sessions {
         self.sessions
             .lock()
             .unwrap()
-            .insert(id, Arc::new(Session { pty, flow }));
+            .insert(id, Arc::new(Session { pty, flow, reader }));
         Ok((id, pid))
     }
 
@@ -192,7 +265,11 @@ fn read_loop(mut output: File, flow: &Flow, tx: &Sender<Message>) {
     let mut forwarding = true;
     loop {
         let open = flow.wait_for_room();
-        let read = match output.read(&mut buffer) {
+        let result = output.read(&mut buffer);
+        flow.done_reading();
+        let read = match result {
+            // A pause cancelled the read, which took nothing: wait for the resume, or for the hand-off to end the process.
+            Err(_) if flow.paused() => continue,
             Ok(0) | Err(_) => break, // a broken pipe is the normal end of the stream
             Ok(read) => read,
         };
@@ -510,6 +587,45 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn a_paused_session_reads_nothing_until_it_is_resumed_and_loses_nothing() {
+        let sessions = Sessions::default();
+        let config = cmd_config(&["/d", "/c", "for /L %i in (1,1,3000) do @echo tick-%i"]);
+        let (_, session, rx) = start(&sessions, &config);
+        // The consumer takes in and acknowledges all it gets, as a pane does.
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let consumer = {
+            let (session, collected) = (session.clone(), collected.clone());
+            std::thread::spawn(move || {
+                while let Ok(event) = rx.recv_timeout(Duration::from_secs(20)) {
+                    match event {
+                        Event::Data(bytes) => {
+                            answer_da1(&session, &bytes);
+                            collected.lock().unwrap().extend_from_slice(&bytes);
+                            session.ack(bytes.len());
+                        }
+                        Event::Exit(code) => return code,
+                    }
+                }
+                u32::MAX
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !String::from_utf8_lossy(&collected.lock().unwrap()).contains("tick-10\r") {
+            assert!(Instant::now() < deadline, "the flood never started");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(session.pause(Duration::from_secs(5)), "the reader stops and what it read is taken in");
+        let at_pause = collected.lock().unwrap().len();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(collected.lock().unwrap().len(), at_pause, "nothing is read while paused");
+        session.resume();
+        assert_eq!(consumer.join().unwrap(), 0);
+        let text = String::from_utf8_lossy(&collected.lock().unwrap()).into_owned();
+        let missing: Vec<u32> = (1..=3000).filter(|i| !text.contains(&format!("tick-{i}\r"))).collect();
+        assert!(missing.is_empty(), "lines lost across the pause: {missing:?}");
     }
 
     #[test]

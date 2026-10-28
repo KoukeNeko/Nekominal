@@ -1,8 +1,12 @@
 //! Minimal ConPTY host.
 //!
 //! Loads the bundled, version-matched `conpty.dll` + `OpenConsole.exe` pair from the executable's
-//! directory when both exist and falls back to the in-box kernel32 API otherwise. Children are
-//! created inside a kill-on-close Job Object so closing a pane takes the whole process tree down.
+//! directory when both exist (run from a copy, see `relocate`) and falls back to the in-box kernel32 API otherwise.
+//! Children are created inside a kill-on-close Job Object so closing a pane takes the whole process tree down.
+//!
+//! A session can be handed to another process ([`Pty::parts`], [`Pty::adopt`], `handoff`): the job, the child, both
+//! pipes and the three handles inside the pseudoconsole are duplicated into it, and it packs them into a pseudoconsole
+//! of its own with the bundled DLL's `ConptyPackPseudoConsole`.
 
 use std::{
     collections::BTreeMap,
@@ -10,7 +14,7 @@ use std::{
     fs::File,
     io::{self, Write},
     mem::{size_of, zeroed},
-    os::windows::{ffi::OsStrExt, io::FromRawHandle},
+    os::windows::{ffi::OsStrExt, io::{AsRawHandle, FromRawHandle}},
     path::{Path, PathBuf},
     ptr::{null, null_mut},
     sync::{Mutex, OnceLock},
@@ -81,6 +85,9 @@ type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON
 type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> i32;
 type CloseFn = unsafe extern "system" fn(HPCON);
 type ReleaseFn = unsafe extern "system" fn(HPCON) -> i32;
+/// `ConptyPackPseudoConsole(hProcess, hRef, hSignal, *phPC)` of the bundled DLL: a pseudoconsole made of loose handles,
+/// allocated as `CreatePseudoConsole` allocates one, so that resizing and closing it work alike.
+type PackFn = unsafe extern "system" fn(HANDLE, HANDLE, HANDLE, *mut HPCON) -> i32;
 
 /// Which ConPTY implementation is hosting the sessions.
 #[derive(Clone, Debug)]
@@ -148,6 +155,8 @@ struct Api {
     /// Available from Windows 11 24H2 and in the bundled DLL; lets EOF reach the reader without
     /// the blocking behaviour of `ClosePseudoConsole`.
     release: Option<ReleaseFn>,
+    /// Only in the bundled DLL: a session handed over from another process needs it.
+    pack: Option<PackFn>,
     backend: Backend,
 }
 
@@ -176,6 +185,7 @@ unsafe fn api_from_module(module: *mut c_void, backend: Backend) -> Option<Api> 
             resize: symbol(module, b"ResizePseudoConsole\0")?,
             close: symbol(module, b"ClosePseudoConsole\0")?,
             release: symbol(module, b"ReleasePseudoConsole\0"),
+            pack: symbol(module, b"ConptyPackPseudoConsole\0"),
             backend,
         })
     }
@@ -305,6 +315,8 @@ pub struct Pty {
     input: Mutex<File>,
     process: Handle,
     job: Handle,
+    /// The read end of the output pipe, owned by the [`File`] `spawn` returned: only its value, for a hand-off.
+    output: usize,
     pub pid: u32,
 }
 
@@ -350,7 +362,70 @@ impl Pty {
             input: Mutex::new(input),
             process: process.0,
             job,
+            output: output.as_raw_handle() as usize,
             pid,
+        };
+        Ok((pty, output))
+    }
+
+    /// The handles of the session, as values of this process, for [`crate::handoff::duplicate_into`]: they stay this
+    /// session's. Fails when the pseudoconsole is closed, or when it does not hold the three handles the pinned
+    /// conpty.dll keeps (signal pipe, reference, console host process).
+    pub fn parts(&self) -> io::Result<crate::handoff::Parts> {
+        let guard = self.hpc.lock().unwrap();
+        let hpc = guard.ok_or_else(|| io::Error::other("the pseudoconsole is closed"))?;
+        // SAFETY: an HPCON of conpty.dll points to its `PseudoConsole` struct, which lives until `close_console` frees
+        // it, and that waits for the lock held here.
+        let [signal, reference, console] = unsafe { unpack(hpc) };
+        check_console_handles(signal, console)?;
+        let value = |handle: HANDLE| handle as u64;
+        Ok(crate::handoff::Parts {
+            job: value(self.job.0),
+            process: value(self.process.0),
+            input: value(self.input.lock().unwrap().as_raw_handle()),
+            output: self.output as u64,
+            signal: value(signal),
+            reference: value(reference),
+            console: value(console),
+            pid: self.pid,
+        })
+    }
+
+    /// The session another process handed over: `parts` are handles of this process (duplicated into it), which the
+    /// session owns from now on, also when this fails (they are closed then). Needs the bundled conpty.dll, the only
+    /// one that packs loose handles into a pseudoconsole. Returns the session and its output stream, as `spawn` does.
+    pub fn adopt(parts: &crate::handoff::Parts) -> io::Result<(Pty, File)> {
+        let handle = |value: u64| value as HANDLE;
+        let fail = |e: io::Error| {
+            crate::handoff::close(parts);
+            Err(e)
+        };
+        let api = match api() {
+            Ok(api) => api,
+            Err(e) => return fail(e),
+        };
+        let Some(pack) = api.pack else {
+            return fail(io::Error::other("this ConPTY cannot take a session over (no ConptyPackPseudoConsole)"));
+        };
+        if let Err(e) = check_console_handles(handle(parts.signal), handle(parts.console)) {
+            return fail(e);
+        }
+        let mut hpc: HPCON = 0;
+        // SAFETY: three handles of this process; on success the pseudoconsole owns them and closing it closes them.
+        let hr = unsafe { pack(handle(parts.console), handle(parts.reference), handle(parts.signal), &mut hpc) };
+        if hr < 0 {
+            return fail(io::Error::other(format!("ConptyPackPseudoConsole (HRESULT {hr:#010x})")));
+        }
+        // SAFETY: the pipe ends are handles of this process that nothing else owns.
+        let (input, output) = unsafe { (File::from_raw_handle(handle(parts.input)), File::from_raw_handle(handle(parts.output))) };
+        let pty = Pty {
+            api,
+            hpc: Mutex::new(Some(hpc)),
+            input: Mutex::new(input),
+            process: Handle(handle(parts.process)),
+            job: Handle(handle(parts.job)),
+            output: parts.output as usize,
+            pid: parts.pid,
         };
         Ok((pty, output))
     }
@@ -492,6 +567,29 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         self.close_console();
+    }
+}
+
+/// The handles inside a pseudoconsole of conpty.dll, in the order of its `PseudoConsole` struct (`winconpty.h`):
+/// `hSignal`, `hPtyReference`, `hConPtyProcess`. Not a public layout: the test
+/// `the_pinned_conpty_keeps_a_pseudoconsole_as_signal_reference_and_console_process` holds it to the bundled DLL.
+///
+/// # Safety
+/// `hpc` must be a live pseudoconsole of conpty.dll (or of kernel32, whose struct is the same).
+unsafe fn unpack(hpc: HPCON) -> [HANDLE; 3] {
+    // SAFETY: the caller guarantees the struct behind the pointer.
+    unsafe { *(hpc as *const [HANDLE; 3]) }
+}
+
+/// Whether `signal` is a pipe and `console` a process: the two of the three handles that can be told apart by kind.
+fn check_console_handles(signal: HANDLE, console: HANDLE) -> io::Result<()> {
+    use windows_sys::Win32::{Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType}, System::Threading::GetProcessId};
+    // SAFETY: plain queries; a value that is not a handle of the right kind fails them.
+    let (pipe, process) = unsafe { (GetFileType(signal) == FILE_TYPE_PIPE, GetProcessId(console) != 0) };
+    if pipe && process {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("the pseudoconsole does not hold a signal pipe and a console process (pipe {pipe}, process {process})")))
     }
 }
 
@@ -966,6 +1064,61 @@ mod tests {
         let copies = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join("Nekominal").join("conpty");
         assert!(loaded.starts_with(&copies), "{} is not under {}", loaded.display(), copies.display());
         assert!(loaded.with_file_name("OpenConsole.exe").is_file(), "conpty.dll starts the OpenConsole beside it");
+    }
+
+    /// What a hand-off depends on and no header promises: an HPCON of the bundled conpty.dll is a pointer to three handles,
+    /// signal pipe, reference and console host process in that order, which `ConptyPackPseudoConsole` fills and
+    /// `ClosePseudoConsole` closes. A conpty.dll that changes this fails here, before a hand-off reads garbage.
+    #[test]
+    fn the_pinned_conpty_keeps_a_pseudoconsole_as_signal_reference_and_console_process() {
+        use windows_sys::Win32::{Foundation::GetHandleInformation, System::Threading::{CreateEventW, GetProcessId}};
+        let api = api().unwrap();
+        if !api.backend.is_bundled() {
+            return;
+        }
+        let pack = api.pack.expect("the bundled conpty.dll exports ConptyPackPseudoConsole");
+        // A process that has ended, for the console host: closing waits on it, and must not wait.
+        let ended = std::process::Command::new("cmd.exe").args(["/d", "/c", "exit 0"]).spawn().unwrap();
+        let ended_pid = ended.id();
+        let mut ended = ended;
+        ended.wait().unwrap();
+        let console = Handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE | windows_sys::Win32::System::Threading::PROCESS_TERMINATE, 0, ended_pid) });
+        assert!(!console.0.is_null(), "the ended process is still open through its Child");
+        // SAFETY: plain calls; the handles are owned by the packed pseudoconsole, which closes them.
+        unsafe {
+            let (signal, reference) = (CreateEventW(null(), 1, 0, null()), CreateEventW(null(), 1, 0, null()));
+            let console = into_raw(console);
+            let mut hpc: HPCON = 0;
+            assert_eq!(pack(console, reference, signal, &mut hpc), 0);
+            assert_eq!(unpack(hpc), [signal, reference, console], "the order of the struct");
+            (api.close)(hpc);
+            let mut flags = 0u32;
+            for handle in [signal, reference, console] {
+                assert_eq!(GetHandleInformation(handle, &mut flags), 0, "ClosePseudoConsole closes what was packed");
+            }
+        }
+
+        // A pseudoconsole that runs: its signal is a pipe, its console host the OpenConsole.exe beside the loaded DLL.
+        let config = SpawnConfig {
+            program: PathBuf::from(std::env::var("SystemRoot").unwrap()).join(r"System32\cmd.exe"),
+            args: vec!["/d".into(), "/c".into(), "ping -n 3 127.0.0.1 >nul".into()],
+            cwd: None,
+            env: BTreeMap::new(),
+            cols: 80,
+            rows: 25,
+            width_model: WidthModel::default(),
+            inherit_environment: true,
+        };
+        let (pty, _output) = Pty::spawn(&config).unwrap();
+        let parts = pty.parts().expect("a live pseudoconsole hands its parts");
+        let console = parts.console as HANDLE;
+        // SAFETY: a process handle of the live pseudoconsole.
+        let host = image_path(unsafe { GetProcessId(console) }).expect("the console host's program");
+        assert!(host.file_name().is_some_and(|name| name.eq_ignore_ascii_case("OpenConsole.exe")), "{}", host.display());
+        let copies = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join(r"Nekominal\conpty");
+        assert!(host.starts_with(&copies), "the console host runs from the copy, not the app's folder: {}", host.display());
+        assert_eq!(parts.pid, pty.pid);
+        pty.kill();
     }
 
     #[test]

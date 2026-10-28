@@ -449,6 +449,8 @@ dependencies = [
 name = "nekominal-pty"
 version = "0.2.3"
 dependencies = [
+ "serde",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 
