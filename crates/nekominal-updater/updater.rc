@@ -1,0 +1,3 @@
+// The icon of the app, as Nekominal.exe has it (crates/nekominal-shell/nekominal.rc): the first icon of the program, and
+// resource 1, which the window loads for its title bar.
+1 ICON "../../assets/nekominal.ico"

@@ -12,6 +12,7 @@ members = [
     "tools/agent-probe",
     "tools/d3d11-spike",
     "crates/nekominal-pane",
+    "crates/nekominal-updater",
 ]
 
 [workspace.package]

@@ -519,6 +519,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nekominal-updater"
+version = "0.2.3"
+dependencies = [
+ "embed-resource",
+ "nekominal-pty",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"

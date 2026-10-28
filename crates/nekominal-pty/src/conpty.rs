@@ -1289,8 +1289,8 @@ pub struct Job {
     pub root: bool,
 }
 
-/// The path of the program file of a process.
-fn image_path(pid: u32) -> Option<std::path::PathBuf> {
+/// The path of the program file of a process (one of a higher integrity included).
+pub fn image_path(pid: u32) -> Option<std::path::PathBuf> {
     // SAFETY: the handle is owned and closed by `Handle`; the buffer is as long as the size passed.
     unsafe {
         let process = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
