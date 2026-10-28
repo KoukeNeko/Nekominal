@@ -444,6 +444,9 @@ impl App {
         let area = self.pane_area();
         let size = (area.w.max(1) as u32, area.h.max(1) as u32);
         let mut panes = window.panes;
+        for pane in &panes {
+            util::log(&format!("update: handed over: tab {} pane {} session {} live {}", pane.tab, pane.pane, pane.session, pane.parts.is_some()));
+        }
         let lang = self.language();
         for (index, record) in session.tabs.iter().enumerate() {
             let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
@@ -451,6 +454,7 @@ impl App {
                 let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
                 let cwd = pane.and_then(|pane| pane.cwd.as_deref());
                 let Some(at) = panes.iter().position(|state| state.tab == index && state.pane == id) else {
+                    util::log(&format!("update: tab {index} pane {id} was not handed over: a fresh shell"));
                     return self.make_entry_with(id, size, profile, cwd);
                 };
                 let mut state = panes.swap_remove(at);
