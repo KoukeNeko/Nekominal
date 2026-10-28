@@ -51,9 +51,9 @@ another, with its default settings except that restoring windows at start is off
 
 ## Knows what your agents are doing
 
-Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is **working**, **waiting for you**,
-**done** or **failed**. The sidebar groups the tabs by state, the title bar counts the ones that wait, and
-**Ctrl+Shift+U** takes you to the next of them. Nothing to set up.
+Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is working, waiting for you, done
+or failed. The sidebar groups the tabs by state, the title bar counts the ones that wait, and Ctrl+Shift+U takes you to
+the next of them. There is nothing to set up.
 
 ![Nekominal's sidebar with five agent tabs grouped by state: waiting, running and done](assets/screenshots/agents.png)
 
@@ -66,11 +66,12 @@ meter for the details, and for the session's Remote Control link when it has one
 
 ## Made for parallel work
 
-- **One worktree per agent.** Open a tab in a new git worktree from the command palette; removing it shows what would
-  be lost first.
-- **Updates keep your tabs running.** Update and restart, and every shell and agent carries on in the new version.
-- **Pull requests and ports on the tabs**, and phone notifications through ntfy or a webhook when an agent needs you.
-- **Scriptable.** `nekominal cli` lists, opens, splits and reads panes, so your own tools can drive it.
+- Give each agent its own git worktree: the command palette opens a tab in a new one, and removing it first shows what
+  would be lost.
+- Update and restart, and every shell and agent carries on in the new version.
+- Tabs show their pull request and the ports they listen on, and an agent that needs you can reach your phone through
+  ntfy or a webhook.
+- `nekominal cli` lists, opens, splits and reads panes, so your own tools can drive it.
 
 ## A terminal first
 

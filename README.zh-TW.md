@@ -49,8 +49,8 @@ Warp 0.2026.10.14 在另一個時段，採預設設定，只關閉「啟動時�
 
 ## 知道你的 agent 在做什麼
 
-在分頁裡執行 Claude Code、Codex、Gemini CLI 或 Aider，分頁就會顯示它是**工作中**、**等你回應**、**已完成**還是**失敗**。
-側邊欄依狀態分組，標題列會數出有幾個在等你，按 **Ctrl+Shift+U** 就跳到下一個。不用另外設定。
+在分頁裡執行 Claude Code、Codex、Gemini CLI 或 Aider，分頁就會顯示它是工作中、等你回應、已完成還是失敗。
+側邊欄依狀態分組，標題列會數出有幾個在等你，按 Ctrl+Shift+U 就跳到下一個。不用另外設定。
 
 ![Nekominal 側邊欄依狀態分組的五個 agent 分頁：等待中、執行中、已完成](assets/screenshots/agents.png)
 
@@ -63,10 +63,10 @@ Remote Control 時，也能在那裡開啟或複製連結。
 
 ## 為平行工作而做
 
-- **每個 agent 一個 worktree。** 從命令選擇區在新的 git worktree 開分頁；移除前會先告訴你會失去什麼。
-- **更新時分頁不中斷。** 按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。
-- **分頁上顯示 pull request 與 port**，agent 需要你時可透過 ntfy 或 webhook 傳到手機。
-- **可用腳本控制。** `nekominal cli` 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。
+- 每個 agent 可以有自己的 git worktree：從命令選擇區在新的 worktree 開分頁，移除前會先告訴你會失去什麼。
+- 按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。
+- 分頁上會顯示 pull request 與正在監聽的 port；agent 需要你時，可以透過 ntfy 或 webhook 傳到手機。
+- `nekominal cli` 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。
 
 ## 首先是一個好用的終端機
 

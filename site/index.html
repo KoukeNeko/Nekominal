@@ -38,7 +38,7 @@
     <h1 data-i18n="hero.title">一個輕量的<br>Windows 終端機。</h1>
     <p class="sub" data-i18n="hero.sub">原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。</p>
     <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
-    <div class="cap" id="cap" data-i18n="cap.0"><h3>一次按鍵的旅程</h3><ol><li>你在視窗打字：Rust 處理按鍵、分頁與窗格。</li><li>按鍵經 ConPTY 交給你的 shell。</li><li>shell 的輸出經 ConPTY 回到視窗。</li><li>Direct3D 在畫面有變化時重繪。</li></ol><p class="hint">把游標移到某一層，看它做什麼。</p></div>
+    <div class="cap" id="cap" data-i18n="cap.0"><h3>一次按鍵經過的路</h3><ol><li>你在視窗打字：Rust 處理按鍵、分頁與窗格。</li><li>按鍵經 ConPTY 交給你的 shell。</li><li>shell 的輸出經 ConPTY 回到視窗。</li><li>Direct3D 在畫面有變化時重繪。</li></ol><p class="hint">把游標移到某一層，看它做什麼。</p></div>
     <div class="total"><b>9 MB</b><span data-i18n="hero.total">Nekominal.exe 本體 9 MB，連同 ConPTY 約 10 MB</span></div>
   </div>
 
@@ -110,7 +110,7 @@
     <figure class="rv"><img src="img/repos.png" width="1482" height="811" loading="lazy" alt="分頁依所在的 repository 分組並顯示狀態" data-i18n-alt="agents.repos.alt"><figcaption data-i18n="agents.repos">依 repository 分組</figcaption></figure>
   </div>
   <div class="feature rv">
-    <div class="txt" data-i18n="ctx.txt"><h3>Context 用量，一眼看完</h3><p>使用 Claude Code 時，標題列會顯示模型、context 用量、費用與時間。滑鼠移到計量條上，可以看到快取讀取、快取寫入、新輸入各佔多少，以及這個工作階段的 token 與程式碼行數。</p><p>工作階段連上 Remote Control 時，也能在那裡開啟或複製連結。</p></div>
+    <div class="txt" data-i18n="ctx.txt"><h3>Context 用量</h3><p>使用 Claude Code 時，標題列會顯示模型、context 用量、費用與時間。滑鼠移到計量條上，可以看到快取讀取、快取寫入、新輸入各佔多少，以及這個工作階段的 token 與程式碼行數。</p><p>工作階段連上 Remote Control 時，也能在那裡開啟或複製連結。</p></div>
     <figure><img src="img/context.png" width="951" height="540" loading="lazy" alt="滑鼠移到 context 計量條上，浮出 context 用量、快取、費用與時間的卡片" data-i18n-alt="ctx.alt"></figure>
   </div>
   <div class="feature flip rv">
@@ -118,7 +118,7 @@
     <figure><img src="img/subagents.png" width="602" height="450" loading="lazy" alt="標題列顯示 12 個執行中、95 個已完成的 subagent，展開的卡片列出 workflow 的各階段與 subagent" data-i18n-alt="sub.alt"></figure>
   </div>
   <div class="feature rv">
-    <div class="txt" data-i18n="drawer.txt"><h3>點進去看它做了什麼</h3><p>卡片的任何一列都能打開抽屜：看這個 subagent 被交辦什麼、呼叫了哪些工具、回了什麼；workflow 則看它的各個階段與 agent。</p></div>
+    <div class="txt" data-i18n="drawer.txt"><h3>Subagent 做了什麼</h3><p>卡片的任何一列都能打開抽屜：看這個 subagent 被交辦什麼、呼叫了哪些工具、回了什麼；workflow 則看它的各個階段與 agent。</p></div>
     <figure><img src="img/subagent-drawer.png" width="1382" height="591" loading="lazy" alt="右側抽屜顯示一個 workflow 的階段與其中四個執行中的 agent" data-i18n-alt="drawer.alt"></figure>
   </div>
 </section>
@@ -137,11 +137,11 @@
   <h2 class="rv" data-i18n="term.h">首先是一個好用的終端機</h2>
   <p class="lead rv" data-i18n="term.lead">分割窗格、拖出分頁、Win+` 下拉視窗、儲存版面與還原工作階段。網址、路徑與 hash 的提示模式，在編輯器開啟 <code>file:line</code>，搜尋所有分頁。Sixel 與 kitty 圖片、字型連字、Mica 與壓克力背景，並可匯入 Windows Terminal 與 iTerm2 的配色。</p>
   <div class="shots">
-    <figure class="wide rv"><img src="img/split.png" width="1359" height="867" loading="lazy" alt="一個視窗分成三個窗格，各自執行 git 指令" data-i18n-alt="term.split.alt"><figcaption data-i18n="term.split">分割窗格：向右、向下，隨你切</figcaption></figure>
-    <figure class="rv"><img src="img/palette.png" width="1359" height="867" loading="lazy" alt="命令選擇區，輸入 split 後列出兩個分割命令與其快速鍵" data-i18n-alt="term.palette.alt"><figcaption data-i18n="term.palette">命令選擇區：所有命令都在這裡，旁邊就是快速鍵</figcaption></figure>
-    <figure class="rv"><img src="img/search-all-tabs.png" width="1359" height="867" loading="lazy" alt="搜尋所有分頁，列出三個分頁中含 finished 的行" data-i18n-alt="term.search.alt"><figcaption data-i18n="term.search">搜尋所有分頁，一次找到哪個分頁印過它</figcaption></figure>
-    <figure class="rv"><img src="img/hints.png" width="1359" height="867" loading="lazy" alt="提示模式在網址、路徑與 hash 前標上單一字母" data-i18n-alt="term.hints.alt"><figcaption data-i18n="term.hints">提示模式：網址、路徑、hash，按一個字母就開</figcaption></figure>
-    <figure class="rv"><img src="img/settings.png" width="1359" height="867" loading="lazy" alt="設定分頁，外觀頁可選分頁版面與配色" data-i18n-alt="term.settings.alt"><figcaption data-i18n="term.settings">設定也是一個分頁：版面、配色、設定檔、agent、快速鍵</figcaption></figure>
+    <figure class="wide rv"><img src="img/split.png" width="1359" height="867" loading="lazy" alt="一個視窗分成三個窗格，各自執行 git 指令" data-i18n-alt="term.split.alt"><figcaption data-i18n="term.split">向右或向下分割窗格</figcaption></figure>
+    <figure class="rv"><img src="img/palette.png" width="1359" height="867" loading="lazy" alt="命令選擇區，輸入 split 後列出兩個分割命令與其快速鍵" data-i18n-alt="term.palette.alt"><figcaption data-i18n="term.palette">命令選擇區列出所有命令，旁邊附上快速鍵</figcaption></figure>
+    <figure class="rv"><img src="img/search-all-tabs.png" width="1359" height="867" loading="lazy" alt="搜尋所有分頁，列出三個分頁中含 finished 的行" data-i18n-alt="term.search.alt"><figcaption data-i18n="term.search">搜尋所有分頁，找出是哪個分頁印出了這一行</figcaption></figure>
+    <figure class="rv"><img src="img/hints.png" width="1359" height="867" loading="lazy" alt="提示模式在網址、路徑與 hash 前標上單一字母" data-i18n-alt="term.hints.alt"><figcaption data-i18n="term.hints">提示模式在網址、路徑與 hash 前標上字母，按下就開啟</figcaption></figure>
+    <figure class="rv"><img src="img/settings.png" width="1359" height="867" loading="lazy" alt="設定分頁，外觀頁可選分頁版面與配色" data-i18n-alt="term.settings.alt"><figcaption data-i18n="term.settings">設定在分頁裡開啟，可以調整版面、配色、設定檔、agent 與快速鍵</figcaption></figure>
   </div>
   <div class="shots three">
     <figure class="wide rv"><img src="img/images-and-ligatures.png" width="1682" height="751" loading="lazy" alt="字型連字，以及在終端機裡顯示的 Sixel 與 kitty 圖片" data-i18n-alt="term.lig.alt"><figcaption data-i18n="term.lig">字型連字、Sixel 與 kitty 圖片</figcaption></figure>
