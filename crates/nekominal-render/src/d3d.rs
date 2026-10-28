@@ -353,12 +353,13 @@ pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> Result<(ID3D1
 }
 
 /// Copies the texels of `rect` (x0, y0, x1, y1, exclusive max) from `shadow`, whose rows are `pitch` bytes apart.
-pub fn upload_texels(gpu: &Gpu, texture: &ID3D11Texture2D, shadow: &[u8], pitch: u32, bytes_per_texel: u32, rect: (u32, u32, u32, u32)) {
+/// Writes `pixels` (rows of `pitch` bytes, starting at the box's corner) into the box `rect` of `texture`.
+pub fn upload_texels(gpu: &Gpu, texture: &ID3D11Texture2D, pixels: &[u8], pitch: u32, rect: (u32, u32, u32, u32)) {
     let (x0, y0, x1, y1) = rect;
+    assert!(pixels.len() >= (pitch * (y1 - y0)) as usize, "the pixels cover the box");
     let region = D3D11_BOX { left: x0, top: y0, front: 0, right: x1, bottom: y1, back: 1 };
-    let offset = (y0 * pitch + x0 * bytes_per_texel) as usize;
-    // SAFETY: the source pointer is inside `shadow`, which covers every row of the box at `pitch`.
-    unsafe { gpu.context.UpdateSubresource(texture, 0, Some(&region), shadow[offset..].as_ptr().cast::<c_void>(), pitch, 0) };
+    // SAFETY: `pixels` covers every row of the box at `pitch` (checked above) and lives through the call.
+    unsafe { gpu.context.UpdateSubresource(texture, 0, Some(&region), pixels.as_ptr().cast::<c_void>(), pitch, 0) };
 }
 
 /// Copies the whole of `from` into the top-left corner of the larger `to`.

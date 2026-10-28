@@ -1,12 +1,13 @@
-//! GPU glyph atlas: shelf (bucketed) packing with etagere, batched uploads from a
-//! CPU shadow copy, growth by texture copy, wholesale clear when the size limit is hit.
+//! GPU glyph atlas: shelf (bucketed) packing with etagere, the glyphs of a frame uploaded together, growth by texture
+//! copy, wholesale clear when the size limit is hit.
 //!
 //! Instances store atlas coordinates in texels (not normalized UVs) and the
 //! shader fetches with `textureLoad`, so growing the texture never invalidates
 //! cached glyph positions and no sampler/filtering can blur glyph edges.
 //!
-//! Uploads cost far more per call than rasterizing a glyph, so inserts only write the CPU shadow and extend a
-//! dirty rectangle; `flush` issues one `UpdateSubresource` per frame.
+//! Inserts keep only the glyph's own pixels until `flush`, which uploads each of them into its place: no copy of the
+//! whole texture is kept in memory (it cost as much as the texture, per pane, up to 20 MiB once grown), and most
+//! frames insert nothing.
 
 use etagere::{BucketedAtlasAllocator, size2};
 use windows::Win32::Graphics::{
@@ -20,10 +21,8 @@ pub struct AtlasTexture {
     pub texture: ID3D11Texture2D,
     pub view: ID3D11ShaderResourceView,
     alloc: BucketedAtlasAllocator,
-    /// CPU mirror of the texture (row pitch = size * bytes_per_texel).
-    shadow: Vec<u8>,
-    /// Dirty bounding box in texels: (x0, y0, x1, y1), exclusive max.
-    dirty: Option<(u32, u32, u32, u32)>,
+    /// The glyphs inserted since the last flush: their box in texels (x0, y0, x1, y1, exclusive max) and their pixels.
+    pending: Vec<((u32, u32, u32, u32), Vec<u8>)>,
     pub size: u32,
     max_size: u32,
     format: DXGI_FORMAT,
@@ -45,8 +44,7 @@ impl AtlasTexture {
             texture,
             view,
             alloc: BucketedAtlasAllocator::new(size2(initial as i32, initial as i32)),
-            shadow: vec![0; (initial * initial * bytes_per_texel) as usize],
-            dirty: None,
+            pending: Vec::new(),
             size: initial,
             max_size,
             format,
@@ -58,7 +56,7 @@ impl AtlasTexture {
         })
     }
 
-    /// GPU texture bytes (the CPU shadow doubles the host-side footprint).
+    /// GPU texture bytes.
     pub fn memory_bytes(&self) -> u64 {
         self.size as u64 * self.size as u64 * self.bytes_per_texel as u64
     }
@@ -75,7 +73,7 @@ impl AtlasTexture {
 
     pub fn clear(&mut self) {
         self.alloc.clear();
-        self.dirty = None;
+        self.pending.clear();
         self.clears += 1;
     }
 
@@ -98,15 +96,6 @@ impl AtlasTexture {
         self.flush(gpu);
         let (texture, view) = atlas_texture(gpu, self.format, new_size)?;
         copy_texture(gpu, &texture, &self.texture);
-        // Grow the shadow keeping existing rows (pitch changes).
-        let bpt = self.bytes_per_texel as usize;
-        let (old, new) = (self.size as usize, new_size as usize);
-        let mut shadow = vec![0u8; new * new * bpt];
-        for y in 0..old {
-            shadow[y * new * bpt..y * new * bpt + old * bpt]
-                .copy_from_slice(&self.shadow[y * old * bpt..(y + 1) * old * bpt]);
-        }
-        self.shadow = shadow;
         self.alloc.grow(size2(new_size as i32, new_size as i32));
         self.texture = texture;
         self.view = view;
@@ -116,28 +105,24 @@ impl AtlasTexture {
         Ok(())
     }
 
-    /// Copy a bitmap into the shadow and mark it dirty. Returns its atlas position.
+    /// Keeps a bitmap to be uploaded at the next flush. Returns its atlas position.
     pub fn insert(&mut self, gpu: &Gpu, w: u32, h: u32, data: &[u8]) -> Result<(u16, u16), AtlasFull> {
         debug_assert_eq!(data.len() as u32, w * h * self.bytes_per_texel);
         let (x, y) = self.allocate(gpu, w, h)?;
-        let bpt = self.bytes_per_texel as usize;
-        let pitch = self.size as usize * bpt;
-        let row_bytes = w as usize * bpt;
-        for row in 0..h as usize {
-            let dst = (y as usize + row) * pitch + x as usize * bpt;
-            self.shadow[dst..dst + row_bytes].copy_from_slice(&data[row * row_bytes..(row + 1) * row_bytes]);
+        if w > 0 && h > 0 {
+            self.pending.push(((x, y, x + w, y + h), data.to_vec()));
         }
-        self.dirty = Some(match self.dirty {
-            None => (x, y, x + w, y + h),
-            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + w), y1.max(y + h)),
-        });
         Ok((x as u16, y as u16))
     }
 
-    /// Upload everything inserted since the last flush with a single `UpdateSubresource`.
+    /// Uploads every glyph inserted since the last flush into its place.
     pub fn flush(&mut self, gpu: &Gpu) {
-        let Some(rect) = self.dirty.take() else { return };
-        upload_texels(gpu, &self.texture, &self.shadow, self.size * self.bytes_per_texel, self.bytes_per_texel, rect);
+        if self.pending.is_empty() {
+            return;
+        }
+        for (rect, pixels) in self.pending.drain(..) {
+            upload_texels(gpu, &self.texture, &pixels, (rect.2 - rect.0) * self.bytes_per_texel, rect);
+        }
         self.flushes += 1;
     }
 }
