@@ -1,9 +1,10 @@
 document.querySelectorAll('[data-copy]').forEach(box => {
   const btn = box.querySelector('button');
+  const idle = btn.textContent;
   btn.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(box.dataset.copy); btn.textContent = '已複製'; }
-    catch { btn.textContent = '請手動複製'; }
-    setTimeout(() => (btn.textContent = '複製'), 1800);
+    try { await navigator.clipboard.writeText(box.dataset.copy); btn.textContent = btn.dataset.done ?? '已複製'; }
+    catch { btn.textContent = btn.dataset.failed ?? '請手動複製'; }
+    setTimeout(() => (btn.textContent = idle), 1800);
   });
 });
 

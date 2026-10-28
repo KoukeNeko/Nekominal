@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nekominal — a light Windows terminal</title>
+<meta name="description" content="Native Rust and Direct3D, no web runtime inside. Every tab tells you which agent is waiting for you.">
+<link rel="alternate" hreflang="zh-Hant" href="../">
+<link rel="alternate" hreflang="en" href="./">
+<link rel="icon" type="image/png" href="../img/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="pill">
+  <a class="brand" href="#top"><img src="../img/icon.png" width="26" height="26" alt="">Nekominal</a>
+  <a class="hide-s" href="#light">Light</a><a class="hide-s" href="#agents">Agents</a><a class="hide-s" href="#parallel">Parallel work</a>
+  <a href="https://github.com/KoukeNeko/Nekominal">GitHub</a>
+  <a href="../" hreflang="zh-Hant" lang="zh-Hant">中文</a>
+  <a class="dl" href="#install">Download</a>
+</div></nav>
+
+<header class="hero" id="top">
+  <h1>A light<br><span class="grad">Windows terminal</span></h1>
+  <p class="sub">Native Rust and Direct3D, no web runtime inside. Every tab tells you which agent is waiting for you.</p>
+  <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-done="Copied" data-failed="Copy by hand">Copy</button></div>
+  <div class="stage">
+    <div class="win"><img src="../img/agents.png" width="1482" height="811" alt="The Nekominal window, its sidebar listing five agent tabs grouped by state"></div>
+    <div class="card c1"><b><i style="background:#ffc766"></i>review</b><small>Waiting for input · Nekominal · master</small></div>
+    <div class="card c2"><b><i style="background:#8fb4ff"></i>release</b><small>Running · Nekominal · master</small></div>
+    <div class="card c3"><b><i style="background:#9bf05b"></i>docs</b><small>Done · Nekominal · master</small></div>
+  </div>
+</header>
+
+<section class="sec" id="light">
+  <h2 class="rv">Light by design</h2>
+  <p class="lead rv">One native program of about 9 MB: Rust, Direct3D 11 and ConPTY. There is no Electron, no web view and no runtime to install. A window draws only when something on it changes, so a terminal you are not looking at costs next to nothing.</p>
+  <div class="tiles">
+    <div class="tile rv"><span class="big">82 MB</span><span class="lbl">Memory, one tab</span><span class="vs">Windows Terminal 113 MB</span></div>
+    <div class="tile rv"><span class="big">136 MB</span><span class="lbl">Memory, five tabs</span><span class="vs">Windows Terminal 193 MB</span></div>
+    <div class="tile rv"><span class="big">0.70 s</span><span class="lbl">Launch to a running shell</span><span class="vs">Windows Terminal 0.76 s</span></div>
+    <div class="tile rv"><span class="big">0.02 s</span><span class="lbl">CPU at rest, per 20 s</span><span class="vs">Windows Terminal 0.09 s</span></div>
+  </div>
+  <p class="note rv">Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and <code>pwsh -NoProfile</code>; the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out.</p>
+</section>
+
+<section class="sec" id="agents">
+  <h2 class="rv">Knows what your agents are doing</h2>
+  <p class="lead rv">Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is <b>working</b>, <b>waiting for you</b>, <b>done</b> or <b>failed</b>. The sidebar groups the tabs by state, the title bar counts the ones that wait, and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> takes you to the next of them. Nothing to set up.</p>
+  <div class="shots">
+    <figure class="glass rv"><img src="../img/cards.png" width="1482" height="811" loading="lazy" alt="Each tab as a card with its state, folder and branch"><figcaption>Agent cards</figcaption></figure>
+    <figure class="glass rv"><img src="../img/repos.png" width="1482" height="811" loading="lazy" alt="The tabs under the repository they work in, with their state"><figcaption>By repository</figcaption></figure>
+  </div>
+  <div class="feature rv">
+    <div class="txt"><h3>The context, at a glance</h3><p>For Claude Code, the title bar shows the model, the share of the context used, the cost and the time. Hover the meter to see how much is read from cache, written to cache and new input, and the tokens and lines of the session.</p><p>When the session has a Remote Control link, you can open or copy it there.</p></div>
+    <figure class="glass"><img src="../img/context.png" width="951" height="540" loading="lazy" alt="Hovering the context meter shows a card with the context used, the cache, the cost and the time"></figure>
+  </div>
+  <div class="feature flip rv">
+    <div class="txt"><h3>The subagents card</h3><p>The title bar counts how many subagents run and how many have ended, and each row of the sidebar shows how many its tab's agent runs.</p><p>Open the card to see what every subagent is doing, and the phases of every workflow.</p></div>
+    <figure class="glass"><img src="../img/subagents.png" width="602" height="450" loading="lazy" alt="The title bar says 12 running, 95 done; the open card lists the phases of a workflow and its subagents"></figure>
+  </div>
+  <div class="feature rv">
+    <div class="txt"><h3>Open one to see what it did</h3><p>A row of the card opens a drawer: what the subagent was asked, the tools it called and what it said. For a workflow, its phases and agents.</p></div>
+    <figure class="glass"><img src="../img/subagent-drawer.png" width="1382" height="591" loading="lazy" alt="A drawer on the right showing the phase of a workflow and four running agents"></figure>
+  </div>
+</section>
+
+<section class="sec" id="parallel">
+  <h2 class="rv">Made for parallel work</h2>
+  <div class="grid4">
+    <article class="glass rv"><h3>One worktree per agent</h3><p>Open a tab in a new git worktree from the command palette; removing it shows what would be lost first.</p></article>
+    <article class="glass rv"><h3>Updates keep your tabs running</h3><p>Update and restart, and every shell and agent carries on in the new version.</p></article>
+    <article class="glass rv"><h3>Pull requests and ports on the tabs</h3><p>And phone notifications through ntfy or a webhook when an agent needs you.</p></article>
+    <article class="glass rv"><h3>Scriptable</h3><p><code>nekominal cli</code> lists, opens, splits and reads panes, so your own tools can drive it.</p></article>
+  </div>
+</section>
+
+<section class="sec" id="terminal">
+  <h2 class="rv">A terminal first</h2>
+  <p class="lead rv">Split panes, tear-off tabs, a drop-down window on Win+`, saved layouts and session restore. Hints for URLs, paths and hashes, <code>file:line</code> opened in your editor, search across all tabs. Sixel and kitty images, font ligatures, Mica and acrylic, and colour schemes imported from Windows Terminal and iTerm2.</p>
+  <div class="shots">
+    <figure class="glass rv wide"><img src="../img/split.png" width="1359" height="867" loading="lazy" alt="One window split into three panes, each running a git command"><figcaption>Split panes: right, down, as you like</figcaption></figure>
+    <figure class="glass rv"><img src="../img/palette.png" width="1359" height="867" loading="lazy" alt="The command palette, with split typed, listing two split commands and their shortcuts"><figcaption>The command palette: every command, with its shortcut beside it</figcaption></figure>
+    <figure class="glass rv"><img src="../img/search-all-tabs.png" width="1359" height="867" loading="lazy" alt="Search across all tabs, listing the lines with finished in three tabs"><figcaption>Search across all tabs: find which one printed it</figcaption></figure>
+    <figure class="glass rv"><img src="../img/hints.png" width="1359" height="867" loading="lazy" alt="Hint mode puts a single letter before a URL, a path and a hash"><figcaption>Hints: a URL, a path, a hash, one letter to open it</figcaption></figure>
+    <figure class="glass rv"><img src="../img/settings.png" width="1359" height="867" loading="lazy" alt="The settings tab, its appearance page with the tab layout and colour schemes"><figcaption>Settings is a tab too: layout, colours, profiles, agents, shortcuts</figcaption></figure>
+  </div>
+  <div class="shots three">
+    <figure class="glass rv wide"><img src="../img/images-and-ligatures.png" width="1682" height="751" loading="lazy" alt="Font ligatures, and a Sixel and a kitty image shown in the terminal"><figcaption>Font ligatures, Sixel and kitty images</figcaption></figure>
+    <figure class="glass rv"><img src="../img/yazi-preview.png" width="1355" height="863" loading="lazy" alt="An image previewed in yazi"><figcaption>Image previews in yazi</figcaption></figure>
+    <figure class="glass rv"><img src="../img/chafa.png" width="1355" height="863" loading="lazy" alt="An image shown in the terminal with chafa"><figcaption>Images with chafa</figcaption></figure>
+  </div>
+  <div class="keys rv">
+    <div><span>Next tab that waits</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>U</kbd></span></div>
+    <div><span>Command palette</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
+    <div><span>Split right</span><span><kbd>Alt</kbd><kbd>Shift</kbd><kbd>D</kbd></span></div>
+    <div><span>Search all tabs</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>G</kbd></span></div>
+    <div><span>Hints</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>E</kbd></span></div>
+    <div><span>Settings</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd></span></div>
+  </div>
+  <p class="note rv">Every command is in the palette, and any shortcut can be changed in Settings.</p>
+</section>
+
+<section class="sec install" id="install">
+  <h2 class="rv">Install</h2>
+  <div class="cmd big-cmd rv" data-copy="scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket&#10;scoop install koukeneko/nekominal"><code>scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket<br>scoop install koukeneko/nekominal</code><button type="button" data-done="Copied" data-failed="Copy by hand">Copy</button></div>
+  <p class="lead rv">Or download the zip and run <code>Nekominal.exe</code>. Windows 11, x64 or ARM64.</p>
+  <p class="rv"><a class="btn" href="https://github.com/KoukeNeko/Nekominal/releases/latest">Download the latest release</a></p>
+</section>
+
+<footer>
+  <span><img src="../img/icon.png" width="20" height="20" alt=""> Nekominal · MIT</span>
+  <span><a href="https://github.com/KoukeNeko/Nekominal">GitHub</a> · <a href="https://github.com/KoukeNeko/Nekominal/releases">Release notes</a> · <a href="https://buymeacoffee.com/doershing">Support</a></span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script src="../main.js"></script>
+</body>
+</html>
