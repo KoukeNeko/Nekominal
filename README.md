@@ -24,25 +24,30 @@ scoop install koukeneko/nekominal
 ```
 
 <p align="center">
-  Or <a href="https://github.com/KoukeNeko/Nekominal/releases/latest">download the zip</a> and run <code>Nekominal.exe</code>. Windows 11, x64 or ARM64.
+  Or take the <a href="https://github.com/KoukeNeko/Nekominal/releases/latest">installer (MSI) or the zip</a> of the latest release: the installer needs no administrator. Windows 11, x64 or ARM64.<br>
+  <a href="https://koukeneko.github.io/Nekominal/">koukeneko.github.io/Nekominal</a>
 </p>
 
 ## Light by design
 
-Nekominal is one native program of about 9 MB: Rust, Direct3D 11 and ConPTY. There is no Electron, no web view and
-no runtime to install. A window draws only when something on it changes, so a terminal you are not looking at costs
+Nekominal.exe is about 9 MB, a native program in Rust and Direct3D 11; the two ConPTY files beside it bring the folder
+to about 10 MB. There is no Electron, no WebView and no runtime to install. A window draws only when something on it
+changes, and the cursor stops blinking a few seconds after the last key, so a terminal you are not looking at costs
 next to nothing.
 
-|  | Nekominal | Windows Terminal |
-| --- | ---: | ---: |
-| Memory, one tab | **82 MB** | 113 MB |
-| Memory, five tabs | **136 MB** | 193 MB |
-| Launch to a running shell | **0.70 s** | 0.76 s |
-| CPU at rest, one tab | 0.02 s per 20 s | 0.09 s per 20 s |
-| Printing a 20 MB text file | 10.6 s | 10.5 s |
+|  | Nekominal | Windows Terminal | Warp |
+| --- | ---: | ---: | ---: |
+| Memory, one tab | **78 MB** | 114 MB | 554 MB |
+| Memory, five tabs | **135 MB** | 192 MB | 640 MB |
+| Launch until the shell is ready | **1.38 s** | 1.50 s | 2.48 s |
+| CPU at rest, one tab, per 20 s | **0.031 s** | 0.078 s | 0.25 s |
+| Installed size | **10 MB** | | 398 MB |
 
-<sub>Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and `pwsh -NoProfile`;
-the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out.</sub>
+<sub>Measured on one Windows 11 machine, in the same way for the three: default settings, a cold start, running `pwsh`,
+the median of five runs. Memory is the working set of the terminal and its OpenConsole, the shells left out. Ready means
+the shell has finished starting and waits for input; CPU at rest is the processor time over 20 s with one tab open and
+nobody touching it. Nekominal 0.2.15 and Windows Terminal 1.24 were measured in one session, Warp 0.2026.10.14 in
+another, with its default settings except that restoring windows at start is off.</sub>
 
 ## Knows what your agents are doing
 

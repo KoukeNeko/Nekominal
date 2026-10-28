@@ -24,24 +24,28 @@ scoop install koukeneko/nekominal
 ```
 
 <p align="center">
-  也可以<a href="https://github.com/KoukeNeko/Nekominal/releases/latest">下載 zip</a>，解壓後執行 <code>Nekominal.exe</code>。支援 Windows 11，x64 或 ARM64。
+  也可以從最新版本下載<a href="https://github.com/KoukeNeko/Nekominal/releases/latest">安裝程式（MSI）或 zip</a>；安裝程式不需要系統管理員權限。支援 Windows 11，x64 或 ARM64。<br>
+  <a href="https://koukeneko.github.io/Nekominal/">koukeneko.github.io/Nekominal</a>
 </p>
 
 ## 天生輕量
 
-Nekominal 是一個約 9 MB 的原生程式：Rust、Direct3D 11 與 ConPTY。沒有 Electron、沒有 web view，也不用另外安裝執行環境。
-視窗只在畫面有變化時才重繪，所以你沒在看的終端機幾乎不花資源。
+Nekominal.exe 約 9 MB，是用 Rust 與 Direct3D 11 寫的原生程式；連同旁邊 ConPTY 的兩個檔案，整個資料夾約 10 MB。
+沒有 Electron、沒有 WebView，也不用另外安裝執行環境。視窗只在畫面有變化時才重繪，最後一次按鍵幾秒後游標也會停止閃爍，
+所以你沒在看的終端機幾乎不花資源。
 
-|  | Nekominal | Windows Terminal |
-| --- | ---: | ---: |
-| 記憶體，一個分頁 | **82 MB** | 113 MB |
-| 記憶體，五個分頁 | **136 MB** | 193 MB |
-| 從啟動到 shell 開始執行 | **0.70 秒** | 0.76 秒 |
-| 閒置時的 CPU，一個分頁 | 每 20 秒 0.02 秒 | 每 20 秒 0.09 秒 |
-| 輸出 20 MB 的文字檔 | 10.6 秒 | 10.5 秒 |
+|  | Nekominal | Windows Terminal | Warp |
+| --- | ---: | ---: | ---: |
+| 記憶體，一個分頁 | **78 MB** | 114 MB | 554 MB |
+| 記憶體，五個分頁 | **135 MB** | 192 MB | 640 MB |
+| 啟動到 shell 就緒 | **1.38 秒** | 1.50 秒 | 2.48 秒 |
+| 閒置時每 20 秒的 CPU，一個分頁 | **0.031 秒** | 0.078 秒 | 0.25 秒 |
+| 安裝大小 | **10 MB** | | 398 MB |
 
-<sub>在 Windows 11 上與 Windows Terminal 1.24 比較，兩者皆為預設設定並執行 `pwsh -NoProfile`，取三次的中位數。
-記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。</sub>
+<sub>三個終端機都在同一台 Windows 11 機器上，用同一種方法量測：預設設定、冷啟動、執行 `pwsh`，取五輪的中位數。
+記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。「就緒」指 shell 啟動完成、開始等待輸入；閒置 CPU
+是開著一個分頁、不操作時每 20 秒的處理器時間。Nekominal 0.2.15 與 Windows Terminal 1.24 在同一個時段量測，
+Warp 0.2026.10.14 在另一個時段，採預設設定，只關閉「啟動時還原視窗」。</sub>
 
 ## 知道你的 agent 在做什麼
 
