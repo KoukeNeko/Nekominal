@@ -552,7 +552,8 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, settings: &Settings) ->
         // The snippets are a section of their own, not the last rows' (the push rows end the Terminal page before them).
         let snippets = (section == Section::Terminal).then_some([Entry::Heading(Text::SettingsSnippetsHeading), Entry::Snippets]).into_iter().flatten();
         // A row that starts a section of the page comes under its heading; the test of the push comes after its rows.
-        let rows = settings_ui::in_section(section).flat_map(|row| {
+        // The styles of the list are shown only while the tabs are a list: three pictures of nothing else are noise.
+        let rows = settings_ui::in_section(section).filter(|row| row.id != "tabs.style" || row.applies(settings)).flat_map(|row| {
             let test = (row.id == "notifications.push.events").then_some(Entry::PushTest);
             settings_ui::heading_before(row.id).map(Entry::Heading).into_iter().chain([Entry::Setting(row)]).chain(test)
         });
@@ -1612,11 +1613,13 @@ mod tests {
                 Section::Profiles => 2,
                 // No rules yet: the ready-made ones.
                 Section::Triggers => 1,
+                // The styles of the list are not shown with the tabs on top, as they are by default.
+                Section::Appearance => -1,
                 _ => 0,
             };
             // And a heading over each row that starts a section of the page.
             let headings = settings_ui::in_section(*section).filter(|row| settings_ui::heading_before(row.id).is_some()).count();
-            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { settings_ui::in_section(*section).count() + own + headings };
+            let expected = if *section == Section::Keys { settings_ui::key_rows().count() } else { (settings_ui::in_section(*section).count() as isize + own) as usize + headings };
             assert_eq!(shown, expected, "{section:?}");
         }
     }
@@ -1858,14 +1861,18 @@ mod tests {
         assert!(can_press(&settings, "tabs.sidebarOpen") && !can_press(&settings, "tabs.groupByState"), "the groups are only for the list");
         settings.tabs.layout = nekominal_model::settings::TabLayout::List;
         assert!(can_press(&settings, "tabs.groupByState"));
-        let thumbs = |style: bool| frame(&page, &settings).items.iter().filter(|item| matches!(item.visual, Visual::Layout { style: s, .. } if s == style)).count();
-        assert_eq!((thumbs(false), thumbs(true)), (3, 3), "a miniature for each layout and each style of the list");
+        let thumbs = |settings: &Settings, style: bool| frame(&page, settings).items.iter().filter(|item| matches!(item.visual, Visual::Layout { style: s, .. } if s == style)).count();
+        assert_eq!((thumbs(&settings, false), thumbs(&settings, true)), (3, 3), "a miniature for each layout and each style of the list");
         settings.tabs.style = nekominal_model::settings::TabStyle::Repo;
         assert!(!can_press(&settings, "tabs.groupByState"), "tabs under their repositories are not grouped by state");
         let can_pick = |settings: &Settings| frame(&page, settings).items.iter().any(|item| item.part == Some(Part::Option("tabs.style", 0)));
         assert!(can_pick(&settings));
         settings.tabs.layout = nekominal_model::settings::TabLayout::Top;
         assert!(!can_pick(&settings), "the style of the list is not picked with the tabs on top");
+        for layout in [nekominal_model::settings::TabLayout::Top, nekominal_model::settings::TabLayout::Icons] {
+            settings.tabs.layout = layout;
+            assert_eq!(thumbs(&settings, true), 0, "{layout:?}: the styles of the list are not shown at all");
+        }
     }
 
     #[test]
