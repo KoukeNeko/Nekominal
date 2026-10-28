@@ -129,7 +129,7 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     let first = holder.givers()[0].clone();
 
     show(view, ui, |v| v.status = words.say("Asking the other Nekominal windows to hand over…", "正在請其他 Nekominal 視窗交接…"));
-    let asked = ask_others(&args.pipe, first.0);
+    let asked = ask_others(&args.pipe, first.0, args.app.as_deref());
     holder.wait_for_bundles(1 + asked.len(), OTHERS_TIMEOUT);
     for process in &asked {
         process.exited_within(OTHERS_TIMEOUT);
@@ -199,8 +199,10 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     }
 }
 
-/// Asks every other Nekominal that runs the automation API to hand over to this updater: the processes asked.
-fn ask_others(pipe: &str, first: u32) -> Vec<nekominal_pty::handoff::Process> {
+/// Asks every other Nekominal that runs the automation API from the app's folder `app` (any, when the folder is not known)
+/// to hand over to this updater: the processes asked. One run from elsewhere (a build of its own, another Scoop root) is
+/// not what is updated, and is left alone.
+fn ask_others(pipe: &str, first: u32, app: Option<&Path>) -> Vec<nekominal_pty::handoff::Process> {
     let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join(r"Nekominal\api")) else { return Vec::new() };
     let mut asked = Vec::new();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -210,6 +212,9 @@ fn ask_others(pipe: &str, first: u32) -> Vec<nekominal_pty::handoff::Process> {
         }
         let Ok(name) = std::fs::read_to_string(entry.path()) else { continue };
         let Ok(process) = nekominal_pty::handoff::Process::open(pid) else { continue };
+        if app.is_some_and(|app| !process.image().is_some_and(|image| scoop::is_inside(&image, app))) {
+            continue;
+        }
         if process.exited_within(Duration::ZERO) {
             continue;
         }
