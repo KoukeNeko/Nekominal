@@ -32,6 +32,17 @@ scoop install koukeneko/nekominal
 Nekominal 是一個約 9 MB 的原生程式：Rust、Direct3D 11 與 ConPTY。沒有 Electron、沒有 web view，也不用另外安裝執行環境。
 視窗只在畫面有變化時才重繪，所以你沒在看的終端機幾乎不花資源。
 
+|  | Nekominal | Windows Terminal |
+| --- | ---: | ---: |
+| 記憶體，一個分頁 | **81 MB** | 114 MB |
+| 記憶體，五個分頁 | **138 MB** | 193 MB |
+| 從啟動到 shell 開始執行 | **0.70 秒** | 0.77 秒 |
+| 閒置時的 CPU，一個分頁 | 每 20 秒 0.06 秒 | 每 20 秒 0.05 秒 |
+| 輸出 20 MB 的文字檔 | 11.1 秒 | 11.1 秒 |
+
+<sub>在 Windows 11 上與 Windows Terminal 1.24 比較，兩者皆為預設設定並執行 `pwsh -NoProfile`，取三次的中位數。
+記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。</sub>
+
 ## 知道你的 agent 在做什麼
 
 在分頁裡執行 Claude Code、Codex、Gemini CLI 或 Aider，分頁就會顯示它是**工作中**、**等你回應**、**已完成**還是**失敗**。

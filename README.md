@@ -33,6 +33,17 @@ Nekominal is one native program of about 9 MB: Rust, Direct3D 11 and ConPTY. The
 no runtime to install. A window draws only when something on it changes, so a terminal you are not looking at costs
 next to nothing.
 
+|  | Nekominal | Windows Terminal |
+| --- | ---: | ---: |
+| Memory, one tab | **81 MB** | 114 MB |
+| Memory, five tabs | **138 MB** | 193 MB |
+| Launch to a running shell | **0.70 s** | 0.77 s |
+| CPU at rest, one tab | 0.06 s per 20 s | 0.05 s per 20 s |
+| Printing a 20 MB text file | 11.1 s | 11.1 s |
+
+<sub>Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and `pwsh -NoProfile`;
+the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out.</sub>
+
 ## Knows what your agents are doing
 
 Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is **working**, **waiting for you**,
