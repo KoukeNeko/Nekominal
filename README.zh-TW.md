@@ -18,35 +18,45 @@
   <a href="README.md">English</a> · <strong>繁體中文</strong>
 </p>
 
-## 安裝
-
 ```powershell
 scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket
 scoop install koukeneko/nekominal
 ```
 
-也可以從 [Releases](https://github.com/KoukeNeko/Nekominal/releases) 下載 zip，解壓後執行 `Nekominal.exe`。
-支援 Windows 11，x64 或 ARM64。
+<p align="center">
+  也可以<a href="https://github.com/KoukeNeko/Nekominal/releases/latest">下載 zip</a>，解壓後執行 <code>Nekominal.exe</code>。支援 Windows 11，x64 或 ARM64。
+</p>
 
-## 功能
+## 天生輕量
 
-- **不佔資源。** 單一原生程式：Rust、Direct3D 11 與 ConPTY，沒有 Electron 或 web view。視窗只在畫面有變化時才重繪。
-- **每個分頁都有 agent 狀態。** 工作中、等你回應、已完成或失敗。Ctrl+Shift+U 跳到下一個等你的分頁。
-- **標題列顯示 Claude Code 狀態。** 模型、context 用量、費用與時間；滑鼠移到計量條上可看詳細資訊。
-- **也支援 Codex、Gemini CLI 與 Aider**，不用另外設定。
-- **分頁側邊欄**，可依狀態或 repository 分組，並顯示每個分頁的 pull request 與開啟的 port。
-- 從命令選擇區**在新的 git worktree 開分頁**，讓每個 agent 有自己的檔案。
-- **更新時分頁不中斷。** 按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。
-- 分割窗格、拖出分頁、下拉視窗（Win+`）、儲存版面與還原工作階段。
-- 網址、路徑與 hash 的提示模式；在編輯器開啟 `file:line`；搜尋所有分頁。
-- 內嵌圖片（Sixel、kitty）、字型連字、Mica 與壓克力背景，可匯入 Windows Terminal 與 iTerm2 的配色。
-- 透過 ntfy 或 webhook 傳送手機通知，並提供 `nekominal cli` 給腳本使用。
+Nekominal 是一個約 9 MB 的原生程式：Rust、Direct3D 11 與 ConPTY。沒有 Electron、沒有 web view，也不用另外安裝執行環境。
+視窗只在畫面有變化時才重繪，所以你沒在看的終端機幾乎不花資源。
+
+## 知道你的 agent 在做什麼
+
+在分頁裡執行 Claude Code、Codex、Gemini CLI 或 Aider，分頁就會顯示它是**工作中**、**等你回應**、**已完成**還是**失敗**。
+側邊欄依狀態分組，標題列會數出有幾個在等你，按 **Ctrl+Shift+U** 就跳到下一個。不用另外設定。
 
 ![Nekominal 側邊欄依狀態分組的五個 agent 分頁：等待中、執行中、已完成](assets/screenshots/agents.png)
+
+使用 Claude Code 時，標題列還會顯示模型、context 用量、費用與時間。滑鼠移到計量條上可看詳細資訊；工作階段連上
+Remote Control 時，也能在那裡開啟或複製連結。
 
 | Agent 卡片 | 依 repository 分組 |
 | :---: | :---: |
 | ![每個分頁一張卡片，顯示狀態、資料夾與分支](assets/screenshots/cards.png) | ![分頁依所在的 repository 分組並顯示狀態](assets/screenshots/repos.png) |
+
+## 為平行工作而做
+
+- **每個 agent 一個 worktree。** 從命令選擇區在新的 git worktree 開分頁；移除前會先告訴你會失去什麼。
+- **更新時分頁不中斷。** 按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。
+- **分頁上顯示 pull request 與 port**，agent 需要你時可透過 ntfy 或 webhook 傳到手機。
+- **可用腳本控制。** `nekominal cli` 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。
+
+## 首先是一個好用的終端機
+
+分割窗格、拖出分頁、Win+\` 下拉視窗、儲存版面與還原工作階段。網址、路徑與 hash 的提示模式，在編輯器開啟 `file:line`，
+搜尋所有分頁。Sixel 與 kitty 圖片、字型連字、Mica 與壓克力背景，並可匯入 Windows Terminal 與 iTerm2 的配色。
 
 ## 快速鍵
 

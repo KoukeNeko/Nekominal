@@ -18,36 +18,49 @@
   <strong>English</strong> · <a href="README.zh-TW.md">繁體中文</a>
 </p>
 
-## Install
-
 ```powershell
 scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket
 scoop install koukeneko/nekominal
 ```
 
-Or download a zip from [Releases](https://github.com/KoukeNeko/Nekominal/releases), unpack it and run `Nekominal.exe`.
-Windows 11, x64 or ARM64.
+<p align="center">
+  Or <a href="https://github.com/KoukeNeko/Nekominal/releases/latest">download the zip</a> and run <code>Nekominal.exe</code>. Windows 11, x64 or ARM64.
+</p>
 
-## What it does
+## Light by design
 
-- **Light on your machine.** A single native program: Rust, Direct3D 11 and ConPTY, with no Electron or web view. A window
-  draws only when something on it changes.
-- **Agent state on every tab.** Working, waiting for you, done or failed. Ctrl+Shift+U jumps to the next tab that waits.
-- **Claude Code in the title bar.** The model, the context used, the cost and the time. Hover the meter for the details.
-- **Works with Codex, Gemini CLI and Aider too**, with nothing to set up.
-- **Sidebar of tabs**, grouped by state or by repository, with each tab's pull request and open ports.
-- **A tab in a new git worktree** from the command palette, so each agent has its own files.
-- **Updates keep your tabs running.** Update and restart, and every shell and agent carries on in the new version.
-- Split panes, tear-off tabs, a drop-down window (Win+`), saved layouts and session restore.
-- Hints for URLs, paths and hashes; open `file:line` in your editor; search across all tabs.
-- Inline images (Sixel, kitty), font ligatures, Mica and acrylic, colour schemes from Windows Terminal and iTerm2.
-- Phone notifications through ntfy or a webhook, and a `nekominal cli` for scripts.
+Nekominal is one native program of about 9 MB: Rust, Direct3D 11 and ConPTY. There is no Electron, no web view and
+no runtime to install. A window draws only when something on it changes, so a terminal you are not looking at costs
+next to nothing.
+
+## Knows what your agents are doing
+
+Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is **working**, **waiting for you**,
+**done** or **failed**. The sidebar groups the tabs by state, the title bar counts the ones that wait, and
+**Ctrl+Shift+U** takes you to the next of them. Nothing to set up.
 
 ![Nekominal's sidebar with five agent tabs grouped by state: waiting, running and done](assets/screenshots/agents.png)
+
+For Claude Code, the title bar also shows the model, the share of the context used, the cost and the time. Hover the
+meter for the details, and for the session's Remote Control link when it has one.
 
 | Agent cards | By repository |
 | :---: | :---: |
 | ![Each tab as a card with its state, folder and branch](assets/screenshots/cards.png) | ![The tabs under the repository they work in, with their state](assets/screenshots/repos.png) |
+
+## Made for parallel work
+
+- **One worktree per agent.** Open a tab in a new git worktree from the command palette; removing it shows what would
+  be lost first.
+- **Updates keep your tabs running.** Update and restart, and every shell and agent carries on in the new version.
+- **Pull requests and ports on the tabs**, and phone notifications through ntfy or a webhook when an agent needs you.
+- **Scriptable.** `nekominal cli` lists, opens, splits and reads panes, so your own tools can drive it.
+
+## A terminal first
+
+Split panes, tear-off tabs, a drop-down window on Win+\`, saved layouts and session restore. Hints for URLs, paths and
+hashes, `file:line` opened in your editor, search across all tabs. Sixel and kitty images, font ligatures, Mica and
+acrylic, and colour schemes imported from Windows Terminal and iTerm2.
 
 ## Shortcuts
 
