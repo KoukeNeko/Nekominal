@@ -5,17 +5,16 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Nekominal — 一個輕量的 Windows 終端機</title>
 <meta name="description" content="原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'%3E%3Crect width='30' height='30' rx='8' fill='%232a2450'/%3E%3Crect x='7' y='10' width='5' height='9' rx='2.5' fill='%239bf05b'/%3E%3Crect x='18' y='10' width='5' height='9' rx='2.5' fill='%239bf05b'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" href="img/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="logo" viewBox="0 0 30 30"><path d="M3 12 5 2l7 5M27 12 25 2l-7 5" fill="#c9b8ff"/><rect x="2" y="6" width="26" height="22" rx="9" fill="#2a2450"/><rect x="8" y="14" width="4.5" height="8" rx="2.2" fill="#9bf05b"/><rect x="17.5" y="14" width="4.5" height="8" rx="2.2" fill="#9bf05b"/></symbol></svg>
 
 <nav class="nav"><div class="pill">
-  <a class="brand" href="#top"><svg width="26" height="26"><use href="#logo"/></svg>Nekominal</a>
+  <a class="brand" href="#top"><img src="img/icon.png" width="26" height="26" alt="">Nekominal</a>
   <a class="hide-s" href="#light">輕量</a><a class="hide-s" href="#agents">Agent</a><a class="hide-s" href="#parallel">平行工作</a>
   <a href="https://github.com/KoukeNeko/Nekominal">GitHub</a>
   <a class="dl" href="#install">下載</a>
@@ -52,7 +51,18 @@
     <figure class="glass rv"><img src="img/cards.png" width="1482" height="811" loading="lazy" alt="每個分頁一張卡片，顯示狀態、資料夾與分支"><figcaption>Agent 卡片</figcaption></figure>
     <figure class="glass rv"><img src="img/repos.png" width="1482" height="811" loading="lazy" alt="分頁依所在的 repository 分組並顯示狀態"><figcaption>依 repository 分組</figcaption></figure>
   </div>
-  <p class="lead rv">使用 Claude Code 時，標題列還會顯示模型、context 用量、費用與時間；工作階段連上 Remote Control 時，也能在那裡開啟或複製連結。</p>
+  <div class="feature rv">
+    <div class="txt"><h3>Context 用量，一眼看完</h3><p>使用 Claude Code 時，標題列會顯示模型、context 用量、費用與時間。滑鼠移到計量條上，可以看到快取讀取、快取寫入、新輸入各佔多少，以及這個工作階段的 token 與程式碼行數。</p><p>工作階段連上 Remote Control 時，也能在那裡開啟或複製連結。</p></div>
+    <figure class="glass"><img src="img/context.png" width="951" height="540" loading="lazy" alt="滑鼠移到 context 計量條上，浮出 context 用量、快取、費用與時間的卡片"></figure>
+  </div>
+  <div class="feature flip rv">
+    <div class="txt"><h3>Subagent 卡片</h3><p>標題列會數出有幾個 subagent 在跑、幾個已經結束，側邊欄的每一列也會標出該分頁的 agent 正在跑幾個。</p><p>點開卡片，每個 subagent 在做什麼一目了然；workflow 則逐階段列出進度。</p></div>
+    <figure class="glass"><img src="img/subagents.png" width="602" height="450" loading="lazy" alt="標題列顯示 12 個執行中、95 個已完成的 subagent，展開的卡片列出 workflow 的各階段與 subagent"></figure>
+  </div>
+  <div class="feature rv">
+    <div class="txt"><h3>點進去看它做了什麼</h3><p>卡片的任何一列都能打開抽屜：看這個 subagent 被交辦什麼、呼叫了哪些工具、回了什麼；workflow 則看它的各個階段與 agent。</p></div>
+    <figure class="glass"><img src="img/subagent-drawer.png" width="1382" height="591" loading="lazy" alt="右側抽屜顯示一個 workflow 的階段與其中四個執行中的 agent"></figure>
+  </div>
 </section>
 
 <section class="sec" id="parallel">
@@ -68,6 +78,11 @@
 <section class="sec" id="terminal">
   <h2 class="rv">首先是一個好用的終端機</h2>
   <p class="lead rv">分割窗格、拖出分頁、Win+` 下拉視窗、儲存版面與還原工作階段。網址、路徑與 hash 的提示模式，在編輯器開啟 <code>file:line</code>，搜尋所有分頁。Sixel 與 kitty 圖片、字型連字、Mica 與壓克力背景，並可匯入 Windows Terminal 與 iTerm2 的配色。</p>
+  <div class="shots three">
+    <figure class="glass rv wide"><img src="img/images-and-ligatures.png" width="1682" height="751" loading="lazy" alt="字型連字，以及在終端機裡顯示的 Sixel 與 kitty 圖片"><figcaption>字型連字、Sixel 與 kitty 圖片</figcaption></figure>
+    <figure class="glass rv"><img src="img/yazi-preview.png" width="1355" height="863" loading="lazy" alt="在 yazi 裡預覽圖片"><figcaption>在 yazi 裡預覽圖片</figcaption></figure>
+    <figure class="glass rv"><img src="img/chafa.png" width="1355" height="863" loading="lazy" alt="用 chafa 在終端機顯示圖片"><figcaption>用 chafa 顯示圖片</figcaption></figure>
+  </div>
   <div class="keys rv">
     <div><span>下一個等你的分頁</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>U</kbd></span></div>
     <div><span>命令選擇區</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></span></div>
@@ -87,7 +102,7 @@
 </section>
 
 <footer>
-  <span><svg width="20" height="20"><use href="#logo"/></svg> Nekominal · MIT</span>
+  <span><img src="img/icon.png" width="20" height="20" alt=""> Nekominal · MIT</span>
   <span><a href="https://github.com/KoukeNeko/Nekominal">GitHub</a> · <a href="https://github.com/KoukeNeko/Nekominal/releases">版本說明</a> · <a href="https://buymeacoffee.com/doershing">支持</a></span>
 </footer>
 
