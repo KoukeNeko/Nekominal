@@ -116,16 +116,35 @@ pub fn claude_hook_main() -> bool {
     let Some(Ok(input)) = values.next() else { return true };
     if let Some(file) = std::env::var(SESSION_VAR).ok().and_then(|s| session_file(&s, HOOK_EXTENSION)) {
         let old = std::fs::read_to_string(&file).ok();
-        if let Some(text) = hook_record(&input, old.as_deref()) {
+        let bridge = std::env::var(BRIDGE_VAR).ok();
+        if let Some(text) = hook_record(&input, old.as_deref(), bridge.as_deref()) {
             write_if_changed(&file, &text);
         }
     }
     true
 }
 
-/// What the file of a pane keeps of a hook's input: the session, its transcript and folder, and the model when the event
-/// names one (`SessionStart` does in recent versions). A model said before is kept while the session is the same one.
-fn hook_record(input: &serde_json::Value, old: Option<&str>) -> Option<String> {
+/// The variable Claude Code sets for its hooks while the session has a Remote Control connection: the session's id on
+/// claude.ai (`session_…`), the one in its `claude.ai/code` link. Gone when the connection ends.
+const BRIDGE_VAR: &str = "CLAUDE_CODE_BRIDGE_SESSION_ID";
+
+/// The Remote Control id of `bridge` when it is one: `session_` and letters, digits or `_`, nothing that could make the
+/// link it goes into lead elsewhere.
+pub fn remote_id(bridge: &str) -> Option<&str> {
+    let rest = bridge.strip_prefix("session_")?;
+    (!rest.is_empty() && rest.len() <= 64 && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).then_some(bridge)
+}
+
+/// The link of a Remote Control session on claude.ai.
+pub fn remote_link(id: &str) -> String {
+    format!("https://claude.ai/code/{id}")
+}
+
+/// What the file of a pane keeps of a hook's input: the session, its transcript and folder, the model when the event
+/// names one (`SessionStart` does in recent versions), and the Remote Control session while one is connected (`bridge`,
+/// from the hook's environment; none is no connection as of this event). A model said before is kept while the session
+/// is the same one.
+fn hook_record(input: &serde_json::Value, old: Option<&str>, bridge: Option<&str>) -> Option<String> {
     let text = |value: &serde_json::Value, key: &str| value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
     let session = text(input, "session_id");
     let transcript = text(input, "transcript_path")?;
@@ -133,7 +152,8 @@ fn hook_record(input: &serde_json::Value, old: Option<&str>) -> Option<String> {
     let model = input.get("model").and_then(|m| m.as_str().map(str::to_owned).or_else(|| text(m, "display_name")).or_else(|| text(m, "id")));
     let old: Option<serde_json::Value> = old.and_then(|o| serde_json::from_str(o).ok());
     let model = model.or_else(|| old.as_ref().filter(|o| text(o, "session_id") == session).and_then(|o| text(o, "model")));
-    Some(serde_json::json!({ "session_id": session, "transcript_path": transcript, "cwd": text(input, "cwd"), "model": model }).to_string())
+    let remote = bridge.and_then(remote_id);
+    Some(serde_json::json!({ "session_id": session, "transcript_path": transcript, "cwd": text(input, "cwd"), "model": model, "remote": remote }).to_string())
 }
 
 /// What the agent of a pane last said about its session.
@@ -158,6 +178,8 @@ pub struct Usage {
     pub lines_added: Option<u64>,
     pub lines_removed: Option<u64>,
     pub api_duration_ms: Option<u64>,
+    /// The session's Remote Control id (`session_…`) while it was connected at the last hook.
+    pub remote: Option<String>,
 }
 
 /// The fields of the JSON Claude Code hands its `statusLine` command that the bar shows. `used_percentage` and
@@ -183,6 +205,7 @@ pub fn parse_usage(json: &str) -> Option<Usage> {
         lines_added: count("/cost/total_lines_added"),
         lines_removed: count("/cost/total_lines_removed"),
         api_duration_ms: count("/cost/total_api_duration_ms"),
+        remote: None,
     })
 }
 
@@ -231,6 +254,7 @@ pub fn read_usage(session: &str) -> Option<Usage> {
     let mut usage = combine(line, text(hook.as_ref(), "session_id"), turn.map(|turn| (turn, transcript.as_deref().and_then(modified))));
     usage.cwd = usage.cwd.or_else(|| text(hook.as_ref(), "cwd"));
     usage.model = usage.model.or_else(|| text(hook.as_ref(), "model").map(|m| model_name(&m)));
+    usage.remote = text(hook.as_ref(), "remote").filter(|id| remote_id(id).is_some());
     Some(usage)
 }
 
@@ -616,23 +640,36 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_notes_the_remote_control_session_while_it_is_connected_and_only_a_well_formed_one() {
+        let input = serde_json::json!({"session_id":"s1","transcript_path":"C:\\t\\s1.jsonl"});
+        let on: serde_json::Value = serde_json::from_str(&hook_record(&input, None, Some("session_01U8zozZirBz3yrQQbgyNVfM")).unwrap()).unwrap();
+        assert_eq!(on["remote"], "session_01U8zozZirBz3yrQQbgyNVfM");
+        assert_eq!(remote_link("session_01U8zozZirBz3yrQQbgyNVfM"), "https://claude.ai/code/session_01U8zozZirBz3yrQQbgyNVfM");
+        let off: serde_json::Value = serde_json::from_str(&hook_record(&input, Some(&on.to_string()), None).unwrap()).unwrap();
+        assert!(off["remote"].is_null(), "a hook without the variable says the connection is gone");
+        for bad in ["session_", "sess_01", "session_01/../evil", "session_01?x=1", "https://claude.ai/code/session_01"] {
+            assert_eq!(remote_id(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn a_hook_notes_the_transcript_and_keeps_a_model_said_before_in_the_same_session() {
         let start: serde_json::Value = serde_json::from_str(
             r#"{"session_id":"s1","transcript_path":"C:\\Users\\me\\.claude\\projects\\p\\s1.jsonl","cwd":"C:\\work","hook_event_name":"SessionStart","source":"startup","model":"claude-opus-5-5"}"#,
         ).unwrap();
-        let first = hook_record(&start, None).unwrap();
+        let first = hook_record(&start, None, None).unwrap();
         let noted: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(noted["transcript_path"], "C:\\Users\\me\\.claude\\projects\\p\\s1.jsonl");
         assert_eq!((noted["session_id"].as_str(), noted["cwd"].as_str(), noted["model"].as_str()), (Some("s1"), Some("C:\\work"), Some("claude-opus-5-5")));
         let tool: serde_json::Value = serde_json::from_str(r#"{"session_id":"s1","transcript_path":"C:\\t\\s1.jsonl","cwd":"C:\\work","hook_event_name":"PostToolUse","tool_name":"Bash"}"#).unwrap();
-        let later: serde_json::Value = serde_json::from_str(&hook_record(&tool, Some(&first)).unwrap()).unwrap();
+        let later: serde_json::Value = serde_json::from_str(&hook_record(&tool, Some(&first), None).unwrap()).unwrap();
         assert_eq!(later["model"], "claude-opus-5-5", "the model of the session's start stays");
         let cleared: serde_json::Value = serde_json::from_str(r#"{"session_id":"s2","transcript_path":"C:\\t\\s2.jsonl","hook_event_name":"SessionStart","model":{"id":"claude-haiku-4-5","display_name":"Haiku 4.5"}}"#).unwrap();
-        let cleared: serde_json::Value = serde_json::from_str(&hook_record(&cleared, Some(&first)).unwrap()).unwrap();
+        let cleared: serde_json::Value = serde_json::from_str(&hook_record(&cleared, Some(&first), None).unwrap()).unwrap();
         assert_eq!((cleared["transcript_path"].as_str(), cleared["model"].as_str()), (Some("C:\\t\\s2.jsonl"), Some("Haiku 4.5")));
         let other: serde_json::Value = serde_json::from_str(r#"{"session_id":"s3","transcript_path":"C:\\t\\s3.jsonl"}"#).unwrap();
-        assert!(serde_json::from_str::<serde_json::Value>(&hook_record(&other, Some(&first)).unwrap()).unwrap()["model"].is_null(), "another session's model is not kept");
-        assert_eq!(hook_record(&serde_json::json!({"session_id":"s1"}), None), None, "nothing to note without a transcript");
+        assert!(serde_json::from_str::<serde_json::Value>(&hook_record(&other, Some(&first), None).unwrap()).unwrap()["model"].is_null(), "another session's model is not kept");
+        assert_eq!(hook_record(&serde_json::json!({"session_id":"s1"}), None, None), None, "nothing to note without a transcript");
     }
 
     #[test]

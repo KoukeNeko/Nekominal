@@ -67,6 +67,11 @@ pub enum Hit {
     Waiting,
     /// The context meter of the focused pane's agent: the pointer on it shows the context card.
     Meter,
+    /// The context card under the meter: the pointer on it keeps it open.
+    Card,
+    /// The buttons of the card's Remote Control row: open the session's link, copy it.
+    RemoteOpen,
+    RemoteCopy,
     /// What of the sidebar is not a row.
     Side,
     /// The right edge of the sidebar as a list, which is dragged to make it wider or narrower.

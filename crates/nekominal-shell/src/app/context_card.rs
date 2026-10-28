@@ -8,6 +8,8 @@ const WIDTH: f32 = 340.0;
 const PAD: f32 = 16.0;
 const ROW: f32 = 22.0;
 const BAR: f32 = 8.0;
+/// The Remote Control row: its name and state, and two small buttons.
+const REMOTE_ROW: f32 = 32.0;
 
 /// What the card says, from what the agent of the pane reported.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -26,6 +28,8 @@ pub struct Facts {
     pub lines: Option<(u64, u64)>,
     /// The status line ran: without it what only it knows (cost, time) is missing for a reason the card says.
     pub status_line: bool,
+    /// The session's Remote Control id while it is connected.
+    pub remote: Option<String>,
 }
 
 impl Facts {
@@ -48,6 +52,7 @@ impl Facts {
             lines: usage.lines_added.zip(usage.lines_removed),
             // Only the status line reports a cost: from the transcript there is none.
             status_line: usage.cost.is_some(),
+            remote: usage.remote.clone(),
         })
     }
 
@@ -72,7 +77,10 @@ pub fn tokens(n: u64) -> String {
 
 impl App {
     pub(super) fn paint_context_card(&mut self) {
-        if self.hover != Hit::Meter {
+        // Open while the pointer is on the meter or on the card, so that its buttons can be reached.
+        let shown = matches!(self.hover, Hit::Meter | Hit::Card | Hit::RemoteOpen | Hit::RemoteCopy);
+        (self.card_rect, self.remote_buttons) = (None, None);
+        if !shown {
             return;
         }
         let (Some(meter), Some(facts)) = (self.meter_rect, self.focused().and_then(|e| e.usage.as_ref()).and_then(Facts::of)) else { return };
@@ -98,10 +106,15 @@ impl App {
         if !facts.status_line {
             height += 8.0 + 2.0 * small;
         }
+        if facts.remote.is_some() {
+            height += 12.0 + REMOTE_ROW;
+        }
         height += PAD - 4.0;
         let width = self.layout.size.0;
         let mid = meter.x + meter.w / 2.0;
         let card = Rect::new((mid - 70.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0)), layout::TITLE_HEIGHT + 4.0, WIDTH, height);
+        // The gap between the meter and the card is the card's too: the pointer crosses it on the way down.
+        self.card_rect = Some(Rect::new(card.x, meter.y + meter.h, card.w, card.y + card.h - (meter.y + meter.h)));
         self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         self.ui.rrect(card, CORNER_RADIUS, Color([g.background.r, g.background.g, g.background.b, 252]), Some((col(g.divider()), 1.0)));
         let (x, right) = (card.x + PAD, card.x + card.w - PAD);
@@ -203,6 +216,28 @@ impl App {
                 self.ui.text(x, y + n as f32 * small, row, SMALL_SIZE, quiet, false);
             }
             self.ui.pop_clip();
+            y += 2.0 * small;
+        }
+        // Remote Control while it is connected: its state, and its link to open or copy.
+        if facts.remote.is_some() {
+            y += 6.0;
+            self.ui.fill(Rect::new(x, y, right - x, 1.0), col(g.divider()));
+            y += 6.0;
+            let mid = y + REMOTE_ROW / 2.0;
+            let name_w = self.ui.text(x, mid - line / 2.0, Text::CardRemote.get(lang), TEXT_SIZE, text, false);
+            let dot = Rect::new(x + name_w + 10.0, mid - 3.0, 6.0, 6.0);
+            self.ui.rrect(dot, 3.0, col(g.mark(g.success)), None);
+            self.ui.text(dot.x + 12.0, mid - small / 2.0, Text::CardRemoteOn.get(lang), SMALL_SIZE, col(g.mark(g.success)), false);
+            let labels = [Text::CommonOpen.get(lang), Text::CardCopyLink.get(lang)];
+            let widths = labels.map(|label| self.ui.measure(label, SMALL_SIZE, false) + 20.0);
+            let copy = Rect::new(right - widths[1], mid - 13.0, widths[1], 26.0);
+            let open = Rect::new(copy.x - 6.0 - widths[0], mid - 13.0, widths[0], 26.0);
+            for ((rect, label), hit) in [open, copy].into_iter().zip(labels).zip([Hit::RemoteOpen, Hit::RemoteCopy]) {
+                widgets::button(&mut self.ui, &g, rect, State { hover: self.hover == hit, pressed: self.pressed == hit, chosen: false });
+                let lw = self.ui.measure(label, SMALL_SIZE, false);
+                self.ui.text(rect.x + (rect.w - lw) / 2.0, mid - small / 2.0, label, SMALL_SIZE, text, false);
+            }
+            self.remote_buttons = Some([open, copy]);
         }
     }
 }

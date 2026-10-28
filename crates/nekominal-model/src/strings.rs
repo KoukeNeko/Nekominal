@@ -517,6 +517,9 @@ texts! {
     CardNewInput "card.newInput" "新的輸入" "New input";
     CardFree "card.free" "剩餘" "Free";
     CardSession "card.session" "這個工作階段" "This session";
+    CardRemote "card.remote" "Remote Control" "Remote Control";
+    CardRemoteOn "card.remoteOn" "已連線" "Connected";
+    CardCopyLink "card.copyLink" "複製連結" "Copy link";
     CardCost "card.cost" "費用" "Cost";
     CardTime "card.time" "時間" "Time";
     CardTokens "card.tokens" "Token" "Tokens";

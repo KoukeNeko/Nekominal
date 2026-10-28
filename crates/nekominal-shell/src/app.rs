@@ -270,6 +270,9 @@ pub struct App {
     waiting_rect: Option<Rect>,
     /// The context meter of the right of the bar, as it was drawn last: the pointer on it shows the context card.
     meter_rect: Option<Rect>,
+    /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
+    card_rect: Option<Rect>,
+    remote_buttons: Option<[Rect; 2]>,
     /// The edge of the sidebar is being dragged: the settings as they were before, for the change to be saved once.
     side_drag: Option<Settings>,
     /// The badges drawn in the last frame, where and what a click on each opens.
@@ -647,6 +650,8 @@ impl App {
             plate_rect: None,
             waiting_rect: None,
             meter_rect: None,
+            card_rect: None,
+            remote_buttons: None,
             side_drag: None,
             badge_hits: Vec::new(),
             right_width: 0.0,
@@ -1567,6 +1572,14 @@ impl App {
         if self.meter_rect.is_some_and(|rect| rect.contains(x, y)) {
             return Hit::Meter;
         }
+        // The card drawn last, over the panes: its buttons, or the card itself, which keeps it open.
+        if self.card_rect.is_some_and(|card| card.contains(x, y)) {
+            return match self.remote_buttons {
+                Some([open, _]) if open.contains(x, y) => Hit::RemoteOpen,
+                Some([_, copy]) if copy.contains(x, y) => Hit::RemoteCopy,
+                _ => Hit::Card,
+            };
+        }
         if let Some(k) = badges::at(&self.badge_hits, x, y) {
             return Hit::Badge(k);
         }
@@ -1828,6 +1841,15 @@ impl App {
                         }
                     }
                     Hit::Sidebar => self.run(Command::ViewSidebar),
+                    Hit::RemoteOpen | Hit::RemoteCopy => {
+                        if let Some(link) = self.focused().and_then(|e| e.usage.as_ref()).and_then(|u| u.remote.as_deref()).map(agent::remote_link) {
+                            if hit == Hit::RemoteOpen {
+                                open_link(&link);
+                            } else {
+                                clipboard::write_text(&link);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
