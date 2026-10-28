@@ -515,6 +515,16 @@ impl Pane {
         self.pointer(&PointerEvent::new(PointerKind::Cancel, 0.0, 0.0), grid)
     }
 
+    /// The find bar has matches in this pane or not: the scrollbar shows with them, and can be dragged, at the bottom too.
+    pub fn set_finding(&self, finding: bool) {
+        self.pointer.borrow_mut().set_finding(finding);
+    }
+
+    /// The left button holds the thumb of the scrollbar: it is drawn lit.
+    pub fn holds_thumb(&self) -> bool {
+        self.pointer.borrow().holds_thumb()
+    }
+
     /// One step of the scrolling a drag held outside the grid asks for. True when the view moved.
     pub fn drag_scroll(&self) -> bool {
         self.pointer.borrow_mut().drag_scroll(&mut self.term.lock())

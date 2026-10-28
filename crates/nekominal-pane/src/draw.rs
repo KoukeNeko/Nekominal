@@ -37,6 +37,8 @@ pub struct PaneRenderer {
     hint_labels: Vec<(usize, usize, String)>,
     labelled: Vec<r::Cell>,
     find_lines: Vec<(i32, bool)>,
+    /// The left button holds the thumb of the scrollbar: it is drawn lit.
+    thumb_lit: bool,
     marks: Vec<r::ScrollMark>,
     /// The pictures in view, from the last snapshot.
     images: Vec<r::ImageView>,
@@ -84,6 +86,7 @@ impl PaneRenderer {
             hint_labels: Vec::new(),
             labelled: Vec::new(),
             find_lines: Vec::new(),
+            thumb_lit: false,
             marks: Vec::new(),
             images: Vec::new(),
         })
@@ -167,6 +170,14 @@ impl PaneRenderer {
     pub fn set_find_lines(&mut self, lines: Vec<(i32, bool)>) {
         if lines != self.find_lines {
             self.find_lines = lines;
+            self.force_draw = true;
+        }
+    }
+
+    /// The left button holds the thumb of the scrollbar or not.
+    pub fn set_thumb_lit(&mut self, lit: bool) {
+        if lit != self.thumb_lit {
+            self.thumb_lit = lit;
             self.force_draw = true;
         }
     }
@@ -257,7 +268,7 @@ impl PaneRenderer {
             let (row, col) = term.lock().cursor_cell();
             r::Preedit { row: row as u16, col: col as u16, text: text.clone() }
         });
-        let scrollbar = view::scrollbar(&self.snapshot, !self.find_lines.is_empty());
+        let scrollbar = view::scrollbar(&self.snapshot, !self.find_lines.is_empty()).map(|bar| r::Scrollbar { hovered: self.thumb_lit, ..bar });
         self.marks = if scrollbar.is_some() { view::scroll_marks(&self.snapshot, &self.prompt_lines, &self.failed_lines, &self.find_lines) } else { Vec::new() };
         let themed = view::themed(&self.theme, &self.snapshot);
         self.renderer.set_theme(&if self.focused { themed } else { view::dimmed(&themed) });

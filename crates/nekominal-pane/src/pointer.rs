@@ -31,6 +31,14 @@ pub struct PointerEffects {
     pub open_link: Option<Link>,
 }
 
+/// Moves the view to the display offset `offset`, when it is not there.
+fn scroll_to(core: &mut TerminalCore, offset: usize) {
+    let delta = offset as i32 - core.display_offset() as i32;
+    if delta != 0 {
+        core.scroll_display(Scroll::Delta(delta));
+    }
+}
+
 fn kind_of(gesture: Gesture) -> SelectionKind {
     match gesture {
         Gesture::Simple => SelectionKind::Simple,
@@ -64,6 +72,50 @@ pub struct Pointer {
     drag: Option<(CellPoint, i32)>,
     /// The left button went down on the pinned prompt line: the view went to its prompt and the release is swallowed.
     on_header: bool,
+    /// The left button holds the thumb of the scrollbar, this many pixels below the top of the thumb.
+    thumb_grab: Option<f32>,
+    /// The find bar has matches: the scrollbar shows at the bottom too, and can be taken there.
+    finding: bool,
+}
+
+/// The scrollbar as it is drawn (`nekominal_render::rows`), in pixels of the pane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bar {
+    left: f32,
+    track: f32,
+    thumb_top: f32,
+    thumb: f32,
+    history: usize,
+}
+
+impl Bar {
+    /// The scrollbar the pane shows now: none at the bottom without a find, or without a scrollback.
+    fn of(core: &TerminalCore, grid: &PointerGrid, finding: bool) -> Option<Bar> {
+        let (history, offset, rows) = (core.history_size(), core.display_offset(), usize::from(grid.rows));
+        if history == 0 || (offset == 0 && !finding) {
+            return None;
+        }
+        let total = (history + rows) as f32;
+        let track = f32::from(grid.rows) * grid.cell_height;
+        let width = (grid.cell_width * 0.6).round().max(4.0);
+        let thumb = (rows as f32 / total * track).max(16.0).min(track);
+        let top = (history - offset.min(history)) as f32 / total;
+        let thumb_top = (top * track).clamp(0.0, track - thumb);
+        Some(Bar { left: f32::from(grid.columns) * grid.cell_width - width, track, thumb_top, thumb, history })
+    }
+
+    /// The point is on the scrollbar; a few pixels to its left count, as it is thin.
+    fn holds(&self, x: f32, y: f32) -> bool {
+        x >= self.left - 3.0 && y >= 0.0 && y < self.track
+    }
+
+    /// The display offset that puts the top of the thumb at `top` pixels: the thumb's way down the track is the
+    /// scrollback, from its oldest line at the top to the screen at the bottom.
+    fn offset_at(&self, top: f32) -> usize {
+        let travel = (self.track - self.thumb).max(1.0);
+        let down = (top.clamp(0.0, travel) / travel * self.history as f32).round() as usize;
+        self.history - down.min(self.history)
+    }
 }
 
 impl Pointer {
@@ -76,6 +128,32 @@ impl Pointer {
         modes: &InputModes,
     ) -> PointerEffects {
         let mut effects = PointerEffects::default();
+        // The left button on the scrollbar takes its thumb, whoever has the mouse otherwise: a press on the track first
+        // brings the middle of the thumb there. The thumb follows the pointer until the button goes up.
+        match event.kind {
+            PointerKind::Press(MouseButton::Left) => {
+                if let Some(bar) = Bar::of(core, grid, self.finding).filter(|bar| bar.holds(event.x, event.y)) {
+                    let on_thumb = event.y >= bar.thumb_top && event.y < bar.thumb_top + bar.thumb;
+                    let grab = if on_thumb { event.y - bar.thumb_top } else { bar.thumb / 2.0 };
+                    self.thumb_grab = Some(grab);
+                    if !on_thumb {
+                        scroll_to(core, bar.offset_at(event.y - grab));
+                    }
+                    return effects;
+                }
+            }
+            PointerKind::Move => {
+                if let Some(grab) = self.thumb_grab {
+                    if let Some(bar) = Bar::of(core, grid, true) {
+                        scroll_to(core, bar.offset_at(event.y - grab));
+                    }
+                    return effects;
+                }
+            }
+            PointerKind::Release(MouseButton::Left) if self.thumb_grab.take().is_some() => return effects,
+            PointerKind::Cancel => self.thumb_grab = None,
+            _ => {}
+        }
         // A plain left click on the pinned prompt line goes to that prompt; neither the press nor its release reaches the
         // assembler, so it neither selects nor reports. The pinned line hides the row under it, so nothing is lost there.
         match event.kind {
@@ -152,6 +230,16 @@ impl Pointer {
         true
     }
 
+    /// The find bar has matches or not: with them the scrollbar shows, and takes the pointer, at the bottom too.
+    pub fn set_finding(&mut self, finding: bool) {
+        self.finding = finding;
+    }
+
+    /// The left button holds the thumb of the scrollbar.
+    pub fn holds_thumb(&self) -> bool {
+        self.thumb_grab.is_some()
+    }
+
     /// The pointer left (capture lost, focus lost): every held button goes up and a drag ends where it was.
     pub fn cancel(&mut self, core: &mut TerminalCore, grid: &PointerGrid, modes: &InputModes) -> PointerEffects {
         self.handle(core, &PointerEvent::new(PointerKind::Cancel, 0.0, 0.0), grid, modes)
@@ -182,6 +270,63 @@ mod tests {
 
     fn right(col: u16, row: u16) -> (f32, f32) {
         (f32::from(col) * 10.0 + 8.0, f32::from(row) * 20.0 + 5.0)
+    }
+
+    /// A rig with 45 lines written, most of them in the scrollback.
+    fn scrolled_back() -> Rig {
+        let text: String = (0..45).map(|i| format!("line{i:02}\r\n")).collect();
+        Rig::new(&text)
+    }
+
+    /// On the scrollbar, which is the right 6 pixels of the 200 of the grid (0.6 of a cell, at least 4).
+    const BAR_X: f32 = 197.0;
+
+    #[test]
+    fn the_thumb_of_the_scrollbar_follows_the_pointer_from_the_oldest_line_to_the_screen() {
+        let mut rig = scrolled_back();
+        let history = rig.core.history_size();
+        assert!(history > 30, "{history}");
+        rig.core.scroll_display(Scroll::Top);
+        // The track is the 100 pixels of the 5 rows; the thumb, 16 at least, is at its top.
+        rig.press((BAR_X, 5.0));
+        assert!(rig.pointer.holds_thumb());
+        rig.drag((BAR_X, 5.0 + 84.0));
+        assert_eq!(rig.core.display_offset(), 0, "the thumb at the bottom shows the screen");
+        rig.drag((BAR_X, 5.0 + 42.0));
+        assert_eq!(rig.core.display_offset(), history - (history as f32 / 2.0).round() as usize, "half way, half the scrollback");
+        rig.drag((BAR_X, -300.0));
+        assert_eq!(rig.core.display_offset(), history, "above the track: the oldest line");
+        rig.release((BAR_X, -300.0));
+        assert!(!rig.pointer.holds_thumb());
+        assert_eq!(rig.text(), None, "dragging the thumb selects nothing");
+    }
+
+    #[test]
+    fn a_press_on_the_track_brings_the_thumb_there_and_a_drag_goes_on_from_it() {
+        let mut rig = scrolled_back();
+        let history = rig.core.history_size();
+        rig.core.scroll_display(Scroll::Top);
+        // The middle of the 16-pixel thumb goes to 60: its top to 52 of the 84 it can travel.
+        rig.press((BAR_X, 60.0));
+        assert_eq!(rig.core.display_offset(), history - (52.0 / 84.0 * history as f32).round() as usize);
+        rig.drag((BAR_X, 100.0));
+        assert_eq!(rig.core.display_offset(), 0);
+        rig.release((BAR_X, 100.0));
+    }
+
+    #[test]
+    fn without_a_scrollbar_the_right_edge_selects_and_with_the_find_it_scrolls() {
+        let mut rig = scrolled_back();
+        assert_eq!(rig.core.display_offset(), 0);
+        // At the bottom there is no scrollbar: the press starts a selection as anywhere else.
+        rig.press((BAR_X, 50.0));
+        assert!(!rig.pointer.holds_thumb());
+        rig.release((BAR_X, 50.0));
+        // The find bar shows the scrollbar at the bottom too, and it can be taken there.
+        rig.pointer.set_finding(true);
+        rig.press((BAR_X, 10.0));
+        assert!(rig.pointer.holds_thumb());
+        assert!(rig.core.display_offset() > 0, "the thumb went up to the press");
     }
 
     impl Rig {

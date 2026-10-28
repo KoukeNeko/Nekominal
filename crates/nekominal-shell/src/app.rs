@@ -2881,6 +2881,9 @@ impl App {
                 let Some(entry) = tab.entry_mut(id) else { continue };
                 entry.view.set_highlights(if id == focused { highlights.clone() } else { Vec::new() });
                 entry.view.set_find_lines(if id == focused { find_lines.clone() } else { Vec::new() });
+                // The scrollbar the find bar shows can be dragged as the one of a scrolled view.
+                entry.pane.set_finding(id == focused && !find_lines.is_empty());
+                entry.view.set_thumb_lit(entry.pane.holds_thumb());
                 entry.view.set_cursor_visible(id != focused || cursor_on);
                 entry.view.prepare(&entry.pane.term);
                 let rect = [entry.rect.x.max(0) as u32, entry.rect.y.max(0) as u32, entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32];
