@@ -8,7 +8,7 @@
 <link rel="icon" type="image/png" href="img/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -26,6 +26,7 @@
     <h1 data-i18n="hero.title">一個輕量的<br>Windows 終端機。</h1>
     <p class="sub" data-i18n="hero.sub">原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。</p>
     <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
+    <p class="cap" id="cap" data-i18n="cap.0">把游標移到任何一層上看看。</p>
     <div class="total"><b>9 MB</b><span data-i18n="hero.total">Nekominal.exe 本體只有 9 MB；連同 ConPTY 的兩個檔案，整個資料夾約 10 MB</span></div>
   </div>
 
@@ -38,12 +39,14 @@
     <g class="pl"><g class="pl-in"><g class="pl-hv">
       <polygon class="side" points="40,300 300,360 300,376 40,316"/><polygon class="side" points="300,360 560,300 560,316 300,376"/>
       <polygon class="plate" points="300,240 560,300 300,360 40,300"/>
+      <g class="term" transform="matrix(2.6 -0.6 2.6 0.6 40 300)"><text x="5" y="19"><tspan class="pr">&gt; </tspan><tspan class="ty"></tspan></text><rect class="cur" x="15.8" y="11.6" width="4.6" height="9"/><text class="o o1" x="5" y="39"></text><text class="o o2" x="5" y="59"></text></g>
       <g class="lab"><line class="lead" x1="560" y1="300" x2="610" y2="300"/>
       <text x="620" y="294" class="t1" data-i18n="s.1">視窗與分頁</text><text x="620" y="318" class="t2 mono">Rust</text></g>
     </g></g></g>
     <g class="pl"><g class="pl-in"><g class="pl-hv">
       <polygon class="side" points="40,450 300,510 300,526 40,466"/><polygon class="side" points="300,510 560,450 560,466 300,526"/>
       <polygon class="plate" points="300,390 560,450 300,510 40,450"/>
+      <polygon class="flash" points="300,390 560,450 300,510 40,450"/>
       <g class="lab"><line class="lead" x1="560" y1="450" x2="610" y2="450"/>
       <text x="620" y="444" class="t1" data-i18n="s.2">繪製</text><text x="620" y="468" class="t2 mono" data-i18n="s.2s">Direct3D 11，畫面有變化才重繪</text></g>
     </g></g></g>
@@ -59,7 +62,6 @@
       <g class="lab"><line class="lead" x1="560" y1="750" x2="610" y2="750"/>
       <text x="620" y="744" class="t1" data-i18n="s.4">你原本的 shell</text><text x="620" y="768" class="t2 mono">pwsh、WSL …</text></g>
     </g></g></g>
-  <circle class="pk" cx="300" cy="240" r="7" opacity="0"/>
   </svg>
 </header>
 

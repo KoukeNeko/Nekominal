@@ -7,6 +7,12 @@ const EN = {
   'nav.light': 'Light', 'nav.agents': 'Agents', 'nav.parallel': 'Parallel work', 'nav.lang': '中文', 'nav.download': 'Download',
   'hero.title': 'A light<br><span class="grad">Windows terminal</span>',
   'hero.sub': 'Native Rust and Direct3D, no web runtime inside. Every tab tells you which agent is waiting for you.',
+  'cap.0': 'Point at any layer.',
+  'cap.g': 'This layer does not exist: no Chromium, no Node, no web view.',
+  'cap.1': 'Tabs, split panes, the command palette, search and settings all live in this layer.',
+  'cap.2': 'Drawn with Direct3D 11, and redrawn only when something changes, so a terminal you are not looking at costs next to nothing.',
+  'cap.3': 'ConPTY is the pseudo console of Windows. It connects your shell to the window.',
+  'cap.4': 'pwsh, WSL and the rest: the shell you already use, running as it always did.',
   'hero.total': 'Nekominal.exe itself is only 9 MB; with the two ConPTY files, the whole folder is about 10 MB',
   'hero.aria': 'The four layers of Nekominal, and a fifth above them that is not there',
   's.ghost': 'This layer does not exist', 's.1': 'Window and tabs', 's.2': 'Drawing', 's.2s': 'Direct3D 11, redraws on change', 's.3': 'Terminal backend', 's.4': 'Your own shell',
@@ -71,7 +77,16 @@ function apply() {
 }
 
 // What the copy buttons say after a click, in the language of the page.
-window.i18n = { say: key => (lang === 'en' ? EN[key] : { copied: '已複製', copyFailed: '請手動複製', copy: '複製' }[key]) };
+const ZH = {
+  copied: '已複製', copyFailed: '請手動複製', copy: '複製',
+  'cap.0': '把游標移到任何一層上看看。',
+  'cap.g': '這一層不存在：沒有 Chromium、沒有 Node、沒有 web view。',
+  'cap.1': '分頁、分割窗格、命令選擇區、搜尋與設定，都在這一層。',
+  'cap.2': '用 Direct3D 11 繪製，畫面有變化才重繪，你沒在看的終端機幾乎不花資源。',
+  'cap.3': 'ConPTY 是 Windows 的偽終端機，把你的 shell 接到視窗上。',
+  'cap.4': 'pwsh、WSL 等等：你原本在用的 shell，照常執行。',
+};
+window.i18n = { say: key => (lang === 'en' ? EN[key] : ZH[key]) };
 
 document.getElementById('lang').addEventListener('click', () => { lang = lang === 'en' ? 'zh' : 'en'; store.set(lang); apply(); });
 apply();
