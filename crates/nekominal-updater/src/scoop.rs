@@ -15,7 +15,9 @@ const STILL_RUNNING: &str = "are still running";
 
 /// The version Scoop installed in `app` (`...\scoop\apps\nekominal`): what the manifest of `current` names.
 pub fn installed(app: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(app.join("current").join("manifest.json")).ok()?;
+    // Scoop keeps the manifest of an installed version as scoop-manifest.json; manifest.json is what older Scoops wrote.
+    let current = app.join("current");
+    let text = std::fs::read_to_string(current.join("scoop-manifest.json")).or_else(|_| std::fs::read_to_string(current.join("manifest.json"))).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
     Some(manifest.get("version")?.as_str()?.to_owned())
 }
@@ -114,9 +116,9 @@ mod tests {
     fn the_installed_version_is_the_one_the_manifest_of_current_names() {
         let app = std::env::temp_dir().join(format!("nekominal-updater-app-{}", std::process::id()));
         std::fs::create_dir_all(app.join("current")).unwrap();
-        std::fs::write(app.join("current").join("manifest.json"), "\u{feff}{ \"version\": \"0.2.4\", \"bin\": \"x\" }").unwrap();
+        std::fs::write(app.join("current").join("scoop-manifest.json"), "\u{feff}{ \"version\": \"0.2.4\", \"bin\": \"x\" }").unwrap();
         assert_eq!(installed(&app).as_deref(), Some("0.2.4"));
-        std::fs::write(app.join("current").join("manifest.json"), "not json").unwrap();
+        std::fs::write(app.join("current").join("scoop-manifest.json"), "not json").unwrap();
         assert_eq!(installed(&app), None);
         std::fs::remove_dir_all(&app).unwrap();
         assert_eq!(installed(&app), None);
