@@ -155,7 +155,7 @@ fn open_link(uri: &str) {
 
 /// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese). At most
 /// `max_lines` of them: the rest of a long text is not measured at all.
-fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32, max_lines: usize) -> Vec<String> {
+pub(crate) fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32, max_lines: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for ch in text.chars() {
@@ -2148,7 +2148,11 @@ impl App {
             return;
         };
         if !elevated() {
-            match crate::handoff::start_holder(&app_dir) {
+            let to = match self.update_check() {
+                update::Check::Newer(version) => Some(version),
+                _ => None,
+            };
+            match crate::handoff::start_holder(&app_dir, to.as_deref()) {
                 Ok(pipe) => {
                     // The hand-off borrows every window, this one included: it runs from the message loop.
                     crate::handoff::give_later(pipe);

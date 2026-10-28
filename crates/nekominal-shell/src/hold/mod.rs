@@ -71,6 +71,8 @@ struct Args {
     pipe: String,
     app: Option<PathBuf>,
     version: String,
+    /// The version the update goes to, as the app's check found it: shown from the start instead of being guessed.
+    to: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -82,6 +84,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--hold" => parsed.pipe = value()?,
             "--app" => parsed.app = Some(PathBuf::from(value()?)).filter(|app| !app.as_os_str().is_empty()),
             "--version" => parsed.version = value()?,
+            "--to" => parsed.to = Some(value()?).filter(|to| !to.is_empty()),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -133,9 +136,10 @@ pub fn hold_main() -> bool {
             return true;
         }
     };
-    let view = Arc::new(Mutex::new(View { from: args.version.clone(), ..View::default() }));
+    let view = Arc::new(Mutex::new(View { from: args.version.clone(), to: args.to.clone(), ..View::default() }));
     let shared = view.clone();
-    window::run("Nekominal update", view, move |ui| update(&args, &holder, &shared, ui));
+    let title = Words::new().say("Nekominal update", "更新 Nekominal");
+    window::run(&title, view, move |ui| update(&args, &holder, &shared, ui));
     true
 }
 
@@ -175,7 +179,7 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     let installed = args.app.as_deref().and_then(scoop::installed);
     show(view, ui, |v| {
         v.step = 2;
-        v.to = installed.clone().or_else(|| Some(args.version.clone()));
+        v.to = installed.clone().or_else(|| args.to.clone()).or_else(|| Some(args.version.clone()));
     });
 
     let (all, live) = holder.panes();
@@ -374,9 +378,10 @@ mod tests {
     fn the_arguments_name_the_pipe_and_the_app_and_nothing_else_is_taken() {
         let args = |list: &[&str]| parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
-            args(&["--hold", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3"]).unwrap(),
-            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), version: "0.2.3".into() }
+            args(&["--hold", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3", "--to", "0.2.4"]).unwrap(),
+            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), version: "0.2.3".into(), to: Some("0.2.4".into()) }
         );
+        assert_eq!(args(&["--hold", "p", "--to", ""]).unwrap().to, None, "an empty version is none");
         assert_eq!(args(&["--hold", "p", "--app", ""]).unwrap().app, None, "an empty folder is none");
         assert_eq!(args(&["--app", "a"]).unwrap_err(), "--hold is missing");
         assert_eq!(args(&["--hold"]).unwrap_err(), "--hold needs a value");

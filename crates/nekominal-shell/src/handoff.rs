@@ -102,7 +102,7 @@ pub fn find(panes: &[wire::PaneState], tab: usize, layout: &nekominal_model::lay
 
 /// Copies this program out of the app's folder (`hold::copy_of`) and starts the copy in the hold mode for the Scoop install
 /// in `app`: the name of the pipe it serves.
-pub fn start_holder(app: &Path) -> Result<String, String> {
+pub fn start_holder(app: &Path, to: Option<&str>) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -112,7 +112,7 @@ pub fn start_holder(app: &Path) -> Result<String, String> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |at| at.as_millis());
     let pipe = format!(r"\\.\pipe\nekominal-update-{sid}-{}-{stamp}", std::process::id());
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let args = ["--hold", pipe.as_str(), "--app", &app.to_string_lossy(), "--version", crate::update::CURRENT];
+    let args = ["--hold", pipe.as_str(), "--app", &app.to_string_lossy(), "--version", crate::update::CURRENT, "--to", to.unwrap_or("")];
     let start = |flags: u32| std::process::Command::new(&copy).args(args).current_dir(&home).creation_flags(flags).spawn();
     // Out of any job this process runs in (a terminal it was started from), so that ending that job does not end the update.
     start(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| start(0)).map_err(|e| format!("hold: {e}"))?;
