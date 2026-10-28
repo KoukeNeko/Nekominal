@@ -29,6 +29,10 @@ pub mod offscreen;
 pub mod raster;
 pub mod renderer;
 mod rows;
+/// The D3D bytecode of every shader, compiled by `build.rs`.
+pub mod shaders {
+    include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
+}
 pub mod sprites;
 
 pub use cell::*;

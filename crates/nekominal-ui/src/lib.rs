@@ -13,7 +13,7 @@ use bytemuck::{Pod, Zeroable};
 use nekominal_render::{
     atlas::AtlasTexture,
     d3d::{
-        Attribute, DrawStates, Gpu, bind_textures, bind_uniforms, compile, constant_buffer, input_layout, pixel_shader,
+        Attribute, DrawStates, Gpu, bind_textures, bind_uniforms, constant_buffer, input_layout, pixel_shader,
         set_shaders, vertex_shader, write_buffer,
     },
     fonts::{CharClass, FaceId, FontChoice, FontConfig, FontStack, Style, is_cjk},
@@ -154,19 +154,17 @@ fn ui_fonts() -> FontConfig {
 
 impl Ui {
     pub fn new(gpu: &Gpu) -> Result<Self, String> {
-        let quad_src = include_str!("quad.hlsl");
-        let glyph_src = include_str!("glyph.hlsl");
-        let quad_vs_code = compile(quad_src, "vs_main", "vs_5_0")?;
-        let glyph_vs_code = compile(glyph_src, "vs_main", "vs_5_0")?;
+        // Compiled when building, by the renderer's build script.
+        use nekominal_render::shaders::{UI_GLYPH_PS, UI_GLYPH_VS, UI_QUAD_PS, UI_QUAD_VS};
         Ok(Ui {
             gpu: gpu.clone(),
             states: DrawStates::new(gpu)?,
-            quad_layout: input_layout(gpu, &quad_vs_code, &QUAD_ATTRS)?,
-            quad_vs: vertex_shader(gpu, &quad_vs_code)?,
-            quad_ps: pixel_shader(gpu, &compile(quad_src, "fs_main", "ps_5_0")?)?,
-            glyph_layout: input_layout(gpu, &glyph_vs_code, &GLYPH_ATTRS)?,
-            glyph_vs: vertex_shader(gpu, &glyph_vs_code)?,
-            glyph_ps: pixel_shader(gpu, &compile(glyph_src, "fs_main", "ps_5_0")?)?,
+            quad_layout: input_layout(gpu, UI_QUAD_VS, &QUAD_ATTRS)?,
+            quad_vs: vertex_shader(gpu, UI_QUAD_VS)?,
+            quad_ps: pixel_shader(gpu, UI_QUAD_PS)?,
+            glyph_layout: input_layout(gpu, UI_GLYPH_VS, &GLYPH_ATTRS)?,
+            glyph_vs: vertex_shader(gpu, UI_GLYPH_VS)?,
+            glyph_ps: pixel_shader(gpu, UI_GLYPH_PS)?,
             uniform_buffer: constant_buffer(gpu, std::mem::size_of::<Uniforms>())?,
             atlas_gray: AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, 512, 2048)?,
             atlas_rgba: AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, 256, 1024)?,

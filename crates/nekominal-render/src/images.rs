@@ -12,7 +12,7 @@ use windows::Win32::Graphics::{
 };
 
 use crate::cell::GridView;
-use crate::d3d::{Attribute, Gpu, compile, input_layout, pixel_shader, set_shaders, vertex_shader};
+use crate::d3d::{Attribute, Gpu, input_layout, pixel_shader, set_shaders, vertex_shader};
 use crate::gpu::GrowBuffer;
 use crate::renderer::{PaneState, Renderer};
 
@@ -75,8 +75,7 @@ pub(crate) struct ImagePipeline {
 
 impl ImagePipeline {
     fn new(gpu: &Gpu) -> Result<Self, String> {
-        let source = include_str!("shaders/image.hlsl");
-        let vs_code = compile(source, "vs_main", "vs_5_0")?;
+        use crate::shaders::{IMAGE_PS, IMAGE_VS};
         let desc = D3D11_SAMPLER_DESC {
             Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
             AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
@@ -89,9 +88,9 @@ impl ImagePipeline {
         // SAFETY: the descriptor lives through the call.
         unsafe { gpu.device.CreateSamplerState(&desc, Some(&mut sampler)) }.map_err(|e| format!("CreateSamplerState: {e}"))?;
         Ok(ImagePipeline {
-            layout: input_layout(gpu, &vs_code, &IMAGE_ATTRS)?,
-            vs: vertex_shader(gpu, &vs_code)?,
-            ps: pixel_shader(gpu, &compile(source, "fs_main", "ps_5_0")?)?,
+            layout: input_layout(gpu, IMAGE_VS, &IMAGE_ATTRS)?,
+            vs: vertex_shader(gpu, IMAGE_VS)?,
+            ps: pixel_shader(gpu, IMAGE_PS)?,
             sampler: sampler.ok_or("no sampler")?,
         })
     }

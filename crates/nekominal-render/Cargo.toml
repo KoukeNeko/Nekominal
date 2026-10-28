@@ -21,6 +21,10 @@ memmap2 = { workspace = true }
 rustc-hash = { workspace = true }
 unicode-width = { workspace = true }
 
+[build-dependencies]
+# `build.rs` compiles the shaders with the system's D3DCompile, once, instead of the program at every start.
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc"] }
+
 [dev-dependencies]
 # This crate's own tests and examples drive the renderer headlessly.
 nekominal-render = { workspace = true, features = ["offscreen"] }

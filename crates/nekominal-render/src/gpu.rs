@@ -3,7 +3,7 @@
 use bytemuck::{Pod, Zeroable};
 use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
-use crate::d3d::{Attribute, DrawStates, Gpu, compile, dynamic_buffer, input_layout, pixel_shader, vertex_shader, write_buffer};
+use crate::d3d::{Attribute, DrawStates, Gpu, dynamic_buffer, input_layout, pixel_shader, vertex_shader, write_buffer};
 
 /// One solid rectangle in pane pixels. 20 bytes.
 #[repr(C)]
@@ -146,19 +146,16 @@ pub struct Pipelines {
 
 impl Pipelines {
     pub fn new(gpu: &Gpu) -> Result<Self, String> {
-        let rect_src = include_str!("shaders/rect.hlsl");
-        let glyph_src = include_str!("shaders/glyph.hlsl");
-        let rect_vs_code = compile(rect_src, "vs_main", "vs_5_0")?;
-        let glyph_vs_code = compile(glyph_src, "vs_main", "vs_5_0")?;
+        use crate::shaders::{GLYPH_LCD_PS, GLYPH_PS, GLYPH_VS, RECT_PS, RECT_VS};
         Ok(Pipelines {
             states: DrawStates::new(gpu)?,
-            rect_layout: input_layout(gpu, &rect_vs_code, &RECT_ATTRS)?,
-            rect_vs: vertex_shader(gpu, &rect_vs_code)?,
-            rect_ps: pixel_shader(gpu, &compile(rect_src, "fs_main", "ps_5_0")?)?,
-            glyph_layout: input_layout(gpu, &glyph_vs_code, &GLYPH_ATTRS)?,
-            glyph_vs: vertex_shader(gpu, &glyph_vs_code)?,
-            glyph_ps: pixel_shader(gpu, &compile(glyph_src, "fs_main", "ps_5_0")?)?,
-            glyph_lcd_ps: pixel_shader(gpu, &compile(glyph_src, "fs_lcd", "ps_5_0")?)?,
+            rect_layout: input_layout(gpu, RECT_VS, &RECT_ATTRS)?,
+            rect_vs: vertex_shader(gpu, RECT_VS)?,
+            rect_ps: pixel_shader(gpu, RECT_PS)?,
+            glyph_layout: input_layout(gpu, GLYPH_VS, &GLYPH_ATTRS)?,
+            glyph_vs: vertex_shader(gpu, GLYPH_VS)?,
+            glyph_ps: pixel_shader(gpu, GLYPH_PS)?,
+            glyph_lcd_ps: pixel_shader(gpu, GLYPH_LCD_PS)?,
         })
     }
 }
