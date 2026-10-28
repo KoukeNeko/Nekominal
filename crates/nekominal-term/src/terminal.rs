@@ -239,6 +239,15 @@ impl fmt::Debug for CoreEvent {
 /// Default memory budget of the scrollback of one pane.
 pub const DEFAULT_SCROLLBACK_BYTES: usize = 64 * 1024 * 1024;
 
+/// The widest pane a line setting is kept whole at.
+const BUDGET_COLUMNS: usize = 400;
+
+/// The budget that keeps `lines` lines of scrollback in a pane up to 400 columns wide, never below the default: the line
+/// setting is what the user chose, so the budget follows it instead of quietly cutting it short in a wide pane.
+pub fn scrollback_bytes_for(lines: usize) -> usize {
+    lines.saturating_mul(history_row_bytes(BUDGET_COLUMNS)).max(DEFAULT_SCROLLBACK_BYTES)
+}
+
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
     /// Most lines kept in scrollback. The memory budget below can allow fewer.
@@ -1595,6 +1604,7 @@ impl TerminalCore {
     /// number drops the oldest lines at once, like a narrower terminal with a smaller budget does.
     pub fn set_scrollback_lines(&mut self, lines: usize) {
         self.config.scrollback_lines = lines;
+        self.config.scrollback_bytes = scrollback_bytes_for(lines);
         self.history_cap = Self::scrollback_limit_for(&self.config, self.term.columns());
         self.enforce_scrollback();
         self.dirty = true;

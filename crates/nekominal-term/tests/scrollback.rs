@@ -1,7 +1,7 @@
 //! Scrollback budget, stable line ids for OSC 133 prompt navigation, and resizing under load.
 
 use nekominal_term::{
-    CoreConfig, CoreEvent, DEFAULT_SCROLLBACK_BYTES, Damage, LineId, Snapshot, TerminalCore,
+    CoreConfig, CoreEvent, DEFAULT_SCROLLBACK_BYTES, Damage, LineId, Snapshot, TerminalCore, scrollback_bytes_for,
     alacritty_terminal::{
         grid::{Row, Scroll},
         term::cell::Cell,
@@ -129,6 +129,21 @@ fn growing_wider_shrinks_the_scrollback_to_the_new_budget_and_shrinking_keeps_it
     core.resize(40, 10);
     assert_eq!(core.scrollback_limit(), narrow);
     assert_eq!(core.history_size(), wide, "history that is gone does not come back");
+}
+
+#[test]
+fn a_line_setting_is_kept_whole_in_a_wide_pane_when_its_budget_follows_it() {
+    // 30,000 lines at 300 columns are far past the default budget (about 9,000 rows there).
+    let config = CoreConfig { scrollback_lines: 30_000, scrollback_bytes: scrollback_bytes_for(30_000), ..CoreConfig::default() };
+    let mut core = core_with(300, 5, config);
+    assert_eq!(core.scrollback_limit(), 30_000);
+    // Raised on a running pane, from the default, the setting is kept whole too.
+    let mut running = core_with(300, 5, CoreConfig::default());
+    assert!(running.scrollback_limit() < 10_000, "the default budget cuts a wide pane short");
+    running.set_scrollback_lines(50_000);
+    assert_eq!(running.scrollback_limit(), 50_000);
+    core.set_scrollback_lines(0);
+    assert_eq!(core.scrollback_limit(), 0);
 }
 
 #[test]

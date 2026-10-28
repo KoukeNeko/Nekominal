@@ -236,7 +236,7 @@ const PUSH_EVENTS: [Text; 5] = [Text::GroupWaiting, Text::PushEventFailed, Text:
 
 const FONT_SIZE: Range = Range { min: FONT_SIZE_RANGE.0, max: FONT_SIZE_RANGE.1, step: 1.0, large: 4.0 };
 const LINE_HEIGHT: Range = Range { min: 1.0, max: 2.0, step: 0.05, large: 0.25 };
-const SCROLLBACK: Range = Range { min: 0.0, max: 1_000_000.0, step: 1000.0, large: 10_000.0 };
+const SCROLLBACK: Range = Range { min: 0.0, max: 100_000.0, step: 1000.0, large: 10_000.0 };
 /// The large paste warning in KiB, 0 (off) to the 100 MB the file accepts.
 const LARGE_PASTE: Range = Range { min: 0.0, max: 97_656.0, step: 1.0, large: 100.0 };
 const CLOSE_THRESHOLD: Range = Range { min: 1.0, max: 1000.0, step: 1.0, large: 5.0 };

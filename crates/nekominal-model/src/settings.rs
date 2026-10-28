@@ -1322,7 +1322,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
             // 0 keeps the width of the style; any other is at least the narrowest a list reads at.
             sidebar_width: Some(number(&tabs, "sidebarWidth", d.tabs.sidebar_width, (0.0, SIDEBAR_WIDTH_RANGE.1), "tabs", &mut problems)).filter(|w| *w > 0.0).map_or(0.0, |w| w.max(SIDEBAR_WIDTH_RANGE.0)),
         },
-        scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 1_000_000.0), "", &mut problems) as u32,
+        scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 100_000.0), "", &mut problems) as u32,
         default_profile: text(&root, "defaultProfile", &d.default_profile, "", &mut problems),
         profiles: read_profiles(&root, &mut problems),
         snippets: read_snippets(&root, &mut problems),

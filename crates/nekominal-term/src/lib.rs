@@ -19,7 +19,7 @@ pub use alacritty_terminal;
 pub use crate::terminal::{
     CellColor, CellSide, ClipboardFormatter, ClipboardKind, CoreConfig, CoreEvent, Damage, LineDamage, LineId,
     CommandOutput, MarkCursor, MouseExtensions, SearchMatch, SearchSession, SelectionKind, SnapCell, SnapCursor, Snapshot, StyledRun,
-    TermDims, TerminalCore, TriggerMark, DA1_WITH_SIXEL, DEFAULT_SCROLLBACK_BYTES, SEMANTIC_ESCAPE_CHARS_CJK, sticky_prompt_line,
+    TermDims, TerminalCore, TriggerMark, DA1_WITH_SIXEL, DEFAULT_SCROLLBACK_BYTES, SEMANTIC_ESCAPE_CHARS_CJK, scrollback_bytes_for, sticky_prompt_line,
 };
 pub use images::SnapImage;
 pub use links::{Link, LinkKind, OpenTarget, Refusal};

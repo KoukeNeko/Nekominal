@@ -630,6 +630,7 @@ pub fn core_config(settings: &Settings) -> CoreConfig {
         osc52: osc52_for(settings.osc52),
         cursor_style: cursor_style_for(&settings.cursor),
         scrollback_lines: settings.scrollback as usize,
+        scrollback_bytes: nekominal_term::scrollback_bytes_for(settings.scrollback as usize),
         kitty_keyboard: settings.keyboard.kitty_protocol,
         sticky_header: settings.sticky_header,
         triggers: crate::triggers::rules(&settings.triggers),
