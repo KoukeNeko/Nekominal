@@ -324,8 +324,9 @@ fn forward_loop(rx: &Receiver<Message>, mut sink: Sink, pty: &Pty, flow: &Flow) 
         }
 
         // Merge whatever else arrives within the window into the same frame. The window is slept through rather than
-        // waited on: ConPTY writes about a line at a time, and waking for each read cost more than taking it in.
-        if !finished {
+        // waited on: ConPTY writes about a line at a time, and waking for each read cost more than taking it in. A full
+        // read means a program writing big blocks, whose output is already there: waiting would only cap the throughput.
+        if !finished && frame.data.len() < READ_BUFFER_SIZE {
             thread::sleep(FRAME_WINDOW);
         }
         while !finished && frame.data.len() < FRAME_MAX {
