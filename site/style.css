@@ -11,6 +11,7 @@ code{font-size:.9em;color:#d8d3ff}
 .nav{position:sticky;top:0;z-index:10;display:flex;justify-content:center;padding:18px var(--gutter) 0}
 .pill{display:flex;align-items:center;gap:26px;padding:8px 10px 8px 18px;border-radius:999px;background:rgba(18,16,42,.55);border:1px solid var(--edge);backdrop-filter:blur(18px);font-size:14px;max-width:100%}
 .pill a{color:var(--mute);text-decoration:none}.pill a:hover{color:var(--text)}
+.pill .lang{font:inherit;color:var(--mute);background:none;border:0;padding:0;cursor:pointer}.pill .lang:hover{color:var(--text)}
 .pill .brand{display:flex;gap:8px;align-items:center;font-weight:600;color:var(--text)}
 .pill .dl{background:#fff;color:#1a1536;padding:7px 16px;border-radius:999px;font-weight:600}
 .hero{text-align:center;padding:72px var(--gutter) 40px}
