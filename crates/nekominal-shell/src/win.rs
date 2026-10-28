@@ -6,11 +6,11 @@ use nekominal_input::MouseButton;
 use nekominal_model::{settings::Backdrop, strings::Text};
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
             Dwm::{
-                DWM_SYSTEMBACKDROP_TYPE, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
-                DwmSetWindowAttribute,
+                DWM_SYSTEMBACKDROP_TYPE, DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                DWMWA_WINDOW_CORNER_PREFERENCE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
             },
             Gdi::{ClientToScreen, ScreenToClient, ValidateRect},
         },
@@ -380,7 +380,9 @@ fn place_ime(hwnd: HWND) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         // The client area is the whole window except the frame the system draws left, right and below; the title
-        // bar is ours. When maximized the window overhangs the screen by the frame: keep the top inside it.
+        // bar is ours. When maximized the window overhangs the screen by the frame: keep the top inside it. Over the
+        // whole monitor it is the whole window.
+        WM_NCCALCSIZE if wparam.0 != 0 && is_fullscreen_marked(hwnd) => LRESULT(0),
         WM_NCCALCSIZE if wparam.0 != 0 => {
             // SAFETY: with wParam set, lParam points to an NCCALCSIZE_PARAMS.
             unsafe {
@@ -831,6 +833,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // SAFETY: default handling of every other message.
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
+}
+
+const FULLSCREEN_PROP: windows::core::PCWSTR = w!("NekominalFullscreen");
+/// DWMWA_BORDER_COLOR values: no border at all, and the one the system chooses.
+const BORDER_COLOR_NONE: u32 = 0xFFFF_FFFE;
+const BORDER_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+/// DWM_WINDOW_CORNER_PREFERENCE values: square corners, and the system's choice.
+const CORNERS_SQUARE: i32 = 1;
+const CORNERS_DEFAULT: i32 = 0;
+
+/// Whether the window is over its whole monitor. A property of the window, not a field of `App`: the window procedure
+/// asks while `App` is busy making the change. The frame DWM draws around a window with this style, the border and the
+/// round corners, goes while it covers the monitor.
+pub(crate) fn mark_fullscreen(hwnd: HWND, on: bool) {
+    let (border, corners) = if on { (BORDER_COLOR_NONE, CORNERS_SQUARE) } else { (BORDER_COLOR_DEFAULT, CORNERS_DEFAULT) };
+    // SAFETY: a property of a window of this thread, holding no resource; the attributes are 4-byte values.
+    unsafe {
+        if on {
+            let _ = SetPropW(hwnd, FULLSCREEN_PROP, Some(HANDLE(1 as _)));
+        } else {
+            let _ = RemovePropW(hwnd, FULLSCREEN_PROP);
+        }
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, (&border as *const u32).cast(), 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&corners as *const i32).cast(), 4);
+    }
+}
+
+fn is_fullscreen_marked(hwnd: HWND) -> bool {
+    // SAFETY: a query of a window of this thread.
+    !unsafe { GetPropW(hwnd, FULLSCREEN_PROP) }.is_invalid()
 }
 
 /// The DWM backdrop the window shows through: 1 none, 2 Mica, 3 acrylic, 4 Mica Alt. Needs the frame extended over

@@ -40,10 +40,10 @@ use windows::{core::HSTRING, Win32::{
     UI::{
         Input::KeyboardAndMouse::GetKeyState,
         WindowsAndMessaging::{
-            DestroyWindow, KillTimer, SetTimer, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GWL_STYLE, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
-            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowLongPtrW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
-            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPlacement,
-            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND, WS_OVERLAPPEDWINDOW,
+            DestroyWindow, KillTimer, SetTimer, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
+            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPlacement,
+            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND,
         },
     },
 }};
@@ -411,7 +411,7 @@ pub struct App {
     popup: Option<popup::Popup>,
     confirmation: Option<Confirmation>,
     /// The placement and style the window had before full screen, while it is full screen.
-    fullscreen: Option<(WINDOWPLACEMENT, isize)>,
+    fullscreen: Option<WINDOWPLACEMENT>,
     /// The search of the find bar while it is open.
     find: Option<FindState>,
     /// When the find bar last searched again for new output.
@@ -2871,13 +2871,6 @@ impl App {
         }
         let cursor_on = self.blink_on;
         let mut first = true;
-        // Full screen has no frame, so DWM puts nothing behind the window, Mica or none: whatever is drawn with alpha would
-        // show the desktop. The frame starts from the scheme's background, opaque.
-        if self.fullscreen.is_some() {
-            let b = self.glass.background;
-            self.gpu.clear(&view, [f32::from(b.r) / 255.0, f32::from(b.g) / 255.0, f32::from(b.b) / 255.0, 1.0]);
-            first = false;
-        }
         if let Some(tab) = self.tabs.get_mut(self.selected) {
             let focused = tab.focused;
             for id in tab.shown() {
@@ -5005,19 +4998,19 @@ impl App {
         self.fullscreen.is_some()
     }
 
-    /// Full screen is the window without its frame over the whole monitor it is on; the way back is the style and
-    /// the placement it had.
+    /// Full screen is the window over the whole monitor it is on, its client area the whole window; the way back is the
+    /// placement it had. The window keeps its style: without `WS_OVERLAPPEDWINDOW` DWM no longer holds the backdrop, which
+    /// flickered while what was behind the window redrew.
     fn toggle_fullscreen(&mut self) {
         // SAFETY: plain Win32 calls on our own window; the structures live through the calls.
         unsafe {
-            if let Some((placement, style)) = self.fullscreen.take() {
-                SetWindowLongPtrW(self.hwnd, GWL_STYLE, style);
+            if let Some(placement) = self.fullscreen.take() {
+                crate::win::mark_fullscreen(self.hwnd, false);
                 let _ = SetWindowPlacement(self.hwnd, &placement);
                 let _ = SetWindowPos(self.hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
                 self.sync_size();
                 return;
             }
-            let style = GetWindowLongPtrW(self.hwnd, GWL_STYLE);
             let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
             let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
             if GetWindowPlacement(self.hwnd, &mut placement).is_err()
@@ -5025,8 +5018,8 @@ impl App {
             {
                 return;
             }
-            self.fullscreen = Some((placement, style));
-            SetWindowLongPtrW(self.hwnd, GWL_STYLE, style & !(WS_OVERLAPPEDWINDOW.0 as isize));
+            self.fullscreen = Some(placement);
+            crate::win::mark_fullscreen(self.hwnd, true);
             let r = monitor.rcMonitor;
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         }
