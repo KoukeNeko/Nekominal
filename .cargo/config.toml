@@ -1,0 +1,7 @@
+# The C runtime is linked into the program: a fresh Windows has the UCRT (api-ms-win-crt-*) but not VCRUNTIME140.dll,
+# so without this Nekominal.exe does not start there at all (0xC0000135) unless the VC++ redistributable is installed.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
