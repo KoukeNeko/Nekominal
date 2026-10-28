@@ -131,7 +131,9 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
 - 檔案總管右鍵選單的 **在 Nekominal 開啟**，可選「在這裡開啟」或「以系統管理員身分開啟」。
 - 工作列按鈕的捷徑清單列出設定檔。
 - 與 `wt` 相似的命令列：`-d`、`-p`、`nt`、`sp -H/-V`、`--` 之後的指令，以及用 `;` 分隔的多個動作。
-- 從命令選擇區或「關於」頁 **更新並重新啟動**，透過 Scoop 完成。
+- 從命令選擇區或「關於」頁 **更新並重新啟動**，透過 Scoop 完成：每個分頁裡的 shell、agent 和指令都繼續執行，
+  在新版本裡回到原本的視窗和版面，畫面和捲動歷史都還在。Scoop 更新時由一個小視窗（`updater.exe`）暫時保管它們。
+  以系統管理員身分執行的視窗則會關閉，再用儲存的文字還原。
 - 螢幕閱讀器可以讀到分頁、文字、設定與選單（UI Automation）。輸入法組字直接畫在游標處。繁體中文與英文介面。
 
 ### 比較
@@ -166,7 +168,7 @@ DirectComposition 疊在 Mica 或壓克力背景上，再以 ConPTY 執行 shell
    ```
 
    Scoop 會自動選擇 x64 或 ARM64 版本。每個[版本](https://github.com/KoukeNeko/Nekominal/releases)也有 zip 檔：
-   解壓到任何地方後執行 `Nekominal.exe`，並讓 `conpty.dll` 與 `OpenConsole.exe` 留在旁邊。
+   解壓到任何地方後執行 `Nekominal.exe`，並讓 `conpty.dll`、`OpenConsole.exe` 與 `updater.exe` 留在旁邊。
 
 2. **選擇分頁的位置。** 第一次啟動時會詢問：放在標題列、側邊欄清單，或側邊欄圖示。之後可在「設定 › 外觀」更改。
 
@@ -274,6 +276,7 @@ cargo test --workspace -- --ignored      # 另外執行真正的 ConPTY 工作�
 | `nekominal-ui` | 自繪介面：圓角矩形、文字、圖示 |
 | `nekominal-pane` | 窗格：一個工作階段、一個模擬器、一個繪製器、提示選取 |
 | `nekominal-shell` | 應用程式本身：視窗、分頁、側邊欄、彈出視窗、設定、Windows 整合、更新 |
+| `nekominal-updater` | `updater.exe`：Scoop 更新時暫時保管分頁的工作階段，再交給新版本 |
 
 ### 發布
 
