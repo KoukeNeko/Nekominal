@@ -182,6 +182,8 @@ pub struct Usage {
     pub api_duration_ms: Option<u64>,
     /// The session's Remote Control id (`session_…`) while it was connected at the last hook.
     pub remote: Option<String>,
+    /// The session's transcript, as the hooks named it, when it is on a disk of this machine.
+    pub transcript: Option<PathBuf>,
 }
 
 /// The fields of the JSON Claude Code hands its `statusLine` command that the bar shows. `used_percentage` and
@@ -208,6 +210,7 @@ pub fn parse_usage(json: &str) -> Option<Usage> {
         lines_removed: count("/cost/total_lines_removed"),
         api_duration_ms: count("/cost/total_api_duration_ms"),
         remote: None,
+        transcript: None,
     })
 }
 
@@ -257,6 +260,7 @@ pub fn read_usage(session: &str) -> Option<Usage> {
     usage.cwd = usage.cwd.or_else(|| text(hook.as_ref(), "cwd"));
     usage.model = usage.model.or_else(|| text(hook.as_ref(), "model").map(|m| model_name(&m)));
     usage.remote = text(hook.as_ref(), "remote").filter(|id| remote_id(id).is_some());
+    usage.transcript = transcript;
     Some(usage)
 }
 
@@ -299,7 +303,7 @@ impl Turn {
 }
 
 /// The end of a transcript, and whether it was cut (its first line then is most likely a part of one).
-fn read_tail(file: &Path) -> Option<(String, bool)> {
+pub fn read_tail(file: &Path) -> Option<(String, bool)> {
     let mut input = std::fs::File::open(file).ok()?;
     let length = input.metadata().ok()?.len();
     let start = length.saturating_sub(TRANSCRIPT_TAIL);

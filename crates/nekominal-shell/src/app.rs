@@ -1074,6 +1074,8 @@ impl App {
             session,
             usage: None,
             usage_stamp: None,
+            subagents: Default::default(),
+            subagents_stamp: None,
             hook_stamp: None,
             git: None,
             scheme: profile.options.color_scheme.clone(),
@@ -2081,6 +2083,19 @@ impl App {
                 let usage = stamp.and_then(|_| agent::read_usage(&entry.session));
                 changed |= usage != entry.usage;
                 entry.usage = usage;
+            }
+            // The subagents are read again when their folder changed, and every tick while one runs: its end changes a file
+            // in the folder, not the folder.
+            let session = entry.usage.as_ref().and_then(|u| u.transcript.as_deref()).map(crate::subagents::folder);
+            let stamp = session.as_deref().and_then(crate::subagents::stamp);
+            if stamp != entry.subagents_stamp || entry.subagents.running() > 0 {
+                entry.subagents_stamp = stamp;
+                let subagents = match (&session, stamp) {
+                    (Some(folder), Some(_)) => crate::subagents::read(folder, &entry.subagents),
+                    _ => Default::default(),
+                };
+                changed |= subagents != entry.subagents;
+                entry.subagents = subagents;
             }
             let folder = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
             let git = folder.as_deref().and_then(|dir| agent::git_branch(std::path::Path::new(dir)));

@@ -36,6 +36,7 @@ mod search_tabs;
 mod settings_page;
 mod spend;
 mod status;
+mod subagents;
 mod tab;
 mod textfield;
 mod toast;
