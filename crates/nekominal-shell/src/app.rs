@@ -259,6 +259,8 @@ pub struct App {
     waiting_rect: Option<Rect>,
     /// The context meter of the right of the bar, as it was drawn last: the pointer on it shows the context card.
     meter_rect: Option<Rect>,
+    /// The edge of the sidebar is being dragged: the settings as they were before, for the change to be saved once.
+    side_drag: Option<Settings>,
     /// The badges drawn in the last frame, where and what a click on each opens.
     badge_hits: Vec<(Rect, String)>,
     /// The room the right of the title bar takes (the waiting count and the numbers of the agent), the tabs of the
@@ -632,6 +634,7 @@ impl App {
             plate_rect: None,
             waiting_rect: None,
             meter_rect: None,
+            side_drag: None,
             badge_hits: Vec::new(),
             right_width: 0.0,
             groups: Vec::new(),
@@ -818,7 +821,7 @@ impl App {
 
     /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated() }
+        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated(), width: self.settings.tabs.sidebar_width as f32 }
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, under their repositories
@@ -1537,6 +1540,14 @@ impl App {
             self.hover = hit;
             self.redraw();
         }
+        if self.side_drag.is_some() {
+            // The sidebar follows the pointer, between the widths a list reads at, and the panes move with it.
+            let (min, max) = settings::SIDEBAR_WIDTH_RANGE;
+            self.settings.tabs.sidebar_width = f64::from(x as f32 / self.scale).clamp(min, max).round();
+            self.relayout();
+            self.redraw();
+            return;
+        }
         if let Some(drag) = self.drag.as_mut() {
             let pointer = x as f32 / self.scale;
             drag.x = pointer;
@@ -1615,6 +1626,9 @@ impl App {
 
     /// The cursor the window shows over the panes instead of the arrow.
     pub fn cursor(&self) -> Option<Cursor> {
+        if self.side_drag.is_some() || self.hover == Hit::SideEdge {
+            return Some(Cursor::ResizeH);
+        }
         match self.over_splitter {
             Some(Axis::Row) => Some(Cursor::ResizeH),
             Some(Axis::Column) => Some(Cursor::ResizeV),
@@ -1668,7 +1682,7 @@ impl App {
             return Capture::None;
         }
         let hit = self.hit_test(x, y);
-        if self.page_shown() && settings_tab::button_to_page(hit, self.pressed != Hit::None, self.page.as_ref().is_some_and(|page| page.drag.is_some())) {
+        if self.page_shown() && self.side_drag.is_none() && settings_tab::button_to_page(hit, self.pressed != Hit::None, self.page.as_ref().is_some_and(|page| page.drag.is_some())) {
             let (x, y) = self.point(x, y);
             return self.page_button(x, y, button, down);
         }
@@ -1691,6 +1705,15 @@ impl App {
                 self.request_close_tab(i);
             }
             return Capture::None;
+        }
+        // The edge of the sidebar is dragged: pressed, it keeps the pointer until let go, and the width is saved then.
+        if button == MouseButton::Left && down && hit == Hit::SideEdge {
+            self.side_drag = Some(self.settings_before_change());
+            return Capture::Take;
+        }
+        if button == MouseButton::Left && !down && let Some(before) = self.side_drag.take() {
+            self.apply_settings(&before);
+            return Capture::Release;
         }
         // A left press outside the panes, and its release, are for the chrome.
         if button == MouseButton::Left && (self.pressed != Hit::None || (down && hit != Hit::Pane)) {
@@ -1829,6 +1852,10 @@ impl App {
     /// The mouse capture ended: held buttons are no longer held.
     pub fn on_capture_lost(&mut self) {
         self.buttons = [false; 3];
+        // A drag of the sidebar's edge cut short keeps the width it got to, as a release would.
+        if let Some(before) = self.side_drag.take() {
+            self.apply_settings(&before);
+        }
         if let Some(page) = self.page.as_mut() {
             page.drag = None;
         }

@@ -693,6 +693,7 @@ mod tests {
     /// The keys of `settings.json` the drawer has no row for, and why.
     const NOT_SHOWN: &[(&str, &str)] = &[
         ("profiles", "the profiles page lists and edits them, a page of its own for each"),
+        ("tabs.sidebarWidth", "set by dragging the edge of the sidebar; 0 in the file is the width of the style again"),
         ("snippets", "the Terminal page lists them under its rows, a line each with its fields"),
         ("keybindings", "the shortcuts page edits them"),
         ("schemes", "the colour scheme tiles list them, with buttons that import them and a delete button on the user's own"),

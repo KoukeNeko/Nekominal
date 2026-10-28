@@ -523,11 +523,16 @@ pub struct Tabs {
     pub sidebar_open: bool,
     /// The list of the sidebar puts the tabs that wait for the user first instead of keeping their order.
     pub group_by_state: bool,
+    /// The width of the sidebar as a list, in DIP, as its edge was dragged to; 0 is the width of its style.
+    pub sidebar_width: f64,
 }
+
+/// The widths the edge of the sidebar can be dragged between, in DIP.
+pub const SIDEBAR_WIDTH_RANGE: (f64, f64) = (160.0, 480.0);
 
 impl Default for Tabs {
     fn default() -> Self {
-        Tabs { title: TabTitle::default(), layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, group_by_state: false }
+        Tabs { title: TabTitle::default(), layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, group_by_state: false, sidebar_width: 0.0 }
     }
 }
 
@@ -1314,6 +1319,8 @@ pub fn parse(source: Option<&str>) -> Parsed {
             style: one_of(&tabs, "style", &[("activity", TabStyle::Activity), ("cards", TabStyle::Cards), ("repo", TabStyle::Repo)], d.tabs.style, "tabs", &mut problems),
             sidebar_open: boolean(&tabs, "sidebarOpen", d.tabs.sidebar_open, "tabs", &mut problems),
             group_by_state: boolean(&tabs, "groupByState", d.tabs.group_by_state, "tabs", &mut problems),
+            // 0 keeps the width of the style; any other is at least the narrowest a list reads at.
+            sidebar_width: Some(number(&tabs, "sidebarWidth", d.tabs.sidebar_width, (0.0, SIDEBAR_WIDTH_RANGE.1), "tabs", &mut problems)).filter(|w| *w > 0.0).map_or(0.0, |w| w.max(SIDEBAR_WIDTH_RANGE.0)),
         },
         scrollback: number(&root, "scrollback", d.scrollback as f64, (0.0, 1_000_000.0), "", &mut problems) as u32,
         default_profile: text(&root, "defaultProfile", &d.default_profile, "", &mut problems),

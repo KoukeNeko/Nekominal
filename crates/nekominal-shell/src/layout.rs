@@ -44,6 +44,8 @@ pub const LIST_HEADING: f32 = 26.0;
 pub const ICON_CELL: f32 = 36.0;
 pub const ICON_ROW: f32 = 44.0;
 pub const SIDE_PAD: f32 = 8.0;
+/// How far from the edge of the sidebar the pointer takes it, each side, in DIP.
+const EDGE_GRIP: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
@@ -67,6 +69,8 @@ pub enum Hit {
     Meter,
     /// What of the sidebar is not a row.
     Side,
+    /// The right edge of the sidebar as a list, which is dragged to make it wider or narrower.
+    SideEdge,
     Minimize,
     Maximize,
     Close,
@@ -75,20 +79,23 @@ pub enum Hit {
 
 /// How the tabs are shown: where (`TabLayout`), how a row of the list looks (`TabStyle`), whether the sidebar is open,
 /// and whether the shield of an elevated window
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Mode {
     pub layout: TabLayout,
     pub style: TabStyle,
     pub sidebar_open: bool,
     pub admin: bool,
+    /// The width the edge of the list was dragged to, in DIP; 0 is the width of its style.
+    pub width: f32,
 }
 
 impl Mode {
-    pub const TOP: Mode = Mode { layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, admin: false };
+    pub const TOP: Mode = Mode { layout: TabLayout::Top, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
 
     /// The width of the sidebar on show; 0 with the tabs on top or the sidebar hidden.
     pub fn side_width(self) -> f32 {
         match (self.layout, self.sidebar_open) {
+            (TabLayout::List, true) if self.width > 0.0 => self.width,
             (TabLayout::List, true) => match self.style {
                 TabStyle::Activity => SIDE_LIST,
                 TabStyle::Cards => SIDE_CARDS,
@@ -268,6 +275,13 @@ impl Layout {
         if self.menu.contains(x, y) {
             return Hit::Menu;
         }
+        // A few DIP each side of the hairline: the edge of a list, not of the narrow column of icons.
+        if let Some(side) = self.sidebar.filter(|_| self.mode.layout == TabLayout::List)
+            && y >= side.y
+            && (x - (side.x + side.w)).abs() <= EDGE_GRIP
+        {
+            return Hit::SideEdge;
+        }
         for (i, chip) in self.chips.iter().enumerate().filter(|(i, _)| self.is_shown(*i)) {
             if chip.contains(x, y) {
                 return if Self::close_button(*chip).is_some_and(|close| close.contains(x, y)) { Hit::ChipClose(i) } else { Hit::Chip(i) };
@@ -297,7 +311,7 @@ mod tests {
 
     fn side(layout: TabLayout, open: bool, groups: &[Vec<usize>]) -> Layout {
         let tabs = groups.iter().map(Vec::len).sum();
-        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, style: TabStyle::Activity, sidebar_open: open, admin: false }, 200.0, groups, &[])
+        Layout::new(1200.0, 720.0, tabs, CAPTION, 0, Mode { layout, style: TabStyle::Activity, sidebar_open: open, admin: false, width: 0.0 }, 200.0, groups, &[])
     }
 
     #[test]
@@ -384,13 +398,28 @@ mod tests {
 
     #[test]
     fn a_row_with_badges_is_taller_and_the_rows_under_it_move_down_by_as_much() {
-        let mode = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false };
+        let mode = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
         let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
         let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[0.0, 20.0]);
         assert_eq!((tall.chips[0], tall.chips[1].h), (plain.chips[0], LIST_ROW + 20.0));
         assert_eq!(tall.chips[2].y - plain.chips[2].y, 20.0);
         assert_eq!(tall.hit(tall.chips[1].x + 4.0, tall.chips[1].y + LIST_ROW + 10.0), Hit::Chip(1), "the third line is the row's");
         assert_eq!(Layout::close_button(tall.chips[1]).map(|c| c.y - tall.chips[1].y), Layout::close_button(plain.chips[1]).map(|c| c.y - plain.chips[1].y));
+    }
+
+    #[test]
+    fn the_edge_of_the_list_is_taken_by_the_pointer_and_a_dragged_width_is_the_sidebars() {
+        let list = Mode { layout: TabLayout::List, ..Mode::TOP };
+        let plain = Layout::new(1200.0, 720.0, 2, CAPTION, 0, list, 0.0, &[vec![0, 1]], &[]);
+        assert_eq!(plain.hit(SIDE_LIST, 300.0), Hit::SideEdge);
+        assert_eq!(plain.hit(SIDE_LIST + 3.0, 300.0), Hit::SideEdge, "a little into the pane too");
+        assert_eq!(plain.hit(SIDE_LIST + 6.0, 300.0), Hit::Pane);
+        assert_eq!(plain.hit(SIDE_LIST, 20.0), Hit::Drag, "not in the title bar");
+        let wide = Layout::new(1200.0, 720.0, 2, CAPTION, 0, Mode { width: 333.0, ..list }, 0.0, &[vec![0, 1]], &[]);
+        assert_eq!((wide.pane.x, wide.chips[0].w), (333.0, 333.0 - 2.0 * SIDE_PAD));
+        let icons = Layout::new(1200.0, 720.0, 2, CAPTION, 0, Mode { layout: TabLayout::Icons, width: 333.0, ..Mode::TOP }, 0.0, &[vec![0, 1]], &[]);
+        assert_eq!(icons.pane.x, SIDE_ICONS, "the column of icons keeps its width");
+        assert_ne!(icons.hit(SIDE_ICONS, 300.0), Hit::SideEdge);
     }
 
     #[test]
@@ -416,12 +445,12 @@ mod tests {
     #[test]
     fn the_strip_and_the_icons_take_no_room_for_badges() {
         for layout in [TabLayout::Top, TabLayout::Icons] {
-            let mode = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false };
+            let mode = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
             let plain = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[]);
             let tall = Layout::new(1200.0, 720.0, 3, CAPTION, 0, mode, 0.0, &[vec![0, 1, 2]], &[20.0, 40.0, 20.0]);
             assert_eq!(tall.chips, plain.chips, "{layout:?}");
         }
-        let list = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false };
+        let list = Mode { layout: TabLayout::List, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
         let short = Layout::new(1200.0, 720.0, 1, CAPTION, 0, list, 0.0, &[vec![0]], &[20.0, 40.0]);
         assert_eq!(short.chips.len(), 1, "heights past the last tab are left");
     }
@@ -429,7 +458,7 @@ mod tests {
     #[test]
     fn an_elevated_window_has_its_shield_first_and_everything_else_moves_over_for_it() {
         for layout in [TabLayout::Top, TabLayout::List] {
-            let plain = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false };
+            let plain = Mode { layout, style: TabStyle::Activity, sidebar_open: true, admin: false, width: 0.0 };
             let admin = Mode { admin: true, ..plain };
             let without = Layout::new(1200.0, 720.0, 3, CAPTION, 0, plain, 0.0, &[vec![0, 1, 2]], &[]);
             let with = Layout::new(1200.0, 720.0, 3, CAPTION, 0, admin, 0.0, &[vec![0, 1, 2]], &[]);
