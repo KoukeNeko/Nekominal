@@ -30,9 +30,15 @@ h1{font-size:clamp(38px,4.6vw,66px);line-height:1.12;font-weight:700;letter-spac
 .stack .t1{font-size:23px;font-weight:700}.stack .t2{font-size:17px;fill:var(--mute)}.stack .mono{font-family:"IBM Plex Mono",monospace}
 .stack .plate{fill:var(--plate);stroke:var(--edge);stroke-width:1.8;stroke-linejoin:round}
 .stack .side{fill:var(--side);stroke:var(--edge);stroke-width:1.8;stroke-linejoin:round}
-.stack .ghost{fill:none;stroke:var(--hot);stroke-width:2.5;stroke-dasharray:9 7;stroke-linejoin:round}
+.stack .ghost{fill:var(--hot);fill-opacity:0;stroke:var(--hot);stroke-width:2.5;stroke-dasharray:9 7;stroke-linejoin:round}
 .stack .lead{stroke:var(--edge);stroke-width:1.4}.stack .leadhot{stroke:var(--hot);stroke-width:1.4;stroke-dasharray:4 4}
 .stack .hot{fill:var(--hot)}
+.stack .pk{fill:var(--eye)}
+.stack .pl{transition:opacity .25s;cursor:default}
+.stack .pl .plate{transition:stroke .2s}
+.stack .pl.on .plate{stroke:var(--eye)}
+.stack.hovering .pl:not(.on){opacity:.4}
+.stack .pl.on text.t1:not(.hot){fill:var(--eye)}
 
 .sec{max-width:1120px;margin:0 auto;padding:112px var(--gutter) 0}
 h2{font-size:clamp(28px,3.6vw,42px);line-height:1.25;font-weight:700;letter-spacing:-.01em}
