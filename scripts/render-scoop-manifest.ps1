@@ -30,7 +30,9 @@ $manifest = [ordered]@{
         '64bit' = [ordered]@{ url = $Url; hash = $Sha256.ToLowerInvariant() }
         'arm64' = [ordered]@{ url = $Arm64Url; hash = $Arm64Sha256.ToLowerInvariant() }
     }
-    bin           = 'Nekominal.exe'
+    # The app's folder on PATH rather than a shim of Scoop's: `nekominal` then starts Nekominal.exe itself, with its
+    # icon, instead of a launcher without one that stays in the list of processes beside it.
+    env_add_path  = '.'
     shortcuts     = @(, @('Nekominal.exe', 'Nekominal'))
     pre_install   = $stop
     pre_uninstall = @($stop, $unregister)
