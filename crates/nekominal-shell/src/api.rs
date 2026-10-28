@@ -527,6 +527,13 @@ fn instances_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("api"))
 }
 
+/// Removes the file of this instance, for a process that ends without dropping [`Running`] (a hand-off).
+pub fn forget_instance() {
+    if let Some(dir) = instances_dir() {
+        let _ = std::fs::remove_file(dir.join(std::process::id().to_string()));
+    }
+}
+
 /// The API while it runs: dropped (the process ends), its file goes.
 pub struct Running(Option<PathBuf>);
 

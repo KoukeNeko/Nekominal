@@ -123,6 +123,7 @@ pub fn give(pipe: &str) -> String {
     let error = match try_give(pipe) {
         Ok(()) => {
             crate::util::log("update: the windows were handed to the updater");
+            crate::api::forget_instance();
             // No destructor, no pseudoconsole closed: the shells live on in the updater's handles.
             // SAFETY: ends this process.
             unsafe {
