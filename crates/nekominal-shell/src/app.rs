@@ -3446,13 +3446,21 @@ impl App {
             self.ui.push_clip(Rect::new(x, row.y, (right - x).max(0.0), row.h));
             self.ui.text(x, top + (TAB_ICON - line) / 2.0, &label, TEXT_SIZE, name_color, false);
             let panes = self.tabs[i].panes.len();
+            let mut at = x + self.ui.measure(&label, TEXT_SIZE, false) + 6.0;
             if panes > 1 {
                 // A split tab is one row: the number of its panes after its title.
-                let at = x + self.ui.measure(&label, TEXT_SIZE, false) + 6.0;
                 let count = panes.to_string();
                 let badge = Rect::new(at, top + 1.0, self.ui.measure(&count, SMALL_SIZE, false) + 8.0, 14.0);
                 self.ui.rrect(badge, 3.0, Color::TRANSPARENT, Some((col(g.divider()), 1.0)));
                 self.ui.text(badge.x + 4.0, badge.y + (badge.h - small) / 2.0, &count, SMALL_SIZE, quiet, false);
+                at = badge.x + badge.w + 6.0;
+            }
+            // The subagents its agent runs: their number after a square, in the colour of what runs.
+            let running = self.tabs[i].focused_entry().map_or(0, |e| e.subagents.running());
+            if running > 0 {
+                let mid = top + TAB_ICON / 2.0;
+                self.ui.rrect(Rect::new(at, mid - 3.5, 7.0, 7.0), 1.5, col(g.accent), None);
+                self.ui.text(at + 11.0, mid - small / 2.0, &running.to_string(), SMALL_SIZE, col(g.accent), false);
             }
             self.ui.pop_clip();
             self.paint_activity_rest(i, row, x);
