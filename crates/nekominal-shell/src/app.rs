@@ -75,6 +75,14 @@ pub const WM_WAKE: u32 = WM_APP + 1;
 /// The device was lost: posted by a window whose frame did not show, and handled outside every borrow of the windows.
 pub const WM_GPU_LOST: u32 = WM_APP + 5;
 
+/// How the session of a new pane starts.
+enum Start {
+    /// A new session, with the text of a restored pane and the line under it, if any.
+    Fresh(Option<(String, String)>),
+    /// The session an update handed over: the pane it was, and its handles (in this process).
+    HandedOver(nekominal_pty::handoff::PaneState, nekominal_pty::handoff::Parts),
+}
+
 /// What the window does with the mouse capture after a button event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capture {
@@ -710,6 +718,14 @@ impl App {
             }
         }
         app.relayout();
+        // A window an update handed over (`--adopt`): its tabs, on the sessions the Nekominal before ran.
+        if first_tab && let Some(window) = crate::handoff::take_pending() {
+            app.open_handed_over(window);
+            if app.tabs.is_empty() {
+                app.new_tab()?;
+            }
+            return Ok(app);
+        }
         // What the command line asks for (a folder, a profile, a program, more tabs and panes) is what the first window
         // opens, instead of the saved session.
         let launch = crate::cli::launch();
@@ -951,11 +967,20 @@ impl App {
     /// `make_entry_with` for a pane of a restored session: `restored`, the text it held and the line shown under it,
     /// goes into its terminal before its shell starts.
     fn make_entry_restoring(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>, restored: Option<(String, String)>) -> Result<PaneEntry, String> {
+        self.make_entry_starting(id, size_px, profile, directory, Start::Fresh(restored))
+    }
+
+    /// A pane that runs a new session of `profile`, or (`Start::HandedOver`) the session another Nekominal handed over in an
+    /// update, at the size it had there, under its old name, showing what it showed.
+    fn make_entry_starting(&self, id: PaneId, size_px: (u32, u32), profile: &Profile, directory: Option<&str>, start: Start) -> Result<PaneEntry, String> {
         let sibling = self.tabs.iter().find_map(|tab| tab.panes.first()).map(|entry| &entry.view);
         let mut config = self.renderer_config();
         config.font_size_pt = zoomed(profile.options.font_size.unwrap_or(self.settings.font.size), self.zoom);
         let view = PaneRenderer::new_sharing(&self.gpu, config, self.pane_theme(profile.options.color_scheme.as_deref()), sibling)?;
-        let (cols, rows) = view.grid_for(size_px);
+        let (cols, rows) = match &start {
+            Start::HandedOver(state, _) => (usize::from(state.cols), usize::from(state.rows)),
+            Start::Fresh(_) => view.grid_for(size_px),
+        };
         let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
         let reader_target = target.clone();
         let wake: nekominal_pane::Wake = Arc::new(move || {
@@ -965,22 +990,39 @@ impl App {
                 unsafe { PostMessageW(Some(hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
             }
         });
-        let session = agent::new_session();
-        let config = self.spawn_config(profile, directory, &session, cols as u16, rows as u16);
         let core = logic::core_config(&self.settings);
-        let pane = Pane::spawn_prepared(config, core, wake, |term| {
-            if let Some((text, label)) = &restored {
-                term.show_restored(text, label);
+        let (session, pane, title) = match start {
+            Start::Fresh(restored) => {
+                let session = agent::new_session();
+                let config = self.spawn_config(profile, directory, &session, cols as u16, rows as u16);
+                let pane = Pane::spawn_prepared(config, core, wake, |term| {
+                    if let Some((text, label)) = &restored {
+                        term.show_restored(text, label);
+                    }
+                });
+                (session, pane, String::new())
             }
-        })
-        .map_err(|e| format!("pty: {e}"))?;
+            Start::HandedOver(state, parts) => {
+                agent::reserve_session(&state.session);
+                crate::handoff::consumed(&state.session, false);
+                let pane = Pane::adopt_prepared(&parts, state.cols, state.rows, core, wake, |term| term.show_handoff(&state.screen));
+                if let Ok(pane) = &pane {
+                    crate::handoff::consumed(&state.session, true);
+                    // Once smaller and back: a full-screen program (Claude Code, vim) draws its whole screen again.
+                    pane.resize(state.cols, state.rows.saturating_sub(1).max(1));
+                    pane.resize(state.cols, state.rows);
+                }
+                (state.session.clone(), pane, state.title.clone())
+            }
+        };
+        let pane = pane.map_err(|e| format!("pty: {e}"))?;
         Ok(PaneEntry {
             id,
             pane,
             view,
             grid: (cols as u16, rows as u16),
             rect: PxRect { x: 0, y: 0, w: size_px.0 as i32, h: size_px.1 as i32 },
-            title: String::new(),
+            title,
             cwd: None,
             profile: profile.name.clone(),
             profile_id: profile.id.clone(),
@@ -2088,9 +2130,11 @@ impl App {
         });
     }
 
-    /// Scoop does not replace a program that runs, and the update would be typed in this very terminal: a PowerShell window
-    /// of its own waits for this process and its OpenConsole to end, runs the update and starts the app again, while every
-    /// window here closes and saves the session.
+    /// Updates with Scoop and starts the new version, the programs of every tab still running: `updater.exe` takes the
+    /// tabs of every Nekominal over while Scoop updates (`handoff.rs`, `docs/updater-design.md`). Without it (a build that
+    /// does not ship it), or from a window run as administrator (which can hand nothing to a program that is not, nor reach
+    /// the other windows), as before: a PowerShell window of its own waits for this process and its OpenConsole to end,
+    /// runs the update and starts the app again, while every window here closes and saves the session.
     fn update_and_restart(&mut self) {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x10;
@@ -2098,6 +2142,18 @@ impl App {
             util::log("update: this copy was not installed with Scoop, so there is nothing to update");
             return;
         };
+        if !elevated() {
+            match crate::handoff::start_updater(&app_dir) {
+                Ok(pipe) => {
+                    // The hand-off borrows every window, this one included: it runs from the message loop.
+                    crate::handoff::give_later(pipe);
+                    // SAFETY: posting to our own window.
+                    unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_HAND_OFF, WPARAM(0), LPARAM(0)); }
+                    return;
+                }
+                Err(e) => util::log(&format!("update: {e}; updating with the script instead")),
+            }
+        }
         let script = update::encoded(&update::update_script(std::process::id(), &app_dir));
         // Started outside the app's folder: run from a shortcut of Scoop, this process works in `current`, and a console
         // that inherited that would hold the folder Scoop unlinks.

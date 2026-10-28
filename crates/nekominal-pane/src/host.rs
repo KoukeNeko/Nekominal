@@ -25,6 +25,7 @@ use nekominal_input::{
 };
 use nekominal_pty::{
     conpty::{SpawnConfig, WidthModel},
+    handoff::Parts,
     session::{Event, Session, Sessions, Sink},
 };
 use crate::pointer::{Pointer, PointerEffects};
@@ -85,6 +86,9 @@ pub enum UiEvent {
 /// How many events a pane's queue to the UI holds. When it is full the reader waits for the UI to take some, so a
 /// program that floods titles or notifications is slowed instead of growing the queue without limit.
 const UI_QUEUE: usize = 4096;
+
+/// How long a hand-off waits for the output read so far to be shown.
+const HAND_OFF_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Whether a command runs in the pane, as far as the prompt marks of the shell (OSC 133) and the input sent to it
 /// tell. The integration of PowerShell marks the prompt and the end of a command but not its start, so a command
@@ -209,10 +213,11 @@ pub struct Pane {
 /// Called from the reader thread when the pane has something new to show.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// Starts `config` as the session of generation `mine`: its output feeds `term`, what the emulator reports goes to
-/// `ui` and its replies to the program. Output of a session whose generation is no longer the pane's is dropped.
+/// Starts the session of generation `mine` with `start` (a program spawned, or a session handed over adopted): its output
+/// feeds `term`, what the emulator reports goes to `ui` and its replies to the program. Output of a session whose
+/// generation is no longer the pane's is dropped.
 fn start_session(
-    config: &SpawnConfig,
+    start: impl FnOnce(&Sessions, Sink) -> std::io::Result<(u32, u32)>,
     term: &Arc<FairMutex<TerminalCore>>,
     ui: &SyncSender<UiEvent>,
     activity: &Arc<AtomicU8>,
@@ -295,7 +300,7 @@ fn start_session(
     };
 
     let sessions = Sessions::default();
-    let (id, _pid) = sessions.spawn(config, sink)?;
+    let (id, _pid) = start(&sessions, sink)?;
     let session = sessions.get(id)?;
     let _ = session_cell.set(session.clone());
     let early = pending_ack.swap(0, Ordering::Relaxed);
@@ -339,14 +344,32 @@ impl Pane {
     /// Like [`Pane::spawn_woken`], and `prepare` runs on the emulator before the program starts: what it feeds (the
     /// text of a restored pane) is above anything the program writes, and never reaches the program.
     pub fn spawn_prepared(config: SpawnConfig, core: CoreConfig, wake: Wake, prepare: impl FnOnce(&mut TerminalCore)) -> std::io::Result<Pane> {
-        let (cols, rows) = (usize::from(config.cols), usize::from(config.rows));
-        let mut emulator = TerminalCore::new(cols, rows, core);
+        let (cols, rows) = (config.cols, config.rows);
+        Pane::start_prepared(|sessions: &Sessions, sink| sessions.spawn(&config, sink), cols, rows, core, wake, prepare)
+    }
+
+    /// A pane for a session another process handed over (`parts`, handles of this process that the pane owns from now
+    /// on): its terminal of `cols` by `rows` gets `prepare` (what the pane showed there), then the output of the program,
+    /// what it wrote meanwhile first.
+    pub fn adopt_prepared(parts: &Parts, cols: u16, rows: u16, core: CoreConfig, wake: Wake, prepare: impl FnOnce(&mut TerminalCore)) -> std::io::Result<Pane> {
+        Pane::start_prepared(|sessions: &Sessions, sink| sessions.adopt(parts, sink), cols, rows, core, wake, prepare)
+    }
+
+    fn start_prepared(
+        start: impl FnOnce(&Sessions, Sink) -> std::io::Result<(u32, u32)>,
+        cols: u16,
+        rows: u16,
+        core: CoreConfig,
+        wake: Wake,
+        prepare: impl FnOnce(&mut TerminalCore),
+    ) -> std::io::Result<Pane> {
+        let mut emulator = TerminalCore::new(usize::from(cols), usize::from(rows), core);
         prepare(&mut emulator);
         let term = Arc::new(FairMutex::new(emulator));
         let (ui_tx, ui_rx) = sync_channel::<UiEvent>(UI_QUEUE);
         let activity = Arc::new(AtomicU8::new(Activity::Unknown.code()));
         let generation = Arc::new(AtomicU32::new(0));
-        let live = start_session(&config, &term, &ui_tx, &activity, &generation, &wake, 0)?;
+        let live = start_session(start, &term, &ui_tx, &activity, &generation, &wake, 0)?;
         Ok(Pane {
             term,
             events: ui_rx,
@@ -375,7 +398,7 @@ impl Pane {
             config.rows = u16::try_from(core.rows()).unwrap_or(config.rows);
         }
         self.activity.store(Activity::Unknown.code(), Ordering::Relaxed);
-        let live = start_session(&config, &self.term, &self.ui, &self.activity, &self.generation, &self.wake, mine)?;
+        let live = start_session(|sessions: &Sessions, sink| sessions.spawn(&config, sink), &self.term, &self.ui, &self.activity, &self.generation, &self.wake, mine)?;
         *self.live.borrow_mut() = live;
         Ok(())
     }
@@ -544,6 +567,27 @@ impl Pane {
             return false;
         }
         self.live.borrow().input.send((request.reply)(text).into_bytes()).is_ok()
+    }
+
+    /// Stops reading the program's output, with all read so far shown, and gives the handles of the session, for this
+    /// process to hand it to another (an update). The program goes on running; what it writes waits in the pipe for the
+    /// process that takes it. Fails (and reads on) when the pane has no session left or its output was not taken in.
+    pub fn hand_off(&self) -> std::io::Result<Parts> {
+        let live = self.live.borrow();
+        let session = live.sessions.get(live.id)?;
+        if !session.pause(HAND_OFF_PAUSE) {
+            session.resume();
+            return Err(std::io::Error::other("the output of the pane was not taken in"));
+        }
+        session.parts().inspect_err(|_| session.resume())
+    }
+
+    /// Reads the output again after a [`Pane::hand_off`] that went no further.
+    pub fn resume(&self) {
+        let live = self.live.borrow();
+        if let Ok(session) = live.sessions.get(live.id) {
+            session.resume();
+        }
     }
 
     /// Closes the session (kills the process tree) while the process can still create threads. Drop only does it as a fallback:

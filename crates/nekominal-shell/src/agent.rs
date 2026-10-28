@@ -43,6 +43,16 @@ pub fn new_session() -> String {
     format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+/// A name a pane that came from another process keeps (an update hands the panes over): the names this process hands out
+/// from now on are not it. Only a name of this process's own id can meet them, when Windows gave it the id of the one
+/// that handed over.
+pub fn reserve_session(session: &str) {
+    let mine = format!("{}-", std::process::id());
+    if let Some(n) = session.strip_prefix(&mine).and_then(|n| n.parse::<u64>().ok()) {
+        NEXT.fetch_max(n + 1, Ordering::Relaxed);
+    }
+}
+
 /// Where the file of a pane is; `None` for a name this program did not hand out.
 fn usage_file(session: &str) -> Option<PathBuf> {
     session_file(session, "json")
@@ -527,6 +537,13 @@ mod tests {
     fn a_pane_name_is_only_ever_one_this_program_hands_out() {
         assert!(new_session().bytes().all(|b| b.is_ascii_digit() || b == b'-'));
         assert_ne!(new_session(), new_session());
+        // A pane handed over with a name of this process's id: the next names come after it, and other names change nothing.
+        let taken = format!("{}-{}", std::process::id(), 1_000_000);
+        reserve_session(&taken);
+        reserve_session("1-99999999");
+        reserve_session("not a name");
+        let next: u64 = new_session().rsplit('-').next().unwrap().parse().unwrap();
+        assert!(next > 1_000_000, "after the name kept, not over it: {next}");
         assert!(usage_file("..\\..\\evil").is_none());
         assert!(usage_file("").is_none());
     }

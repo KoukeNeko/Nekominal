@@ -432,6 +432,91 @@ impl App {
         added
     }
 
+    /// Opens the tabs of a window an update handed over, each pane on its session when it came with one (the panes keep
+    /// their names, so the files of their agents go on), else on a fresh shell under the text it showed. Tabs that ran as
+    /// administrator open here like the others: they were in this window already.
+    pub(crate) fn open_handed_over(&mut self, window: nekominal_pty::handoff::WindowState) {
+        let parsed = Session::parse(&window.session.to_string());
+        for problem in &parsed.problems {
+            util::log(&format!("update: session: {problem}"));
+        }
+        let session = parsed.session;
+        let area = self.pane_area();
+        let size = (area.w.max(1) as u32, area.h.max(1) as u32);
+        let mut panes = window.panes;
+        let lang = self.language();
+        for (index, record) in session.tabs.iter().enumerate() {
+            let restored = Tab::restore(record.layout.clone(), record.active, record.zoomed.is_some(), |id| {
+                let pane = record.panes.get(&id);
+                let profile = pane.and_then(|pane| self.profiles.iter().find(|p| p.id == pane.profile)).unwrap_or(&self.profile);
+                let cwd = pane.and_then(|pane| pane.cwd.as_deref());
+                let Some(at) = panes.iter().position(|state| state.tab == index && state.pane == id) else {
+                    return self.make_entry_with(id, size, profile, cwd);
+                };
+                let mut state = panes.swap_remove(at);
+                let text = nekominal_term::restore::sanitize(&state.screen);
+                if let Some(parts) = state.parts.take() {
+                    match self.make_entry_starting(id, size, profile, cwd, Start::HandedOver(state, parts)) {
+                        Ok(entry) => return Ok(entry),
+                        Err(e) => util::log(&format!("update: a pane could not be adopted: {e}")),
+                    }
+                }
+                self.make_entry_restoring(id, size, profile, cwd, Some((text, Text::PaneNotKept.get(lang).to_owned())))
+            });
+            if let Some(mut tab) = restored {
+                (tab.name, tab.color) = (record.name.clone(), record.color.filter(|c| *c < logic::TAB_COLORS.len()));
+                self.tabs.push(tab);
+            }
+        }
+        if !self.tabs.is_empty() {
+            self.selected = session.active_tab.min(self.tabs.len() - 1);
+            self.relayout();
+            self.sync_focus();
+        }
+        self.placement = session.window;
+    }
+
+    /// The window as an update hands it over: its session, and each pane with what it shows and its session's handles
+    /// duplicated into `updater` (also kept in `handed`, to be closed there if the hand-off goes no further). A pane whose
+    /// session cannot be handed over (it ended) goes as its text.
+    pub(crate) fn hand_off_window(&self, updater: &nekominal_pty::handoff::Process, handed: &mut Vec<nekominal_pty::handoff::Parts>) -> nekominal_pty::handoff::WindowState {
+        let (records, active_tab) = self.tab_records(|_| None);
+        let session = Session { window: self.window_placement(), tabs: records, active_tab };
+        let (tabs, _) = settings_tab::kept(&self.tabs, self.selected);
+        let mut panes = Vec::new();
+        for (index, tab) in tabs.iter().enumerate() {
+            for entry in &tab.panes {
+                let parts = entry.pane.hand_off().and_then(|parts| nekominal_pty::handoff::duplicate_into(updater, &parts));
+                let parts = parts.map_err(|e| util::log(&format!("update: pane {}: {e}", entry.session))).ok();
+                handed.extend(parts);
+                let mut core = entry.pane.term.lock();
+                panes.push(nekominal_pty::handoff::PaneState {
+                    tab: index,
+                    pane: entry.id,
+                    session: entry.session.clone(),
+                    title: entry.title.clone(),
+                    cols: core.columns() as u16,
+                    rows: core.rows() as u16,
+                    screen: core.handoff_screen(),
+                    parts,
+                });
+            }
+        }
+        nekominal_pty::handoff::WindowState { session: session.to_value(), panes }
+    }
+
+    /// Every pane reads its output again, after a hand-off that went no further.
+    pub(crate) fn resume_panes(&self) {
+        for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
+            entry.pane.resume();
+        }
+    }
+
+    /// The hand-off of an update failed: the tabs stay, and the user is told why.
+    pub(crate) fn hand_off_failed(&mut self, error: &str) {
+        self.inform(Text::UpdateHandOffFailed.format(self.language(), &[&error]));
+    }
+
     /// The tabs of the window as the session and the layouts keep them (not the settings), and the place of the one in view
     /// among them; `buffer` names the saved text of a pane, if any.
     pub(super) fn tab_records(&self, mut buffer: impl FnMut(&PaneEntry) -> Option<String>) -> (Vec<TabRecord>, usize) {

@@ -62,9 +62,11 @@ pub(crate) const WM_QUAKE: u32 = WM_APP + 4;
 pub(crate) const WM_AGENTS: u32 = WM_APP + 0x40;
 /// Shows a pane a row of the agents panel of another window chose: wParam the uid of its tab, lParam its id.
 pub(crate) const WM_SHOW_PANE: u32 = WM_APP + 0x41;
+/// Hands every window to the updater that Update and restart started (`handoff.rs`), outside the borrow of the window.
+pub(crate) const WM_HAND_OFF: u32 = WM_APP + 0x42;
 // The messages of the modules are numbered apart; two with one number would send the second to the handler of the first.
 const _: () = {
-    let all = [crate::app::WM_WAKE, WM_NEW_WINDOW, WM_DESTROY_WINDOW, WM_QUAKE, crate::app::WM_GPU_LOST, WM_AGENTS, WM_SHOW_PANE, crate::toast::WM_TOAST];
+    let all = [crate::app::WM_WAKE, WM_NEW_WINDOW, WM_DESTROY_WINDOW, WM_QUAKE, crate::app::WM_GPU_LOST, WM_AGENTS, WM_SHOW_PANE, WM_HAND_OFF, crate::toast::WM_TOAST];
     let mut i = 0;
     while i < all.len() {
         let mut j = i + 1;
@@ -75,6 +77,14 @@ const _: () = {
         i += 1;
     }
 };
+/// The message the updater posts to the windows of a Nekominal that could not hand its tabs over (one run as
+/// administrator, or without the automation API): save the session and close, as an update did before.
+fn update_close_message() -> u32 {
+    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    // SAFETY: registering a message name is a plain call.
+    *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("NekominalUpdateClose")) })
+}
+
 /// The id of the global hotkey that does the same: Win+` (the key under Esc), as in Windows Terminal.
 const QUAKE_HOTKEY: i32 = 1;
 
@@ -704,6 +714,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, |app| app.show_pane(wparam.0 as u64, lparam.0 as u32));
             LRESULT(0)
         }
+        WM_HAND_OFF => {
+            // On success the process ends inside `give`.
+            if let Some(pipe) = crate::handoff::take_give_to() {
+                let error = crate::handoff::give(&pipe);
+                with_app(hwnd, |app| app.hand_off_failed(&error));
+            }
+            LRESULT(0)
+        }
+        message if message == update_close_message() => {
+            close_all_windows();
+            LRESULT(0)
+        }
         WM_NEW_WINDOW => {
             if let Some(gpu) = with_app(hwnd, |app| app.shared_gpu()) {
                 if let Err(e) = create_window(Some(gpu), None, true) { crate::util::log(&format!("new window: {e}")); }
@@ -859,6 +881,10 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
             let _ = SetWindowPos(hwnd, None, rect.x, rect.y, rect.width as i32, rect.height as i32, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         SetTimer(Some(hwnd), JOB_TIMER, 1000, None);
+        // An updater, which is not elevated, may ask an elevated window to close: Windows lets that one message through.
+        if crate::app::elevated() {
+            let _ = ChangeWindowMessageFilterEx(hwnd, update_close_message(), MSGFLT_ALLOW, None);
+        }
         // Files dropped from Explorer come as WM_DROPFILES. shortcut: Windows blocks that message from a program of lower
         // integrity, so nothing drops on a window run as administrator; an OLE drop target would take those too.
         windows::Win32::UI::Shell::DragAcceptFiles(hwnd, true);
@@ -984,6 +1010,30 @@ fn start_detach(source: HWND, detach: Detach) {
     // SAFETY: the button is held; the new window takes the pointer from the one the chip came out of.
     unsafe { SetCapture(window) };
 }
+/// Started by the updater (`--adopt`): makes a window for each window handed over, its panes on their sessions, and tells
+/// the updater which were adopted. False when there was nothing to adopt, and the first window is to be made as usual.
+fn adopt_windows() -> bool {
+    let Some((connection, windows)) = crate::handoff::adopt_pipe().and_then(crate::handoff::take) else { return false };
+    let mut adopted = Vec::new();
+    let mut made = 0;
+    for window in windows {
+        crate::handoff::set_pending(window.clone());
+        let gpu = APPS.with(|apps| apps.borrow().values().find_map(|app| app.try_borrow().ok().map(|app| app.shared_gpu())));
+        let window_made = match create_window(gpu, None, true) {
+            Ok(_) => true,
+            Err(e) => {
+                crate::util::log(&format!("update: a window could not be made again: {e}"));
+                false
+            }
+        };
+        made += usize::from(window_made);
+        adopted.extend(crate::handoff::window_done(&window, window_made));
+    }
+    crate::util::log(&format!("update: {made} windows, {} sessions adopted", adopted.len()));
+    crate::handoff::confirm(connection, adopted);
+    made > 0
+}
+
 pub fn run() -> Result<(), String> {
     // SAFETY: plain Win32 calls on the thread that owns the window.
     unsafe {
@@ -1003,7 +1053,9 @@ pub fn run() -> Result<(), String> {
         RegisterClassW(&class);
         // Before the first window, whose panes get its variables; its file goes when this returns.
         let _api = crate::app::load_settings().0.api.enabled.then(crate::api::start);
-        create_window(None, None, true)?;
+        if !adopt_windows() {
+            create_window(None, None, true)?;
+        }
 
         let mut message = MSG::default();
         // The hotkey belongs to the thread, not to a window: it works whichever windows are open. Another program (Windows

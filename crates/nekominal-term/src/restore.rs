@@ -103,6 +103,23 @@ pub(crate) fn grid_text(grid: &Grid<Cell>, max_rows: usize, max_bytes: usize) ->
     let Some(bottom) = (top..grid.screen_lines() as i32).rev().find(|line| grid[Line(*line)].into_iter().any(|cell| !cell.is_empty())) else {
         return String::new();
     };
+    rows_text(grid, top, bottom, max_rows, max_bytes)
+}
+
+/// The rows of `grid` as [`grid_text`] writes them, the screen kept whole, its blank rows included, and no line break
+/// after its last row: fed to a terminal of the same size, the screen ends up as it was, row for row (the scrollback
+/// above it, at most `max_rows` rows and `max_bytes` bytes of it). With `history` false, the screen alone.
+pub(crate) fn screen_text(grid: &Grid<Cell>, history: bool, max_rows: usize, max_bytes: usize) -> String {
+    let top = if history { -(grid.history_size() as i32) } else { 0 };
+    let screen = grid.screen_lines();
+    let mut text = rows_text(grid, top, screen as i32 - 1, max_rows.max(screen), max_bytes);
+    if text.ends_with("\r\n") {
+        text.truncate(text.len() - 2);
+    }
+    text
+}
+
+fn rows_text(grid: &Grid<Cell>, top: i32, bottom: i32, max_rows: usize, max_bytes: usize) -> String {
     let first = (bottom + 1 - max_rows as i32).max(top);
     let columns = grid.columns();
     let mut lines: Vec<String> = Vec::new();

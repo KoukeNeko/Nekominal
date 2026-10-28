@@ -347,6 +347,10 @@ texts! {
     SettingsRestoreSession "settings.restoreSession" "啟動時還原工作階段" "Restore sessions on start";
     // The line under the text a restored pane shows again from the last session; {0} is when that session ended.
     PaneRestored "pane.restored" "已還原 {0} 的內容" "Restored from {0}";
+    // The line under the text of a pane whose program could not be kept through an update: a new shell runs below it.
+    PaneNotKept "pane.notKept" "更新時無法接回原本的程式，以下是新的 shell" "The program could not be kept through the update; a new shell runs below";
+    // The update could not start: the tabs stay as they are. {0} is what went wrong.
+    UpdateHandOffFailed "update.handOffFailed" "無法把分頁交給更新程式，所以沒有更新：{0}" "The tabs could not be handed to the updater, so nothing was updated: {0}";
     SettingsConfirmClose "settings.confirmClose" "關閉前確認" "Confirm before closing";
     SettingsConfirmCloseThreshold "settings.confirmCloseThreshold" "觸發確認的工作階段數" "Sessions that trigger confirmation";
 

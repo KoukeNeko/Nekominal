@@ -1477,6 +1477,76 @@ impl TerminalCore {
         if self.term.mode().contains(TermMode::ALT_SCREEN) { self.with_hidden_primary(text) } else { text(self) }
     }
 
+    /// What the pane shows, as VT that makes a fresh terminal of the same size show it again, for the process that takes
+    /// its session over in an update: the scrollback and the screen of the primary buffer row for row, the alternate
+    /// screen over it when a program is on it, the cursors, and the modes the program and ConPTY set (keys, mouse,
+    /// paste, focus, win32-input-mode). The program then goes on writing to the screen it left, so its output lands
+    /// where it meant it to. Not kept: the scroll region, the character sets, the pen, the title.
+    pub fn handoff_screen(&mut self) -> String {
+        let cursor = |core: &Self| {
+            let point = core.term.grid().cursor.point;
+            format!("\x1b[{};{}H", point.line.0 + 1, point.column.0 + 1)
+        };
+        let primary = |core: &mut Self| {
+            let text = crate::restore::screen_text(core.term.grid(), true, crate::restore::SAVED_ROWS, crate::restore::SAVED_BYTES);
+            text + &cursor(core)
+        };
+        let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let mut out = if alternate { self.with_hidden_primary(primary) } else { primary(self) };
+        if alternate {
+            out.push_str("\x1b[?1049h\x1b[H");
+            out.push_str(&crate::restore::screen_text(self.term.grid(), false, 0, crate::restore::SAVED_BYTES));
+            out.push_str(&cursor(self));
+        }
+        let mode = *self.term.mode();
+        let set = |out: &mut String, on: bool, code: &str| out.push_str(&format!("\x1b[?{code}{}", if on { 'h' } else { 'l' }));
+        // Those that differ from a fresh terminal's.
+        for (flag, code) in [
+            (TermMode::APP_CURSOR, "1"),
+            (TermMode::MOUSE_REPORT_CLICK, "1000"),
+            (TermMode::MOUSE_DRAG, "1002"),
+            (TermMode::MOUSE_MOTION, "1003"),
+            (TermMode::FOCUS_IN_OUT, "1004"),
+            (TermMode::UTF8_MOUSE, "1005"),
+            (TermMode::SGR_MOUSE, "1006"),
+            (TermMode::BRACKETED_PASTE, "2004"),
+        ] {
+            if mode.contains(flag) {
+                set(&mut out, true, code);
+            }
+        }
+        for (flag, code) in [(TermMode::SHOW_CURSOR, "25"), (TermMode::LINE_WRAP, "7"), (TermMode::ALTERNATE_SCROLL, "1007")] {
+            if !mode.contains(flag) {
+                set(&mut out, false, code);
+            }
+        }
+        if mode.contains(TermMode::APP_KEYPAD) {
+            out.push_str("\x1b=");
+        }
+        if mode.contains(TermMode::INSERT) {
+            out.push_str("\x1b[4h");
+        }
+        let extensions = self.mouse_extensions;
+        for (on, code) in [(extensions.x10, "9"), (extensions.urxvt, "1015"), (extensions.sgr_pixels, "1016"), (self.win32_input_mode, "9001")] {
+            if on {
+                set(&mut out, true, code);
+            }
+        }
+        let kitty = self.kitty_flags();
+        if kitty != 0 {
+            out.push_str(&format!("\x1b[>{kitty}u"));
+        }
+        out
+    }
+
+    /// Shows what [`TerminalCore::handoff_screen`] wrote in the process that handed the pane's session over, before the
+    /// session's output goes on. It came from that process over the updater's pipe, not from a file, so it is fed as it
+    /// is; the events it raises (it asks nothing of anyone) are dropped.
+    pub fn show_handoff(&mut self, screen: &str) {
+        self.feed(screen.as_bytes());
+        self.take_events();
+    }
+
     /// Shows `saved` (what [`TerminalCore::saved_text`] wrote in an earlier run) and a dim line `label` under it, before
     /// the program of a restored pane starts. Only its text and SGR are fed (`restore::sanitize`), so nothing of the old
     /// session acts again. The screen is then cleared into the scrollback: the restored text stays above, to be scrolled

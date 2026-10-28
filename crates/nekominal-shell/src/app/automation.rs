@@ -55,6 +55,7 @@ pub fn answer(windows: &[(HWND, Rc<RefCell<App>>)], request: &Request) -> Option
             return Some(Ok(json!({ "pid": std::process::id(), "windows": listed })));
         }
         Request::Subscribe { .. } => return Some(Err("subscribe is answered by the pipe".to_owned())),
+        Request::HandOff { .. } => return Some(Err("hand-off is answered outside the windows".to_owned())),
         Request::NewTab { profile, cwd, command } => {
             let (_, app) = windows.first()?;
             return Some(app.try_borrow_mut().ok()?.api_new_tab(profile.clone(), cwd.clone(), command.clone()));
@@ -185,7 +186,7 @@ impl App {
                 Ok(json!({}))
             }
             Request::Notify { title, body, .. } => self.api_notify(title, body, t),
-            Request::List | Request::NewTab { .. } | Request::Subscribe { .. } => Err("not a request about a pane".to_owned()),
+            Request::List | Request::NewTab { .. } | Request::Subscribe { .. } | Request::HandOff { .. } => Err("not a request about a pane".to_owned()),
         }
     }
 

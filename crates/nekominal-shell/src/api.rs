@@ -115,6 +115,9 @@ pub enum Request {
     /// A notification of Windows; a click on it shows the tab of `pane`, or the selected tab of the front window.
     Notify { title: String, body: String, pane: Option<String> },
     Subscribe { topics: Vec<Topic> },
+    /// Hand every window over to the updater serving `pipe` and exit (`handoff.rs`): an update that another Nekominal
+    /// started. Never answered when it works, since the process is gone.
+    HandOff { pipe: String },
 }
 
 /// A string member: missing (or null) is `None`, anything but a string an error.
@@ -200,6 +203,14 @@ fn request_of(request: &Value) -> Result<Request, String> {
                 Some(_) => return Err("\"events\" must be an array of names".to_owned()),
             };
             Request::Subscribe { topics }
+        }
+        "hand-off" => {
+            let pipe = required(request, "pipe")?;
+            // Only an updater's pipe: the windows' handles go to whoever serves it.
+            if !pipe.starts_with(r"\\.\pipe\nekominal-update-") || pipe[9..].contains(['\\', '/']) {
+                return Err("\"pipe\" is not the pipe of an updater".to_owned());
+            }
+            Request::HandOff { pipe }
         }
         other => return Err(format!("unknown command {other}")),
     })
@@ -476,6 +487,11 @@ fn drain() -> bool {
     let windows = crate::win::apps();
     let mut waiting = VecDeque::new();
     for job in jobs {
+        // Outside any window: it takes them all, and on success the process ends here.
+        if let Request::HandOff { pipe } = &job.request {
+            let _ = job.answer.send(Err(crate::handoff::give(pipe)));
+            continue;
+        }
         match crate::app::automation::answer(&windows, &job.request) {
             Some(answer) => {
                 let _ = job.answer.send(answer);
@@ -594,7 +610,12 @@ pub fn connect(name: &str) -> std::io::Result<File> {
 /// running instance. The file of an instance that is gone (it crashed) is removed on the way.
 pub fn connect_default() -> Result<File, String> {
     if let Some(name) = std::env::var(PIPE_VAR).ok().filter(|name| !name.is_empty()) {
-        return connect(&name).map_err(|e| format!("{name}: {e}"));
+        match connect(&name) {
+            // The pane outlived the Nekominal that started it (an update handed it to a new one, with a pipe of its own):
+            // the newest instance is the one it runs in now.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            other => return other.map_err(|e| format!("{name}: {e}")),
+        }
     }
     connect_newest(&instances_dir().ok_or("LOCALAPPDATA is not set")?)
 }
@@ -713,6 +734,11 @@ mod tests {
         assert_eq!(parsed(r#"{"cmd":"notify","title":"Build"}"#), Ok(Request::Notify { title: "Build".into(), body: String::new(), pane: None }));
         assert_eq!(parsed(r#"{"cmd":"subscribe"}"#), Ok(Request::Subscribe { topics: vec![Topic::AgentState, Topic::CommandFinished] }), "output is asked for, not given");
         assert_eq!(parsed(r#"{"cmd":"subscribe","events":["output"]}"#), Ok(Request::Subscribe { topics: vec![Topic::Output] }));
+        assert_eq!(parsed(r#"{"cmd":"hand-off","pipe":"\\\\.\\pipe\\nekominal-update-S-1-5-9"}"#), Ok(Request::HandOff { pipe: r"\\.\pipe\nekominal-update-S-1-5-9".into() }));
+        for pipe in [r"\\.\pipe\nekominal-S-1-5-9", r"C:\\x", r"\\.\pipe\nekominal-update-x\\..\\y"] {
+            let line = serde_json::json!({ "cmd": "hand-off", "pipe": pipe }).to_string();
+            assert_eq!(parsed(&line).unwrap_err(), "\"pipe\" is not the pipe of an updater", "{pipe}");
+        }
     }
 
     #[test]

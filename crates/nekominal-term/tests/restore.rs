@@ -156,3 +156,50 @@ fn restored_text_is_only_shown_never_acted_on() {
     assert!(core.all_text().starts_with("beforelinkafter\n"), "{:?}", core.all_text());
     assert!(!core.mode().intersects(TermMode::MOUSE_MODE | TermMode::BRACKETED_PASTE), "no mode the old program set");
 }
+
+/// `text` fed into a fresh terminal, handed over (`handoff_screen`), and shown in another fresh terminal of the same size.
+fn hand_over(columns: usize, lines: usize, text: &str) -> (TerminalCore, TerminalCore) {
+    let mut original = TerminalCore::new(columns, lines, CoreConfig::default());
+    feed(&mut original, text);
+    let screen = original.handoff_screen();
+    let mut taken = TerminalCore::new(columns, lines, CoreConfig::default());
+    taken.show_handoff(&screen);
+    (original, taken)
+}
+
+#[test]
+fn a_handed_over_pane_shows_the_same_screen_scrollback_and_cursor_so_output_goes_on_where_it_left_off() {
+    let history: String = (0..30).map(|n| format!("\x1b[3{}mline {n}\x1b[0m\r\n", n % 8)).collect();
+    // A prompt in the middle of the screen, with blank rows below it, and the cursor after it.
+    let text = format!("{history}\x1b[2J\x1b[Hfirst\r\n\r\n\x1b[1mPS C:\\>\x1b[0m echo hi\x1b[5;3Hx\x1b[3;9H");
+    let (mut original, mut taken) = hand_over(40, 8, &text);
+    assert_eq!(rows(&mut taken), rows(&mut original), "the screen, cell for cell");
+    assert_eq!(taken.cursor_cell(), original.cursor_cell());
+    assert_eq!(taken.all_text(), original.all_text(), "the scrollback above it");
+    // What the program writes next lands in the same cells in both.
+    feed(&mut original, "\x1b[Kmore\r\n\x1b[2;1Hdrawn");
+    feed(&mut taken, "\x1b[Kmore\r\n\x1b[2;1Hdrawn");
+    assert_eq!(rows(&mut taken), rows(&mut original));
+}
+
+#[test]
+fn a_handed_over_full_screen_program_keeps_its_screen_and_modes_and_the_shell_under_it() {
+    let text = concat!(
+        "PS C:\\> claude\r\n",
+        "\x1b[?2004h\x1b[?1004h\x1b[?1002h\x1b[?1006h\x1b[?9001h\x1b[?25l",
+        "\x1b[?1049h\x1b[>5u\x1b[H\x1b[7m status \x1b[0m\x1b[4;2Hfull screen\x1b[6;10H",
+    );
+    let (mut original, mut taken) = hand_over(40, 8, text);
+    assert_eq!(rows(&mut taken), rows(&mut original), "the alternate screen");
+    assert_eq!(taken.cursor_cell(), (5, 9));
+    let modes = TermMode::ALT_SCREEN | TermMode::BRACKETED_PASTE | TermMode::FOCUS_IN_OUT | TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE | TermMode::SHOW_CURSOR;
+    assert_eq!(taken.mode() & modes, original.mode() & modes);
+    assert!(!taken.mode().contains(TermMode::SHOW_CURSOR), "the hidden cursor stays hidden");
+    assert_eq!((original.kitty_flags(), taken.kitty_flags()), (5, 5), "the program's kitty keyboard flags");
+    assert!(taken.win32_input_mode(), "ConPTY's win32-input-mode");
+    // Leaving the program shows the shell under it, as in the original.
+    feed(&mut original, "\x1b[?1049l");
+    feed(&mut taken, "\x1b[?1049l");
+    assert_eq!(snap(&mut taken).row_text(0).trim_end(), "PS C:\\> claude");
+    assert_eq!(taken.cursor_cell(), original.cursor_cell());
+}
