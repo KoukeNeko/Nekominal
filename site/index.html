@@ -27,14 +27,14 @@
     <p class="sub" data-i18n="hero.sub">原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。</p>
     <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
     <div class="cap" id="cap" data-i18n="cap.0"><h3>一次按鍵的旅程</h3><ol><li>你在視窗打字：Rust 處理按鍵、分頁與窗格。</li><li>按鍵經 ConPTY 交給你的 shell。</li><li>shell 的輸出經 ConPTY 回到視窗。</li><li>Direct3D 在畫面有變化時重繪。</li></ol><p class="hint">把游標移到某一層，看它做什麼。</p></div>
-    <div class="total"><b>9 MB</b><span data-i18n="hero.total">Nekominal.exe 本體只有 9 MB；連同 ConPTY 的兩個檔案，整個資料夾約 10 MB</span></div>
+    <div class="total"><b>9 MB</b><span data-i18n="hero.total">Nekominal.exe 本體 9 MB，連同 ConPTY 約 10 MB</span></div>
   </div>
 
   <svg class="stack" viewBox="0 0 960 900" role="img" aria-label="Nekominal 的四層構造，最上方有一層不存在" data-i18n-aria="hero.aria">
     <g class="pl"><rect class="hit" x="30" y="75" width="930" height="150"/><g class="pl-in"><g class="pl-hv">
       <polygon class="ghost" points="300,90 560,150 300,210 40,150"/>
       <g class="lab"><line class="leadhot" x1="560" y1="150" x2="610" y2="150"/>
-      <text x="620" y="144" class="t1 hot">Chromium · Node · web view</text><text x="620" y="168" class="t2" data-i18n="s.ghost">沒有這一層</text></g>
+      <text x="620" y="144" class="t1 hot">Chromium · Node · WebView</text><text x="620" y="168" class="t2" data-i18n="s.ghost">沒有這一層</text></g>
     </g></g></g>
     <g class="pl"><rect class="hit" x="30" y="225" width="930" height="150"/><g class="pl-in"><g class="pl-hv">
       <polygon class="side" points="40,300 300,360 300,376 40,316"/><polygon class="side" points="300,360 560,300 560,316 300,376"/>
@@ -67,16 +67,16 @@
 
 <section class="sec" id="light">
   <h2 class="rv" data-i18n="light.h">天生輕量</h2>
-  <p class="lead rv" data-i18n="light.lead">Nekominal.exe 約 9 MB，是用 Rust 與 Direct3D 11 寫的原生程式；ConPTY 的兩個檔案放在旁邊，整個資料夾約 10 MB。沒有 Electron、沒有 web view，也不用另外安裝執行環境。視窗只在畫面有變化時才重繪，你沒在看的終端機幾乎不花資源。</p>
+  <p class="lead rv" data-i18n="light.lead">Nekominal.exe 約 9 MB，是用 Rust 與 Direct3D 11 寫的原生程式；ConPTY 的兩個檔案放在旁邊，整個資料夾約 10 MB。沒有 Electron、沒有 WebView，也不用另外安裝執行環境。視窗只在畫面有變化時才重繪，你沒在看的終端機幾乎不花資源。</p>
   <div class="meas">
     <div class="m rv"><h3 data-i18n="light.t1">一個分頁的記憶體</h3>
-      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:14.70%"></i><b>82 MB</b></div></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:20.25%"></i><b>113 MB</b></div></div>
-      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>558 MB</b></div></div></div>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:14.70%"></i><b>82 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:20.25%"></i><b>113 MB</b></div></div>
+      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>558 MB</b></div></div></div>
     <div class="m rv"><h3 data-i18n="light.t2">五個分頁的記憶體</h3>
-      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:21.09%"></i><b>136 MB</b></div></div>
-      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:29.92%"></i><b>193 MB</b></div></div>
-      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>645 MB</b></div></div></div>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:21.09%"></i><b>136 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:29.92%"></i><b>193 MB</b></div></div>
+      <div class="r"><span>Warp</span><div class="track"><i style="--w:100%"></i><b>645 MB</b></div></div></div>
     <div class="m rv"><h3 data-i18n="light.t3">啟動到 shell 開始執行</h3>
       <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:92.11%"></i><b data-i18n="light.n3">0.70 秒</b></div></div>
       <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b data-i18n="light.v3">0.76 秒</b></div></div></div>
