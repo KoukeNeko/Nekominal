@@ -2194,6 +2194,10 @@ impl App {
         self.dialog(title, rows, Confirmation::Notice);
     }
 
+    pub fn inform_text(&mut self, text: Text) {
+        self.inform(text.get(self.language()).to_owned());
+    }
+
     fn dialog(&mut self, title: String, rows: Vec<popup::Row>, action: Confirmation) {
         self.open_dialog(title, rows, action, None);
     }

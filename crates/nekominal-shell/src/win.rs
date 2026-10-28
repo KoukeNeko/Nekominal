@@ -3,7 +3,7 @@
 use std::{cell::{Cell, RefCell}, collections::HashMap, rc::Rc};
 
 use nekominal_input::MouseButton;
-use nekominal_model::settings::Backdrop;
+use nekominal_model::{settings::Backdrop, strings::Text};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -85,8 +85,45 @@ fn update_close_message() -> u32 {
     *MESSAGE.get_or_init(|| unsafe { RegisterWindowMessageW(w!("NekominalUpdateClose")) })
 }
 
-/// The id of the global hotkey that does the same: Win+` (the key under Esc), as in Windows Terminal.
+/// The id of the global hotkey that does the same: Win+`, as in Windows Terminal.
 const QUAKE_HOTKEY: i32 = 1;
+
+thread_local! {
+    /// The virtual key the hotkey is registered with, while it is.
+    static QUAKE_KEY: Cell<Option<u32>> = const { Cell::new(None) };
+    /// Whether the user was told this run why Win+` does nothing.
+    static QUAKE_TOLD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The virtual key that types ` with no Shift or AltGr, from what `VkKeyScanW` gives: the key under Esc on a US layout,
+/// another key on a UK one, none where ` needs Shift or is a dead key under one (German, French, Nordic).
+fn backtick_key(scan: i16) -> Option<u32> {
+    let (vk, shift) = (scan as u16 & 0xFF, scan as u16 >> 8);
+    (scan != -1 && shift == 0).then_some(u32::from(vk))
+}
+
+/// Takes Win+` for the drop-down window, as the active layout types it. Called again when a window is activated and when
+/// the layout changes, so the key follows the layout and is taken once the program that held it (Windows Terminal) lets go.
+fn take_quake_hotkey() -> Result<(), Text> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_NOREPEAT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VkKeyScanW};
+    // SAFETY: plain calls; the hotkey belongs to this thread.
+    unsafe {
+        let key = backtick_key(VkKeyScanW(u16::from(b'`')));
+        if key.is_some() && QUAKE_KEY.get() == key {
+            return Ok(());
+        }
+        if QUAKE_KEY.take().is_some() {
+            let _ = UnregisterHotKey(None, QUAKE_HOTKEY);
+        }
+        let vk = key.ok_or(Text::QuakeKeyMissing)?;
+        RegisterHotKey(None, QUAKE_HOTKEY, MOD_WIN | MOD_NOREPEAT, vk).map_err(|e| {
+            crate::util::log(&format!("drop-down hotkey Win+`: {e}"));
+            Text::QuakeKeyTaken
+        })?;
+        QUAKE_KEY.set(Some(vk));
+        Ok(())
+    }
+}
 
 /// The drop-down window: shown at the top of the screen and given the keyboard when it is hidden or behind another
 /// window, hidden when it has the keyboard, made the first time.
@@ -521,6 +558,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_ACTIVATE => {
             let active = (wparam.0 & 0xFFFF) != 0;
+            if active {
+                let _ = take_quake_hotkey();
+            }
             with_app(hwnd, |app| app.on_activate(active));
             raise_access_events(hwnd, |app| app.access_focus(active));
             LRESULT(0)
@@ -703,8 +743,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_QUAKE => {
+            let taken = take_quake_hotkey();
             quake_toggle();
+            // Once a run, in the drop-down window: the palette is the only way the user finds out why Win+` did nothing.
+            if let Err(why) = taken
+                && !QUAKE_TOLD.replace(true)
+                && let Some(quake) = APPS.with(|apps| apps.borrow().iter().find(|(_, app)| app.try_borrow().is_ok_and(|app| app.is_quake())).map(|(hwnd, _)| HWND(*hwnd as *mut _)))
+            {
+                with_app(quake, |app| app.inform_text(why));
+            }
             LRESULT(0)
+        }
+        WM_INPUTLANGCHANGE => {
+            let _ = take_quake_hotkey();
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_AGENTS => {
             open_agents_panel(hwnd);
@@ -1059,15 +1111,8 @@ pub fn run() -> Result<(), String> {
 
         let mut message = MSG::default();
         // The hotkey belongs to the thread, not to a window: it works whichever windows are open. Another program (Windows
-        // Terminal) may hold it already; the command of the palette still works then.
-        if let Err(e) = windows::Win32::UI::Input::KeyboardAndMouse::RegisterHotKey(
-            None,
-            QUAKE_HOTKEY,
-            windows::Win32::UI::Input::KeyboardAndMouse::MOD_WIN | windows::Win32::UI::Input::KeyboardAndMouse::MOD_NOREPEAT,
-            0xC0,
-        ) {
-            crate::util::log(&format!("drop-down hotkey Win+`: {e}"));
-        }
+        // Terminal) may hold it already; the command of the palette still works then, and activation tries again.
+        let _ = take_quake_hotkey();
         while GetMessageW(&mut message, None, 0, 0).as_bool() {
             if message.message == windows::Win32::UI::WindowsAndMessaging::WM_HOTKEY && message.hwnd.is_invalid() && message.wParam.0 == QUAKE_HOTKEY as usize {
                 quake_toggle();
@@ -1087,7 +1132,16 @@ pub fn run() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::key_scan;
+    use super::{backtick_key, key_scan};
+
+    #[test]
+    fn the_drop_down_key_is_the_one_that_types_a_backtick_without_shift() {
+        assert_eq!(backtick_key(0x00C0), Some(0xC0)); // US: the key under Esc
+        assert_eq!(backtick_key(0x00DF), Some(0xDF)); // UK: VK_OEM_8
+        assert_eq!(backtick_key(0x01DD), None); // German: Shift+´, a dead key
+        assert_eq!(backtick_key(0x06BA), None); // under AltGr
+        assert_eq!(backtick_key(-1), None); // no key types it
+    }
     use nekominal_input::{physical_key, vk};
     use nekominal_model::{commands::{self, Command}, keymap::{self, Modifiers}};
 

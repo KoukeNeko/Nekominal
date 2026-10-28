@@ -119,6 +119,8 @@ texts! {
     ExplorerOpenAdmin "explorer.openAdmin" "以系統管理員身分開啟" "Open as administrator";
     ViewFocusMode "view.focusMode" "專注模式" "Focus mode";
     ViewQuake "view.quake" "下拉式視窗（Win+`）" "Drop-down window (Win+`)";
+    QuakeKeyTaken "quake.keyTaken" "Win+` 已被其他程式使用（例如 Windows Terminal 的 quake 模式），下拉式視窗只能從命令選擇區開啟。在那個程式取消這個快速鍵後，Nekominal 會在視窗下次啟用時接手" "Win+` is held by another program (Windows Terminal's quake mode, for example), so the drop-down window opens only from the palette. Unbind it there, and Nekominal takes it the next time one of its windows is active";
+    QuakeKeyMissing "quake.keyMissing" "目前的鍵盤配置沒有不按 Shift 就能輸入 ` 的按鍵，下拉式視窗只能從命令選擇區開啟" "The keyboard layout has no key that types ` without Shift, so the drop-down window opens only from the palette";
     TabRenameTo "tab.renameTo" "命名為「{0}」" "Name it “{0}”";
     TabRenameAuto "tab.renameAuto" "使用自動標題" "Use the automatic title";
     DialogCloseTabs "dialog.closeTabs" "關閉 {0} 個分頁？" "Close {0} tabs?";
