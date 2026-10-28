@@ -65,7 +65,7 @@ h2{font-size:clamp(28px,3.6vw,42px);line-height:1.25;font-weight:700;letter-spac
 h3{font-size:19px;font-weight:700;line-height:1.4}
 .lead{margin-top:18px;max-width:1000px;font-size:17px;color:var(--mute)}
 .lead b{color:var(--text);font-weight:700}
-.note{margin-top:22px;font-size:13px;color:var(--mute);max-width:60ch}
+.note{margin-top:22px;font-size:13px;color:var(--mute)}
 kbd{display:inline-block;min-width:26px;padding:1px 8px;margin:0 2px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;font-size:.82em;color:var(--text);text-align:center}
 
 .meas{margin-top:40px;display:grid;gap:30px}

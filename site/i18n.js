@@ -24,7 +24,7 @@ const EN = {
   'light.t2': 'Memory, five tabs',
   'light.n3': '0.70 s', 'light.t3': 'Launch to a running shell', 'light.v3': '0.76 s',
   'light.n4': '0.02 s', 'light.t4': 'CPU at rest, per 20 s', 'light.v4': '0.09 s',
-  'light.note': 'Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and <code>pwsh -NoProfile</code>; the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out. Warp 0.2026.10.14 was measured the same way on the same machine, with its default settings except that restoring windows at start is off.',
+  'light.note': 'Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and <code>pwsh -NoProfile</code>; the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out. Warp 0.2026.10.14 was measured the same way on the same machine, with its default settings except that restoring windows at start is off.',
   'agents.h': 'Knows what your agents are doing',
   'agents.lead': 'Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is <b>working</b>, <b>waiting for you</b>, <b>done</b> or <b>failed</b>. The sidebar groups the tabs by state, the title bar counts the ones that wait, and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> takes you to the next of them. Nothing to set up.',
   'agents.cards': 'Agent cards', 'agents.cards.alt': 'Each tab as a card with its state, folder and branch',
