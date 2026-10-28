@@ -1283,6 +1283,12 @@ impl App {
     /// Whether the cursor of the focused pane blinks now: the setting is on, the program did not ask for a steady one, and
     /// the window has the keyboard (an inactive window keeps a steady, hollow cursor).
     fn blink_wanted(&self) -> bool {
+        // The caret of a field of the settings page blinks as the terminal's cursor does.
+        let page_caret = self.page_shown()
+            && self.page.as_ref().is_some_and(|page| page.editing.is_some() || (page.focus.is_none() && (page.searching || !page.query.is_empty())));
+        if page_caret {
+            return self.settings.cursor.blink && self.active && self.welcome.is_none();
+        }
         self.settings.cursor.blink
             && self.active
             && self.welcome.is_none()
@@ -2760,6 +2766,7 @@ impl App {
         // A pill tinted with a colour of the scheme, faint enough for text on it.
         let tint = |color: themes::Color, alpha: u8| { let c = col(color); Color([c.0[0], c.0[1], c.0[2], alpha]) };
         let now = Instant::now();
+        let blink_on = self.blink_on;
         let seconds = self.field_clock.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
         let (mut lights, mut fading) = (Vec::new(), false);
         let mut clipped = false;
@@ -2849,7 +2856,7 @@ impl App {
                     }
                 }
                 settings_page::Visual::Edit { text, cursor, placeholder } => {
-                    widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder });
+                    widgets::line_edit(&mut self.ui, &g, rect, TEXT_SIZE, &widgets::LineEdit { text, cursor: *cursor, preedit: "", placeholder, caret_on: blink_on });
                 }
                 settings_page::Visual::Layout { layout, style, selected, hover } => {
                     let border = if *selected { (accent, 2.0) } else if *hover { (col(g.text_secondary()), 1.0) } else { (col(g.divider()), 1.0) };
@@ -4447,6 +4454,7 @@ impl App {
                 }
             }
         }
+        self.show_cursor();
         self.page_redraw();
         true
     }
@@ -4465,6 +4473,7 @@ impl App {
             }
         };
         if changed {
+            self.show_cursor();
             self.page_redraw();
         }
     }
@@ -5956,7 +5965,7 @@ impl App {
             let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
             let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
             let area = Rect::new(popup::QUERY_LEFT, 0.0, (end - popup::QUERY_LEFT).max(0.0), header);
-            popup.caret = widgets::line_edit(ui, &g, area, TEXT_SIZE, &widgets::LineEdit { text: query, cursor: Some(popup.cursor), preedit: &popup.preedit, placeholder: "" });
+            popup.caret = widgets::line_edit(ui, &g, area, TEXT_SIZE, &widgets::LineEdit { text: query, cursor: Some(popup.cursor), preedit: &popup.preedit, placeholder: "", caret_on: true });
             if !popup.status.is_empty() {
                 let width = ui.measure(&popup.status, TEXT_SIZE, false);
                 ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);

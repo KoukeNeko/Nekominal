@@ -144,6 +144,8 @@ pub struct LineEdit<'a> {
     pub preedit: &'a str,
     /// What an empty line says in a quiet colour.
     pub placeholder: &'a str,
+    /// The caret is shown: false in the off phase of its blink.
+    pub caret_on: bool,
 }
 
 /// How far a line is scrolled left so that the caret, `caret` from its start, stays in `room`, with 4 to spare.
@@ -186,8 +188,10 @@ pub fn line_edit(ui: &mut Ui, g: &Glass, area: Rect, size: f32, edit: &LineEdit)
         ui.fill(Rect::new(start + width, y + line - 1.0, composing, 1.0), col(g.accent));
     }
     let caret = start + width + composing + 1.0;
-    // The caret is a bar after the text that does not blink, so that the window needs no timer.
-    ui.fill(Rect::new(caret, y, 1.5, line), col(g.text()));
+    // The caret is a bar after the text; it blinks where the caller says (the settings page, on the window's blink timer).
+    if edit.caret_on {
+        ui.fill(Rect::new(caret, y, 1.5, line), col(g.text()));
+    }
     ui.pop_clip();
     (caret, y, line)
 }
@@ -296,9 +300,9 @@ mod tests {
         slider(&mut ui, &g, Rect::new(10.0, 170.0, 120.0, 28.0), 0.0);
         slider(&mut ui, &g, Rect::new(210.0, 170.0, 120.0, 28.0), 1.0);
         let edit_area = Rect::new(10.0, 210.0, 150.0, 28.0);
-        let short = line_edit(&mut ui, &g, edit_area, 13.0, &LineEdit { text: "ab", cursor: Some(Cursor::at_end("ab")), preedit: "", placeholder: "" });
-        let long = line_edit(&mut ui, &g, Rect::new(210.0, 210.0, 150.0, 28.0), 13.0, &LineEdit { text: "abcdefgh", cursor: Some(Cursor::at_end("abcdefgh")), preedit: "", placeholder: "" });
-        line_edit(&mut ui, &g, Rect::new(10.0, 250.0, 150.0, 28.0), 13.0, &LineEdit { text: "", cursor: None, preedit: "", placeholder: "Search" });
+        let short = line_edit(&mut ui, &g, edit_area, 13.0, &LineEdit { text: "ab", cursor: Some(Cursor::at_end("ab")), preedit: "", placeholder: "", caret_on: true });
+        let long = line_edit(&mut ui, &g, Rect::new(210.0, 210.0, 150.0, 28.0), 13.0, &LineEdit { text: "abcdefgh", cursor: Some(Cursor::at_end("abcdefgh")), preedit: "", placeholder: "", caret_on: true });
+        line_edit(&mut ui, &g, Rect::new(10.0, 250.0, 150.0, 28.0), 13.0, &LineEdit { text: "", cursor: None, preedit: "", placeholder: "Search", caret_on: true });
         ui.end_frame(&target.view);
         let rgba = target.read_rgba(&gpu).expect("readback");
         let at = |r: Rect| (r.x as u32, r.y as u32, r.w as u32, r.h as u32);
