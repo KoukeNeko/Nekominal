@@ -69,8 +69,23 @@ pub fn contributors() -> Vec<String> {
 /// brings Scoop and its buckets up to date (without that, the bucket on this computer may not know the new version
 /// yet), updates the app, and starts it again. When the version did not change it says so and waits for a key, so that
 /// what Scoop said stays on the screen.
+/// `text` as a single-quoted PowerShell string. PowerShell takes the curly quotes `‘ ’ ‚ ‛` for `'` too, so each of the
+/// five is doubled: `C:\Users\O’Neil` would otherwise end the string early.
+pub fn ps_quote(text: &str) -> String {
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('\'');
+    for c in text.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
 pub fn update_script(pid: u32, app_dir: &Path) -> String {
-    let quoted = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let quoted = |path: &Path| ps_quote(&path.display().to_string());
     let dir = quoted(app_dir);
     let current = quoted(&app_dir.join("current"));
     format!(
@@ -80,7 +95,8 @@ Set-Location -LiteralPath $env:USERPROFILE
 $dir = {dir}
 # The folder Scoop runs the app from: `current`, unless Scoop is set to keep no junction, then the version's own.
 function Prefix {{ $p = scoop prefix nekominal 2>$null 6>$null | Select-Object -Last 1; if ($p -and (Test-Path -LiteralPath $p)) {{ $p }} else {{ {current} }} }}
-function Installed {{ try {{ (Get-Content -LiteralPath (Join-Path (Prefix) 'manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json).version }} catch {{ '' }} }}
+# Scoop names the copy of the manifest it installed scoop-manifest.json; older versions, manifest.json.
+function Installed {{ foreach ($name in 'scoop-manifest.json', 'manifest.json') {{ try {{ return (Get-Content -LiteralPath (Join-Path (Prefix) $name) -Raw -ErrorAction Stop | ConvertFrom-Json).version }} catch {{ }} }}; '' }}
 $before = Installed
 Write-Host "Waiting for Nekominal $before to close..."
 Wait-Process -Id {pid} -Timeout 120 -ErrorAction SilentlyContinue
@@ -168,6 +184,8 @@ mod tests {
         assert!(script.contains("Wait-Process -Id 4242 -Timeout"), "a close that is called off calls the update off");
         assert!(!script.contains("-like"), "a [ in the folder is no wildcard");
         assert!(script.contains(r"'C:\Users\o''neil\scoop\apps\nekominal\current'"), "a quote in a path is doubled");
+        assert_eq!(ps_quote("O\u{2019}Neil \u{2018}x\u{201A}\u{201B}"), "'O\u{2019}\u{2019}Neil \u{2018}\u{2018}x\u{201A}\u{201A}\u{201B}\u{201B}'", "and so is every quote PowerShell takes");
+        assert!(script.contains("'scoop-manifest.json', 'manifest.json'"), "the version from the file Scoop writes now, then the old name");
         assert!(script.contains("scoop prefix nekominal"), "the folder Scoop runs the app from, junction or not");
         let leave = lines.iter().position(|line| line.starts_with("Set-Location -LiteralPath $env:USERPROFILE")).expect("the script leaves the app's folder");
         assert!(leave < bucket, "before Scoop replaces it");

@@ -31,7 +31,7 @@ pub fn refused_as_running(output: &[String]) -> bool {
 /// nekominal`), so that an install of its own (a test one, `SCOOP` set elsewhere) updates itself and not the user's;
 /// `scoop` from PATH when that root has none.
 pub fn command(app: &Path, args: &str) -> String {
-    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let quote = |path: &Path| crate::update::ps_quote(&path.display().to_string());
     let root = app.parent().and_then(Path::parent);
     let own = root.map(|root| (root, root.join("apps").join("scoop").join("current").join("bin").join("scoop.ps1"))).filter(|(_, script)| script.is_file());
     let scoop = match &own {
