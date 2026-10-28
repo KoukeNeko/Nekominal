@@ -2467,7 +2467,7 @@ impl App {
             return true;
         }
         let held = held();
-        if let Some(name) = nekominal_input::physical_key(scan, extended).map(|key| key.name())
+        if let Some(name) = nekominal_input::shortcut_key(vk_code, scan, extended).map(|key| key.name())
             && let Some(command) = self.keymap.find(held, name)
             && !(command == Command::EditSmartCopy && self.focused().is_none_or(|e| e.pane.selection_text().is_none()))
         {
@@ -4357,7 +4357,7 @@ impl App {
                 settings_page::KeySlot::New => {}
             },
             _ => {
-                let chord = nekominal_input::physical_key(scan, extended).and_then(|key| keybindings::chord_of(key.name(), mods));
+                let chord = nekominal_input::shortcut_key(vk_code, scan, extended).and_then(|key| keybindings::chord_of(key.name(), mods));
                 let Some(chord) = chord else { return true };
                 // A chord a program needs is taken only when it is pressed a second time, after the warning.
                 if keybindings::needed_by_programs(chord) && reserved != Some(chord) {

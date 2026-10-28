@@ -248,9 +248,33 @@ pub fn physical_key(scan_code: u16, extended: bool) -> Option<PhysicalKey> {
     TABLE.iter().find(|entry| entry.2 == code && entry.3 == extended).map(|entry| entry.0)
 }
 
+/// The key a shortcut names, read as the terminal reads a chord: a letter or a digit by what the layout prints on it
+/// (Ctrl+Shift+W on a French board is the key marked W, where a US board has Z), any other key by its place.
+pub fn shortcut_key(vk: i32, scan_code: u16, extended: bool) -> Option<PhysicalKey> {
+    let name = match vk {
+        0x41..=0x5A => format!("Key{}", vk as u8 as char),
+        0x30..=0x39 => format!("Digit{}", vk as u8 as char),
+        _ => return physical_key(scan_code, extended),
+    };
+    PhysicalKey::from_name(&name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shortcut_names_letters_and_digits_as_the_layout_prints_them_and_the_rest_by_place() {
+        // AZERTY: the key at US W (0x11) is marked Z, and the one at US Q (0x10) is marked A.
+        assert_eq!(shortcut_key(0x5A, 0x11, false), Some(PhysicalKey::KeyZ));
+        assert_eq!(shortcut_key(0x41, 0x10, false), Some(PhysicalKey::KeyA));
+        // Dvorak's comma sits at US W; it is a punctuation key, so its place names it.
+        assert_eq!(shortcut_key(0xBC, 0x11, false), Some(PhysicalKey::KeyW));
+        // Digits by the layout too, and everything else (arrows, the keypad) by place.
+        assert_eq!(shortcut_key(0x31, 0x02, false), Some(PhysicalKey::Digit1));
+        assert_eq!(shortcut_key(0x25, 0x4B, true), Some(PhysicalKey::ArrowLeft));
+        assert_eq!(shortcut_key(0x64, 0x4B, false), physical_key(0x4B, false));
+    }
 
     #[test]
     fn every_variant_sits_at_its_own_table_row() {

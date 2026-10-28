@@ -203,7 +203,7 @@ impl App {
         if !input_method && (self.page_field_key(vk_code) || (!held.ctrl && !held.alt && self.page_key(vk_code, repeat))) {
             return true;
         }
-        let Some(command) = nekominal_input::physical_key(scan, extended).and_then(|key| self.keymap.find(held, key.name())) else { return false };
+        let Some(command) = nekominal_input::shortcut_key(vk_code, scan, extended).and_then(|key| self.keymap.find(held, key.name())) else { return false };
         match command {
             Command::EditPaste if !repeat => self.paste_into_page(),
             command if works_on_page(command) && (!repeat || command.repeats()) => self.run(command),

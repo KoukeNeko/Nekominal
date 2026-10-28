@@ -31,7 +31,7 @@ pub use mouse_assembler::{
     SelectionKind, Side,
 };
 pub use paste::{encode_focus, prepare_paste};
-pub use scancode::{physical_key, PhysicalKey};
+pub use scancode::{physical_key, shortcut_key, PhysicalKey};
 pub use utf16::Utf16Assembler;
 pub use win32::{
     conpty_route, encode_key_conpty, encode_win32_input, encode_win32_text, ConptyRoute, Win32Key,
