@@ -1,4 +1,4 @@
-# Builds the release executables (Nekominal.exe and updater.exe) and packs them, with the ConPTY pair they need, into dist/Nekominal-<version>-windows-<arch>.zip
+# Builds the release executable (Nekominal.exe) and packs it, with the ConPTY pair they need, into dist/Nekominal-<version>-windows-<arch>.zip
 # and a checksum file beside it. Run from any directory; cargo has to be on PATH.
 #
 #   scripts\package.ps1               # x64, version of the workspace
@@ -26,7 +26,7 @@ $target, $release = if ($Arch -eq 'arm64') {
 if (-not $NoBuild) {
     Push-Location $root
     try {
-        cargo build --release --locked -p nekominal-shell -p nekominal-updater @target
+        cargo build --release --locked -p nekominal-shell @target
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
     } finally { Pop-Location }
 }
@@ -35,9 +35,6 @@ $files = @{
     'Nekominal.exe'   = Join-Path $release 'nekominal-next.exe'
     'conpty.dll'      = Join-Path $release 'conpty.dll'
     'OpenConsole.exe' = Join-Path $release 'OpenConsole.exe'
-    # Updates the app while the programs of its tabs keep running (crates/nekominal-updater). Not named Nekominal: the
-    # Scoop manifest stops every process of that name before it installs.
-    'updater.exe'     = Join-Path $release 'updater.exe'
 }
 foreach ($file in $files.Values) {
     if (-not (Test-Path $file)) { throw "Missing $file. Build first, without -NoBuild." }

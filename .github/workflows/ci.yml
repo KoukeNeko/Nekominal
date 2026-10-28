@@ -42,7 +42,7 @@ jobs:
         run: >
           cargo test --locked
           -p nekominal-model -p nekominal-input -p nekominal-term
-          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell -p nekominal-updater
+          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell
       # One test of the ConPTY host counts the bytes a shell delivers in four seconds, which depends on the speed of the
       # machine rather than on the code.
       - name: Test the ConPTY host

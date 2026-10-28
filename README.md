@@ -143,7 +143,8 @@ allow. Large and multi-line pastes ask first.
 - A command line like `wt`: `-d`, `-p`, `nt`, `sp -H/-V`, a command after `--`, and several actions separated by `;`.
 - **Update and restart** from the command palette or the About page, through Scoop: the shells, agents and commands of
   every tab keep running and come back in the new version, in the same windows and layout, with their screen and
-  scrollback. A small window (`updater.exe`) holds them while Scoop updates. A window run as administrator closes instead
+  scrollback. A small window, a copy of Nekominal (`Nekominal-hold.exe` in `%LOCALAPPDATA%\Nekominal\hold`), holds them
+  while Scoop updates. A window run as administrator closes instead
   and is restored from its saved text.
 - Screen readers see the tabs, the text, the settings and the menus (UI Automation). IME composition is drawn in place.
   Traditional Chinese and English.
@@ -180,7 +181,7 @@ into them; WezTerm's installer adds an Explorer entry but no jump list.
    ```
 
    Scoop picks the x64 or the ARM64 build. Each [release](https://github.com/KoukeNeko/Nekominal/releases) is also a zip:
-   unpack it anywhere and run `Nekominal.exe`, keeping `conpty.dll`, `OpenConsole.exe` and `updater.exe` beside it.
+   unpack it anywhere and run `Nekominal.exe`, keeping `conpty.dll` and `OpenConsole.exe` beside it.
 
 2. **Choose where the tabs go.** The first start asks: on top, as a list in a sidebar, or as icons. Settings › Appearance
    changes it later.
@@ -291,8 +292,7 @@ foreground, so leave the machine alone while they run. The tests that run the re
 | `nekominal-render` | the Direct3D 11 grid renderer |
 | `nekominal-ui` | the drawn interface: rounded rectangles, text, icons |
 | `nekominal-pane` | a pane: a session, an emulator, a renderer, hints |
-| `nekominal-shell` | the application: windows, tabs, sidebar, pop-ups, settings, Windows integration, updates |
-| `nekominal-updater` | `updater.exe`: holds the tabs' sessions while Scoop updates the app, then hands them to the new version |
+| `nekominal-shell` | the application: windows, tabs, sidebar, pop-ups, settings, Windows integration, updates (its `--hold` mode holds the tabs' sessions while Scoop updates the app) |
 
 ### Releases
 

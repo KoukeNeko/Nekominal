@@ -1,6 +1,6 @@
 //! Handing the sessions of the panes from one process to another, for an update that keeps them running (see
-//! `docs/updater-design.md`): the Nekominal that is replaced gives its sessions to `updater.exe`, which holds them while
-//! Scoop updates the app and gives them to the new Nekominal.
+//! `docs/updater-design.md`): the Nekominal that is replaced gives its sessions to a copy of itself in the hold mode (the
+//! updater), which holds them while Scoop updates the app and gives them to the new Nekominal.
 //!
 //! A session is its handles ([`Parts`]): the kill-on-close job and the child, the two ends of the ConPTY pipes this side
 //! keeps, and the three handles inside the pseudoconsole. A handle is given by duplicating it into the other process

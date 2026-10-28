@@ -1,4 +1,4 @@
-# updater.exe：不中斷工作的更新
+# 不中斷工作的更新：Nekominal 的 --hold 模式
 
 ## 目標
 
@@ -16,11 +16,11 @@
 
 啟動時把隨附的 `conpty.dll` 和 `OpenConsole.exe` 複製到 `%LOCALAPPDATA%\Nekominal\conpty\<sha256 前 12 碼>\`（內容沒變就不重複複製），從那裡載入。這樣分頁的 console host 不在 `apps\nekominal\` 底下，Scoop 不會因為它們而拒絕更新。舊版本的資料夾用不到時，由下一次啟動清掉。
 
-### 2. updater.exe：交接期間保管分頁
+### 2. updater（Nekominal 的 --hold 模式）：交接期間保管分頁
 
-新的小程式 `updater.exe`（workspace 新增 `crates/nekominal-updater`，只用 Win32，不含繪圖），隨 zip 一起發布。它的工作是在新舊版本之間，暫時持有所有分頁：
+updater 就是 Nekominal 自己：同一個 `Nekominal.exe` 以 `--hold <pipe>` 啟動時，進入 `nekominal-shell` 的 `hold` 模組（只用 Win32 畫一個小視窗，不開終端機視窗）。下文的「updater」指的都是這個程序。它的工作是在新舊版本之間，暫時持有所有分頁：
 
-1. 使用者按「更新」。舊 Nekominal 把 `updater.exe` 複製到 `%LOCALAPPDATA%\Nekominal\updater\<sha256 前 12 碼>\` 再啟動它（同樣避開 app 資料夾），兩者以只有使用者本人能開的 named pipe 連線（與自動化 API 相同的 SDDL）。（實作時沒有先問 Scoop 有沒有新版本：沒有的話就走下面「沒有新版本」的路，分頁一樣接回。）
+1. 使用者按「更新」。舊 Nekominal 把自己的 `Nekominal.exe` 複製成 `%LOCALAPPDATA%\Nekominal\hold\<sha256 前 12 碼>\Nekominal-hold.exe`（內容相同就不重複複製，沒人在跑的舊資料夾由之後的複製清掉），再以 `--hold` 啟動它：不在 app 資料夾裡，Scoop 的 `test_running_process` 不會因它拒絕更新；名字不是 `Nekominal`，manifest 的 `pre_install`（`Get-Process Nekominal | Stop-Process`）也不會結束它。兩者以只有使用者本人能開的 named pipe 連線（與自動化 API 相同的 SDDL）。（實作時沒有先問 Scoop 有沒有新版本：沒有的話就走下面「沒有新版本」的路，分頁一樣接回。）
 2. **交接**：舊 Nekominal 對每個窗格，用 `DuplicateHandle` 把下列 handle 複製進 updater：
    - job、shell 程序
    - ConPTY 的輸入寫端、輸出讀端
@@ -62,16 +62,18 @@
 - **交出的一方不關任何東西**：每個窗格先暫停讀取（讀取執行緒的 `ReadFile` 用 `CancelSynchronousIo` 取消，不會吃掉資料），等已讀到的輸出都進了模擬器，才取畫面和 handle。交接成功後以 `TerminateProcess` 結束自己：不跑任何解構、不呼叫 `ClosePseudoConsole`（那會讓 console host 結束），系統只關掉它自己那份 handle。交接失敗時每個窗格恢復讀取，畫面上說明原因。
 - **畫面**：`TerminalCore::handoff_screen` 把主緩衝區的捲動歷史和畫面逐列寫成 VT（畫面的空白列也保留、最後一列不換行），接著游標位置；程式在替代畫面時再加上 `?1049h`、替代畫面的內容和游標；最後是和新終端機不同的模式（游標鍵、滑鼠、聚焦回報、bracketed paste、隱藏游標、kitty 鍵盤旗標、ConPTY 的 win32-input-mode）。接手時原樣餵入同樣大小的新模擬器，所以畫面一格不差。沒有保留：捲動區域、字元集、目前的畫筆。
 - **訊息**：`nekominal-pty` 的 `handoff` 模組，一行一則 JSON（`give`、`take`、`windows`、`adopted`、`ok`、`error`），每則帶協定版本 `v`。版本不符時接手方不使用 handle（由 updater 結束那些工作階段），只用文字還原並開新 shell。
-- **其他執行中的 Nekominal**：updater 從 `%LOCALAPPDATA%\Nekominal\api\<pid>` 找到它們，經自動化 API 送 `{"cmd":"hand-off","pipe":…}`（只接受 updater 的 pipe 名稱，並確認對方程式是 `updater.exe`）。沒有 API 的（設定關掉、或以系統管理員身分執行）會收到登錄的視窗訊息 `NekominalUpdateClose`（提升權限的視窗用 `ChangeWindowMessageFilterEx` 允許這一則），照以前的方式儲存並關閉；updater 最多等 90 秒。從系統管理員視窗按「更新」時，沿用以前的 PowerShell 腳本。
+- **其他執行中的 Nekominal**：updater 從 `%LOCALAPPDATA%\Nekominal\api\<pid>` 找到它們，經自動化 API 送 `{"cmd":"hand-off","pipe":…}`（只接受 updater 的 pipe 名稱）。交出的一方確認 pipe 對方的程式是 `%LOCALAPPDATA%\Nekominal\hold\` 某個資料夾裡的 `Nekominal-hold.exe`，且檔案內容和自己的 exe 完全相同，才把 handle 交出去：只有同一個程式的複本能拿到它們。沒有 API 的（設定關掉、或以系統管理員身分執行）會收到登錄的視窗訊息 `NekominalUpdateClose`（提升權限的視窗用 `ChangeWindowMessageFilterEx` 允許這一則），照以前的方式儲存並關閉；updater 最多等 90 秒。從系統管理員視窗按「更新」時，沿用以前的 PowerShell 腳本。
 - **Scoop**：updater 執行 app 所在 Scoop 根目錄自己的 `apps\scoop\current\bin\scoop.ps1`（並設 `SCOOP` 為該根目錄），沒有才用 PATH 上的 `scoop`；所以在另一個 Scoop 根目錄裡測試不會動到使用者的 Scoop。
 - **接手**：新版從 `--adopt <pipe>` 取得視窗，每個視窗用原本的版面重建；窗格保留 session id（`agent::reserve_session` 讓新的 id 不會和它撞上），標題也帶過來。只有 updater 自己啟動的程序能取得 handle。接手後每個窗格縮一列再放回，讓全螢幕程式重畫。舊 shell 環境裡的 `NEKOMINAL_PIPE` 指向舊程序的 pipe，`nekominal cli` 找不到它時改連最新的執行中實例。
 - **updater 結束**：新版回報接手了哪些工作階段之後，updater 關掉自己的 handle，沒被接手的工作階段（job）被結束；新版沒在 60 秒內接手（或啟動後就結束）時，先結束它，再試下一個（Scoop 現在的版本 → 交出時的版本資料夾 → 交出的那個 exe）；都失敗就結束所有工作階段，視窗顯示原因。
+- **為什麼不是另一個 exe**：起初 updater 是隨 zip 發布的小程式 `updater.exe`。Microsoft Defender 在執行時把它判為 `Trojan:Win32/Bearfoos.A!ml`（機器學習的行為判斷：一個沒簽章的小 exe 被複製到 `%LOCALAPPDATA%` 後執行、從其他程序複製 handle、接手 console、執行 PowerShell），靜態掃描則找不到問題。改成由 Nekominal 自己的複本保管分頁後，就沒有這個另外的小程式了。
+- **窗格的配對**：交出的窗格以「分頁的位置」和「它在該分頁版面樹裡的順序」標示，不用窗格 id。每個分頁的窗格 id 從 1 開始，但接手方讀回工作階段時，id 是跨分頁重新編號的（第二個分頁的第一個窗格變成 2），用 id 配對時只有第一個分頁接得回來。
 
 ## 測試
 
-- 單元測試：交接訊息的序列化和版本（`nekominal-pty` `handoff::tests`）、handle 複製失敗時的清理、updater 的參數和 Scoop 輸出判斷（`nekominal-updater`）、接手方關掉沒用到的 handle（`nekominal-shell` `handoff::tests`）、畫面交接後一格不差（`nekominal-term` `tests/restore.rs` 的 `a_handed_over_*`）。
+- 單元測試：交接訊息的序列化和版本（`nekominal-pty` `handoff::tests`）、handle 複製失敗時的清理、updater 的參數、Scoop 輸出判斷、只把分頁交給同一程式的複本（`nekominal-shell` `hold::tests`）、窗格依它在分頁樹裡的位置配對（`handoff::tests::every_pane_of_every_tab_is_found_again_*`）、接手方關掉沒用到的 handle（`nekominal-shell` `handoff::tests`）、畫面交接後一格不差（`nekominal-term` `tests/restore.rs` 的 `a_handed_over_*`）。
 - pseudoconsole 結構：`the_pinned_conpty_keeps_a_pseudoconsole_as_signal_reference_and_console_process`。
-- 整合測試：`nekominal-pty` 的 `tests/handoff.rs` 在子程序開一個 ConPTY 窗格執行 `cmd /k ping -t`，把它交給父程序後子程序以 `TerminateProcess` 結束；父程序確認 cmd 和 ping 還在、接手後 ping 的輸出繼續、Ctrl+C、resize（`mode con` 看到新大小）和 `exit 5` 都正常。`nekominal-updater` 的 `the_holder_keeps_the_sessions_given_hands_them_to_its_taker_alone_and_ends_those_not_adopted` 走過 updater 的 pipe：give、拒絕非 updater 啟動的程序、take、adopted，沒被接手的工作階段被結束。`nekominal-pane` 的 `tests/handoff_pane.rs` 確認接手的窗格是同一個 shell（之前設的變數還在）。
+- 整合測試：`nekominal-pty` 的 `tests/handoff.rs` 在子程序開一個 ConPTY 窗格執行 `cmd /k ping -t`，把它交給父程序後子程序以 `TerminateProcess` 結束；父程序確認 cmd 和 ping 還在、接手後 ping 的輸出繼續、Ctrl+C、resize（`mode con` 看到新大小）和 `exit 5` 都正常。同一個測試也交接一個 PowerShell 7（app 的 `pwsh` 設定檔，在這台機器上是 Microsoft Store 版），接手後變數還在。`nekominal-shell` `hold::holder` 的 `the_holder_keeps_the_sessions_given_hands_them_to_its_taker_alone_and_ends_those_not_adopted` 走過 updater 的 pipe：give、拒絕非 updater 啟動的程序、take、adopted，沒被接手的工作階段被結束。`nekominal-pane` 的 `tests/handoff_pane.rs` 確認接手的窗格是同一個 shell（之前設的變數還在）。
 - 真實測試：在沙箱裡用一個本機 Scoop bucket，從 0.2.3 更新到測試版，分頁裡同時跑著 Claude Code。
 
 ## 另外：Nekominal.exe 的圖示

@@ -69,7 +69,7 @@ jobs:
         run: >
           cargo test --locked
           -p nekominal-model -p nekominal-input -p nekominal-term
-          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell -p nekominal-updater
+          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell
       - name: Package
         run: scripts\package.ps1
       # Cross-compiled with the MSVC ARM64 tools of the image; an ARM64 binary cannot run here, so the tests above are x64's.
