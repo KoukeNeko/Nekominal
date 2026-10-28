@@ -19,7 +19,7 @@ if (window.gsap && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
   const idle = [];   // what keeps moving by itself; it stops while the hero is out of view
   gsap.from(layers, { y: i => (last - i) * 150, duration: 1.3, ease: 'power3.out', onComplete: startIdle });
   gsap.from('.stack .lab', { opacity: 0, duration: .5, delay: 1.1, stagger: .09 });
-  gsap.from('.hero h1, .hero .sub, .hero .cmd, .hero .total', { y: 24, opacity: 0, duration: .8, stagger: .1, ease: 'power3.out' });
+  gsap.from('.hero h1, .hero .sub, .hero .cmd, .hero .btn, .hero .cap, .hero .total', { y: 24, opacity: 0, duration: .8, stagger: .1, ease: 'power3.out' });
   // the layer that is not there keeps marching: its outline never settles
   idle.push(gsap.to('.stack .ghost', { strokeDashoffset: -32, duration: 2.4, ease: 'none', repeat: -1 }));
   // now and then it tries to take shape, and nothing is there
