@@ -116,15 +116,23 @@ impl Layer {
         }
     }
 
-    /// Hides the layer, no panel being open, and gives back the memory of its swap chain.
-    pub fn hide(&mut self, gpu: &Gpu) {
+    /// Hides the layer, no panel being open. True when it was shown: the memory of its swap chain goes a while later
+    /// ([`Layer::shrink`]), so that a panel opened again at once does not make it again.
+    pub fn hide(&mut self) -> bool {
         if !self.shown {
-            return;
+            return false;
         }
         // SAFETY: hiding a window of this thread.
         unsafe { let _ = ShowWindow(self.hwnd, SW_HIDE); }
         self.shown = false;
-        self.surface.resize(gpu, (1, 1));
+        true
+    }
+
+    /// Gives back the memory of the swap chain of a layer that is hidden.
+    pub fn shrink(&mut self, gpu: &Gpu) {
+        if !self.shown {
+            self.surface.resize(gpu, (1, 1));
+        }
     }
 
     pub fn shown(&self) -> bool {

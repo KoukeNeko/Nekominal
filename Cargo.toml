@@ -10,7 +10,6 @@ members = [
     "crates/nekominal-shell",
     "tools/winprobe",
     "tools/agent-probe",
-    "tools/d3d11-spike",
     "crates/nekominal-pane",
 ]
 

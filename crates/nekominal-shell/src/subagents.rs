@@ -75,7 +75,13 @@ pub struct Subagents {
     /// Running first, then by when they started.
     pub agents: Vec<Agent>,
     pub workflows: Vec<Workflow>,
+    /// Every workflow of the session as last read, by its run, with when its journal and its outcome were last written:
+    /// one whose files did not change is not read again, though the read is every second while something runs.
+    seen: HashMap<String, (Stamps, Workflow)>,
 }
+
+/// When the journal and the outcome of a workflow were last written.
+type Stamps = (Option<SystemTime>, Option<SystemTime>);
 
 impl Subagents {
     pub fn running(&self) -> usize {
@@ -114,21 +120,37 @@ pub fn read(folder: &Path, old: &Subagents) -> Subagents {
         }
         agents.push(agent);
     }
-    let mut workflows = Vec::new();
+    let mut seen = HashMap::new();
     for entry in std::fs::read_dir(dir.join("workflows")).into_iter().flatten().flatten() {
         let run = entry.file_name().to_string_lossy().into_owned();
         let journal = entry.path().join("journal.jsonl");
-        let Ok(text) = std::fs::read_to_string(&journal) else { continue };
-        let started = std::fs::metadata(&journal).and_then(|m| m.created()).unwrap_or(SystemTime::UNIX_EPOCH);
         let outcome_file = folder.join("workflows").join(format!("{run}.json"));
-        let outcome: Option<serde_json::Value> = std::fs::read_to_string(&outcome_file).ok().and_then(|t| serde_json::from_str(&t).ok());
-        let finished = outcome.as_ref().and_then(|_| std::fs::metadata(&outcome_file).ok()?.modified().ok());
-        let script = script_of(&folder.join("workflows").join("scripts"), &run);
-        let name = outcome.as_ref().and_then(|o| o.get("workflowName")?.as_str().map(str::to_owned)).or_else(|| script.as_ref().map(|(name, _)| name.clone())).unwrap_or_else(|| run.clone());
-        let summary = outcome.as_ref().and_then(|o| o.get("summary")?.as_str().map(str::to_owned)).or_else(|| script.and_then(|(_, text)| script_description(&text)));
-        workflows.push(Workflow { phases: parse_journal(&text, outcome.as_ref()), run, name, summary, started, finished });
+        let modified = |file: &Path| std::fs::metadata(file).ok()?.modified().ok();
+        let stamps = (modified(&journal), modified(&outcome_file));
+        if stamps.0.is_none() {
+            continue;
+        }
+        if let Some((before, workflow)) = old.seen.get(&run).filter(|(before, _)| *before == stamps) {
+            seen.insert(run, (*before, workflow.clone()));
+            continue;
+        }
+        let Some(workflow) = read_workflow(folder, &run, &journal, &outcome_file) else { continue };
+        seen.insert(run, (stamps, workflow));
     }
-    batch(agents, workflows)
+    let workflows = seen.values().map(|(_, workflow)| workflow.clone()).collect();
+    Subagents { seen, ..batch(agents, workflows) }
+}
+
+/// A workflow from its journal, its outcome when it ended and the script it was launched with.
+fn read_workflow(folder: &Path, run: &str, journal: &Path, outcome_file: &Path) -> Option<Workflow> {
+    let text = std::fs::read_to_string(journal).ok()?;
+    let started = std::fs::metadata(journal).and_then(|m| m.created()).unwrap_or(SystemTime::UNIX_EPOCH);
+    let outcome: Option<serde_json::Value> = std::fs::read_to_string(outcome_file).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let finished = outcome.as_ref().and_then(|_| std::fs::metadata(outcome_file).ok()?.modified().ok());
+    let script = script_of(&folder.join("workflows").join("scripts"), run);
+    let name = outcome.as_ref().and_then(|o| o.get("workflowName")?.as_str().map(str::to_owned)).or_else(|| script.as_ref().map(|(name, _)| name.clone())).unwrap_or_else(|| run.to_owned());
+    let summary = outcome.as_ref().and_then(|o| o.get("summary")?.as_str().map(str::to_owned)).or_else(|| script.and_then(|(_, text)| script_description(&text)));
+    Some(Workflow { phases: parse_journal(&text, outcome.as_ref()), run: run.to_owned(), name, summary, started, finished })
 }
 
 /// A subagent from its meta file; `None` for an agent of a workflow, which its journal tells.
@@ -356,7 +378,7 @@ fn batch(mut agents: Vec<Agent>, mut workflows: Vec<Workflow>) -> Subagents {
     workflows.retain(|w| w.finished.is_none_or(|end| end >= since));
     agents.sort_by_key(|a| (a.finished.is_some(), a.started));
     workflows.sort_by_key(|w| w.started);
-    Subagents { agents, workflows }
+    Subagents { agents, workflows, ..Subagents::default() }
 }
 
 #[cfg(test)]
@@ -455,6 +477,30 @@ mod tests {
         assert_eq!(got.agents[1].reply.as_deref(), Some("It races on a pipe name."));
         assert_eq!((got.workflows[0].name.as_str(), got.workflows[0].summary.as_deref()), ("cats", Some("Three stories")));
         assert_eq!((got.running(), got.done()), (2, 1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_workflow_whose_files_did_not_change_is_not_read_again() {
+        let root = std::env::temp_dir().join(format!("nekominal-subagents-{}", crate::agent::new_session()));
+        let run = root.join("subagents").join("workflows").join("wf_1");
+        std::fs::create_dir_all(&run).unwrap();
+        let journal = run.join("journal.jsonl");
+        std::fs::write(&journal, "{\"type\":\"started\",\"agentId\":\"w1\",\"label\":\"a\",\"phase\":\"Write\"}\n").unwrap();
+        let first = read(&root, &Subagents::default());
+        assert_eq!(first.running(), 1);
+        // Planted in what was read: a second read that took the workflow from its files would not have it.
+        let mut marked = first.clone();
+        marked.seen.get_mut("wf_1").unwrap().1.name = "kept".into();
+        assert_eq!(read(&root, &marked).workflows[0].name, "kept", "the same files: the workflow of the last read");
+        // The journal grows: the workflow is read again, and its agent has ended.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut file = std::fs::OpenOptions::new().append(true).open(&journal).unwrap();
+        std::io::Write::write_all(&mut file, b"{\"type\":\"result\",\"agentId\":\"w1\",\"result\":\"ok\"}\n").unwrap();
+        drop(file);
+        let again = read(&root, &marked);
+        assert_ne!(again.workflows.first().map(|w| w.name.as_str()), Some("kept"));
+        assert_eq!(again.running(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

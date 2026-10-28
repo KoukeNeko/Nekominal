@@ -159,6 +159,9 @@ const PROCESS_SNAPSHOT_AGE: Duration = Duration::from_secs(30);
 /// How long the cursor blinks after the last key, or after the window became the active one; then it stays on until the
 /// next. Each phase of the blink draws a whole frame: a window nobody types in would do it twice a second for nothing.
 const BLINK_IDLE: Duration = Duration::from_secs(5);
+/// How long the panels stay closed before their swap chain gives its memory back: moving between the meter and the card
+/// closes and opens them, and making the buffers again every time costs more than keeping them a few seconds.
+const PANELS_SHRINK_MS: u32 = 3000;
 
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
@@ -2936,8 +2939,9 @@ impl App {
         self.ui.begin_frame(size, self.scale);
         self.paint_panels();
         if self.panel_shapes.is_empty() {
-            if let Some(layer) = self.panels.as_mut() {
-                layer.hide(&self.gpu);
+            if self.panels.as_mut().is_some_and(crate::panels::Layer::hide) {
+                // SAFETY: a timer of this window, from its own thread.
+                unsafe { SetTimer(Some(self.hwnd), crate::win::PANELS_TIMER, PANELS_SHRINK_MS, None) };
             }
             return;
         }
@@ -2969,6 +2973,15 @@ impl App {
     fn panel_fill(&self, opaque: u8) -> Color {
         let b = self.glass.background;
         Color([b.r, b.g, b.b, if self.panels_failed { opaque } else { popup::ACRYLIC_TINT }])
+    }
+
+    /// The panels have been closed for a while: their swap chain gives its memory back.
+    pub fn shrink_panels(&mut self) {
+        // SAFETY: a timer of this window, from its own thread.
+        unsafe { let _ = KillTimer(Some(self.hwnd), crate::win::PANELS_TIMER); }
+        if let Some(layer) = self.panels.as_mut() {
+            layer.shrink(&self.gpu);
+        }
     }
 
     /// The window under the pointer is this window's panel layer: the pointer left the window for a panel.

@@ -13,6 +13,7 @@
 #   Scenario-NextWindows     # two windows in one process; only the last close ends it
 #   Scenario-NextTabMove     # pull a chip out into a window of its own, then drop it on the title bar of the other
 #   Scenario-NextAcrylic     # the menu, the palette and a confirmation show the blurred window below
+#   Scenario-NextPanels      # the tip of a sidebar row opens the layer of the panels, leaving closes it, the pane still takes input
 #   Scenario-NextAll
 #
 # A scenario fails (throws) when a check fails. The clipboard of the user is saved and restored.
@@ -777,6 +778,30 @@ function Next-CheckAcrylic([string]$Name, [string]$Shot) {
 }
 
 # The menu, the command palette and a confirmation over a window of strong colours.
+# The floating panels are drawn in a window of their own over the window (`panels.rs`): the tip beside a row of the icons
+# sidebar opens it, leaving the row closes it, and the window it covers keeps taking the pointer the whole time.
+function Scenario-NextPanels {
+    Run-Next {
+        Next-Line 'echo PANELS'
+        $row = Next-At 26 (40 + 8 + 22)    # the middle of the first icon of the column, under the bar
+        Move-To $row[0] $row[1]; Start-Sleep -Milliseconds 800
+        $layer = Next-WindowOfClass 'NekominalPanels'
+        Next-Check 'panels.tip-opens-the-layer' ($layer -ne [IntPtr]::Zero) 'pointing at a row of the icons shows its tip in the layer'
+        if ($layer -ne [IntPtr]::Zero) {
+            $at = New-Object D+RECT; [void][D]::GetWindowRect($layer, [ref]$at)
+            $r = Win-Rect
+            Next-Check 'panels.layer-lies-on-the-window' ($at.Left -ge $r.Left -and $at.Top -ge $r.Top -and $at.Right -le $r.Right + 1 -and $at.Bottom -le $r.Bottom + 1) 'the layer covers the client area of its window and no more'
+        }
+        $middle = Next-At 400 300
+        Move-To $middle[0] $middle[1]; Start-Sleep -Milliseconds 800
+        Next-Check 'panels.leaving-closes-it' ((Next-WindowOfClass 'NekominalPanels') -eq [IntPtr]::Zero) 'away from the row the tip and its layer go'
+        # The layer must not keep the pointer from the window: the pane under it still takes a click and the keys.
+        Click-At $middle[0] $middle[1]; Start-Sleep -Milliseconds 300
+        Next-Line 'echo AFTER-PANELS'
+        Next-Check 'panels.window-still-takes-input' ((Next-Text) -match 'AFTER-PANELS') 'after the layer showed, the pane takes a click and typing'
+    } '{ "tabs": { "layout": "icons" } }'
+}
+
 function Scenario-NextAcrylic {
     Run-Next {
         Start-Pattern
