@@ -524,7 +524,7 @@ texts! {
     CardLines "card.lines" "行數" "Lines";
     CardIn "card.in" "{0} 輸入" "{0} in";
     CardOut "card.out" "{0} 輸出" "{0} out";
-    CardNoStatusLine "card.noStatusLine" "費用與時間來自 Claude Code 的 statusLine，目前由別的外掛使用" "Cost and time come from Claude Code's status line, which another plugin is drawing";
+    CardNoStatusLine "card.noStatusLine" "statusLine 由其他外掛使用，沒有費用與時間" "No cost or time: a plugin has the status line";
     ClaudeForeign "claude.foreign" "Claude Code 已有自訂的 statusLine，Nekominal 不會取代它；模型與脈絡用量改由 hooks 取得，費用則不會顯示" "Claude Code has a custom statusLine, which Nekominal leaves alone; the model and context come from its hooks instead, without the cost";
     ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
 
