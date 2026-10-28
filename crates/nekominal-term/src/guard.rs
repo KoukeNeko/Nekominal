@@ -23,6 +23,35 @@ pub const MAX_SHORT_OSC: usize = 8 * 1024;
 /// link that may be opened (longer ones are refused anyway) and room for its parameters.
 pub const MAX_LINK_OSC: usize = crate::links::MAX_LINK_BYTES + 256;
 
+/// The bytes of OSC 8 links a pane takes at once, and how fast that refills. Each link is kept on the cells it covers,
+/// outside the scrollback budget: one long link per cell would cost gigabytes. Past the budget a link is cut to
+/// `8;;`-sized (no link is opened, and a link's end still closes it), so the text prints without it.
+const LINK_BYTES_AT_ONCE: f64 = 16.0 * 1024.0 * 1024.0;
+const LINK_BYTES_PER_SECOND: f64 = 64.0 * 1024.0;
+const LINK_CLOSE: usize = 3;
+
+#[derive(Debug)]
+struct LinkBudget {
+    left: f64,
+    at: Option<std::time::Instant>,
+}
+
+impl LinkBudget {
+    /// The longest link the next one may be.
+    fn allow(&mut self) -> usize {
+        let now = std::time::Instant::now();
+        if let Some(at) = self.at {
+            self.left = (self.left + now.duration_since(at).as_secs_f64() * LINK_BYTES_PER_SECOND).min(LINK_BYTES_AT_ONCE);
+        }
+        self.at = Some(now);
+        if self.left >= MAX_LINK_OSC as f64 { MAX_LINK_OSC } else { LINK_CLOSE }
+    }
+
+    fn spend(&mut self, bytes: usize) {
+        self.left = (self.left - bytes as f64).max(0.0);
+    }
+}
+
 const ESC: u8 = 0x1b;
 const CAN: u8 = 0x18;
 const SUB: u8 = 0x1a;
@@ -48,6 +77,9 @@ pub struct StringGuard {
     head_len: usize,
     /// Payload bytes dropped so far (for diagnostics).
     pub dropped: u64,
+    links: LinkBudget,
+    /// The cap of the link being read, decided when it starts.
+    link_limit: Option<usize>,
 }
 
 impl Default for StringGuard {
@@ -68,7 +100,8 @@ fn find_terminator(bytes: &[u8]) -> Option<usize> {
 
 impl StringGuard {
     pub fn with_limit(limit: usize) -> Self {
-        Self { state: State::Ground, payload: 0, limit, head: [0; 3], head_len: 0, dropped: 0 }
+        let links = LinkBudget { left: LINK_BYTES_AT_ONCE, at: None };
+        Self { state: State::Ground, payload: 0, limit, head: [0; 3], head_len: 0, dropped: 0, links, link_limit: None }
     }
 
     /// Returns the bytes to feed the parsers: `bytes` itself unless a payload went over the limit.
@@ -93,6 +126,7 @@ impl StringGuard {
                             self.state = State::Osc;
                             self.payload = 0;
                             self.head_len = 0;
+                            self.link_limit = None;
                         }
                         ESC => {}
                         _ => self.state = State::Ground,
@@ -108,8 +142,11 @@ impl StringGuard {
                     self.head_len += take;
                     let short = self.head_len == self.head.len() && self.head != *b"52;";
                     let link = self.head_len >= 2 && self.head[..2] == *b"8;";
+                    if link && self.link_limit.is_none() {
+                        self.link_limit = Some(self.links.allow());
+                    }
                     let limit = if link {
-                        self.limit.min(MAX_LINK_OSC)
+                        self.limit.min(self.link_limit.unwrap_or(MAX_LINK_OSC))
                     } else if short {
                         self.limit.min(MAX_SHORT_OSC)
                     } else {
@@ -117,6 +154,9 @@ impl StringGuard {
                     };
                     let room = limit.saturating_sub(self.payload);
                     if segment > room {
+                        if link {
+                            self.links.spend(self.payload + room);
+                        }
                         // Cut here: keep `room` bytes, end the string with CAN, drop the remainder.
                         out.extend_from_slice(&bytes[copy_from..i + room]);
                         out.push(CAN);
@@ -128,6 +168,9 @@ impl StringGuard {
                         self.payload += segment;
                         i += segment;
                         if end.is_some() {
+                            if link {
+                                self.links.spend(self.payload);
+                            }
                             // BEL / CAN / SUB end the string; ESC starts the ST (or another sequence).
                             self.state = if bytes[i] == ESC { State::Escape } else { State::Ground };
                             i += 1;
@@ -238,6 +281,27 @@ mod tests {
         ok.extend(std::iter::repeat_n(b'x', crate::links::MAX_LINK_BYTES - 12));
         ok.extend_from_slice(b"\x1b\\");
         assert!(matches!(guard.filter(&ok), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn past_the_link_budget_a_link_is_cut_short_and_its_close_still_passes() {
+        let mut guard = StringGuard::default();
+        let link = |n: usize| {
+            let mut data = format!("\x1b]8;;https://a.b/{n}/").into_bytes();
+            data.extend(std::iter::repeat_n(b'x', 2000));
+            data.extend_from_slice(b"\x1b\\X\x1b]8;;\x1b\\");
+            data
+        };
+        let mut cut = 0;
+        for n in 0..10_000 {
+            if matches!(guard.filter(&link(n)), Cow::Owned(_)) {
+                cut += 1;
+            }
+        }
+        assert!(cut > 0, "20 MB of links in a moment goes past the 16 MiB budget");
+        let out = guard.filter(&link(0)).into_owned();
+        assert!(out.starts_with(b"\x1b]8;;\x18"), "cut to its first bytes, no address: {:?}", String::from_utf8_lossy(&out[..12]));
+        assert!(out.ends_with(b"X\x1b]8;;\x1b\\"), "the close is untouched");
     }
 
     #[test]
