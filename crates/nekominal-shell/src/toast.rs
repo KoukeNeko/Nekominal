@@ -31,16 +31,35 @@ thread_local! {
     static SHOWN: RefCell<Vec<ToastNotification>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The icon of the toasts, built into the program.
+const ICON: &[u8] = include_bytes!("../../../assets/nekominal.ico");
+
+/// The file name of an icon: `nekominal-` and the start of the SHA-256 of its bytes.
+fn icon_name(icon: &[u8]) -> String {
+    let digest = nekominal_pty::relocate::sha256(icon);
+    format!("nekominal-{}.ico", digest[..6].iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+
 /// Registers the id under the current user, once a run: Windows reads the name and the icon of the toasts from there.
 fn register() -> Result<(), String> {
     static DONE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     DONE.get_or_init(|| {
         let key = format!(r"Software\Classes\AppUserModelId\{AUMID}");
         crate::integration::write_string(&key, Some("DisplayName"), nekominal_model::strings::APP_NAME)?;
-        // The icon must be a file: the one built into the program is written next to the settings.
-        let icon = nekominal_model::store::config_dir().map(|dir| dir.join("nekominal.ico"));
-        if let Some(icon) = icon.filter(|icon| icon.exists() || std::fs::write(icon, include_bytes!("../../../assets/nekominal.ico")).is_ok()) {
-            crate::integration::write_string(&key, Some("IconUri"), &icon.display().to_string())?;
+        // The icon must be a file: the one built into the program is written next to the settings. It is named by its
+        // content, as Windows keeps the picture of a path it has read: a new icon is a new path, and the old ones go.
+        if let Some(dir) = nekominal_model::store::config_dir() {
+            let name = icon_name(ICON);
+            let icon = dir.join(&name);
+            if icon.exists() || std::fs::write(&icon, ICON).is_ok() {
+                crate::integration::write_string(&key, Some("IconUri"), &icon.display().to_string())?;
+                for old in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let file = old.file_name().to_string_lossy().into_owned();
+                    if file != name && file.starts_with("nekominal") && file.ends_with(".ico") {
+                        let _ = std::fs::remove_file(old.path());
+                    }
+                }
+            }
         }
         Ok(())
     })
@@ -93,6 +112,14 @@ pub fn show(hwnd: HWND, tab: u64, title: &str, body: &str) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_icon_file_is_named_by_its_content_so_a_new_icon_is_a_new_path() {
+        let name = icon_name(ICON);
+        assert!(name.starts_with("nekominal-") && name.ends_with(".ico") && name.len() == "nekominal-".len() + 12 + 4, "{name}");
+        assert_eq!(icon_name(ICON), name, "the same bytes, the same name");
+        assert_ne!(icon_name(b"another icon"), name);
+    }
 
     #[test]
     fn the_xml_escapes_the_text_and_keeps_two_lines_of_the_body() {
