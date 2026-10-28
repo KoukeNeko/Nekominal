@@ -82,20 +82,30 @@ if (window.gsap && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
     gsap.to(el, { y, duration: .7, ease: 'power3.out', delay: Math.abs(d) * .04, overwrite: 'auto' });
   });
   const settle = () => gsap.to(hvs, { y: 0, duration: 1, ease: 'power2.out', stagger: .04, overwrite: 'auto' });
+  let active = -1, enterTimer;
+  const open = i => {
+    active = i;
+    stack.classList.add('hovering'); layers.forEach((l, j) => l.classList.toggle('on', j === i)); cap.classList.add('on');
+    setCap(capKeys[i]); part(i);
+  };
+  const close = () => {
+    active = -1;
+    stack.classList.remove('hovering'); layers.forEach(l => l.classList.remove('on')); cap.classList.remove('on');
+    setCap('cap.0'); settle();
+  };
+  // The text has links in it, so the way from a layer to the text is part of looking at the layer: the stack closes only
+  // after the pointer has been away from both for a while, and the text keeps the layer open while the pointer is on it.
+  const closeSoon = ms => { clearTimeout(enterTimer); clearTimeout(leaveTimer); leaveTimer = setTimeout(close, ms); };
   layers.forEach((g, i) => {
     g.addEventListener('pointerenter', () => {
-      clearTimeout(leaveTimer);
-      stack.classList.add('hovering'); layers.forEach((l, j) => l.classList.toggle('on', j === i)); cap.classList.add('on');
-      setCap(capKeys[i]); part(i);
+      clearTimeout(leaveTimer); clearTimeout(enterTimer);
+      // from one layer to another on the way to the text, the pointer crosses layers it does not mean: it has to stay a moment
+      if (active < 0 || active === i) open(i); else enterTimer = setTimeout(() => open(i), 140);
     });
-    // a short wait, so that passing from one layer to the next does not close and open the stack in between
-    g.addEventListener('pointerleave', () => {
-      leaveTimer = setTimeout(() => {
-        stack.classList.remove('hovering'); layers.forEach(l => l.classList.remove('on')); cap.classList.remove('on');
-        setCap('cap.0'); settle();
-      }, 160);
-    });
+    g.addEventListener('pointerleave', () => closeSoon(450));
   });
+  cap.addEventListener('pointerenter', () => { clearTimeout(leaveTimer); clearTimeout(enterTimer); });
+  cap.addEventListener('pointerleave', () => { if (active >= 0) closeSoon(350); });
   // scrolling away from the hero pulls the layers further apart
   gsap.to('.pl-in', { y: i => i * 36, ease: 'none', scrollTrigger: { trigger: '.hero', start: 'top top', end: 'bottom top', scrub: true } });
 
