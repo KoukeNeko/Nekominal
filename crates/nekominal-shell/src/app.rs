@@ -3908,7 +3908,13 @@ impl App {
         if !same_field {
             self.page_commit_edit();
         }
-        let Some(part) = part else { return Capture::None };
+        if let Some(page) = self.page.as_mut() {
+            page.searching = part == Some(Part::Search);
+        }
+        let Some(part) = part else {
+            self.page_redraw();
+            return Capture::None;
+        };
         let capture = self.press_page_part(part, x);
         self.page_redraw();
         capture
@@ -4424,7 +4430,7 @@ impl App {
             None => {
                 let changed = textfield::type_unit(&mut page.query, &mut page.cursor, &mut self.text, unit);
                 if changed {
-                    (page.scroll, page.focus) = (0.0, None);
+                    (page.scroll, page.focus, page.searching) = (0.0, None, true);
                 }
                 changed
             }

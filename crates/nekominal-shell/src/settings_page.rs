@@ -84,6 +84,9 @@ pub struct Page {
     pub capturing: Option<Command>,
     pub slot: KeySlot,
     pub reserved: Option<Shortcut>,
+    /// Whether the search line looks like it has the keyboard: once it is pressed or typed in, until something else is
+    /// pressed or a row takes the keyboard. Typing goes to it either way.
+    pub searching: bool,
     /// The caret and the selection of the search line, and of the text field being edited.
     pub cursor: crate::textfield::Cursor,
     pub edit_cursor: crate::textfield::Cursor,
@@ -935,9 +938,10 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
     item(&mut items, nav, None, Visual::Plate(Fill::Strip), false);
     let (inner_x, inner_w) = (nav.x + NAV_PAD, (nav.w - 2.0 * NAV_PAD).max(0.0));
     let search = Rect::new(inner_x, oy + NAV_PAD, inner_w, SEARCH_HEIGHT);
-    item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: page.editing.is_none() }), false);
+    let search_lit = page.editing.is_none() && page.focus.is_none() && (page.searching || searching);
+    item(&mut items, search, Some(Part::Search), Visual::Plate(Fill::Field { editing: search_lit }), false);
     item(&mut items, Rect::new(search.x + 10.0, search.y, 16.0, search.h), None, Visual::Glyph { ch: '\u{E721}', size: 12.0, tone: Tone::Quiet }, false);
-    let edit = Visual::Edit { text: page.query.clone(), cursor: page.editing.is_none().then_some(page.cursor), placeholder: Text::SettingsSearch.get(lang).to_owned() };
+    let edit = Visual::Edit { text: page.query.clone(), cursor: search_lit.then_some(page.cursor), placeholder: Text::SettingsSearch.get(lang).to_owned() };
     item(&mut items, Rect::new(search.x + 32.0, search.y, (search.w - 40.0).max(0.0), search.h), None, edit, false);
     let mut nav_y = search.y + search.h + 12.0;
     for (i, section) in Section::ALL.iter().enumerate() {
@@ -1680,6 +1684,22 @@ mod tests {
         // What a search finds comes from every section, so no section is the one shown.
         let found = nav_items(&frame(&Page { query: "opacity".into(), ..Page::default() }, &settings));
         assert!(selected(&found).is_empty());
+    }
+
+    #[test]
+    fn the_search_line_is_lit_only_once_it_is_pressed_or_typed_in_and_not_while_a_row_has_the_keyboard() {
+        let settings = Settings::default();
+        let keymap = keymap();
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 900.0, 650.0) };
+        let lit = |page: &Page| {
+            let frame = build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
+            let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
+            search.visual == Visual::Plate(Fill::Field { editing: true })
+        };
+        assert!(!lit(&Page::default()), "a page just opened has no field lit");
+        assert!(lit(&Page { searching: true, ..Page::default() }));
+        assert!(lit(&Page { query: "font".into(), ..Page::default() }), "a search typed is lit");
+        assert!(!lit(&Page { searching: true, focus: Some(0), ..Page::default() }), "a row with the keyboard takes it");
     }
 
     #[test]
