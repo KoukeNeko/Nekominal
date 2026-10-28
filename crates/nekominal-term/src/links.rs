@@ -109,14 +109,22 @@ pub fn find_urls(cells: &[char]) -> Vec<Range<usize>> {
 
 /// Length of `url` without the characters that end a sentence or close a bracket nothing opened.
 fn trim_end(url: &[char]) -> usize {
+    // The brackets are counted once and the counts follow the trim: counting them again for each character trimmed
+    // took seconds for a URL with tens of thousands of `)`, on every move of the pointer.
+    let count = |c: char| url.iter().filter(|x| **x == c).count();
+    let (mut round, mut square) = ((count('('), count(')')), (count('['), count(']')));
     let mut end = url.len();
     while end > 0 {
-        let c = url[end - 1];
-        let unopened = |open: char| url[..end].iter().filter(|x| **x == c).count() > url[..end].iter().filter(|x| **x == open).count();
-        let trim = match c {
+        let trim = match url[end - 1] {
             '.' | ',' | ';' | ':' | '!' | '?' | '\'' => true,
-            ')' => unopened('('),
-            ']' => unopened('['),
+            ')' if round.1 > round.0 => {
+                round.1 -= 1;
+                true
+            }
+            ']' if square.1 > square.0 => {
+                square.1 -= 1;
+                true
+            }
             _ => false,
         };
         if !trim {
@@ -358,6 +366,17 @@ pub struct Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unopened_brackets_are_trimmed_and_a_url_of_thousands_of_them_is_trimmed_at_once() {
+        let chars = |s: &str| s.chars().collect::<Vec<_>>();
+        assert_eq!(trim_end(&chars("http://a/b_(c))")), "http://a/b_(c)".len());
+        assert_eq!(trim_end(&chars("http://a/[x]].")), "http://a/[x]".len());
+        let hostile = chars(&format!("http://a{}", ")".repeat(25_000)));
+        let started = std::time::Instant::now();
+        assert_eq!(trim_end(&hostile), "http://a".len());
+        assert!(started.elapsed() < std::time::Duration::from_millis(200), "{:?}", started.elapsed());
+    }
 
     fn urls(text: &str) -> Vec<String> {
         let cells: Vec<char> = text.chars().collect();
