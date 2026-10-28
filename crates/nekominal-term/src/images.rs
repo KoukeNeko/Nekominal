@@ -7,9 +7,12 @@
 //! Output is untrusted: one picture holds at most `MAX_IMAGE_BYTES`, the pane at most `MAX_PANE_IMAGE_BYTES` (the oldest
 //! pictures go first) and `MAX_PLACEMENTS` placements.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::terminal::LineId;
@@ -22,6 +25,9 @@ pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PANE_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 /// Placements of a pane at most; past it the oldest goes.
 pub const MAX_PLACEMENTS: usize = 4096;
+/// Pictures of a pane at most, whatever their size: a 1x1 picture is 4 bytes of the budget above, and millions of them
+/// would cost their bookkeeping and the time to look through them.
+pub const MAX_IMAGES: usize = 4096;
 
 /// Keys are unique in the process, so a renderer that caches textures by key never mistakes one picture for another.
 static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
@@ -162,7 +168,7 @@ impl ImageStore {
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
         self.bytes += pixels.len();
         self.images.push(Image { key, id, number, width, height, pixels: pixels.into() });
-        while self.bytes > MAX_PANE_IMAGE_BYTES && self.images.len() > 1 {
+        while (self.bytes > MAX_PANE_IMAGE_BYTES || self.images.len() > MAX_IMAGES) && self.images.len() > 1 {
             let oldest = self.images[0].key;
             self.remove_images(|image| image.key == oldest);
         }
@@ -182,7 +188,7 @@ impl ImageStore {
 
     /// Drops the pictures `doomed` picks and all their placements. True when any went.
     pub fn remove_images(&mut self, doomed: impl Fn(&Image) -> bool) -> bool {
-        let keys: Vec<u64> = self.images.iter().filter(|image| doomed(image)).map(|image| image.key).collect();
+        let keys: HashSet<u64> = self.images.iter().filter(|image| doomed(image)).map(|image| image.key).collect();
         if keys.is_empty() {
             return false;
         }
@@ -200,34 +206,28 @@ impl ImageStore {
     /// Drops the placements `doomed` picks; with `free` (an upper-case kitty delete) also the pictures of those that are
     /// left with no placement. True when any went.
     pub fn remove_placements(&mut self, doomed: impl Fn(&Placement, &Image) -> bool, free: bool) -> bool {
-        let mut touched = Vec::new();
-        let images = &self.images;
+        // Looked up by key once, not searched for each placement: a pane can hold thousands of both.
+        let mut touched = HashSet::new();
+        let images: HashMap<u64, &Image> = self.images.iter().map(|image| (image.key, image)).collect();
         self.placements.retain(|placement| {
-            let gone = images.iter().find(|image| image.key == placement.image).is_some_and(|image| doomed(placement, image));
+            let gone = images.get(&placement.image).is_some_and(|image| doomed(placement, image));
             if gone {
-                touched.push(placement.image);
+                touched.insert(placement.image);
             }
             !gone
         });
         if free {
-            let orphaned: Vec<u64> =
-                touched.iter().copied().filter(|key| !self.placements.iter().any(|p| p.image == *key)).collect();
-            self.remove_images(|image| orphaned.contains(&image.key));
+            let placed: HashSet<u64> = self.placements.iter().map(|p| p.image).collect();
+            self.remove_images(|image| touched.contains(&image.key) && !placed.contains(&image.key));
         }
         !touched.is_empty()
     }
 
     /// Drops the pictures nothing can show again: anonymous ones without a placement.
     pub fn sweep(&mut self) {
-        let placements = &self.placements;
-        let unplaced: Vec<u64> = self
-            .images
-            .iter()
-            .filter(|image| image.anonymous() && !placements.iter().any(|p| p.image == image.key))
-            .map(|image| image.key)
-            .collect();
-        if !unplaced.is_empty() {
-            self.remove_images(|image| unplaced.contains(&image.key));
+        let placed: HashSet<u64> = self.placements.iter().map(|p| p.image).collect();
+        if self.images.iter().any(|image| image.anonymous() && !placed.contains(&image.key)) {
+            self.remove_images(|image| image.anonymous() && !placed.contains(&image.key));
         }
     }
 
@@ -263,9 +263,15 @@ impl ImageStore {
     /// Text was written over `cells` (rows counted as `rows_of` does, columns `start..end`): the Sixels under it go, or
     /// with `all` every picture there.
     pub fn erase(&mut self, cells: &[(i64, usize, usize)], alt: bool, epoch: u32, all: bool) -> bool {
+        // The rows written: a placement outside them is passed over without looking at each cell, as most are (up in
+        // the scrollback, while the output goes on at the bottom).
+        let (Some(first), Some(last)) = (cells.iter().map(|c| c.0).min(), cells.iter().map(|c| c.0).max()) else { return false };
         self.remove_placements(
             |placement, _| {
                 let Some((top, bottom)) = rows_of(placement, alt, epoch).filter(|_| all || placement.erasable) else { return false };
+                if bottom <= first || top > last {
+                    return false;
+                }
                 let (left, right) = (placement.column, placement.column + placement.span[0] as usize);
                 cells.iter().any(|&(row, start, end)| (top..bottom).contains(&row) && start < right && left < end)
             },
@@ -299,6 +305,7 @@ impl ImageStore {
     /// pictures, oldest first.
     pub fn visible(&self, top: Option<LineId>, alt: bool, rows: usize, out: &mut Vec<SnapImage>) {
         let (epoch, first) = top.map_or((0, 0), |top| (top.epoch, top.index as i64));
+        let images: HashMap<u64, &Image> = self.images.iter().map(|image| (image.key, image)).collect();
         for placement in &self.placements {
             let Some((start, end)) = rows_of(placement, alt, epoch) else { continue };
             if !alt && top.is_none() {
@@ -308,7 +315,7 @@ impl ImageStore {
             if end <= 0 || start >= rows as i64 {
                 continue;
             }
-            let Some(image) = self.image(placement.image) else { continue };
+            let Some(image) = images.get(&placement.image) else { continue };
             out.push(SnapImage {
                 key: image.key,
                 width: image.width,
@@ -410,6 +417,27 @@ mod tests {
         out.clear();
         store.visible(None, true, 10, &mut out);
         assert_eq!(out.iter().map(|image| image.row).collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
+    fn thousands_of_tiny_pictures_are_capped_and_handled_without_scanning_each_against_each() {
+        let mut store = ImageStore::default();
+        for n in 0..MAX_IMAGES as u64 + 500 {
+            let key = store.insert(0, 0, 1, 1, vec![0; 4]);
+            store.place(placement(key, line(n), [1, 1], true));
+        }
+        assert!(store.images.len() <= MAX_IMAGES, "{}", store.images.len());
+        // Text over every row and a sweep stay fast: a quadratic pass over 4096 x 4096 would take seconds here.
+        let started = std::time::Instant::now();
+        for _ in 0..200 {
+            store.erase(&[(1_000_000, 0, 80)], false, 0, false);
+            store.sweep();
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+        let cells: Vec<(i64, usize, usize)> = (0..MAX_IMAGES as i64 + 500).map(|row| (row, 0, 80)).collect();
+        assert!(store.erase(&cells, false, 0, false));
+        store.sweep();
+        assert!(store.is_empty(), "every Sixel under text went, and its picture with it");
     }
 
     #[test]
