@@ -533,12 +533,33 @@ fn wsl_command(exe: &Path, flag: &str) -> String {
     format!("\"$(wslpath -u '{exe}')\" {flag}")
 }
 
+/// Whether Claude Code finds Git Bash to run hooks in, as it looks for it: `CLAUDE_CODE_GIT_BASH_PATH`, the `bash.exe`
+/// beside the `git.exe` on the path, Git for Windows where it installs. Without it, it runs them in PowerShell.
+fn git_bash() -> bool {
+    if std::env::var_os("CLAUDE_CODE_GIT_BASH_PATH").is_some_and(|p| Path::new(&p).is_file()) {
+        return true;
+    }
+    let beside_git = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).map(|dir| dir.join("git.exe")).find(|git| git.is_file()).and_then(|git| Some(git.parent()?.parent()?.join("bin").join("bash.exe")))
+    });
+    let installed = std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("Git").join("bin").join("bash.exe"));
+    beside_git.into_iter().chain(installed).any(|bash| bash.is_file())
+}
+
+/// A hook running this program with `flag` in PowerShell, which a quoted path alone does not run: Claude Code's shell
+/// for hooks where there is no Git Bash.
+fn powershell_hook(exe: &Path, flag: &str) -> Option<serde_json::Value> {
+    let exe = exe.to_string_lossy();
+    (!exe.contains(['"', '`', '$'])).then(|| serde_json::json!({ "type": "command", "shell": "powershell", "command": format!("& \"{exe}\" {flag}") }))
+}
+
 /// The settings Claude Code takes with `--settings` in a pane: this program as the hooks that note the session, and as
 /// the status line unless the user has one of their own. `wsl` for the twin the `claude` function of the bash integration
-/// picks, beside the other, inside WSL.
-fn settings_json(exe: &Path, wsl: bool, status_line: bool) -> Option<String> {
+/// picks, beside the other, inside WSL; `powershell` when Claude Code runs hooks in PowerShell (no Git Bash).
+fn settings_json(exe: &Path, wsl: bool, status_line: bool, powershell: bool) -> Option<String> {
     let command = |flag: &str| if wsl { Some(wsl_command(exe, flag)) } else { command(exe, flag) };
-    let hook = serde_json::json!([{ "hooks": [{ "type": "command", "command": command(HOOK_FLAG)? }] }]);
+    let entry = if powershell && !wsl { powershell_hook(exe, HOOK_FLAG)? } else { serde_json::json!({ "type": "command", "command": command(HOOK_FLAG)? }) };
+    let hook = serde_json::json!([{ "hooks": [entry] }]);
     let hooks: serde_json::Map<String, serde_json::Value> = HOOK_EVENTS.iter().map(|event| ((*event).to_owned(), hook.clone())).collect();
     let mut settings = serde_json::json!({ "hooks": hooks });
     if status_line {
@@ -559,9 +580,10 @@ pub fn write_if_changed(file: &Path, text: &str) -> Option<()> {
 pub fn claude_settings_file(own_status_line: bool) -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal");
     let exe = std::env::current_exe().ok()?;
+    let powershell = !git_bash();
     for (name, status_line) in [("claude-settings", true), ("claude-hooks", false)] {
-        write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line)?)?;
-        write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line)?)?;
+        write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line, false)?)?;
+        write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line, powershell)?)?;
     }
     Some(dir.join(if own_status_line { "claude-hooks.json" } else { "claude-settings.json" }))
 }
@@ -627,7 +649,18 @@ mod tests {
     }
 
     fn settings(exe: &str, wsl: bool, status_line: bool) -> serde_json::Value {
-        serde_json::from_str(&settings_json(Path::new(exe), wsl, status_line).unwrap()).unwrap()
+        serde_json::from_str(&settings_json(Path::new(exe), wsl, status_line, false).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn without_git_bash_the_hooks_run_this_program_in_powershell() {
+        let ps: serde_json::Value = serde_json::from_str(&settings_json(Path::new(r"C:\Program Files\N\n.exe"), false, true, true).unwrap()).unwrap();
+        let hook = &ps["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!((hook["shell"].as_str(), hook["command"].as_str()), (Some("powershell"), Some(r#"& "C:\Program Files\N\n.exe" --claude-hook"#)));
+        assert_eq!(ps["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline", "the status line is not run by the hooks' shell");
+        let wsl: serde_json::Value = serde_json::from_str(&settings_json(Path::new(r"C:\n.exe"), true, false, true).unwrap()).unwrap();
+        assert!(wsl["hooks"]["Stop"][0]["hooks"][0].get("shell").is_none(), "inside WSL the shell is bash");
+        assert_eq!(settings_json(Path::new(r"C:\a$b\n.exe"), false, true, true), None, "a path PowerShell would expand gets no hooks");
     }
 
     #[test]
@@ -636,7 +669,7 @@ mod tests {
         assert_eq!(plain["statusLine"]["command"], "\"C:/n/nekominal.exe\" --statusline");
         let quote = settings(r"C:\Users\O'Brien\scoop\apps\nekominal\current\Nekominal.exe", false, true);
         assert_eq!(quote["hooks"]["Stop"][0]["hooks"][0]["command"], "\"C:/Users/O'Brien/scoop/apps/nekominal/current/Nekominal.exe\" --claude-hook", "a ' in double quotes ends nothing");
-        assert_eq!(settings_json(Path::new(r"C:\Users\$x\n.exe"), false, true), None, "a path bash would expand gets no hooks at all");
+        assert_eq!(settings_json(Path::new(r"C:\Users\$x\n.exe"), false, true, false), None, "a path bash would expand gets no hooks at all");
         assert_eq!(plain["statusLine"]["type"], "command");
         let spaced = settings(r"C:\Program Files\N\n.exe", false, true);
         assert_eq!(spaced["statusLine"]["command"], "\"C:/Program Files/N/n.exe\" --statusline");
