@@ -490,6 +490,7 @@ dependencies = [
  "png",
  "serde_json",
  "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -516,16 +517,6 @@ dependencies = [
  "nekominal-render",
  "rustc-hash",
  "windows",
-]
-
-[[package]]
-name = "nekominal-updater"
-version = "0.2.3"
-dependencies = [
- "embed-resource",
- "nekominal-pty",
- "serde_json",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

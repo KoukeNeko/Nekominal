@@ -96,7 +96,7 @@ pub fn run(title: &str, view: Arc<Mutex<View>>, work: impl FnOnce(Ui) + Send + '
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let module = GetModuleHandleW(std::ptr::null());
-        // Resource 1 of the program, the icon of the app (`updater.rc`).
+        // Resource 1 of the program, the icon of the app (`nekominal.rc`).
         let icon = LoadIconW(module, 1 as _);
         let class = WNDCLASSW {
             lpfnWndProc: Some(proc),

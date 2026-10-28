@@ -1,6 +1,6 @@
 //! Copies of the app's programs outside its folder. Scoop refuses to update an app while any process runs from its folder
 //! (`test_running_process` of its `install.ps1`), so what keeps running across an update (the OpenConsole of every pane,
-//! the updater) runs from `%LOCALAPPDATA%\Nekominal\<kind>\<first 12 hex digits of the SHA-256 of the files>` instead.
+//! the copy of Nekominal that holds the tabs) runs from `%LOCALAPPDATA%\Nekominal\<kind>\<first 12 hex digits of the SHA-256 of the files>` instead.
 //! A folder is named by what it holds: the same files are copied once, and a new version gets a folder of its own while
 //! the old one is still in use. The folders no running program uses are deleted by the next start.
 
@@ -36,9 +36,26 @@ pub fn relocate(kind: &str, files: &[PathBuf]) -> io::Result<PathBuf> {
     relocate_in(&PathBuf::from(base).join("Nekominal").join(kind), files)
 }
 
+/// `file` copied as `name` into `%LOCALAPPDATA%\Nekominal\<kind>\<hash>`, and that folder: a program that runs from there
+/// under another name (Nekominal itself, as the copy that holds the tabs through an update).
+pub fn relocate_as(kind: &str, file: &Path, name: &str) -> io::Result<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA").ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is not set"))?;
+    relocate_in_as(&PathBuf::from(base).join("Nekominal").join(kind), file, name)
+}
+
+/// [`relocate_as`] into `root`.
+pub fn relocate_in_as(root: &Path, file: &Path, name: &str) -> io::Result<PathBuf> {
+    copy_into(root, &[file.to_path_buf()], Some(name))
+}
+
 /// [`relocate`] into `root`. The first file is the one a program that uses the folder holds open (the DLL it loaded, the
 /// program it runs): a folder of another hash is deleted only when that file can be, so nothing in use loses a file.
 pub fn relocate_in(root: &Path, files: &[PathBuf]) -> io::Result<PathBuf> {
+    copy_into(root, files, None)
+}
+
+/// The copying of [`relocate_in`], the first file named `rename` when given.
+fn copy_into(root: &Path, files: &[PathBuf], rename: Option<&str>) -> io::Result<PathBuf> {
     let first = files.first().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file to copy"))?;
     let present: Vec<&PathBuf> = files.iter().filter(|file| file.is_file()).collect();
     if present.first() != Some(&first) {
@@ -48,8 +65,10 @@ pub fn relocate_in(root: &Path, files: &[PathBuf]) -> io::Result<PathBuf> {
     let name = folder_name(&contents);
     let dir = root.join(&name);
     fs::create_dir_all(&dir)?;
-    for (file, content) in present.iter().zip(&contents) {
-        let target = dir.join(file.file_name().ok_or_else(|| io::Error::other("a file without a name"))?);
+    let held = rename.map(std::ffi::OsStr::new).or(first.file_name()).unwrap_or_default().to_owned();
+    for (index, (file, content)) in present.iter().zip(&contents).enumerate() {
+        let file_name = if index == 0 { Some(held.as_os_str()) } else { file.file_name() };
+        let target = dir.join(file_name.ok_or_else(|| io::Error::other("a file without a name"))?);
         if fs::read(&target).is_ok_and(|there| there == *content) {
             continue;
         }
@@ -64,7 +83,7 @@ pub fn relocate_in(root: &Path, files: &[PathBuf]) -> io::Result<PathBuf> {
             }
         }
     }
-    clean(root, &name, first.file_name().unwrap_or_default());
+    clean(root, &name, &held);
     Ok(dir)
 }
 

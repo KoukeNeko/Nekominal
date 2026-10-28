@@ -1,8 +1,10 @@
-//! `updater.exe`: updates Nekominal with Scoop while the programs of its tabs keep running (`docs/updater-design.md`).
+//! The hold mode: Nekominal updating itself with Scoop while the programs of its tabs keep running
+//! (`docs/updater-design.md`).
 //!
-//! The Nekominal where the user chose Update copies this program out of the app's folder, starts it with
-//! `--pipe <name> --app <...\scoop\apps\nekominal> --version <its version>`, and hands its windows over on that pipe
-//! (`nekominal_pty::handoff`). Then this program:
+//! The Nekominal where the user chose Update copies its own program out of the app's folder, as
+//! `%LOCALAPPDATA%\Nekominal\hold\<hash>\Nekominal-hold.exe` ([`copy_of`]), starts that with
+//! `--hold <pipe> --app <...\scoop\apps\nekominal> --version <its version>`, and hands its windows over on that pipe
+//! (`nekominal_pty::handoff`). Then the copy:
 //!
 //! 1. asks every other running Nekominal (through its automation pipe) to hand over too, and asks those that cannot (run
 //!    as administrator, or without the API) to save their session and close;
@@ -12,8 +14,10 @@
 //!    start, or to adopt), the version that handed over, which Scoop keeps;
 //! 4. ends, once one has adopted, closing its copies of the handles; the sessions nobody adopted end with it.
 //!
-//! It is not named Nekominal: Scoop's manifest stops every process of that name before it installs.
-#![windows_subsystem = "windows"]
+//! The copy runs outside the app's folder, since Scoop refuses to update while a program runs from it, and is not named
+//! Nekominal, since Scoop's manifest stops every process of that name before it installs. It is the same program as the
+//! one that handed over, not a separate small one: an unsigned helper copied out and run, taking handles from other
+//! processes, is what Defender's behaviour heuristics took for a trojan.
 
 mod holder;
 mod scoop;
@@ -26,6 +30,30 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+/// The folder of `%LOCALAPPDATA%\Nekominal` the copies run from, and the name of a copy.
+const HOLD_DIR: &str = "hold";
+pub const HOLD_EXE: &str = "Nekominal-hold.exe";
+
+/// The copy of this program that holds the tabs: copied once per content (the folder is named by its SHA-256), the
+/// folders of other contents nobody runs deleted.
+pub fn copy_of(exe: &Path) -> std::io::Result<PathBuf> {
+    Ok(nekominal_pty::relocate::relocate_as(HOLD_DIR, exe, HOLD_EXE)?.join(HOLD_EXE))
+}
+
+/// Whether `image`, the program serving a pipe the tabs are to be handed to, is a copy of `exe` made by [`copy_of`]:
+/// named so, in a folder of `%LOCALAPPDATA%\Nekominal\hold`, and the same bytes. The handles of every shell go to it,
+/// so only the same program may take them; a running program's file cannot be changed while it runs.
+pub fn is_copy_of(image: &Path, exe: &Path) -> bool {
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return false };
+    is_copy_in(image, exe, &PathBuf::from(base).join("Nekominal").join(HOLD_DIR))
+}
+
+fn is_copy_in(image: &Path, exe: &Path, root: &Path) -> bool {
+    let named = image.file_name().is_some_and(|name| name.eq_ignore_ascii_case(HOLD_EXE));
+    let placed = image.parent().and_then(Path::parent).is_some_and(|dir| dir.to_string_lossy().eq_ignore_ascii_case(&root.to_string_lossy()));
+    named && placed && std::fs::read(image).is_ok_and(|copy| std::fs::read(exe).is_ok_and(|own| copy == own))
+}
 
 use holder::Holder;
 use window::{Ui, View};
@@ -51,14 +79,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "--pipe" => parsed.pipe = value()?,
+            "--hold" => parsed.pipe = value()?,
             "--app" => parsed.app = Some(PathBuf::from(value()?)).filter(|app| !app.as_os_str().is_empty()),
             "--version" => parsed.version = value()?,
             other => return Err(format!("unknown argument {other}")),
         }
     }
     if parsed.pipe.is_empty() {
-        return Err("--pipe is missing".into());
+        return Err("--hold is missing".into());
     }
     Ok(parsed)
 }
@@ -81,20 +109,20 @@ impl Words {
 }
 
 fn log(text: &str) {
-    if let Some(path) = std::env::var_os("NEKOMINAL_LOG")
-        && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-    {
-        let _ = writeln!(file, "updater: {text}");
-    }
+    crate::util::log(&format!("hold: {text}"));
 }
 
-fn main() {
+/// Runs the hold mode when the program was started with `--hold`: true when it did (and the process is to end).
+pub fn hold_main() -> bool {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_none_or(|first| first != "--hold") {
+        return false;
+    }
     let args = match parse(&args) {
         Ok(args) => args,
         Err(e) => {
             log(&e);
-            return;
+            return true;
         }
     };
     // The pipe first: the Nekominal that started this connects as soon as it can.
@@ -102,12 +130,13 @@ fn main() {
         Ok(holder) => holder,
         Err(e) => {
             log(&format!("pipe {}: {e}", args.pipe));
-            return;
+            return true;
         }
     };
     let view = Arc::new(Mutex::new(View { from: args.version.clone(), ..View::default() }));
     let shared = view.clone();
     window::run("Nekominal update", view, move |ui| update(&args, &holder, &shared, ui));
+    true
 }
 
 /// Changes the view and draws it again.
@@ -345,12 +374,38 @@ mod tests {
     fn the_arguments_name_the_pipe_and_the_app_and_nothing_else_is_taken() {
         let args = |list: &[&str]| parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
-            args(&["--pipe", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3"]).unwrap(),
+            args(&["--hold", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3"]).unwrap(),
             Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), version: "0.2.3".into() }
         );
-        assert_eq!(args(&["--pipe", "p", "--app", ""]).unwrap().app, None, "an empty folder is none");
-        assert_eq!(args(&["--app", "a"]).unwrap_err(), "--pipe is missing");
-        assert_eq!(args(&["--pipe"]).unwrap_err(), "--pipe needs a value");
-        assert_eq!(args(&["--pipe", "p", "--force"]).unwrap_err(), "unknown argument --force");
+        assert_eq!(args(&["--hold", "p", "--app", ""]).unwrap().app, None, "an empty folder is none");
+        assert_eq!(args(&["--app", "a"]).unwrap_err(), "--hold is missing");
+        assert_eq!(args(&["--hold"]).unwrap_err(), "--hold needs a value");
+        assert_eq!(args(&["--hold", "p", "--force"]).unwrap_err(), "unknown argument --force");
+    }
+
+    #[test]
+    fn only_a_copy_of_the_same_program_in_the_hold_folder_by_its_name_is_given_the_tabs() {
+        let work = std::env::temp_dir().join(format!("nekominal-hold-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        let root = work.join("hold");
+        let own = work.join(r"app\Nekominal.exe");
+        std::fs::create_dir_all(own.parent().unwrap()).unwrap();
+        std::fs::write(&own, b"the program").unwrap();
+        let copy = nekominal_pty::relocate::relocate_in_as(&root, &own, HOLD_EXE).unwrap().join(HOLD_EXE);
+        assert_eq!(copy.parent().unwrap().parent().unwrap(), root);
+        assert!(is_copy_in(&copy, &own, &root));
+        assert!(is_copy_in(Path::new(&copy.to_string_lossy().to_uppercase()), &own, &root), "Windows names in any case");
+
+        let at = |dir: &Path, name: &str, bytes: &[u8]| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), bytes).unwrap();
+            dir.join(name)
+        };
+        assert!(!is_copy_in(&at(&root.join("000000000001"), HOLD_EXE, b"another program"), &own, &root), "other bytes");
+        assert!(!is_copy_in(&at(&root.join("000000000002"), "updater.exe", b"the program"), &own, &root), "another name");
+        assert!(!is_copy_in(&at(&work.join(r"elsewhere\000000000003"), HOLD_EXE, b"the program"), &own, &root), "another folder");
+        assert!(!is_copy_in(&at(&root, HOLD_EXE, b"the program"), &own, &root), "not in a folder of its own");
+        assert!(!is_copy_in(&root.join(r"000000000004\Nekominal-hold.exe"), &own, &root), "no such file");
+        let _ = std::fs::remove_dir_all(&work);
     }
 }

@@ -1,10 +1,11 @@
-//! The shell's side of an update that keeps the tabs running (`docs/updater-design.md`, `nekominal-updater`).
+//! The shell's side of an update that keeps the tabs running (`docs/updater-design.md`); the side that holds the tabs
+//! meanwhile, the updater, is this program too, a copy of it in the hold mode (`hold`).
 //!
-//! Giving: Update and restart copies `updater.exe` out of the app's folder and starts it ([`start_updater`]); then every
-//! window of this process is handed to it ([`give`]): each pane stops reading its output, its session's handles are
-//! duplicated into the updater, and the windows go over the updater's pipe with what each pane shows; once the updater
-//! has them, this process ends on the spot, closing nothing (closing a pseudoconsole would end its shell). Another
-//! Nekominal is asked to do the same through its automation pipe (`hand-off`).
+//! Giving: Update and restart copies this program out of the app's folder and starts the copy with `--hold`
+//! ([`start_holder`]); then every window of this process is handed to it ([`give`]): each pane stops reading its output,
+//! its session's handles are duplicated into the updater, and the windows go over the updater's pipe with what each pane
+//! shows; once the updater has them, this process ends on the spot, closing nothing (closing a pseudoconsole would end
+//! its shell). Another Nekominal is asked to do the same through its automation pipe (`hand-off`).
 //!
 //! Taking: the updater starts the new Nekominal with `--adopt <pipe>`; it takes the windows ([`take`]), opens each with its
 //! panes on the sessions handed over (`App::open_handed_over`), and tells the updater which it adopted ([`confirm`]). A
@@ -99,26 +100,22 @@ pub fn find(panes: &[wire::PaneState], tab: usize, layout: &nekominal_model::lay
     panes.iter().position(|state| state.tab == tab && state.pane == place)
 }
 
-/// Copies `updater.exe` (beside this program) out of the app's folder and starts it for the Scoop install in `app`: the
-/// name of the pipe it serves.
-pub fn start_updater(app: &Path) -> Result<String, String> {
+/// Copies this program out of the app's folder (`hold::copy_of`) and starts the copy in the hold mode for the Scoop install
+/// in `app`: the name of the pipe it serves.
+pub fn start_holder(app: &Path) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let bundled = exe.with_file_name("updater.exe");
-    if !bundled.is_file() {
-        return Err(format!("{} is missing", bundled.display()));
-    }
-    // Out of the folder Scoop replaces: Scoop refuses to update while a program runs from it.
-    let dir = nekominal_pty::relocate::relocate("updater", &[bundled]).map_err(|e| format!("updater: {e}"))?;
+    // Out of the folder Scoop replaces (Scoop refuses to update while a program runs from it), under another name.
+    let copy = crate::hold::copy_of(&exe).map_err(|e| format!("hold: {e}"))?;
     let sid = wire::user_sid().map_err(|e| e.to_string())?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |at| at.as_millis());
     let pipe = format!(r"\\.\pipe\nekominal-update-{sid}-{}-{stamp}", std::process::id());
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let args = ["--pipe", pipe.as_str(), "--app", &app.to_string_lossy(), "--version", crate::update::CURRENT];
-    let start = |flags: u32| std::process::Command::new(dir.join("updater.exe")).args(args).current_dir(&home).creation_flags(flags).spawn();
+    let args = ["--hold", pipe.as_str(), "--app", &app.to_string_lossy(), "--version", crate::update::CURRENT];
+    let start = |flags: u32| std::process::Command::new(&copy).args(args).current_dir(&home).creation_flags(flags).spawn();
     // Out of any job this process runs in (a terminal it was started from), so that ending that job does not end the update.
-    start(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| start(0)).map_err(|e| format!("updater: {e}"))?;
+    start(CREATE_BREAKAWAY_FROM_JOB).or_else(|_| start(0)).map_err(|e| format!("hold: {e}"))?;
     Ok(pipe)
 }
 
@@ -155,9 +152,10 @@ fn try_give(pipe: &str) -> Result<(), String> {
     let connection = wire::connect(pipe, Duration::from_secs(15)).map_err(|e| format!("{pipe}: {e}"))?;
     let server = wire::peer_pid(&connection, false).map_err(|e| e.to_string())?;
     let updater = Process::open(server).map_err(|e| e.to_string())?;
-    // The handles of the shells go to whoever serves the pipe: only to an updater.
-    if !updater.image().is_some_and(|image| image.file_name().is_some_and(|name| name.eq_ignore_ascii_case("updater.exe"))) {
-        return Err(format!("process {server} that serves {pipe} is not updater.exe"));
+    // The handles of the shells go to whoever serves the pipe: only to a copy of this very program, holding them.
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if !updater.image().is_some_and(|image| crate::hold::is_copy_of(&image, &exe)) {
+        return Err(format!("process {server} that serves {pipe} is not a copy of this Nekominal holding the tabs"));
     }
     let apps = crate::win::apps();
     // The session file too, as when the last window closes: what the next start restores if the update goes wrong.

@@ -34,7 +34,7 @@ impl Holder {
         let holder = Arc::new(Holder { pipe: pipe.to_owned(), state: Mutex::default(), changed: Condvar::new() });
         let mut waiting = handoff::listen(pipe, true)?;
         let server = holder.clone();
-        std::thread::Builder::new().name("updater pipe".into()).spawn(move || loop {
+        std::thread::Builder::new().name("hold pipe".into()).spawn(move || loop {
             let connected = handoff::accept(&waiting);
             let next = loop {
                 match handoff::listen(&server.pipe, false) {
@@ -45,7 +45,7 @@ impl Holder {
             let client = std::mem::replace(&mut waiting, next);
             if connected.is_ok() {
                 let server = server.clone();
-                let _ = std::thread::Builder::new().name("updater client".into()).spawn(move || server.client(client));
+                let _ = std::thread::Builder::new().name("hold client".into()).spawn(move || server.client(client));
             }
         })?;
         Ok(holder)

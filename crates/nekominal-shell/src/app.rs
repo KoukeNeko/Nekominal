@@ -2130,9 +2130,9 @@ impl App {
         });
     }
 
-    /// Updates with Scoop and starts the new version, the programs of every tab still running: `updater.exe` takes the
-    /// tabs of every Nekominal over while Scoop updates (`handoff.rs`, `docs/updater-design.md`). Without it (a build that
-    /// does not ship it), or from a window run as administrator (which can hand nothing to a program that is not, nor reach
+    /// Updates with Scoop and starts the new version, the programs of every tab still running: a copy of this program in
+    /// the hold mode takes the tabs of every Nekominal over while Scoop updates (`handoff.rs`, `hold`,
+    /// `docs/updater-design.md`). When it cannot be started, or from a window run as administrator (which can hand nothing to a program that is not, nor reach
     /// the other windows), as before: a PowerShell window of its own waits for this process and its OpenConsole to end,
     /// runs the update and starts the app again, while every window here closes and saves the session.
     fn update_and_restart(&mut self) {
@@ -2143,7 +2143,7 @@ impl App {
             return;
         };
         if !elevated() {
-            match crate::handoff::start_updater(&app_dir) {
+            match crate::handoff::start_holder(&app_dir) {
                 Ok(pipe) => {
                     // The hand-off borrows every window, this one included: it runs from the message loop.
                     crate::handoff::give_later(pipe);

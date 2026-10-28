@@ -14,6 +14,7 @@ mod editor;
 mod find;
 mod glass;
 mod handoff;
+mod hold;
 mod github;
 mod gpu;
 mod hooks;
@@ -97,14 +98,15 @@ fn main() {
         }
     }
     // Claude Code's status line command and hooks are this program too: they hand the session over and are gone.
-    if agent::statusline_main() || agent::claude_hook_main() || hooks::hook_main() {
+    // A copy of this program holding the tabs while Scoop updates the app (`hold`).
+    if hold::hold_main() || agent::statusline_main() || agent::claude_hook_main() || hooks::hook_main() {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|first| first == "cli") {
         std::process::exit(cli_main(&args[1..]));
     }
-    // Started by the updater to take the windows of the Nekominal it replaced.
+    // Started by the copy holding the tabs to take the windows of the Nekominal it replaced.
     let args = handoff::strip_adopt(args);
     cli::set_launch(cli::parse(&args));
     std::thread::spawn(paste_files::clean_old);
