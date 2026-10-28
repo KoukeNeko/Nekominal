@@ -29,8 +29,10 @@ const FLAG: &str = "--statusline";
 const HOOK_FLAG: &str = "--claude-hook";
 /// The extension of the file of a pane that holds what the hooks of Claude Code last said about its session.
 const HOOK_EXTENSION: &str = "claude";
-/// The events whose hooks note the session: it starts (or is resumed, cleared, compacted), and its turns go on.
-const HOOK_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"];
+/// The events whose hooks note the session: it starts (or is resumed, cleared, compacted), and its turns start and end.
+/// Not `PostToolUse`: it also runs for every tool of every subagent, which started this program hundreds of times in one
+/// workflow, and the session it notes is the one the other three already did.
+const HOOK_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit", "Stop"];
 /// How much of the end of a transcript is read for its last answer: a few answers' worth, read in well under a millisecond.
 const TRANSCRIPT_TAIL: u64 = 256 * 1024;
 /// The variable that names the settings file the `claude` function of the shell integration hands to Claude Code.
@@ -702,7 +704,7 @@ mod tests {
         let noted: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(noted["transcript_path"], "C:\\Users\\me\\.claude\\projects\\p\\s1.jsonl");
         assert_eq!((noted["session_id"].as_str(), noted["cwd"].as_str(), noted["model"].as_str()), (Some("s1"), Some("C:\\work"), Some("claude-opus-5-5")));
-        let tool: serde_json::Value = serde_json::from_str(r#"{"session_id":"s1","transcript_path":"C:\\t\\s1.jsonl","cwd":"C:\\work","hook_event_name":"PostToolUse","tool_name":"Bash"}"#).unwrap();
+        let tool: serde_json::Value = serde_json::from_str(r#"{"session_id":"s1","transcript_path":"C:\\t\\s1.jsonl","cwd":"C:\\work","hook_event_name":"Stop"}"#).unwrap();
         let later: serde_json::Value = serde_json::from_str(&hook_record(&tool, Some(&first), None).unwrap()).unwrap();
         assert_eq!(later["model"], "claude-opus-5-5", "the model of the session's start stays");
         let cleared: serde_json::Value = serde_json::from_str(r#"{"session_id":"s2","transcript_path":"C:\\t\\s2.jsonl","hook_event_name":"SessionStart","model":{"id":"claude-haiku-4-5","display_name":"Haiku 4.5"}}"#).unwrap();
