@@ -40,15 +40,33 @@ fn icon_name(icon: &[u8]) -> String {
     format!("nekominal-{}.ico", digest[..6].iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
+/// The folder of the icon: Nekominal under the roaming AppData of the user, asked of Windows and not of `APPDATA`. The id
+/// the icon is registered under is the user's, one for every copy of the program: a copy run with a settings folder of its
+/// own (a test, a portable copy) pointed it at that folder, and the icon went when the folder did.
+fn icon_dir() -> Option<std::path::PathBuf> {
+    use windows::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath},
+    };
+    // SAFETY: the path Windows allocates is read once, then freed.
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None).ok()?;
+        let dir = path.to_string().ok().map(|p| std::path::PathBuf::from(p).join("Nekominal"));
+        CoTaskMemFree(Some(path.0 as *const _));
+        dir
+    }
+}
+
 /// Registers the id under the current user, once a run: Windows reads the name and the icon of the toasts from there.
 fn register() -> Result<(), String> {
     static DONE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     DONE.get_or_init(|| {
         let key = format!(r"Software\Classes\AppUserModelId\{AUMID}");
         crate::integration::write_string(&key, Some("DisplayName"), nekominal_model::strings::APP_NAME)?;
-        // The icon must be a file: the one built into the program is written next to the settings. It is named by its
+        // The icon must be a file: the one built into the program is written under the user's AppData. It is named by its
         // content, as Windows keeps the picture of a path it has read: a new icon is a new path, and the old ones go.
-        if let Some(dir) = nekominal_model::store::config_dir() {
+        if let Some(dir) = icon_dir() {
+            let _ = std::fs::create_dir_all(&dir);
             let name = icon_name(ICON);
             let icon = dir.join(&name);
             if icon.exists() || std::fs::write(&icon, ICON).is_ok() {
@@ -119,6 +137,13 @@ mod tests {
         assert!(name.starts_with("nekominal-") && name.ends_with(".ico") && name.len() == "nekominal-".len() + 12 + 4, "{name}");
         assert_eq!(icon_name(ICON), name, "the same bytes, the same name");
         assert_ne!(icon_name(b"another icon"), name);
+    }
+
+    #[test]
+    fn the_icon_goes_to_a_nekominal_folder_of_the_roaming_appdata_windows_knows() {
+        let dir = icon_dir().expect("the roaming AppData of the user");
+        assert!(dir.ends_with("Nekominal"), "{}", dir.display());
+        assert!(dir.parent().is_some_and(std::path::Path::is_dir), "{}", dir.display());
     }
 
     #[test]
