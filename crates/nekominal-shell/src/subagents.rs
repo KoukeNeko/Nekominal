@@ -85,10 +85,6 @@ impl Subagents {
     pub fn done(&self) -> usize {
         self.agents.iter().filter(|a| a.finished.is_some()).count() + self.workflows.iter().map(|w| w.count(State::Done) + w.count(State::Failed)).sum::<usize>()
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.agents.is_empty() && self.workflows.is_empty()
-    }
 }
 
 /// The folder Claude Code keeps a session's subagents in, beside its transcript.
@@ -288,7 +284,7 @@ mod tests {
         let got = batch(vec![agent("old", 0, Some(10)), agent("early", 20, Some(50)), agent("mid", 15, Some(25)), agent("run", 40, None)], vec![]);
         assert_eq!(ids(&got), ["run", "mid", "early"], "running first, then by start");
         assert_eq!((got.running(), got.done()), (1, 2));
-        assert!(batch(vec![agent("a", 0, Some(10))], vec![]).is_empty(), "nothing shows when nothing runs");
+        assert_eq!(batch(vec![agent("a", 0, Some(10))], vec![]), Subagents::default(), "nothing shows when nothing runs");
     }
 
     #[test]

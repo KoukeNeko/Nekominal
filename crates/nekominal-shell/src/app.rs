@@ -64,6 +64,7 @@ mod drop;
 mod badges;
 mod tab_rows;
 mod context_card;
+mod subagents_card;
 pub(crate) mod automation;
 mod notifications;
 mod settings_tab;
@@ -132,6 +133,7 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
         Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, PIECE_SIZE, false),
         Piece::Text(text) => ui.measure(text, PIECE_SIZE, false),
         Piece::Badge(chip) => badges::width(chip, |text| ui.measure(text, badges::BAR.0, false)),
+        Piece::Subagents(text) => 12.0 + 6.0 + ui.measure(text, PIECE_SIZE, false),
     }
 }
 
@@ -227,6 +229,8 @@ enum Piece {
     Text(String),
     /// A badge of the selected tab (`app/badges.rs`).
     Badge(badges::Chip),
+    /// What the subagents of the pane's session are doing (`app/subagents_card.rs`).
+    Subagents(String),
 }
 
 pub struct App {
@@ -280,6 +284,12 @@ pub struct App {
     /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
     card_rect: Option<Rect>,
     remote_buttons: Option<[Rect; 2]>,
+    /// The subagents piece of the bar, its card (with the gap above it) and the card's rows as they were drawn last, and
+    /// what the drawer shows while it is open.
+    subagents_rect: Option<Rect>,
+    sub_card_rect: Option<Rect>,
+    sub_rows: Vec<(Rect, subagents_card::Target)>,
+    sub_drawer: Option<subagents_card::Target>,
     /// The processes of the system as the last snapshot had them, when it was taken, and whether a pane printed since.
     processes: Vec<(u32, u32, String)>,
     processes_at: Option<Instant>,
@@ -667,6 +677,10 @@ impl App {
             meter_rect: None,
             card_rect: None,
             remote_buttons: None,
+            subagents_rect: None,
+            sub_card_rect: None,
+            sub_rows: Vec::new(),
+            sub_drawer: None,
             processes: Vec::new(),
             processes_at: None,
             output_seen: false,
@@ -1248,7 +1262,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Meter | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Meter | Hit::Subagents | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -1623,6 +1637,12 @@ impl App {
         }
         if self.meter_rect.is_some_and(|rect| rect.contains(x, y)) {
             return Hit::Meter;
+        }
+        if self.subagents_rect.is_some_and(|rect| rect.contains(x, y)) {
+            return Hit::Subagents;
+        }
+        if self.sub_card_rect.is_some_and(|card| card.contains(x, y)) {
+            return self.sub_rows.iter().position(|(row, _)| row.contains(x, y)).map_or(Hit::SubCard, Hit::SubRow);
         }
         // The card drawn last, over the panes: its buttons, or the card itself, which keeps it open.
         if self.card_rect.is_some_and(|card| card.contains(x, y)) {
@@ -2053,6 +2073,8 @@ impl App {
             }
         }
         changed |= self.refresh_usage();
+        // The times of running subagents go on while their card or drawer is open.
+        changed |= self.subagents().is_some() && (matches!(self.hover, Hit::SubCard | Hit::SubRow(_) | Hit::Subagents) || self.sub_drawer.is_some());
         changed |= self.refresh_badges(&processes);
         self.processes = processes;
         if changed {
@@ -2831,6 +2853,7 @@ impl App {
         }
         let relaid = self.paint_chrome();
         self.paint_context_card();
+        self.paint_subagents_card();
         self.paint_welcome();
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
@@ -3209,6 +3232,7 @@ impl App {
         let right = self.layout.right;
         self.waiting_rect = None;
         self.meter_rect = None;
+        self.subagents_rect = None;
         self.ui.push_clip(right);
         let mut x = right.x;
         if let Some(text) = &badge {
@@ -3638,6 +3662,9 @@ impl App {
             if let Some(share) = usage.context.filter(|_| show.context) {
                 pieces.push(Piece::Meter(share as f32));
             }
+            if let Some(subs) = self.subagents() {
+                pieces.push(Piece::Subagents(subagents_card::counts(lang, subs)));
+            }
             if let Some(cost) = usage.cost.filter(|_| show.cost) {
                 pieces.push(Piece::Text(format!("${cost:.2}")));
             }
@@ -3686,6 +3713,21 @@ impl App {
                 let (size, h) = badges::BAR;
                 let w = badges::width(chip, |text| self.ui.measure(text, size, false));
                 self.paint_badge(chip, Rect::new(x, (bar - h) / 2.0, w, h), size);
+            }
+            Piece::Subagents(text) => {
+                let w = 12.0 + 6.0 + self.ui.measure(text, PIECE_SIZE, false);
+                let plate = Rect::new(x - 6.0, (bar - 28.0) / 2.0, w + 12.0, 28.0);
+                if matches!(self.hover, Hit::Subagents | Hit::SubCard | Hit::SubRow(_)) || self.sub_drawer.is_some() {
+                    widgets::plate(&mut self.ui, plate, col(g.hover()));
+                }
+                self.subagents_rect = Some(plate);
+                // Three squares stacked: the front one, lit, is what runs.
+                let top = bar / 2.0 - 6.0;
+                for (k, alpha) in [(0.0, 115), (2.5, 180)] {
+                    self.ui.rrect(Rect::new(x + k, top + k, 7.0, 7.0), 1.5, Color([0, 0, 0, 0]), Some((Color([quiet.0[0], quiet.0[1], quiet.0[2], alpha]), 1.2)));
+                }
+                self.ui.rrect(Rect::new(x + 5.0, top + 5.0, 7.0, 7.0), 1.5, col(g.accent), None);
+                self.ui.text(x + 18.0, text_y, text, PIECE_SIZE, col(g.text()), false);
             }
         }
     }

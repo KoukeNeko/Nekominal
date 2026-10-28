@@ -72,6 +72,10 @@ pub enum Hit {
     /// The buttons of the card's Remote Control row: open the session's link, copy it.
     RemoteOpen,
     RemoteCopy,
+    /// The subagents piece of the bar, its card, and a row of the card (`App::sub_rows`), which opens the drawer.
+    Subagents,
+    SubCard,
+    SubRow(usize),
     /// What of the sidebar is not a row.
     Side,
     /// The right edge of the sidebar as a list, which is dragged to make it wider or narrower.
