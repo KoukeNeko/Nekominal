@@ -12,3 +12,6 @@ target/
 
 .claude/
 /dist/
+
+# Design explorations: kept on disk, not part of the history
+/design/
