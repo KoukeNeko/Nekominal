@@ -18,12 +18,24 @@ pub const LONGEST_FRAME: f32 = 0.05;
 /// Closer than this (in DIP) the chip is in its place.
 const REST: f32 = 0.4;
 
+/// The share of what is left of a slide that `seconds` of it cover.
+fn share(seconds: f32) -> f32 {
+    1.0 - (-seconds.clamp(0.0, LONGEST_FRAME) / TIME_CONSTANT).exp()
+}
+
 /// `current` moved toward `target` by what `seconds` of the slide cover.
 pub fn approach(current: Rect, target: Rect, seconds: f32) -> Rect {
-    let share = 1.0 - (-seconds.clamp(0.0, LONGEST_FRAME) / TIME_CONSTANT).exp();
+    let share = share(seconds);
     let toward = |from: f32, to: f32| from + (to - from) * share;
     let moved = Rect::new(toward(current.x, target.x), toward(current.y, target.y), toward(current.w, target.w), toward(current.h, target.h));
     if at_rest(moved, target) { target } else { moved }
+}
+
+/// A light (0 to 1) moved toward `target` at the pace of a slide: how the ring of a field comes on when it takes the
+/// keyboard and goes when it leaves.
+pub fn fade(current: f32, target: f32, seconds: f32) -> f32 {
+    let next = current + (target - current) * share(seconds);
+    if (next - target).abs() < 0.01 { target } else { next }
 }
 
 pub fn at_rest(a: Rect, b: Rect) -> bool {
@@ -108,6 +120,22 @@ mod tests {
             assert!(frames < 60, "still moving after a second");
         }
         assert!(frames > 4, "it arrived in {frames} frames: that is a jump, not a slide");
+    }
+
+    #[test]
+    fn the_ring_of_a_field_comes_on_over_a_few_frames_and_goes_the_same_way() {
+        let mut light = 0.0;
+        let mut frames = 0;
+        while light < 1.0 {
+            let next = fade(light, 1.0, 1.0 / 60.0);
+            assert!(next > light && next <= 1.0);
+            light = next;
+            frames += 1;
+            assert!(frames < 60, "still fading after a second");
+        }
+        assert!(frames > 4, "lit in {frames} frames: that is a jump, not a fade");
+        assert!(fade(1.0, 0.0, 1.0 / 60.0) < 1.0);
+        assert_eq!(fade(0.3, 0.3, 0.02), 0.3);
     }
 
     #[test]

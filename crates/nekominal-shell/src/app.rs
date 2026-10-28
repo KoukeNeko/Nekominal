@@ -258,6 +258,9 @@ pub struct App {
     chip_rects: Vec<Rect>,
     /// When the last frame of a slide was drawn; None while every chip is in its place.
     chip_clock: Option<Instant>,
+    /// How lit the ring of each field of the settings page was in the last frame, and when that frame was, while one fades.
+    field_lights: Vec<(settings_page::Part, f32)>,
+    field_clock: Option<Instant>,
     chip_size: (u32, u32),
     /// A chip held by the pointer.
     drag: Option<ChipDrag>,
@@ -637,6 +640,8 @@ impl App {
             chip_view: HashMap::new(),
             chip_rects: Vec::new(),
             chip_clock: None,
+            field_lights: Vec::new(),
+            field_clock: None,
             chip_size: (0, 0),
             drag: None,
             plate_rect: None,
@@ -2688,6 +2693,8 @@ impl App {
         // Under the chrome: what the sidebar shows beside its rows (the tip of a row) goes over the page.
         if self.page_shown() {
             self.paint_page();
+        } else {
+            self.field_lights.clear();
         }
         let relaid = self.paint_chrome();
         self.paint_context_card();
@@ -2723,6 +2730,9 @@ impl App {
         };
         // A pill tinted with a colour of the scheme, faint enough for text on it.
         let tint = |color: themes::Color, alpha: u8| { let c = col(color); Color([c.0[0], c.0[1], c.0[2], alpha]) };
+        let now = Instant::now();
+        let seconds = self.field_clock.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        let (mut lights, mut fading) = (Vec::new(), false);
         let mut clipped = false;
         for item in &frame.items {
             if item.scrolls && !clipped {
@@ -2751,7 +2761,10 @@ impl App {
                     settings_page::Fill::Row { focus } => widgets::plate(&mut self.ui, rect, if focus { col(g.hover()) } else { soft }),
                     settings_page::Fill::Rule => self.ui.fill(rect, col(g.divider())),
                     settings_page::Fill::Button { selected, hover } => widgets::button(&mut self.ui, &g, rect, State::chosen(selected, hover)),
-                    settings_page::Fill::Field { editing } => widgets::field(&mut self.ui, &g, rect, editing),
+                    settings_page::Fill::Field { editing } => {
+                        let light = self.field_light(item.part, editing, seconds, &mut lights, &mut fading);
+                        widgets::field(&mut self.ui, &g, rect, light);
+                    }
                     settings_page::Fill::Switch { on, hover } => widgets::switch(&mut self.ui, &g, rect, on, hover),
                     settings_page::Fill::Slider { share } => widgets::slider(&mut self.ui, &g, rect, share),
                     settings_page::Fill::Radio { on, hover } => widgets::radio(&mut self.ui, &g, rect, on, hover),
@@ -2836,6 +2849,22 @@ impl App {
         if clipped {
             self.ui.pop_clip();
         }
+        // A field off the screen this frame starts dark when it is back, as does every field of a page opened again.
+        self.field_lights = lights;
+        self.field_clock = fading.then_some(now);
+        self.animating |= fading;
+    }
+
+    /// How lit (0 to 1) the ring of a field of the page is: it comes on over a few frames when the field takes the keyboard,
+    /// and goes the same way when it leaves.
+    fn field_light(&self, part: Option<settings_page::Part>, editing: bool, seconds: f32, lights: &mut Vec<(settings_page::Part, f32)>, fading: &mut bool) -> f32 {
+        let target = if editing { 1.0 } else { 0.0 };
+        let Some(part) = part else { return target };
+        let was = self.field_lights.iter().find(|(p, _)| *p == part).map_or(0.0, |&(_, light)| light);
+        let light = motion::fade(was, target, seconds);
+        lights.push((part, light));
+        *fading |= light != target;
+        light
     }
 
     /// A button of the bar lit: a square plate as tall as the bar, above its lower edge.

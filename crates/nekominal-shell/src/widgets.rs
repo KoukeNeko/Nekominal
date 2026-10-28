@@ -128,8 +128,11 @@ pub fn slider(ui: &mut Ui, g: &Glass, area: Rect, share: f32) {
 }
 
 /// The surface of a field: outlined by the accent while it is being edited.
-pub fn field(ui: &mut Ui, g: &Glass, rect: Rect, editing: bool) {
-    ui.rrect(rect, RADIUS, col(g.cluster()), Some((if editing { col(g.accent) } else { col(g.divider()) }, 1.0)));
+pub fn field(ui: &mut Ui, g: &Glass, rect: Rect, light: f32) {
+    // The faint divider turns into the accent, its alpha with it.
+    let (rest, lit) = (col(g.divider()).0, col(g.accent).0);
+    let ring = Color(std::array::from_fn(|i| (f32::from(rest[i]) + (f32::from(lit[i]) - f32::from(rest[i])) * light).round() as u8));
+    ui.rrect(rect, RADIUS, col(g.cluster()), Some((ring, 1.0)));
 }
 
 /// A line of text and, when it is the one being edited, its caret and selection.
@@ -288,8 +291,8 @@ mod tests {
         switch(&mut ui, &g, Rect::new(110.0, 50.0, 44.0, 24.0), true, false);
         radio(&mut ui, &g, Rect::new(10.0, 90.0, 16.0, 16.0), false, false);
         radio(&mut ui, &g, Rect::new(110.0, 90.0, 16.0, 16.0), true, false);
-        field(&mut ui, &g, cell(3.0, 0.0), false);
-        field(&mut ui, &g, cell(3.0, 1.0), true);
+        field(&mut ui, &g, cell(3.0, 0.0), 0.0);
+        field(&mut ui, &g, cell(3.0, 1.0), 1.0);
         slider(&mut ui, &g, Rect::new(10.0, 170.0, 120.0, 28.0), 0.0);
         slider(&mut ui, &g, Rect::new(210.0, 170.0, 120.0, 28.0), 1.0);
         let edit_area = Rect::new(10.0, 210.0, 150.0, 28.0);
