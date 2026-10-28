@@ -110,6 +110,7 @@ fn main() {
     let args = handoff::strip_adopt(args);
     cli::set_launch(cli::parse(&args));
     std::thread::spawn(paste_files::clean_old);
+    std::thread::spawn(agent::clean_stale);
     if let Err(e) = win::run()
         && e != app::HANDED_OFF
     {

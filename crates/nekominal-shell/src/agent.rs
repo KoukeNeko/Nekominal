@@ -392,6 +392,27 @@ pub fn forget(session: &str) {
     }
 }
 
+/// How long the file of a pane is kept unwritten: a pane's files go with it, but a Nekominal that crashed or was ended
+/// leaves them. Not by whether their process runs: after an update, tabs live on under the name of the process that
+/// handed them over.
+const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// Deletes the files of panes (and the parts of their writes) no one has written for `STALE_AFTER`.
+pub fn clean_stale() {
+    let Some(dir) = session_file("0", "json").and_then(|file| file.parent().map(Path::to_path_buf)) else { return };
+    clean_stale_in(&dir, SystemTime::now());
+}
+
+fn clean_stale_in(dir: &Path, now: SystemTime) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let old = entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|at| now.duration_since(at).is_ok_and(|age| age > STALE_AFTER));
+        let a_pane = entry.file_name().to_string_lossy().split('.').next().is_some_and(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit() || b == b'-'));
+        if old && a_pane {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Whether `dir` is on a disk of this machine: a drive letter whose drive is fixed, removable, optical or in memory. This
 /// runs every second on the thread of the window, so nothing else is looked at: a share (`\\host\x`) makes Windows connect
 /// and hand over the user's credentials, and a mapped drive whose server sleeps blocks for seconds.
@@ -556,6 +577,22 @@ mod tests {
         assert_eq!(parse_usage(r#"{"model":{}}"#), Some(Usage::default()), "an older version without the fields shows nothing");
         assert_eq!(parse_usage("not json"), None);
         assert_eq!(parse_usage(r#"{"context_window":{"used_percentage":250}}"#).unwrap().context, Some(100.0));
+    }
+
+    #[test]
+    fn the_files_of_panes_unwritten_for_a_week_go_and_nothing_else_does() {
+        let dir = std::env::temp_dir().join(format!("nekominal-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["123-1.json", "123-1.claude", "123-1.json.456.part", "notes.txt"] {
+            std::fs::write(dir.join(name), "x").unwrap();
+        }
+        let later = SystemTime::now() + STALE_AFTER + std::time::Duration::from_secs(60);
+        clean_stale_in(&dir, SystemTime::now());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 4, "nothing is a week old yet");
+        clean_stale_in(&dir, later);
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, ["notes.txt"], "only the files of panes");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

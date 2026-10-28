@@ -1014,6 +1014,8 @@ impl App {
         let (session, pane, title) = match start {
             Start::Fresh(restored) => {
                 let session = agent::new_session();
+                // A name a crashed Nekominal of the same process id used: what its pane said is not this one's.
+                agent::forget(&session);
                 let config = self.spawn_config(profile, directory, &session, cols as u16, rows as u16);
                 let pane = Pane::spawn_prepared(config, core, wake, |term| {
                     if let Some((text, label)) = &restored {
