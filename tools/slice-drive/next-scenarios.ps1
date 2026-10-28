@@ -802,6 +802,25 @@ function Scenario-NextPanels {
     } '{ "tabs": { "layout": "icons" } }'
 }
 
+# The tip of a sidebar row, in the layer of the panels, shows the stripes behind the window blurred, as a menu does.
+function Scenario-NextPanelAcrylic {
+    Run-Next {
+        Start-Pattern
+        Place-PatternUnderApp 40
+        $dir = if ($env:NEXT_SHOT) { Split-Path $env:NEXT_SHOT } else { $env:TEMP }
+        $row = Next-At 26 (40 + 8 + 22)
+        Move-To $row[0] $row[1]; Start-Sleep -Milliseconds 900
+        Next-Check 'acrylic.panel-opens' ((Next-WindowOfClass 'NekominalPanels') -ne [IntPtr]::Zero) 'the tip shows in the layer'
+        $s = Get-Scale
+        $shot = Join-Path $dir 'acrylic-panel.png'
+        [void](Shot-WithPattern $shot)
+        # The tip starts 10 DIP right of the 36-DIP icon, which starts 8 DIP in: its inside from 60 DIP, 26 tall around the row.
+        $spread = Next-BackdropSpread $shot (40 + [int](62 * $s)) (40 + [int]((40 + 8 + 22 - 9) * $s)) ([int](40 * $s)) ([int](18 * $s))
+        Next-Check 'acrylic.panel-shows-the-stripes' ($spread -gt 10) ("colour spread {0:N1}" -f $spread)
+        Write-Host "shot: $shot"
+    } '{ "appearance": { "opacity": 0.2 }, "tabs": { "layout": "icons" } }'
+}
+
 function Scenario-NextAcrylic {
     Run-Next {
         Start-Pattern

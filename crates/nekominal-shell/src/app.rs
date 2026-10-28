@@ -1427,7 +1427,7 @@ impl App {
         }
         // The panels lie on the client area: they go where it went.
         if let Some(layer) = self.panels.as_ref().filter(|layer| layer.shown()) {
-            layer.follow(self.hwnd, None);
+            layer.follow(self.hwnd);
         }
     }
 
@@ -2957,12 +2957,12 @@ impl App {
             }
         }
         let Some(layer) = self.panels.as_mut() else { return };
-        layer.place(self.hwnd, &self.gpu, size);
+        layer.place(self.hwnd, &self.gpu, size, &self.panel_shapes, self.scale);
         let Some(view) = layer.surface.acquire() else { return };
         self.gpu.clear(&view, [0.0; 4]);
         self.ui.end_frame(&view);
         let lost = layer.surface.present();
-        layer.shape(&self.panel_shapes, self.scale);
+        layer.show();
         if lost {
             self.report_gpu_lost();
         }

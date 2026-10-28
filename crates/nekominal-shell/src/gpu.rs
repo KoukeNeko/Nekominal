@@ -141,6 +141,19 @@ impl Surface {
         result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET
     }
 
+    /// Moves what the swap chain shows by `(x, y)` pixels in its window: a window smaller than the swap chain shows the
+    /// part of it that this brings under it.
+    pub fn set_offset(&mut self, x: f32, y: f32) {
+        if let Some(visual) = &self._visual {
+            // SAFETY: the visual and the DirectComposition device are alive.
+            unsafe {
+                let _ = visual.SetOffsetX2(x);
+                let _ = visual.SetOffsetY2(y);
+                let _ = self.dcomp.Commit();
+            }
+        }
+    }
+
     /// Lets go of the window, so that a new surface can be made for it.
     pub fn detach(&mut self) {
         self.target = None;

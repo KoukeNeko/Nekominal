@@ -33,6 +33,8 @@ pub struct Layer {
     pub surface: Surface,
     /// The shape last given to the window, in pixels of its client area: (left, top, right, bottom, corner).
     shape: Vec<(i32, i32, i32, i32, i32)>,
+    /// Where the window lies in the client area of its owner, in pixels: the top left of the box around the panels.
+    offset: (i32, i32),
     shown: bool,
 }
 
@@ -69,39 +71,45 @@ pub fn open(owner: HWND, gpu: &Gpu, dark: bool) -> Result<Layer, String> {
                 return Err(e);
             }
         };
-        Ok(Layer { hwnd, surface, shape: Vec::new(), shown: false })
+        Ok(Layer { hwnd, surface, shape: Vec::new(), offset: (0, 0), shown: false })
     }
 }
 
 impl Layer {
-    /// Lays the layer over the client area of `owner`, `size` pixels, and its swap chain to the same size.
-    pub fn place(&mut self, owner: HWND, gpu: &Gpu, size: (u32, u32)) {
+    /// Lays the layer over the panels: the window is as large as the box around them, so that the acrylic, which blurs
+    /// all of a window whatever its region, blurs only there. The swap chain stays as large as the client area of `owner`
+    /// (`size` pixels), as the frame is drawn in its coordinates, and is moved so that the panels fall under the window.
+    pub fn place(&mut self, owner: HWND, gpu: &Gpu, size: (u32, u32), panels: &[(Rect, f32)], scale: f32) {
         self.surface.resize(gpu, size);
-        self.follow(owner, Some(size));
-    }
-
-    /// Moves the layer with its window, which moved; `size` resizes it too.
-    pub fn follow(&self, owner: HWND, size: Option<(u32, u32)>) {
-        let mut at = POINT::default();
-        // SAFETY: plain query and a move of a window of this thread.
-        unsafe {
-            let _ = ClientToScreen(owner, &mut at);
-            let flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | if size.is_some() { SET_WINDOW_POS_FLAGS(0) } else { SWP_NOSIZE };
-            let (w, h) = size.map_or((0, 0), |(w, h)| (w as i32, h as i32));
-            let _ = SetWindowPos(self.hwnd, None, at.x, at.y, w, h, flags);
-        }
-    }
-
-    /// Gives the window the shape of the panels (rectangles and the radius of their corners, in DIP) and shows it.
-    pub fn shape(&mut self, panels: &[(Rect, f32)], scale: f32) {
         let shape = pixels(panels, scale);
+        let (l, t, r, b) = bounds(&shape);
+        self.offset = (l, t);
+        self.surface.set_offset(-(l as f32), -(t as f32));
+        // SAFETY: data of a window this layer made, read by its window procedure.
+        unsafe { SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, pack(l, t)) };
+        self.move_to(owner, Some((r - l, b - t)));
         if shape != self.shape {
+            // One panel is the whole window: no region, which would turn the blur of the acrylic off, and the corners of
+            // the system, as a menu has. Several (rare: the context card while the drawer is open) need one to show apart.
+            let rounded = shape.first().is_some_and(|p| p.4 > 0);
+            // SAFETY: an attribute of a window this layer made.
+            unsafe {
+                let corner: i32 = if shape.len() == 1 && rounded { 3 } else { 1 }; // DWMWCP_ROUNDSMALL or DONOTROUND
+                let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, (&corner as *const i32).cast(), 4);
+            }
+            if shape.len() == 1 {
+                // SAFETY: taking the region of a window this layer made away.
+                unsafe { SetWindowRgn(self.hwnd, None, true) };
+                self.shape = shape;
+                return;
+            }
             // SAFETY: GDI regions made here; the window takes the one it is given and the others are deleted.
             unsafe {
                 let region = CreateRectRgn(0, 0, 0, 0);
-                for &(l, t, r, b, d) in &shape {
+                for &(pl, pt, pr, pb, d) in &shape {
+                    let (pl, pt, pr, pb) = (pl - l, pt - t, pr - l, pb - t);
                     // A round rectangle region leaves out its right and bottom edge: one more pixel takes them in.
-                    let part = if d > 0 { CreateRoundRectRgn(l, t, r + 1, b + 1, d, d) } else { CreateRectRgn(l, t, r, b) };
+                    let part = if d > 0 { CreateRoundRectRgn(pl, pt, pr + 1, pb + 1, d, d) } else { CreateRectRgn(pl, pt, pr, pb) };
                     CombineRgn(Some(region), Some(region), Some(part), RGN_OR);
                     let _ = DeleteObject(part.into());
                 }
@@ -109,13 +117,32 @@ impl Layer {
             }
             self.shape = shape;
         }
+    }
+
+    /// Moves the layer with its window, which moved.
+    pub fn follow(&self, owner: HWND) {
+        self.move_to(owner, None);
+    }
+
+    fn move_to(&self, owner: HWND, size: Option<(i32, i32)>) {
+        let mut at = POINT { x: self.offset.0, y: self.offset.1 };
+        // SAFETY: plain query and a move of a window of this thread.
+        unsafe {
+            let _ = ClientToScreen(owner, &mut at);
+            let flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | if size.is_some() { SET_WINDOW_POS_FLAGS(0) } else { SWP_NOSIZE };
+            let (w, h) = size.unwrap_or((0, 0));
+            let _ = SetWindowPos(self.hwnd, None, at.x, at.y, w.max(1), h.max(1), flags);
+        }
+    }
+
+    /// Shows the layer, laid by [`Layer::place`].
+    pub fn show(&mut self) {
         if !self.shown {
             // SAFETY: showing a window of this thread without taking the focus.
             unsafe { let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE); }
             self.shown = true;
         }
     }
-
     /// Hides the layer, no panel being open. True when it was shown: the memory of its swap chain goes a while later
     /// ([`Layer::shrink`]), so that a panel opened again at once does not make it again.
     pub fn hide(&mut self) -> bool {
@@ -154,6 +181,28 @@ fn pixels(panels: &[(Rect, f32)], scale: f32) -> Vec<(i32, i32, i32, i32, i32)> 
     panels.iter().map(|(r, radius)| (px(r.x), px(r.y), px(r.x + r.w), px(r.y + r.h), px(2.0 * radius))).collect()
 }
 
+/// The box around the panels, in pixels: (left, top, right, bottom).
+fn bounds(shape: &[(i32, i32, i32, i32, i32)]) -> (i32, i32, i32, i32) {
+    shape.iter().fold((i32::MAX, i32::MAX, i32::MIN, i32::MIN), |(l, t, r, b), &(pl, pt, pr, pb, _)| (l.min(pl), t.min(pt), r.max(pr), b.max(pb)))
+}
+
+/// The place of the window in the client area of its owner, kept with the window for its procedure.
+fn pack(x: i32, y: i32) -> isize {
+    ((i64::from(x) << 32) | i64::from(y as u32)) as isize
+}
+
+fn unpack(data: isize) -> (i32, i32) {
+    let data = data as i64;
+    ((data >> 32) as i32, data as i32)
+}
+
+/// A point of the window, as `lparam` carries it, moved to the client area of its owner.
+fn to_owner(lparam: LPARAM, (x, y): (i32, i32)) -> LPARAM {
+    let at_x = i32::from((lparam.0 & 0xFFFF) as u16 as i16) + x;
+    let at_y = i32::from(((lparam.0 >> 16) & 0xFFFF) as u16 as i16) + y;
+    LPARAM(((at_y as u16 as isize) << 16) | (at_x as u16 as isize))
+}
+
 /// The window under the screen point of the cursor is the layer of `owner`: the pointer left the window for its panels.
 pub fn cursor_on_layer(layer: HWND) -> bool {
     let mut at = POINT::default();
@@ -179,7 +228,7 @@ unsafe extern "system" fn layer_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
             // SAFETY: a valid request for this window, and a message to its owner on the same thread.
             unsafe {
                 let _ = TrackMouseEvent(&mut track);
-                SendMessageW(owner, msg, Some(wparam), Some(lparam))
+                SendMessageW(owner, msg, Some(wparam), Some(to_owner(lparam, unpack(GetWindowLongPtrW(hwnd, GWLP_USERDATA)))))
             }
         }
         // Left for the window under it: that window has the pointer now and says so itself. Left for elsewhere: the owner
@@ -195,7 +244,12 @@ unsafe extern "system" fn layer_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
             }
             LRESULT(0)
         }
-        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP | WM_MOUSEWHEEL => {
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_MBUTTONDOWN | WM_MBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
+            // SAFETY: data of this window, and a message to the owner on the same thread.
+            unsafe { SendMessageW(owner, msg, Some(wparam), Some(to_owner(lparam, unpack(GetWindowLongPtrW(hwnd, GWLP_USERDATA))))) }
+        }
+        // The wheel is in screen coordinates, the same for both windows.
+        WM_MOUSEWHEEL => {
             // SAFETY: a message to the owner on the same thread.
             unsafe { SendMessageW(owner, msg, Some(wparam), Some(lparam)) }
         }
@@ -215,6 +269,18 @@ unsafe extern "system" fn layer_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_is_the_box_around_the_panels_and_its_points_go_back_to_the_owner() {
+        let shape = pixels(&[(Rect::new(10.0, 44.0, 340.0, 200.0), 8.0), (Rect::new(600.0, 40.0, 100.0, 50.0), 0.0)], 1.0);
+        assert_eq!(bounds(&shape), (10, 40, 700, 244));
+        for at in [(10, 40), (0, 0), (-5, 3000), (40000, -2)] {
+            assert_eq!(unpack(pack(at.0, at.1)), at);
+        }
+        // A click 5 right and 7 down of the window's corner is that far from the corner of the box in the owner.
+        let moved = to_owner(LPARAM((7 << 16) | 5), (10, 40));
+        assert_eq!((moved.0 & 0xFFFF, (moved.0 >> 16) & 0xFFFF), (15, 47));
+    }
 
     #[test]
     fn a_panel_is_shaped_in_the_pixels_of_the_screen_it_is_on() {
