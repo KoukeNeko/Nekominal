@@ -695,9 +695,11 @@ fn row_plate(items: &mut Vec<Item>, rect: Rect, part: Option<Part>, focus: bool)
 fn row_label(items: &mut Vec<Item>, rect: Rect, room: f32, text: &str, note: Option<&str>, tone: Tone) {
     let line = ROW - ROW_GAP;
     match note {
+        // The two lines as one block in the middle of the row: the title's middle 8 above the row's, the note's 8.5 below.
         Some(note) => {
-            item(items, Rect::new(rect.x + INNER, rect.y + 5.0, room, line / 2.0), None, label(text, 13.0, tone, false, Align::Left), true);
-            item(items, Rect::new(rect.x + INNER, rect.y + line / 2.0 - 1.0, room, line / 2.0), None, label(note, 12.0, Tone::Quiet, false, Align::Left), true);
+            let (mid, half) = (rect.y + line / 2.0, 9.0);
+            item(items, Rect::new(rect.x + INNER, mid - 8.0 - half, room, 2.0 * half), None, label(text, 13.0, tone, false, Align::Left), true);
+            item(items, Rect::new(rect.x + INNER, mid + 8.5 - half, room, 2.0 * half), None, label(note, 12.0, Tone::Quiet, false, Align::Left), true);
         }
         None => item(items, Rect::new(rect.x + INNER, rect.y, room, line), None, label(text, 13.0, tone, false, Align::Left), true),
     }
