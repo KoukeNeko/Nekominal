@@ -8,39 +8,76 @@
 <link rel="icon" type="image/png" href="img/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<nav class="nav"><div class="pill">
+<nav class="nav" id="nav">
   <a class="brand" href="#top"><img src="img/icon.png" width="26" height="26" alt="">Nekominal</a>
   <a class="hide-s" href="#light" data-i18n="nav.light">輕量</a><a class="hide-s" href="#agents" data-i18n="nav.agents">Agent</a><a class="hide-s" href="#parallel" data-i18n="nav.parallel">平行工作</a>
   <a href="https://github.com/KoukeNeko/Nekominal">GitHub</a>
   <button type="button" class="lang" id="lang" data-i18n="nav.lang" aria-label="Language">English</button>
   <a class="dl" href="#install" data-i18n="nav.download">下載</a>
-</div></nav>
+</nav>
 
 <header class="hero" id="top">
-  <h1 data-i18n="hero.title">一個輕量的<br><span class="grad">Windows 終端機</span></h1>
-  <p class="sub" data-i18n="hero.sub">原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。</p>
-  <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
-  <div class="stage">
-    <div class="win"><img src="img/agents.png" width="1482" height="811" alt="Nekominal 視窗，側邊欄依狀態分組列出五個 agent 分頁" data-i18n-alt="hero.alt"></div>
-    <div class="card c1"><b><i style="background:#ffc766"></i>review</b><small data-i18n="hero.c1">等你回應 · Nekominal · master</small></div>
-    <div class="card c2"><b><i style="background:#8fb4ff"></i>release</b><small data-i18n="hero.c2">執行中 · Nekominal · master</small></div>
-    <div class="card c3"><b><i style="background:#9bf05b"></i>docs</b><small data-i18n="hero.c3">已完成 · Nekominal · master</small></div>
+  <div class="copy">
+    <h1 data-i18n="hero.title">一個輕量的<br>Windows 終端機。</h1>
+    <p class="sub" data-i18n="hero.sub">原生 Rust 與 Direct3D，內部沒有網頁執行環境；每個分頁都會告訴你哪個 agent 在等你。</p>
+    <div class="cmd" data-copy="scoop install koukeneko/nekominal"><code>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
+    <div class="total"><b>9 MB</b><span data-i18n="hero.total">下面四層加起來，就是整個程式</span></div>
   </div>
+
+  <svg class="stack" viewBox="0 0 960 900" role="img" aria-label="Nekominal 的四層構造，最上方有一層不存在" data-i18n-aria="hero.aria">
+    <g class="pl"><g class="pl-in">
+      <polygon class="ghost" points="300,90 560,150 300,210 40,150"/>
+      <g class="lab"><line class="leadhot" x1="560" y1="150" x2="610" y2="150"/>
+      <text x="620" y="144" class="t1 hot">Chromium · Node · web view</text><text x="620" y="168" class="t2" data-i18n="s.ghost">沒有這一層</text></g>
+    </g></g>
+    <g class="pl"><g class="pl-in">
+      <polygon class="side" points="40,300 300,360 300,376 40,316"/><polygon class="side" points="300,360 560,300 560,316 300,376"/>
+      <polygon class="plate" points="300,240 560,300 300,360 40,300"/>
+      <g class="lab"><line class="lead" x1="560" y1="300" x2="610" y2="300"/>
+      <text x="620" y="294" class="t1" data-i18n="s.1">視窗與分頁</text><text x="620" y="318" class="t2 mono">Rust</text></g>
+    </g></g>
+    <g class="pl"><g class="pl-in">
+      <polygon class="side" points="40,450 300,510 300,526 40,466"/><polygon class="side" points="300,510 560,450 560,466 300,526"/>
+      <polygon class="plate" points="300,390 560,450 300,510 40,450"/>
+      <g class="lab"><line class="lead" x1="560" y1="450" x2="610" y2="450"/>
+      <text x="620" y="444" class="t1" data-i18n="s.2">繪製</text><text x="620" y="468" class="t2 mono" data-i18n="s.2s">Direct3D 11，畫面有變化才重繪</text></g>
+    </g></g>
+    <g class="pl"><g class="pl-in">
+      <polygon class="side" points="40,600 300,660 300,676 40,616"/><polygon class="side" points="300,660 560,600 560,616 300,676"/>
+      <polygon class="plate" points="300,540 560,600 300,660 40,600"/>
+      <g class="lab"><line class="lead" x1="560" y1="600" x2="610" y2="600"/>
+      <text x="620" y="594" class="t1" data-i18n="s.3">終端機後端</text><text x="620" y="618" class="t2 mono">ConPTY</text></g>
+    </g></g>
+    <g class="pl"><g class="pl-in">
+      <polygon class="side" points="40,750 300,810 300,826 40,766"/><polygon class="side" points="300,810 560,750 560,766 300,826"/>
+      <polygon class="plate" points="300,690 560,750 300,810 40,750"/>
+      <g class="lab"><line class="lead" x1="560" y1="750" x2="610" y2="750"/>
+      <text x="620" y="744" class="t1" data-i18n="s.4">你原本的 shell</text><text x="620" y="768" class="t2 mono">pwsh、WSL …</text></g>
+    </g></g>
+  </svg>
 </header>
 
 <section class="sec" id="light">
   <h2 class="rv" data-i18n="light.h">天生輕量</h2>
   <p class="lead rv" data-i18n="light.lead">約 9 MB 的原生程式：Rust、Direct3D 11 與 ConPTY。沒有 Electron、沒有 web view，也不用另外安裝執行環境。視窗只在畫面有變化時才重繪，你沒在看的終端機幾乎不花資源。</p>
-  <div class="tiles">
-    <div class="tile rv"><span class="big">82 MB</span><span class="lbl" data-i18n="light.t1">一個分頁的記憶體</span><span class="vs" data-i18n="light.v1">Windows Terminal 113 MB</span></div>
-    <div class="tile rv"><span class="big">136 MB</span><span class="lbl" data-i18n="light.t2">五個分頁的記憶體</span><span class="vs" data-i18n="light.v2">Windows Terminal 193 MB</span></div>
-    <div class="tile rv"><span class="big" data-i18n="light.n3">0.70 秒</span><span class="lbl" data-i18n="light.t3">啟動到 shell 開始執行</span><span class="vs" data-i18n="light.v3">Windows Terminal 0.76 秒</span></div>
-    <div class="tile rv"><span class="big" data-i18n="light.n4">0.02 秒</span><span class="lbl" data-i18n="light.t4">閒置時每 20 秒的 CPU</span><span class="vs" data-i18n="light.v4">Windows Terminal 0.09 秒</span></div>
+  <div class="meas">
+    <div class="m rv"><h3 data-i18n="light.t1">一個分頁的記憶體</h3>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:72.57%"></i><b>82 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b>113 MB</b></div></div></div>
+    <div class="m rv"><h3 data-i18n="light.t2">五個分頁的記憶體</h3>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:70.47%"></i><b>136 MB</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b>193 MB</b></div></div></div>
+    <div class="m rv"><h3 data-i18n="light.t3">啟動到 shell 開始執行</h3>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:92.11%"></i><b data-i18n="light.n3">0.70 秒</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b data-i18n="light.v3">0.76 秒</b></div></div></div>
+    <div class="m rv"><h3 data-i18n="light.t4">閒置時每 20 秒的 CPU</h3>
+      <div class="r"><span>Nekominal</span><div class="track"><i class="us" style="--w:22.22%"></i><b data-i18n="light.n4">0.02 秒</b></div></div>
+      <div class="r"><span>Windows Terminal</span><div class="track"><i style="--w:100%"></i><b data-i18n="light.v4">0.09 秒</b></div></div></div>
   </div>
   <p class="note rv" data-i18n="light.note">在 Windows 11 上與 Windows Terminal 1.24 比較，兩者皆為預設設定並執行 <code>pwsh -NoProfile</code>，取三次的中位數。記憶體為終端機本身與其 OpenConsole 的 working set，不含 shell。</p>
 </section>
@@ -49,30 +86,31 @@
   <h2 class="rv" data-i18n="agents.h">知道你的 agent 在做什麼</h2>
   <p class="lead rv" data-i18n="agents.lead">在分頁裡執行 Claude Code、Codex、Gemini CLI 或 Aider，分頁就會顯示它是<b>工作中</b>、<b>等你回應</b>、<b>已完成</b>還是<b>失敗</b>。側邊欄依狀態分組，標題列會數出有幾個在等你，按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> 就跳到下一個。不用另外設定。</p>
   <div class="shots">
-    <figure class="glass rv"><img src="img/cards.png" width="1482" height="811" loading="lazy" alt="每個分頁一張卡片，顯示狀態、資料夾與分支" data-i18n-alt="agents.cards.alt"><figcaption data-i18n="agents.cards">Agent 卡片</figcaption></figure>
-    <figure class="glass rv"><img src="img/repos.png" width="1482" height="811" loading="lazy" alt="分頁依所在的 repository 分組並顯示狀態" data-i18n-alt="agents.repos.alt"><figcaption data-i18n="agents.repos">依 repository 分組</figcaption></figure>
+    <figure class="wide rv"><img src="img/agents.png" width="1482" height="811" alt="Nekominal 視窗，側邊欄依狀態分組列出五個 agent 分頁" data-i18n-alt="hero.alt"><figcaption data-i18n="agents.main">側邊欄依狀態分組：等你、失敗、執行中、已完成</figcaption></figure>
+    <figure class="rv"><img src="img/cards.png" width="1482" height="811" loading="lazy" alt="每個分頁一張卡片，顯示狀態、資料夾與分支" data-i18n-alt="agents.cards.alt"><figcaption data-i18n="agents.cards">Agent 卡片</figcaption></figure>
+    <figure class="rv"><img src="img/repos.png" width="1482" height="811" loading="lazy" alt="分頁依所在的 repository 分組並顯示狀態" data-i18n-alt="agents.repos.alt"><figcaption data-i18n="agents.repos">依 repository 分組</figcaption></figure>
   </div>
   <div class="feature rv">
     <div class="txt" data-i18n="ctx.txt"><h3>Context 用量，一眼看完</h3><p>使用 Claude Code 時，標題列會顯示模型、context 用量、費用與時間。滑鼠移到計量條上，可以看到快取讀取、快取寫入、新輸入各佔多少，以及這個工作階段的 token 與程式碼行數。</p><p>工作階段連上 Remote Control 時，也能在那裡開啟或複製連結。</p></div>
-    <figure class="glass"><img src="img/context.png" width="951" height="540" loading="lazy" alt="滑鼠移到 context 計量條上，浮出 context 用量、快取、費用與時間的卡片" data-i18n-alt="ctx.alt"></figure>
+    <figure><img src="img/context.png" width="951" height="540" loading="lazy" alt="滑鼠移到 context 計量條上，浮出 context 用量、快取、費用與時間的卡片" data-i18n-alt="ctx.alt"></figure>
   </div>
   <div class="feature flip rv">
     <div class="txt" data-i18n="sub.txt"><h3>Subagent 卡片</h3><p>標題列會數出有幾個 subagent 在跑、幾個已經結束，側邊欄的每一列也會標出該分頁的 agent 正在跑幾個。</p><p>點開卡片，每個 subagent 在做什麼一目了然；workflow 則逐階段列出進度。</p></div>
-    <figure class="glass"><img src="img/subagents.png" width="602" height="450" loading="lazy" alt="標題列顯示 12 個執行中、95 個已完成的 subagent，展開的卡片列出 workflow 的各階段與 subagent" data-i18n-alt="sub.alt"></figure>
+    <figure><img src="img/subagents.png" width="602" height="450" loading="lazy" alt="標題列顯示 12 個執行中、95 個已完成的 subagent，展開的卡片列出 workflow 的各階段與 subagent" data-i18n-alt="sub.alt"></figure>
   </div>
   <div class="feature rv">
     <div class="txt" data-i18n="drawer.txt"><h3>點進去看它做了什麼</h3><p>卡片的任何一列都能打開抽屜：看這個 subagent 被交辦什麼、呼叫了哪些工具、回了什麼；workflow 則看它的各個階段與 agent。</p></div>
-    <figure class="glass"><img src="img/subagent-drawer.png" width="1382" height="591" loading="lazy" alt="右側抽屜顯示一個 workflow 的階段與其中四個執行中的 agent" data-i18n-alt="drawer.alt"></figure>
+    <figure><img src="img/subagent-drawer.png" width="1382" height="591" loading="lazy" alt="右側抽屜顯示一個 workflow 的階段與其中四個執行中的 agent" data-i18n-alt="drawer.alt"></figure>
   </div>
 </section>
 
 <section class="sec" id="parallel">
   <h2 class="rv" data-i18n="par.h">為平行工作而做</h2>
-  <div class="grid4">
-    <article class="glass rv" data-i18n="par.1"><h3>每個 agent 一個 worktree</h3><p>從命令選擇區在新的 git worktree 開分頁；移除前會先告訴你會失去什麼。</p></article>
-    <article class="glass rv" data-i18n="par.2"><h3>更新時分頁不中斷</h3><p>按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。</p></article>
-    <article class="glass rv" data-i18n="par.3"><h3>分頁上看得到 PR 與 port</h3><p>agent 需要你時，可透過 ntfy 或 webhook 傳到手機。</p></article>
-    <article class="glass rv" data-i18n="par.4"><h3>可用腳本控制</h3><p><code>nekominal cli</code> 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。</p></article>
+  <div class="rows">
+    <article class="rv"><h3 data-i18n="par.1h">每個 agent 一個 worktree</h3><p data-i18n="par.1p">從命令選擇區在新的 git worktree 開分頁；移除前會先告訴你會失去什麼。</p></article>
+    <article class="rv"><h3 data-i18n="par.2h">更新時分頁不中斷</h3><p data-i18n="par.2p">按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。</p></article>
+    <article class="rv"><h3 data-i18n="par.3h">分頁上看得到 PR 與 port</h3><p data-i18n="par.3p">agent 需要你時，可透過 ntfy 或 webhook 傳到手機。</p></article>
+    <article class="rv"><h3 data-i18n="par.4h">可用腳本控制</h3><p data-i18n="par.4p"><code>nekominal cli</code> 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。</p></article>
   </div>
 </section>
 
@@ -80,16 +118,16 @@
   <h2 class="rv" data-i18n="term.h">首先是一個好用的終端機</h2>
   <p class="lead rv" data-i18n="term.lead">分割窗格、拖出分頁、Win+` 下拉視窗、儲存版面與還原工作階段。網址、路徑與 hash 的提示模式，在編輯器開啟 <code>file:line</code>，搜尋所有分頁。Sixel 與 kitty 圖片、字型連字、Mica 與壓克力背景，並可匯入 Windows Terminal 與 iTerm2 的配色。</p>
   <div class="shots">
-    <figure class="glass rv wide"><img src="img/split.png" width="1359" height="867" loading="lazy" alt="一個視窗分成三個窗格，各自執行 git 指令" data-i18n-alt="term.split.alt"><figcaption data-i18n="term.split">分割窗格：向右、向下，隨你切</figcaption></figure>
-    <figure class="glass rv"><img src="img/palette.png" width="1359" height="867" loading="lazy" alt="命令選擇區，輸入 split 後列出兩個分割命令與其快速鍵" data-i18n-alt="term.palette.alt"><figcaption data-i18n="term.palette">命令選擇區：所有命令都在這裡，旁邊就是快速鍵</figcaption></figure>
-    <figure class="glass rv"><img src="img/search-all-tabs.png" width="1359" height="867" loading="lazy" alt="搜尋所有分頁，列出三個分頁中含 finished 的行" data-i18n-alt="term.search.alt"><figcaption data-i18n="term.search">搜尋所有分頁，一次找到哪個分頁印過它</figcaption></figure>
-    <figure class="glass rv"><img src="img/hints.png" width="1359" height="867" loading="lazy" alt="提示模式在網址、路徑與 hash 前標上單一字母" data-i18n-alt="term.hints.alt"><figcaption data-i18n="term.hints">提示模式：網址、路徑、hash，按一個字母就開</figcaption></figure>
-    <figure class="glass rv"><img src="img/settings.png" width="1359" height="867" loading="lazy" alt="設定分頁，外觀頁可選分頁版面與配色" data-i18n-alt="term.settings.alt"><figcaption data-i18n="term.settings">設定也是一個分頁：版面、配色、設定檔、agent、快速鍵</figcaption></figure>
+    <figure class="wide rv"><img src="img/split.png" width="1359" height="867" loading="lazy" alt="一個視窗分成三個窗格，各自執行 git 指令" data-i18n-alt="term.split.alt"><figcaption data-i18n="term.split">分割窗格：向右、向下，隨你切</figcaption></figure>
+    <figure class="rv"><img src="img/palette.png" width="1359" height="867" loading="lazy" alt="命令選擇區，輸入 split 後列出兩個分割命令與其快速鍵" data-i18n-alt="term.palette.alt"><figcaption data-i18n="term.palette">命令選擇區：所有命令都在這裡，旁邊就是快速鍵</figcaption></figure>
+    <figure class="rv"><img src="img/search-all-tabs.png" width="1359" height="867" loading="lazy" alt="搜尋所有分頁，列出三個分頁中含 finished 的行" data-i18n-alt="term.search.alt"><figcaption data-i18n="term.search">搜尋所有分頁，一次找到哪個分頁印過它</figcaption></figure>
+    <figure class="rv"><img src="img/hints.png" width="1359" height="867" loading="lazy" alt="提示模式在網址、路徑與 hash 前標上單一字母" data-i18n-alt="term.hints.alt"><figcaption data-i18n="term.hints">提示模式：網址、路徑、hash，按一個字母就開</figcaption></figure>
+    <figure class="rv"><img src="img/settings.png" width="1359" height="867" loading="lazy" alt="設定分頁，外觀頁可選分頁版面與配色" data-i18n-alt="term.settings.alt"><figcaption data-i18n="term.settings">設定也是一個分頁：版面、配色、設定檔、agent、快速鍵</figcaption></figure>
   </div>
   <div class="shots three">
-    <figure class="glass rv wide"><img src="img/images-and-ligatures.png" width="1682" height="751" loading="lazy" alt="字型連字，以及在終端機裡顯示的 Sixel 與 kitty 圖片" data-i18n-alt="term.lig.alt"><figcaption data-i18n="term.lig">字型連字、Sixel 與 kitty 圖片</figcaption></figure>
-    <figure class="glass rv"><img src="img/yazi-preview.png" width="1355" height="863" loading="lazy" alt="在 yazi 裡預覽圖片" data-i18n-alt="term.yazi.alt"><figcaption data-i18n="term.yazi">在 yazi 裡預覽圖片</figcaption></figure>
-    <figure class="glass rv"><img src="img/chafa.png" width="1355" height="863" loading="lazy" alt="用 chafa 在終端機顯示圖片" data-i18n-alt="term.chafa.alt"><figcaption data-i18n="term.chafa">用 chafa 顯示圖片</figcaption></figure>
+    <figure class="wide rv"><img src="img/images-and-ligatures.png" width="1682" height="751" loading="lazy" alt="字型連字，以及在終端機裡顯示的 Sixel 與 kitty 圖片" data-i18n-alt="term.lig.alt"><figcaption data-i18n="term.lig">字型連字、Sixel 與 kitty 圖片</figcaption></figure>
+    <figure class="rv"><img src="img/yazi-preview.png" width="1355" height="863" loading="lazy" alt="在 yazi 裡預覽圖片" data-i18n-alt="term.yazi.alt"><figcaption data-i18n="term.yazi">在 yazi 裡預覽圖片</figcaption></figure>
+    <figure class="rv"><img src="img/chafa.png" width="1355" height="863" loading="lazy" alt="用 chafa 在終端機顯示圖片" data-i18n-alt="term.chafa.alt"><figcaption data-i18n="term.chafa">用 chafa 顯示圖片</figcaption></figure>
   </div>
   <div class="keys rv">
     <div><span data-i18n="key.1">下一個等你的分頁</span><span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>U</kbd></span></div>
@@ -104,7 +142,7 @@
 
 <section class="sec install" id="install">
   <h2 class="rv" data-i18n="inst.h">安裝</h2>
-  <div class="cmd big-cmd rv" data-copy="scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket&#10;scoop install koukeneko/nekominal"><code>scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket<br>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
+  <div class="cmd rv" data-copy="scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket&#10;scoop install koukeneko/nekominal"><code>scoop bucket add koukeneko https://github.com/KoukeNeko/scoop-bucket<br>scoop install koukeneko/nekominal</code><button type="button" data-i18n="copy">複製</button></div>
   <p class="lead rv" data-i18n="inst.lead">也可以下載 zip，解壓後執行 <code>Nekominal.exe</code>。支援 Windows 11，x64 或 ARM64。</p>
   <p class="rv"><a class="btn" href="https://github.com/KoukeNeko/Nekominal/releases/latest" data-i18n="inst.btn">下載最新版本</a></p>
 </section>

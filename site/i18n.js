@@ -7,14 +7,17 @@ const EN = {
   'nav.light': 'Light', 'nav.agents': 'Agents', 'nav.parallel': 'Parallel work', 'nav.lang': '中文', 'nav.download': 'Download',
   'hero.title': 'A light<br><span class="grad">Windows terminal</span>',
   'hero.sub': 'Native Rust and Direct3D, no web runtime inside. Every tab tells you which agent is waiting for you.',
+  'hero.total': 'The four layers below are the whole program',
+  'hero.aria': 'The four layers of Nekominal, and a fifth above them that is not there',
+  's.ghost': 'This layer does not exist', 's.1': 'Window and tabs', 's.2': 'Drawing', 's.2s': 'Direct3D 11, redraws on change', 's.3': 'Terminal backend', 's.4': 'Your own shell',
+  'agents.main': 'The sidebar groups the tabs by state: waiting, failed, running, done',
   'hero.alt': 'The Nekominal window, its sidebar listing five agent tabs grouped by state',
-  'hero.c1': 'Waiting for input · Nekominal · master', 'hero.c2': 'Running · Nekominal · master', 'hero.c3': 'Done · Nekominal · master',
   'light.h': 'Light by design',
   'light.lead': 'One native program of about 9 MB: Rust, Direct3D 11 and ConPTY. There is no Electron, no web view and no runtime to install. A window draws only when something on it changes, so a terminal you are not looking at costs next to nothing.',
-  'light.t1': 'Memory, one tab', 'light.v1': 'Windows Terminal 113 MB',
-  'light.t2': 'Memory, five tabs', 'light.v2': 'Windows Terminal 193 MB',
-  'light.n3': '0.70 s', 'light.t3': 'Launch to a running shell', 'light.v3': 'Windows Terminal 0.76 s',
-  'light.n4': '0.02 s', 'light.t4': 'CPU at rest, per 20 s', 'light.v4': 'Windows Terminal 0.09 s',
+  'light.t1': 'Memory, one tab',
+  'light.t2': 'Memory, five tabs',
+  'light.n3': '0.70 s', 'light.t3': 'Launch to a running shell', 'light.v3': '0.76 s',
+  'light.n4': '0.02 s', 'light.t4': 'CPU at rest, per 20 s', 'light.v4': '0.09 s',
   'light.note': 'Measured on Windows 11 against Windows Terminal 1.24, both with their default settings and <code>pwsh -NoProfile</code>; the median of three runs. Memory is the working set of the terminal and its OpenConsole, the shells left out.',
   'agents.h': 'Knows what your agents are doing',
   'agents.lead': 'Run Claude Code, Codex, Gemini CLI or Aider in a tab and the tab says whether it is <b>working</b>, <b>waiting for you</b>, <b>done</b> or <b>failed</b>. The sidebar groups the tabs by state, the title bar counts the ones that wait, and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> takes you to the next of them. Nothing to set up.',
@@ -27,10 +30,10 @@ const EN = {
   'drawer.txt': '<h3>Open one to see what it did</h3><p>A row of the card opens a drawer: what the subagent was asked, the tools it called and what it said. For a workflow, its phases and agents.</p>',
   'drawer.alt': 'A drawer on the right showing the phase of a workflow and four running agents',
   'par.h': 'Made for parallel work',
-  'par.1': '<h3>One worktree per agent</h3><p>Open a tab in a new git worktree from the command palette; removing it shows what would be lost first.</p>',
-  'par.2': '<h3>Updates keep your tabs running</h3><p>Update and restart, and every shell and agent carries on in the new version.</p>',
-  'par.3': '<h3>Pull requests and ports on the tabs</h3><p>And phone notifications through ntfy or a webhook when an agent needs you.</p>',
-  'par.4': '<h3>Scriptable</h3><p><code>nekominal cli</code> lists, opens, splits and reads panes, so your own tools can drive it.</p>',
+  'par.1h': 'One worktree per agent', 'par.1p': 'Open a tab in a new git worktree from the command palette; removing it shows what would be lost first.',
+  'par.2h': 'Updates keep your tabs running', 'par.2p': 'Update and restart, and every shell and agent carries on in the new version.',
+  'par.3h': 'Pull requests and ports on the tabs', 'par.3p': 'And phone notifications through ntfy or a webhook when an agent needs you.',
+  'par.4h': 'Scriptable', 'par.4p': '<code>nekominal cli</code> lists, opens, splits and reads panes, so your own tools can drive it.',
   'term.h': 'A terminal first',
   'term.lead': 'Split panes, tear-off tabs, a drop-down window on Win+`, saved layouts and session restore. Hints for URLs, paths and hashes, <code>file:line</code> opened in your editor, search across all tabs. Sixel and kitty images, font ligatures, Mica and acrylic, and colour schemes imported from Windows Terminal and iTerm2.',
   'term.split': 'Split panes: right, down, as you like', 'term.split.alt': 'One window split into three panes, each running a git command',
@@ -63,6 +66,7 @@ function apply() {
   document.title = lang === 'en' ? EN.title : zh.title;
   meta.content = lang === 'en' ? EN.desc : zh.desc;
   document.querySelectorAll('[data-i18n]').forEach(el => { el.dataset.zh ??= el.innerHTML; el.innerHTML = text(el, el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-aria]').forEach(el => { el.dataset.zhAria ??= el.getAttribute('aria-label'); el.setAttribute('aria-label', lang === 'en' ? EN[el.dataset.i18nAria] ?? el.dataset.zhAria : el.dataset.zhAria); });
   document.querySelectorAll('[data-i18n-alt]').forEach(el => { el.dataset.zh ??= el.alt; el.alt = text(el, el.dataset.i18nAlt); });
 }
 
