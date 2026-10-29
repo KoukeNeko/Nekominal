@@ -192,7 +192,7 @@
   "dialog.pasteLines": "Paste {0} lines?",
   "dialog.pasteSize": "Paste {0}?",
   "dialog.closeSessions": "Close running sessions ({0})?",
-  "dialog.dontAsk": "Don't ask again",
+  "common.dontAsk": "Don't ask again",
   "dialog.closeTab": "Close \"{0}\"?",
   "dialog.restartSession": "Restart \"{0}\"?",
   "dialog.restoreKeys": "Restore all shortcuts?",

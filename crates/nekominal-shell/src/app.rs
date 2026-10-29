@@ -2687,7 +2687,7 @@ impl App {
             Ok(mut popup) => {
                 popup.heading = title;
                 popup.hover = Some(0);
-                popup.check = dont_ask.then(|| popup::Check { label: Text::DialogDontAsk.get(self.language()).to_owned(), on: false, hover: false, focus: false });
+                popup.check = dont_ask.then(|| popup::Check { label: Text::CommonDontAsk.get(self.language()).to_owned(), on: false, hover: false, focus: false });
                 if let Some((view, rects)) = remove {
                     popup.hover = None;
                     popup.rects = rects;
