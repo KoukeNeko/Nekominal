@@ -132,7 +132,11 @@ pub fn request(push: &Push, message: &Message) -> (Vec<(&'static str, String)>, 
         }
         PushKind::Webhook => {
             headers.push(("Content-Type", "application/json".into()));
+            // Discord refuses a post without `content` (of at most 2000 characters) and Slack reads `text`; both ignore the rest.
+            let text: String = format!("**{}**\n{}", message.title, message.body).chars().take(2000).collect();
             serde_json::json!({
+                "content": text,
+                "text": text,
                 "title": message.title,
                 "body": message.body,
                 "kind": message.kind,
@@ -301,7 +305,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "title": "claude · api", "body": "Waiting for input\nAllow edit?", "kind": "commandFailed", "tab": 7, "at": 1_700_000_000u64 })
+            serde_json::json!({ "content": "**claude · api**\nWaiting for input\nAllow edit?", "text": "**claude · api**\nWaiting for input\nAllow edit?", "title": "claude · api", "body":"Waiting for input\nAllow edit?", "kind": "commandFailed", "tab": 7, "at": 1_700_000_000u64 })
         );
     }
 
@@ -393,6 +397,7 @@ mod tests {
         let (_, body) = request(&push(PushKind::Webhook, ""), &message);
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!((json["title"].as_str(), json["body"].as_str()), (Some(AWKWARD), Some(long.as_str())));
+        assert_eq!(json["content"].as_str().unwrap().chars().count(), 2000, "Discord takes no more");
         let (headers, body) = request(&push(PushKind::Ntfy, ""), &message);
         assert_eq!(body, long, "ntfy takes the body as it is");
         let title = headers.iter().find(|(n, _)| *n == "Title").map(|(_, v)| v.clone()).unwrap();
