@@ -167,7 +167,7 @@ impl App {
         let mut height = PAD + line + 6.0;
         match &answer {
             Answer::Overview(seen) => {
-                height += line + 6.0 + SYNC + 10.0;
+                height += 2.0 * SYNC + 1.0 + 10.0;
                 if seen.last.is_some() {
                     height += 1.0 + 10.0 + line + small + 10.0;
                 }
@@ -183,8 +183,8 @@ impl App {
         }
         height += PAD - 6.0;
 
-        // Where the card of a pull request hangs from its badge.
-        let (card, hit) = hang(anchor, (WIDTH, height), self.layout.size);
+        // Where every card of the bar hangs.
+        let (card, hit) = bar_card(anchor, (WIDTH, height), self.layout.size);
         self.branch_card_rect = Some(hit);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
@@ -219,42 +219,43 @@ impl App {
             }
         };
 
-        // Where it pushes: the remote by its host and path, and the name git knows it by.
+        // Where it pushes and how far it is from there, in one box whose rows start their contents 10 in: the remote by its
+        // host and path (a link: it opens the repository in the browser) over the line of how far the branch is from its
+        // upstream. The edges of the box are those of the lines under it.
         let icon_line = self.ui.line_height(SMALL_SIZE);
+        let inset = 10.0;
+        self.ui.rrect(Rect::new(x, y, inner, 2.0 * SYNC + 1.0), RADIUS, col(g.tab_rest()), None);
+        let (row_text, row_small) = (y + (SYNC - line) / 2.0, y + (SYNC - small) / 2.0);
         match (seen.url.as_deref().map(worktree::remote_place), seen.status.remote.as_deref()) {
             (Some((host, path)), _) => {
-                // The row opens the repository in the browser (by the gate every link passes): lit while the pointer is on
-                // it, over the whole width of the card's text, which the clip of the card would cut off.
+                // The row opens the repository by the gate every link passes: lit while the pointer is on it.
                 if let Some(page) = seen.url.as_deref().and_then(worktree::remote_web).and_then(|web| nekominal_term::links::openable(&web)) {
-                    let row = Rect::new(x - 6.0, y - 3.0, inner + 12.0, line + 6.0);
                     if self.hover == Hit::BranchRemote {
-                        self.ui.pop_clip();
-                        widgets::plate(&mut self.ui, row, col(g.hover()));
-                        self.ui.push_clip(Rect::new(x, card.y, inner, card.h));
+                        widgets::plate(&mut self.ui, Rect::new(x + 3.0, y + 3.0, inner - 6.0, SYNC - 4.0), col(g.hover()));
                     }
-                    self.branch_remote = Some((row, page));
+                    self.branch_remote = Some((Rect::new(x, y, inner, SYNC), page));
                 }
-                self.ui.icon(x, y + (line - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
+                self.ui.icon(x + inset, y + (SYNC - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
                 let where_ = [host, seen.status.remote.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
                 let ww = self.ui.measure(&where_, SMALL_SIZE, false);
-                self.ui.text(right - ww, y + (line - small) / 2.0, &where_, SMALL_SIZE, quiet, false);
-                let path = subagents_card::fit(&mut self.ui, path, TEXT_SIZE, false, inner - TEXT_LEFT - ww - 10.0);
-                self.ui.text(x + TEXT_LEFT, y, &path, TEXT_SIZE, col(g.accent), false);
+                self.ui.text(right - inset - ww, row_small, &where_, SMALL_SIZE, quiet, false);
+                let path = subagents_card::fit(&mut self.ui, path, TEXT_SIZE, false, inner - 2.0 * inset - TEXT_LEFT - ww - 10.0);
+                self.ui.text(x + inset + TEXT_LEFT, row_text, &path, TEXT_SIZE, col(g.accent), false);
             }
             // A remote whose address git does not give (only a push address set): its name.
             (None, Some(remote)) => {
-                self.ui.icon(x, y + (line - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
-                self.ui.text(x + TEXT_LEFT, y, remote, TEXT_SIZE, col(g.accent), false);
+                self.ui.icon(x + inset, y + (SYNC - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
+                self.ui.text(x + inset + TEXT_LEFT, row_text, remote, TEXT_SIZE, col(g.accent), false);
             }
             (None, None) => {
-                self.ui.text(x, y, Text::WorktreeNoRemote.get(lang), TEXT_SIZE, quiet, false);
+                self.ui.text(x + inset, row_text, Text::WorktreeNoRemote.get(lang), TEXT_SIZE, quiet, false);
             }
         }
-        y += line + 6.0;
+        y += SYNC;
+        self.ui.fill(Rect::new(x + inset, y, inner - 2.0 * inset, 1.0), col(g.divider()));
+        y += 1.0;
 
         // How far from its upstream: in step, or the commits each side has that the other has not.
-        let sync = Rect::new(x, y, inner, SYNC);
-        self.ui.rrect(sync, RADIUS, col(g.tab_rest()), None);
         let mid_y = y + (SYNC - line) / 2.0;
         let ahead = seen.status.unpushed.unwrap_or(0);
         match (&seen.upstream, seen.status.behind) {

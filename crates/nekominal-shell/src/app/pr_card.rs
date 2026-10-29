@@ -99,8 +99,8 @@ impl App {
         height += (usize::from(review.is_some()) + usize::from(blocker.is_some())) as f32 * (small + 6.0);
         height += 14.0 + BUTTON + PAD;
 
-        // Under the badge, or over it when the window has no room below.
-        let (card, hit) = hang(anchor, (WIDTH, height), self.layout.size);
+        // Where every card of the bar hangs.
+        let (card, hit) = bar_card(anchor, (WIDTH, height), self.layout.size);
         self.pr_card_rect = Some(hit);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
@@ -212,6 +212,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_card_of_the_bar_has_its_top_at_one_height_whatever_opens_it_and_hangs_70_before_the_middle_of_it() {
+        let window = (525.0, 600.0);
+        // A badge, the meter and the branch sit differently high in the bar: their cards do not.
+        for anchor in [Rect::new(62.0, 9.0, 40.0, 22.0), Rect::new(300.0, 12.0, 70.0, 16.0), Rect::new(200.0, 6.0, 60.0, 28.0)] {
+            let (card, gap) = bar_card(anchor, (340.0, 200.0), window);
+            assert_eq!(card.y, layout::TITLE_HEIGHT + 4.0, "{anchor:?}");
+            assert_eq!((gap.y, gap.y + gap.h), (anchor.y + anchor.h, card.y + card.h), "the gap to the anchor is the card's too");
+        }
+        assert_eq!(bar_card(Rect::new(200.0, 6.0, 40.0, 28.0), (340.0, 200.0), window).0.x, 200.0 + 20.0 - 70.0);
+        assert_eq!(bar_card(Rect::new(480.0, 6.0, 40.0, 28.0), (340.0, 200.0), window).0.x, 525.0 - 340.0 - 8.0, "kept inside on the right");
+        assert_eq!(bar_card(Rect::new(5.0, 6.0, 40.0, 28.0), (340.0, 200.0), window).0.x, 8.0, "and on the left");
+    }
 
     #[test]
     fn a_card_hangs_12_before_what_opens_it_and_6_below_or_above_it_when_there_is_no_room_and_inside_the_window() {

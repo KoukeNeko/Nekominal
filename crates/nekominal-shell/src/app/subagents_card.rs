@@ -99,10 +99,9 @@ impl App {
         }
         height += PAD - 4.0;
 
-        let width = self.layout.size.0;
-        let mid = piece.x + piece.w / 2.0;
-        let card = Rect::new((mid - 90.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0)), layout::TITLE_HEIGHT + 4.0, WIDTH, height);
-        self.sub_card_rect = Some(Rect::new(card.x, piece.y + piece.h, card.w, card.y + card.h - (piece.y + piece.h)));
+        // Where every card of the bar hangs.
+        let (card, gap) = bar_card(piece, (WIDTH, height), self.layout.size);
+        self.sub_card_rect = Some(gap);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         }

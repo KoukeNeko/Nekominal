@@ -116,11 +116,9 @@ impl App {
             height += 12.0 + REMOTE_ROW;
         }
         height += PAD - 4.0;
-        let width = self.layout.size.0;
-        let mid = meter.x + meter.w / 2.0;
-        let card = Rect::new((mid - 70.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0)), layout::TITLE_HEIGHT + 4.0, WIDTH, height);
-        // The gap between the meter and the card is the card's too: the pointer crosses it on the way down.
-        self.card_rect = Some(Rect::new(card.x, meter.y + meter.h, card.w, card.y + card.h - (meter.y + meter.h)));
+        // Where every card of the bar hangs.
+        let (card, gap) = bar_card(meter, (WIDTH, height), self.layout.size);
+        self.card_rect = Some(gap);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         }

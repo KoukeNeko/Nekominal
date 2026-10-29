@@ -196,9 +196,19 @@ const PANELS_SHRINK_MS: u32 = 3000;
 /// How long apart the steps are that make a pane an update handed over draw its screen again (`App::regrow`).
 const REGROW_AFTER: Duration = Duration::from_millis(500);
 
-/// Where a card hangs from what opens it, `anchor` (a badge, the branch, a link): its left edge 12 DIP before the anchor's,
-/// 6 DIP below it, or above it when the window has no room below, and kept inside the window. The card and the gap
-/// between it and the anchor, which is the card's too: the pointer crosses it on the way.
+/// Where a card of the title bar hangs, whatever opens it (the context meter, the subagents, the branch, a badge): its top
+/// at one height under the bar, its left edge 70 DIP before the middle of what opens it, and kept inside the window. The
+/// card and the gap between it and the anchor, which is the card's too: the pointer crosses it on the way down.
+fn bar_card(anchor: Rect, size: (f32, f32), window: (f32, f32)) -> (Rect, Rect) {
+    let (w, h) = size;
+    let x = (anchor.x + anchor.w / 2.0 - 70.0).clamp(8.0, (window.0 - w - 8.0).max(8.0));
+    let card = Rect::new(x, layout::TITLE_HEIGHT + 4.0, w, h);
+    (card, Rect::new(x, anchor.y + anchor.h, w, card.y + h - (anchor.y + anchor.h)))
+}
+
+/// Where a card hangs from something inside a pane (a link): its left edge 12 DIP before the anchor's, 6 DIP below it, or
+/// above it when the window has no room below, and kept inside the window. The card and the gap between it and the
+/// anchor.
 fn hang(anchor: Rect, size: (f32, f32), window: (f32, f32)) -> (Rect, Rect) {
     let (w, h) = size;
     let x = (anchor.x - 12.0).clamp(8.0, (window.0 - w - 8.0).max(8.0));
