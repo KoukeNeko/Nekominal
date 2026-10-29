@@ -174,6 +174,11 @@ pub struct Usage {
     pub output_tokens: Option<u64>,
     /// The size of the context window the share is of.
     pub context_window: Option<u64>,
+    /// The id of the model (`claude-sonnet-5-5`), which its settings are named by.
+    pub model_id: Option<String>,
+    /// Where Claude Code compacts the context, in tokens, when its settings name a window smaller than the model's
+    /// (`auto_compact_window`).
+    pub auto_compact: Option<u64>,
     /// The whole session's tokens, lines and time waiting for the API, as the status line has them.
     pub total_input_tokens: Option<u64>,
     pub total_output_tokens: Option<u64>,
@@ -204,6 +209,8 @@ pub fn parse_usage(json: &str) -> Option<Usage> {
         cache_read_tokens: count("/context_window/current_usage/cache_read_input_tokens"),
         output_tokens: count("/context_window/current_usage/output_tokens"),
         context_window: count("/context_window/context_window_size").filter(|&n| n > 0),
+        model_id: text("/model/id"),
+        auto_compact: None,
         total_input_tokens: count("/context_window/total_input_tokens"),
         total_output_tokens: count("/context_window/total_output_tokens"),
         lines_added: count("/cost/total_lines_added"),
@@ -260,6 +267,12 @@ pub fn read_usage(session: &str) -> Option<Usage> {
     usage.cwd = usage.cwd.or_else(|| text(hook.as_ref(), "cwd"));
     usage.model = usage.model.or_else(|| text(hook.as_ref(), "model").map(|m| model_name(&m)));
     usage.remote = text(hook.as_ref(), "remote").filter(|id| remote_id(id).is_some());
+    usage.model_id = usage.model_id.or_else(|| text(hook.as_ref(), "model"));
+    usage.auto_compact = usage
+        .model_id
+        .as_deref()
+        .and_then(|model| auto_compact_window(model, usage.cwd.as_deref().map(Path::new)))
+        .filter(|&at| usage.context_window.is_none_or(|window| at < window));
     usage.transcript = transcript;
     Some(usage)
 }
@@ -341,6 +354,7 @@ fn last_turn(tail: &str, cut: bool) -> Option<Turn> {
 fn fill_from_turn(usage: &mut Usage, turn: &Turn, window: u64) {
     // The newer answer's model: the session may have changed it since the status line last ran.
     usage.model = Some(model_name(&turn.model));
+    usage.model_id = Some(turn.model.clone());
     usage.context = Some((turn.context() as f64 * 100.0 / window as f64).min(100.0));
     usage.context_window = Some(window);
     usage.input_tokens = Some(turn.input);
@@ -494,6 +508,67 @@ fn home() -> Option<PathBuf> {
 fn claude_settings() -> Option<PathBuf> {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home().map(|h| h.join(".claude")))?;
     Some(dir.join("settings.json"))
+}
+
+/// The values `autoCompactWindow` takes, in tokens, as Claude Code checks them.
+const COMPACT_WINDOWS: std::ops::RangeInclusive<u64> = 100_000..=1_000_000;
+
+/// Where Claude Code compacts the context of `model`, in tokens, when its settings name a number: the environment's
+/// `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then the local settings of the project `cwd`, its shared ones and the user's, the
+/// first that names one; within a file the model's own (`modelSettings.<model>.autoCompactWindow`) before the file's,
+/// and the file's `env` before both. None where nothing is set, and for `"auto"`: the window Claude Code tunes for the
+/// model, which it does not say.
+pub fn auto_compact_window(model: &str, cwd: Option<&Path>) -> Option<u64> {
+    if let Ok(value) = std::env::var("CLAUDE_CODE_AUTO_COMPACT_WINDOW") {
+        return compact_value(&serde_json::Value::String(value));
+    }
+    let project = cwd.map(|dir| dir.join(".claude"));
+    let files = [project.as_ref().map(|dir| dir.join("settings.local.json")), project.as_ref().map(|dir| dir.join("settings.json")), claude_settings()];
+    files.into_iter().flatten().find_map(|file| {
+        let text = std::fs::read_to_string(file).ok()?;
+        compact_in(&serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?, model)
+    })?
+}
+
+/// What one settings file says of the compaction of `model`: None when it says nothing, Some(None) for `"auto"` or a
+/// value Claude Code would not take.
+fn compact_in(settings: &serde_json::Value, model: &str) -> Option<Option<u64>> {
+    let key = canonical_model(model);
+    let own = settings
+        .get("modelSettings")
+        .and_then(|m| m.as_object())
+        .and_then(|models| models.iter().find(|(name, _)| canonical_model(name) == key))
+        .and_then(|(_, s)| s.get("autoCompactWindow"));
+    let set = settings.pointer("/env/CLAUDE_CODE_AUTO_COMPACT_WINDOW").or(own).or_else(|| settings.get("autoCompactWindow"))?;
+    Some(compact_value(set))
+}
+
+/// The window a setting names, a number or a string of one, when Claude Code would take it; None for `"auto"`.
+fn compact_value(value: &serde_json::Value) -> Option<u64> {
+    let n = value.as_u64().or_else(|| value.as_str()?.trim().parse().ok())?;
+    COMPACT_WINDOWS.contains(&n).then_some(n)
+}
+
+/// A model id without what Claude Code reads past to the canonical name: a Bedrock prefix (`us.anthropic.`) and version
+/// (`-v1:0`), a date (`-20261001`, `@20261001`), and a window (`[1m]`).
+fn canonical_model(id: &str) -> String {
+    let mut id = id.trim().to_ascii_lowercase();
+    if let Some(at) = id.find("claude-") {
+        id.drain(..at);
+    }
+    if let Some(at) = id.find('[') {
+        id.truncate(at);
+    }
+    if let Some(at) = id.find('@') {
+        id.truncate(at);
+    }
+    if let Some(at) = id.rfind("-v").filter(|at| id[at + 2..].chars().next().is_some_and(|c| c.is_ascii_digit())) {
+        id.truncate(at);
+    }
+    if let Some(at) = id.rfind('-').filter(|at| id.len() - at - 1 == 8 && id[at + 1..].bytes().all(|b| b.is_ascii_digit())) {
+        id.truncate(at);
+    }
+    id
 }
 
 /// Looks for Claude Code: `claude.exe` on the path, then where its own installer puts it.
@@ -797,6 +872,25 @@ mod tests {
     #[test]
     fn the_window_is_the_one_the_status_line_gave_else_200k_or_1m_past_that() {
         assert_eq!(window_size(Some(1_000_000), 50_000), 1_000_000);
+    }
+
+    #[test]
+    fn the_auto_compact_window_is_read_for_the_model_from_its_settings_as_claude_code_has_them() {
+        for id in ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]", "claude-sonnet-5-5-20261001", "us.anthropic.claude-sonnet-5-5-20261001-v1:0", "claude-sonnet-5-5@20261001", "Claude-Sonnet-5-5"] {
+            assert_eq!(canonical_model(id), "claude-sonnet-5-5", "{id}");
+        }
+        assert_eq!(canonical_model("claude-sonnet-5"), "claude-sonnet-5", "no other version's name");
+        // The shape the settings of a user had: a window for one model, none for another.
+        let settings = serde_json::json!({ "modelSettings": { "claude-opus-5": { "effortLevel": "medium" }, "claude-sonnet-5-5": { "effortLevel": "medium", "autoCompactWindow": 400000 } } });
+        assert_eq!(compact_in(&settings, "claude-sonnet-5-5[1m]"), Some(Some(400_000)));
+        assert_eq!(compact_in(&settings, "claude-opus-5"), None, "nothing set for it: the next file is asked");
+        let top = serde_json::json!({ "autoCompactWindow": 300000, "modelSettings": { "claude-haiku-5-5": { "autoCompactWindow": "auto" } } });
+        assert_eq!(compact_in(&top, "claude-opus-5-5"), Some(Some(300_000)), "the file's own");
+        assert_eq!(compact_in(&top, "claude-haiku-5-5"), Some(None), "the model's own comes first, and auto is no number");
+        let env = serde_json::json!({ "env": { "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "250000" }, "autoCompactWindow": 300000 });
+        assert_eq!(compact_in(&env, "claude-opus-5-5"), Some(Some(250_000)));
+        assert_eq!(compact_value(&serde_json::json!(50_000)), None, "out of the range Claude Code takes");
+        assert_eq!(compact_value(&serde_json::json!(1_000_000)), Some(1_000_000));
         assert_eq!(window_size(None, 50_000), 200_000);
         assert_eq!(window_size(None, 200_000), 200_000);
         assert_eq!(window_size(None, 250_000), 1_000_000);

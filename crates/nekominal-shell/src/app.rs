@@ -130,7 +130,7 @@ const ICON_FROM: f32 = 132.0;
 fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
     match piece {
         Piece::State(_, text) => 12.0 + ui.measure(text, PIECE_SIZE, false),
-        Piece::Meter(_) => METER + 6.0 + ui.measure("100%", PIECE_SIZE, false),
+        Piece::Meter(..) => METER + 6.0 + ui.measure("100%", PIECE_SIZE, false),
         Piece::Glyph(_, text) => ICON_SIZE + 6.0 + ui.measure(text, PIECE_SIZE, false),
         Piece::Text(text) => ui.measure(text, PIECE_SIZE, false),
         Piece::Badge(chip) => badges::width(chip, |text| ui.measure(text, badges::BAR.0, false)),
@@ -224,6 +224,13 @@ fn meter_color(g: Glass, share: f64) -> Color {
     col(if share > 90.0 { g.mark(g.danger) } else if share > 70.0 { g.mark(g.warning) } else { g.accent })
 }
 
+/// Where Claude Code compacts the context, as a part (0 to 1) of the meter: when its settings name a window smaller than
+/// the model's (`agent::auto_compact_window`).
+fn compact_mark(usage: &agent::Usage) -> Option<f32> {
+    let (at, window) = (usage.auto_compact?, usage.context_window?);
+    (window > 0 && at < window).then(|| at as f32 / window as f32)
+}
+
 /// The plate under the pointer on a row that is not selected: the hover colour at half its alpha.
 fn soft_hover(g: Glass) -> Color {
     let h = col(g.hover());
@@ -250,7 +257,8 @@ fn state_text(state: logic::TabState) -> Option<Text> {
 /// a glyph before its text, or text alone.
 enum Piece {
     State(Color, String),
-    Meter(f32),
+    /// The share of the context in use, and where Claude Code compacts as a part of the track (`compact_mark`).
+    Meter(f32, Option<f32>),
     Glyph(char, String),
     Text(String),
     /// A badge of the selected tab (`app/badges.rs`).
@@ -3902,7 +3910,7 @@ impl App {
                 pieces.push(Piece::Text(model));
             }
             if let Some(share) = usage.context.filter(|_| show.context) {
-                pieces.push(Piece::Meter(share as f32));
+                pieces.push(Piece::Meter(share as f32, compact_mark(usage)));
             }
             if let Some(subs) = self.subagents() {
                 pieces.push(Piece::Subagents(subagents_card::counts(lang, subs)));
@@ -3929,7 +3937,7 @@ impl App {
                 self.ui.rrect(Rect::new(x, bar / 2.0 - 3.0, 6.0, 6.0), 3.0, *color, None);
                 self.ui.text(x + 12.0, text_y, text, PIECE_SIZE, col(g.text()), false);
             }
-            Piece::Meter(share) => {
+            Piece::Meter(share, mark) => {
                 // The meter and its share are what the pointer goes to for the context card; lit while it is there.
                 let w = METER + 6.0 + self.ui.measure(&format!("{share:.0}%"), PIECE_SIZE, false);
                 let plate = Rect::new(x - 6.0, (bar - 28.0) / 2.0, w + 12.0, 28.0);
@@ -3941,6 +3949,10 @@ impl App {
                 let fill = meter_color(g, f64::from(*share));
                 self.ui.rrect(track, 1.5, col(g.divider()), None);
                 self.ui.rrect(Rect::new(track.x, track.y, METER * (share / 100.0).clamp(0.0, 1.0), 3.0), 1.5, fill, None);
+                // Where Claude Code compacts: a tick across the track.
+                if let Some(mark) = mark {
+                    self.ui.fill(Rect::new(track.x + METER * mark - 0.75, track.y - 2.5, 1.5, 8.0), col(g.text_secondary()));
+                }
                 self.ui.text(x + METER + 6.0, text_y, &format!("{share:.0}%"), PIECE_SIZE, quiet, false);
             }
             Piece::Glyph(ch, text) => {

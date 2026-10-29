@@ -30,6 +30,8 @@ pub struct Facts {
     pub status_line: bool,
     /// The session's Remote Control id while it is connected.
     pub remote: Option<String>,
+    /// Where Claude Code compacts, in tokens, when its settings name a window smaller than this one.
+    pub compact_at: Option<u64>,
 }
 
 impl Facts {
@@ -53,6 +55,7 @@ impl Facts {
             // Only the status line reports a cost: from the transcript there is none.
             status_line: usage.cost.is_some(),
             remote: usage.remote.clone(),
+            compact_at: usage.auto_compact.filter(|&at| usage.context_window.is_some_and(|window| at < window)),
         })
     }
 
@@ -100,6 +103,9 @@ impl App {
         .collect();
         let rows = if facts.parts.is_some() { 4 } else { 0 };
         let mut height = PAD + line + 10.0 + 30.0 + 10.0 + BAR + 12.0 + rows as f32 * ROW;
+        if facts.compact_at.is_some() {
+            height += small + 8.0;
+        }
         if !session.is_empty() || facts.lines.is_some() {
             height += 12.0 + small + 6.0 + (session.len() + usize::from(facts.lines.is_some())) as f32 * ROW;
         }
@@ -166,6 +172,17 @@ impl App {
                 self.ui.pop_clip();
             }
             _ => self.ui.rrect(Rect::new(track.x, track.y, track.w * (facts.share as f32 / 100.0).clamp(0.0, 1.0), BAR), BAR / 2.0, meter_color(g, facts.share), None),
+        }
+        // Where Claude Code compacts: a tick across the bar, and how far it is under it.
+        if let (Some(at), Some(window)) = (facts.compact_at, facts.window) {
+            let tick = track.x + track.w * at as f32 / window as f32;
+            self.ui.fill(Rect::new(tick - 0.75, track.y - 3.0, 1.5, BAR + 6.0), text);
+            let label = match facts.used() {
+                Some(used) if used < at => Text::CardCompactLeft.format(lang, &[&tokens(at), &tokens(at - used)]),
+                _ => Text::CardCompactAt.format(lang, &[&tokens(at)]),
+            };
+            self.ui.text(x, y + BAR + 6.0, &label, SMALL_SIZE, quiet, false);
+            y += small + 8.0;
         }
         y += BAR + 12.0;
 
@@ -268,5 +285,16 @@ mod tests {
         let from_transcript = agent::Usage { context: Some(24.5), cache_creation_tokens: Some(48_916), input_tokens: Some(2), output_tokens: Some(4), context_window: Some(200_000), ..Default::default() };
         let facts = Facts::of(&from_transcript).unwrap();
         assert_eq!((facts.parts, facts.window, facts.last_out, facts.status_line), (Some([0, 48_916, 2]), Some(200_000), Some(4), false), "a part not reported is none of the window");
+    }
+
+    #[test]
+    fn the_compaction_window_is_marked_only_inside_the_window_of_the_model() {
+        let usage = agent::Usage { context: Some(22.0), context_window: Some(1_000_000), auto_compact: Some(400_000), ..Default::default() };
+        assert_eq!(Facts::of(&usage).unwrap().compact_at, Some(400_000));
+        assert_eq!(super::super::compact_mark(&usage), Some(0.4), "four tenths along the meter");
+        let wider = agent::Usage { context_window: Some(200_000), ..usage.clone() };
+        assert_eq!((Facts::of(&wider).unwrap().compact_at, super::super::compact_mark(&wider)), (None, None), "a window past the model's is never reached");
+        let unknown = agent::Usage { context_window: None, ..usage };
+        assert_eq!((Facts::of(&unknown).unwrap().compact_at, super::super::compact_mark(&unknown)), (None, None), "without the model's window there is nowhere to put it");
     }
 }

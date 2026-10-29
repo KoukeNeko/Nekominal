@@ -412,6 +412,8 @@
   "card.context": "脈絡",
   "card.used": "已使用",
   "card.window": "{0} 視窗",
+  "card.compactAt": "{0} 時自動壓縮",
+  "card.compactLeft": "{0} 時自動壓縮，還差 {1}",
   "card.cacheRead": "從快取讀取",
   "card.cacheWrite": "寫入快取",
   "card.newInput": "新的輸入",

@@ -412,6 +412,8 @@
   "card.context": "Context",
   "card.used": "used",
   "card.window": "{0} window",
+  "card.compactAt": "Auto-compacts at {0}",
+  "card.compactLeft": "Auto-compacts at {0}, {1} to go",
   "card.cacheRead": "Read from cache",
   "card.cacheWrite": "Written to cache",
   "card.newInput": "New input",

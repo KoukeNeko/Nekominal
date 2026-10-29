@@ -543,6 +543,9 @@ texts! {
     CardContext "card.context";
     CardUsed "card.used";
     CardWindow "card.window";
+    // Under the bar of the context card, when Claude Code's settings name a window it compacts at. {0} is that window, {1} the tokens until it.
+    CardCompactAt "card.compactAt";
+    CardCompactLeft "card.compactLeft";
     CardCacheRead "card.cacheRead";
     CardCacheWrite "card.cacheWrite";
     CardNewInput "card.newInput";
