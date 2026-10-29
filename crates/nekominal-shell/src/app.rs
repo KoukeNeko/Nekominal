@@ -319,9 +319,9 @@ pub struct App {
     /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
     card_rect: Option<Rect>,
     remote_buttons: Option<[Rect; 2]>,
-    /// The tab whose pull request's card is open, the card where it was drawn last (with the gap to its badge), and its
-    /// buttons.
-    pr_card: Option<u64>,
+    /// The tab whose pull request's card is open with the badge it hangs from (its place in `badge_hits`), the card where
+    /// it was drawn last (with the gap to its badge), and its buttons.
+    pr_card: Option<(u64, usize)>,
     pr_card_rect: Option<Rect>,
     pr_buttons: Option<[Rect; 3]>,
     /// The subagents piece of the bar, its card (with the gap above it) and the card's rows as they were drawn last, and

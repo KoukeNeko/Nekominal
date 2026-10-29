@@ -38,14 +38,15 @@ impl App {
     /// The pull request the card shows, and the badge it hangs from: the badge under the pointer when it is a pull
     /// request's, else the one it showed while the pointer is on the card.
     fn pr_card_target(&mut self) -> Option<(github::PullRequest, Rect)> {
-        let tab = match self.hover {
-            Hit::Badge(k) => self.badge_hits.get(k).and_then(|(_, chip)| chip.tab),
+        let shown = match self.hover {
+            Hit::Badge(k) => self.badge_hits.get(k).and_then(|(_, chip)| chip.tab).map(|tab| (tab, k)),
             Hit::PrCard | Hit::PrOpen | Hit::PrCopy | Hit::PrDismiss => self.pr_card,
             _ => None,
         };
-        self.pr_card = tab;
-        let tab = tab?;
-        let anchor = self.badge_hits.iter().find(|(_, chip)| chip.tab == Some(tab)).map(|(rect, _)| *rect)?;
+        self.pr_card = shown;
+        // The badge it hangs from: the one the pointer was on (a tab has one on its row and one in the title bar).
+        let (tab, k) = shown?;
+        let anchor = self.badge_hits.get(k).filter(|(_, chip)| chip.tab == Some(tab)).map(|(rect, _)| *rect)?;
         Some((self.badges.pull_request.get(&tab)?.clone(), anchor))
     }
 
@@ -122,7 +123,7 @@ impl App {
         let dot = Rect::new(x + nw + 10.0, y + line / 2.0 - 3.0, 6.0, 6.0);
         self.ui.rrect(dot, 3.0, col(state_color), None);
         self.ui.text(dot.x + 12.0, y + (line - small) / 2.0, state_words, SMALL_SIZE, col(state_color), false);
-        if let Some(repo) = self.pr_card.and_then(|tab| self.badges.repo.get(&tab)).map(badges::Repo::name) {
+        if let Some(repo) = self.pr_card.and_then(|(tab, _)| self.badges.repo.get(&tab)).map(badges::Repo::name) {
             let rw = self.ui.measure(&repo, SMALL_SIZE, false);
             self.ui.text(right - rw, y + (line - small) / 2.0, &repo, SMALL_SIZE, quiet, false);
         }
@@ -197,7 +198,7 @@ impl App {
 
     /// A button of the card was pressed: open the pull request, copy its link, or dismiss its badge.
     pub(super) fn pr_card_action(&mut self, hit: Hit) {
-        let Some(url) = self.pr_card.and_then(|tab| self.badges.pull_request.get(&tab)).map(|pr| pr.url.clone()) else { return };
+        let Some(url) = self.pr_card.and_then(|(tab, _)| self.badges.pull_request.get(&tab)).map(|pr| pr.url.clone()) else { return };
         match hit {
             Hit::PrOpen => open_link(&url),
             Hit::PrCopy => {
