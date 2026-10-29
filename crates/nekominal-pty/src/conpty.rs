@@ -502,8 +502,8 @@ impl Pty {
         Vec::new()
     }
 
-    /// The program the user is running now: what the child started last (through cmd shims), not counting the helpers
-    /// of the console, or the child itself when it started nothing. None when the processes cannot be read.
+    /// The program the user is running now: the process of the job that started last, not counting the helpers of the
+    /// console, or the child itself when it started nothing. None when the processes cannot be read.
     pub fn job(&self) -> Option<Job> {
         self.job_with(&process_names()?)
     }
@@ -517,26 +517,22 @@ impl Pty {
         if pids.is_empty() {
             return None;
         }
-        // What the shell itself started last, not the newest process anywhere below it: a dev server's esbuild or the gh an
-        // agent runs is not the program of the tab.
-        let newest_child = |parent: u32| {
-            pids.iter()
-                .copied()
-                .filter(|&pid| pid != parent && names.iter().any(|(id, ppid, _)| *id == pid && *ppid == parent))
-                .filter_map(|pid| Some((pid, name_of(pid)?)))
-                .filter(|(_, name)| !is_console_helper(name))
-                .max_by_key(|(pid, _)| start_time(*pid))
-        };
-        let mut newest = newest_child(self.pid);
-        // A shim (`claude.cmd`, `cmd /c …`) runs in cmd: the program is what it started.
-        while let Some((pid, name)) = &newest
-            && name.eq_ignore_ascii_case("cmd.exe")
-            && let Some(child) = newest_child(*pid)
-        {
-            newest = Some(child);
+        let mut newest: Option<(u64, u32, String)> = None;
+        for pid in pids {
+            if pid == self.pid {
+                continue;
+            }
+            let Some(name) = name_of(pid) else { continue };
+            if is_console_helper(&name) {
+                continue;
+            }
+            let started = start_time(pid);
+            if newest.as_ref().is_none_or(|(at, _, _)| started >= *at) {
+                newest = Some((started, pid, name));
+            }
         }
         let root = newest.is_none();
-        let (pid, name) = newest.or_else(|| Some((self.pid, name_of(self.pid)?)))?;
+        let (pid, name) = newest.map(|(_, pid, name)| (pid, name)).or_else(|| Some((self.pid, name_of(self.pid)?)))?;
         Some(Job { name, path: image_path(pid), root })
     }
 
