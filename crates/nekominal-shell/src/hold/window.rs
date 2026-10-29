@@ -333,6 +333,9 @@ fn paint(state: &mut State, scale: f32) {
     let g = state.glass;
     let size = state.surface.size();
     let Some(target) = state.surface.acquire() else { return };
+    // From nothing: the tint below is not opaque, and over the frame before it would build up, the backdrop gone and
+    // the words of an earlier step showing through.
+    state.gpu.clear(&target, [0.0; 4]);
     let ui = &mut state.ui;
     ui.begin_frame(size, scale);
     let (width, height) = (size.0 as f32 / scale, size.1 as f32 / scale);
