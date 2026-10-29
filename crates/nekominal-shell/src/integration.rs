@@ -18,6 +18,11 @@ pub fn launch_exe() -> Option<PathBuf> {
     }
 }
 
+/// Whether Explorer's menu has the entry already, written by any copy of the program.
+pub fn has_explorer_menu() -> bool {
+    read_string(&format!(r"{}\shell\open\command", MENU_KEYS[0]), "").is_some()
+}
+
 /// The command of the menu entry: the program with the folder clicked (`%V`) as its starting folder.
 /// `\.` after it: a drive root is `C:\`, and in `"C:\"` the backslash would escape the closing quote.
 pub fn explorer_command(exe: &Path) -> String {
@@ -179,6 +184,7 @@ mod tests {
         write_string(&path, Some("Icon"), "設定.exe").expect("written");
         assert_eq!(read_string(&path, "Icon").as_deref(), Some("設定.exe"));
         assert_eq!(read_string(&path, "Missing"), None);
+        assert_eq!(read_string(&format!(r"{path}\command"), "").as_deref(), Some(r#""C:\x y\N.exe" -d "%V""#), "an empty name is the default value");
         let query = std::process::Command::new("reg").args(["query", &format!(r"HKCU\{path}"), "/s"]).output().expect("reg runs");
         let text = String::from_utf8_lossy(&query.stdout);
         // SAFETY: removes the test's own key.

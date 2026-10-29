@@ -781,10 +781,12 @@ impl App {
         if first_window && !app.settings.welcomed {
             app.welcome = Some(welcome::Welcome::default());
         }
-        // The entry of Explorer's menu is written again at each start while it is on: the program may have moved. Only by the
-        // copy Scoop installed: a build run from elsewhere (a checkout) must not take the menu over; turning the setting on in
-        // the settings still writes it.
-        if first_window && app.settings.explorer_menu && (update::scoop_dir().is_some() || update::msi_dir().is_some()) {
+        // The entry of Explorer's menu is written again at each start while it is on: the program may have moved. A copy Scoop
+        // or the installer put in place writes it always; another (a zip, a build of a checkout) only when there is none, so
+        // that the switch, on by default, says what is there, and no such copy takes over the menu of an installed one.
+        // Turning the setting on in the settings still writes it.
+        let installed = update::scoop_dir().is_some() || update::msi_dir().is_some();
+        if first_window && app.settings.explorer_menu && (installed || !crate::integration::has_explorer_menu()) {
             app.sync_explorer_menu();
         }
         // The taskbar button's menu lists the profiles, each starting a window with it.

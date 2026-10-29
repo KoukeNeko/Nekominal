@@ -24,7 +24,7 @@ scoop install koukeneko/nekominal
 ```
 
 <p align="center">
-  Or take the <a href="https://github.com/KoukeNeko/Nekominal/releases/latest">installer (MSI) or the zip</a> of the latest release: the installer needs no administrator. Windows 11, x64 or ARM64.<br>
+  Scoop is the recommended way. You can also take the <a href="https://github.com/KoukeNeko/Nekominal/releases/latest">installer (MSI) or the zip</a> of the latest release: the installer needs no administrator and updates itself from the app as the Scoop copy does; a zip copy is updated by downloading the new one. Windows 11, x64 or ARM64.<br>
   <a href="https://koukeneko.github.io/Nekominal/">koukeneko.github.io/Nekominal</a>
 </p>
 

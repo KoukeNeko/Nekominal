@@ -53,7 +53,7 @@ const EN = {
   'key.1': 'Next tab that waits', 'key.2': 'Command palette', 'key.3': 'Split right', 'key.4': 'Search all tabs', 'key.5': 'Hints', 'key.6': 'Settings',
   'key.note': 'Every command is in the palette, and any shortcut can be changed in Settings.',
   'inst.h': 'Install',
-  'inst.lead': 'Or download the zip and run <code>Nekominal.exe</code>. Windows 11, x64 or ARM64.',
+  'inst.lead': 'Scoop is the recommended way. You can also download the installer (MSI), which updates itself from the app too, or the zip, and run <code>Nekominal.exe</code> from it. Windows 11, x64 or ARM64.',
   'inst.btn': 'Download the latest release',
   'foot.notes': 'Release notes', 'foot.support': 'Support',
 };

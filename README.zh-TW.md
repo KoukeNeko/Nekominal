@@ -24,7 +24,7 @@ scoop install koukeneko/nekominal
 ```
 
 <p align="center">
-  也可以從最新版本下載<a href="https://github.com/KoukeNeko/Nekominal/releases/latest">安裝程式（MSI）或 zip</a>；安裝程式不需要系統管理員權限。支援 Windows 11，x64 或 ARM64。<br>
+  建議用 Scoop 安裝。也可以從最新版本下載<a href="https://github.com/KoukeNeko/Nekominal/releases/latest">安裝程式（MSI）或 zip</a>：安裝程式不需要系統管理員權限，也能像 Scoop 版一樣在程式裡更新；zip 版則要自己下載新版。支援 Windows 11，x64 或 ARM64。<br>
   <a href="https://koukeneko.github.io/Nekominal/">koukeneko.github.io/Nekominal</a>
 </p>
 
