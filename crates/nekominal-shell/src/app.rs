@@ -196,6 +196,18 @@ const PANELS_SHRINK_MS: u32 = 3000;
 /// How long apart the steps are that make a pane an update handed over draw its screen again (`App::regrow`).
 const REGROW_AFTER: Duration = Duration::from_millis(500);
 
+/// Where a card hangs from what opens it, `anchor` (a badge, the branch, a link): its left edge 12 DIP before the anchor's,
+/// 6 DIP below it, or above it when the window has no room below, and kept inside the window. The card and the gap
+/// between it and the anchor, which is the card's too: the pointer crosses it on the way.
+fn hang(anchor: Rect, size: (f32, f32), window: (f32, f32)) -> (Rect, Rect) {
+    let (w, h) = size;
+    let x = (anchor.x - 12.0).clamp(8.0, (window.0 - w - 8.0).max(8.0));
+    let below = anchor.y + anchor.h + 6.0;
+    let y = if below + h <= window.1 - 8.0 { below } else { (anchor.y - 6.0 - h).max(8.0) };
+    let (top, bottom) = if y >= anchor.y { (anchor.y + anchor.h, y + h) } else { (y, anchor.y) };
+    (Rect::new(x, y, w, h), Rect::new(x, top, w, bottom - top))
+}
+
 /// The rows of the menu of a link: a file can be shown in File Explorer and its path copied, an address only copied.
 fn link_menu_items(file: bool) -> Vec<(Text, popup::LinkAction)> {
     use popup::LinkAction::{Copy, Open, Reveal};
@@ -361,6 +373,8 @@ pub struct App {
     /// the card is about, read on a thread of its own (`app/branch_card.rs`).
     branch_rect: Option<Rect>,
     branch_card_rect: Option<Rect>,
+    /// The row of the card that names the remote, as it was drawn last, and the page it opens.
+    branch_remote: Option<(Rect, String)>,
     branch_read: Arc<std::sync::Mutex<branch_card::Read>>,
     /// The tab whose pull request's card is open with the badge it hangs from (its place in `badge_hits`), the card where
     /// it was drawn last (with the gap to its badge), and its buttons.
@@ -783,6 +797,7 @@ impl App {
             remote_buttons: None,
             branch_rect: None,
             branch_card_rect: None,
+            branch_remote: None,
             branch_read: Arc::default(),
             pr_card: None,
             pr_card_rect: None,
@@ -1785,7 +1800,7 @@ impl App {
             return Hit::Branch;
         }
         if self.branch_card_rect.is_some_and(|card| card.contains(x, y)) {
-            return Hit::BranchCard;
+            return if self.branch_remote.as_ref().is_some_and(|(row, _)| row.contains(x, y)) { Hit::BranchRemote } else { Hit::BranchCard };
         }
         if self.sub_card_rect.is_some_and(|card| card.contains(x, y)) {
             return self.sub_rows.iter().position(|(row, _)| row.contains(x, y)).map_or(Hit::SubCard, Hit::SubRow);
@@ -1981,7 +1996,7 @@ impl App {
         match self.over_splitter {
             Some(Axis::Row) => Some(Cursor::ResizeH),
             Some(Axis::Column) => Some(Cursor::ResizeV),
-            None => self.hand.then_some(Cursor::Hand),
+            None => (self.hand || self.hover == Hit::BranchRemote).then_some(Cursor::Hand),
         }
     }
 
@@ -2118,6 +2133,11 @@ impl App {
                     }
                     Hit::Drawer(k) => self.drawer_action(k),
                     Hit::PrOpen | Hit::PrCopy | Hit::PrDismiss => self.pr_card_action(hit),
+                    Hit::BranchRemote => {
+                        if let Some(page) = self.branch_remote.as_ref().map(|(_, page)| page.clone()) {
+                            open_link(&page);
+                        }
+                    }
                     Hit::RemoteOpen | Hit::RemoteCopy => {
                         if let Some(link) = self.focused().and_then(|e| e.usage.as_ref()).and_then(|u| u.remote.as_deref()).map(agent::remote_link) {
                             if hit == Hit::RemoteOpen {
@@ -4118,7 +4138,7 @@ impl App {
                 if *ch == BRANCH_GLYPH {
                     let w = ICON_SIZE + 6.0 + self.ui.measure(text, PIECE_SIZE, false);
                     let plate = Rect::new(x - 6.0, (bar - 28.0) / 2.0, w + 12.0, 28.0);
-                    if matches!(self.hover, Hit::Branch | Hit::BranchCard) {
+                    if matches!(self.hover, Hit::Branch | Hit::BranchCard | Hit::BranchRemote) {
                         widgets::plate(&mut self.ui, plate, col(g.hover()));
                     }
                     self.branch_rect = Some(plate);

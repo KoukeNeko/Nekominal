@@ -125,13 +125,16 @@ impl App {
 
     pub(super) fn paint_branch_card(&mut self) {
         // Open while the pointer is on the branch or on the card.
-        self.branch_card_rect = None;
-        if !matches!(self.hover, Hit::Branch | Hit::BranchCard) {
+        (self.branch_card_rect, self.branch_remote) = (None, None);
+        if !matches!(self.hover, Hit::Branch | Hit::BranchCard | Hit::BranchRemote) {
             return;
         }
         let (Some(anchor), Some(git)) = (self.branch_rect, self.focused().and_then(|entry| entry.git.clone())) else { return };
         self.ask_git(&git.root);
         let answer = self.branch_read.lock().ok().filter(|read| read.root.as_deref() == Some(git.root.as_path())).and_then(|read| read.answer.clone());
+        // Silent: nothing shows until git has answered (a few milliseconds; the answer wakes the window), and the answer of
+        // the last time stands while it is asked again.
+        let Some(answer) = answer else { return };
         let g = self.glass;
         let lang = self.language();
         let (text, quiet) = (col(g.text()), col(g.text_secondary()));
@@ -143,7 +146,7 @@ impl App {
 
         // What it says, laid out first so that the card is as tall as it.
         let (kind, kind_color) = match &answer {
-            Some(Answer::Overview(seen)) => (
+            Answer::Overview(seen) => (
                 match (seen.status.main, &seen.status.branch) {
                     (_, None) => Text::BranchDetached,
                     (true, _) => Text::BranchMain,
@@ -151,20 +154,19 @@ impl App {
                 },
                 quiet,
             ),
-            Some(Answer::Failed(_)) => (Text::BranchFailed, col(g.mark(g.danger))),
-            None => (Text::BranchReading, quiet),
+            Answer::Failed(_) => (Text::BranchFailed, col(g.mark(g.danger))),
         };
         let complaint = match &answer {
-            Some(Answer::Failed(said)) => wrap(&mut self.ui, said, SMALL_SIZE, inner - 20.0, ERROR_LINES),
-            _ => Vec::new(),
+            Answer::Failed(said) => wrap(&mut self.ui, said, SMALL_SIZE, inner - 20.0, ERROR_LINES),
+            Answer::Overview(_) => Vec::new(),
         };
         let checks = match &answer {
-            Some(Answer::Overview(seen)) => lines(seen, pr.as_ref(), lang),
-            _ => Vec::new(),
+            Answer::Overview(seen) => lines(seen, pr.as_ref(), lang),
+            Answer::Failed(_) => Vec::new(),
         };
         let mut height = PAD + line + 6.0;
         match &answer {
-            Some(Answer::Overview(seen)) => {
+            Answer::Overview(seen) => {
                 height += line + 6.0 + SYNC + 10.0;
                 if seen.last.is_some() {
                     height += 1.0 + 10.0 + line + small + 10.0;
@@ -177,16 +179,13 @@ impl App {
                     }
                 }
             }
-            Some(Answer::Failed(_)) => height += small + 10.0 + complaint.len() as f32 * small + 16.0 + 4.0,
-            None => height += small + 4.0,
+            Answer::Failed(_) => height += small + 10.0 + complaint.len() as f32 * small + 16.0 + 4.0,
         }
         height += PAD - 6.0;
 
-        let width = self.layout.size.0;
-        let mid = anchor.x + anchor.w / 2.0;
-        let card = Rect::new((mid - 70.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0)), layout::TITLE_HEIGHT + 4.0, WIDTH, height);
-        // The gap between the branch and the card is the card's too: the pointer crosses it on the way down.
-        self.branch_card_rect = Some(Rect::new(card.x, anchor.y + anchor.h, card.w, card.y + card.h - (anchor.y + anchor.h)));
+        // Where the card of a pull request hangs from its badge.
+        let (card, hit) = hang(anchor, (WIDTH, height), self.layout.size);
+        self.branch_card_rect = Some(hit);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         }
@@ -204,8 +203,8 @@ impl App {
         y += line + 6.0;
 
         let seen = match answer {
-            Some(Answer::Overview(seen)) => seen,
-            Some(Answer::Failed(_)) => {
+            Answer::Overview(seen) => seen,
+            Answer::Failed(_) => {
                 self.ui.mono(x, y, &folder, SMALL_SIZE, quiet);
                 y += small + 10.0;
                 let danger = col(g.mark(g.danger));
@@ -218,18 +217,24 @@ impl App {
                 self.ui.pop_clip();
                 return;
             }
-            None => {
-                self.ui.mono(x, y, &folder, SMALL_SIZE, quiet);
-                self.ui.pop_clip();
-                return;
-            }
         };
 
         // Where it pushes: the remote by its host and path, and the name git knows it by.
         let icon_line = self.ui.line_height(SMALL_SIZE);
         match (seen.url.as_deref().map(worktree::remote_place), seen.status.remote.as_deref()) {
             (Some((host, path)), _) => {
-                self.ui.icon(x, y + (line - icon_line) / 2.0, '\u{E71B}', SMALL_SIZE, quiet);
+                // The row opens the repository in the browser (by the gate every link passes): lit while the pointer is on
+                // it, over the whole width of the card's text, which the clip of the card would cut off.
+                if let Some(page) = seen.url.as_deref().and_then(worktree::remote_web).and_then(|web| nekominal_term::links::openable(&web)) {
+                    let row = Rect::new(x - 6.0, y - 3.0, inner + 12.0, line + 6.0);
+                    if self.hover == Hit::BranchRemote {
+                        self.ui.pop_clip();
+                        widgets::plate(&mut self.ui, row, col(g.hover()));
+                        self.ui.push_clip(Rect::new(x, card.y, inner, card.h));
+                    }
+                    self.branch_remote = Some((row, page));
+                }
+                self.ui.icon(x, y + (line - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
                 let where_ = [host, seen.status.remote.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
                 let ww = self.ui.measure(&where_, SMALL_SIZE, false);
                 self.ui.text(right - ww, y + (line - small) / 2.0, &where_, SMALL_SIZE, quiet, false);
@@ -238,7 +243,7 @@ impl App {
             }
             // A remote whose address git does not give (only a push address set): its name.
             (None, Some(remote)) => {
-                self.ui.icon(x, y + (line - icon_line) / 2.0, '\u{E71B}', SMALL_SIZE, quiet);
+                self.ui.icon(x, y + (line - icon_line) / 2.0 + ICON_NUDGE, '\u{E71B}', SMALL_SIZE, quiet);
                 self.ui.text(x + TEXT_LEFT, y, remote, TEXT_SIZE, col(g.accent), false);
             }
             (None, None) => {
@@ -255,7 +260,7 @@ impl App {
         match (&seen.upstream, seen.status.behind) {
             (Some(upstream), Some(0)) if ahead == 0 => {
                 let ok = col(g.mark(g.success));
-                self.ui.icon(x + 10.0, y + (SYNC - icon_line) / 2.0, '\u{E73E}', SMALL_SIZE, ok);
+                self.ui.icon(x + 10.0, y + (SYNC - icon_line) / 2.0 + ICON_NUDGE, '\u{E73E}', SMALL_SIZE, ok);
                 let words = subagents_card::fit(&mut self.ui, &Text::BranchSynced.format(lang, &[upstream]), TEXT_SIZE, false, inner - 40.0);
                 self.ui.text(x + 10.0 + TEXT_LEFT, mid_y, &words, TEXT_SIZE, ok, false);
             }
@@ -296,7 +301,7 @@ impl App {
         // A line each, as the dialog of Remove this worktree has them, and the files under the line of changes.
         for check in &checks {
             let (glyph, color) = remove_dialog::mark_glyph(&g, check.mark);
-            self.ui.icon(x, y + (line - icon_line) / 2.0, glyph, SMALL_SIZE, color);
+            self.ui.icon(x, y + (line - icon_line) / 2.0 + ICON_NUDGE, glyph, SMALL_SIZE, color);
             let words = if check.mark == Mark::Note { quiet } else { text };
             let shown = subagents_card::fit(&mut self.ui, &check.text, TEXT_SIZE, false, inner - TEXT_LEFT);
             self.ui.text(x + TEXT_LEFT, y, &shown, TEXT_SIZE, words, false);

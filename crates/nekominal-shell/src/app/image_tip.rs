@@ -55,11 +55,9 @@ impl App {
         let (w, h) = preview::fit(tip.size.0, tip.size.1, room_w.max(40.0), room_h, self.scale);
         let card_w = (w + 2.0 * PAD).max(MIN_W);
         let card_h = PAD + h + 6.0 + small + PAD;
-        // Under the link, or over it when the window has no room below.
-        let x = tip.anchor.x.clamp(8.0, (width - card_w - 8.0).max(8.0));
-        let below = tip.anchor.y + tip.anchor.h + 4.0;
-        let y = if below + card_h <= window_h - 8.0 { below } else { (tip.anchor.y - 4.0 - card_h).max(8.0) };
-        let card = Rect::new(x, y, card_w, card_h);
+        // Under the link, or over it when the window has no room below, as the other cards hang from what opens them.
+        let (card, _) = hang(tip.anchor, (card_w, card_h), (width, window_h));
+        let (x, y) = (card.x, card.y);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         }

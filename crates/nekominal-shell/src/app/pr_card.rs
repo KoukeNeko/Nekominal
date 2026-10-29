@@ -100,14 +100,8 @@ impl App {
         height += 14.0 + BUTTON + PAD;
 
         // Under the badge, or over it when the window has no room below.
-        let (width, window_h) = (self.layout.size.0, self.layout.size.1);
-        let x = (anchor.x - 12.0).clamp(8.0, (width - WIDTH - 8.0).max(8.0));
-        let below = anchor.y + anchor.h + 6.0;
-        let y = if below + height <= window_h - 8.0 { below } else { (anchor.y - 6.0 - height).max(8.0) };
-        let card = Rect::new(x, y, WIDTH, height);
-        // The gap between the badge and the card is the card's too: the pointer crosses it on the way.
-        let (top, bottom) = if y >= anchor.y { (anchor.y + anchor.h, y + height) } else { (y, anchor.y) };
-        self.pr_card_rect = Some(Rect::new(x, top, WIDTH, bottom - top));
+        let (card, hit) = hang(anchor, (WIDTH, height), self.layout.size);
+        self.pr_card_rect = Some(hit);
         if self.panels_failed {
             self.ui.shadow(card, CORNER_RADIUS, 14.0, Color([0, 0, 0, 110]));
         }
@@ -218,6 +212,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_hangs_12_before_what_opens_it_and_6_below_or_above_it_when_there_is_no_room_and_inside_the_window() {
+        let window = (525.0, 600.0);
+        let (card, hit) = hang(Rect::new(62.0, 10.0, 40.0, 28.0), (340.0, 200.0), window);
+        assert_eq!((card.x, card.y), (50.0, 44.0), "12 before it, 6 below it");
+        assert_eq!((hit.x, hit.y, hit.h), (50.0, 38.0, 206.0), "the gap to the anchor is the card's too");
+        let (card, hit) = hang(Rect::new(62.0, 500.0, 40.0, 28.0), (340.0, 200.0), window);
+        assert_eq!(card.y, 294.0, "over it, 6 above, when it would run out of the window below");
+        assert_eq!((hit.y, hit.h), (294.0, 206.0));
+        assert_eq!(hang(Rect::new(480.0, 10.0, 40.0, 28.0), (340.0, 200.0), window).0.x, 525.0 - 340.0 - 8.0, "kept inside on the right");
+        assert_eq!(hang(Rect::new(5.0, 10.0, 40.0, 28.0), (340.0, 200.0), window).0.x, 8.0, "and on the left");
+    }
 
     #[test]
     fn the_card_names_what_keeps_a_pull_request_from_merging_and_its_review() {

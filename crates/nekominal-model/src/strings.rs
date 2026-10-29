@@ -591,7 +591,6 @@ texts! {
     BranchMain "branch.main";
     BranchWorktree "branch.worktree";
     BranchDetached "branch.detached";
-    BranchReading "branch.reading";
     BranchFailed "branch.failed";
     // {0} is the branch it pushes to (origin/master), {1} a count; the hours and days of the last commit's age.
     BranchSynced "branch.synced";

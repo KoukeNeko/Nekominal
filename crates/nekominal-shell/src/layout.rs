@@ -82,6 +82,8 @@ pub enum Hit {
     /// and the card, which the pointer on it keeps open.
     Branch,
     BranchCard,
+    /// The row of the card that names the remote: pressed, it opens the repository in the browser.
+    BranchRemote,
     /// The subagents piece of the bar, its card, and a row of the card (`App::sub_rows`), which opens the drawer.
     Subagents,
     SubCard,

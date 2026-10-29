@@ -372,6 +372,25 @@ pub fn remote_place(url: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// The web page of a remote: its https or http address without the user, the token and `.git`, with its port; an ssh or scp
+/// address as `https://host/path`, which has no port of a web server. None for a remote that is a folder, with no host.
+pub fn remote_web(url: &str) -> Option<String> {
+    let (host, path) = remote_place(url);
+    let (host, path) = (host?, path.trim_matches('/'));
+    if path.is_empty() {
+        return None;
+    }
+    let url = url.trim();
+    let scheme = ["https", "http"].into_iter().find(|scheme| url.len() > scheme.len() + 3 && url[..scheme.len() + 3].eq_ignore_ascii_case(&format!("{scheme}://")));
+    Some(match scheme {
+        Some(scheme) => {
+            let authority = url[scheme.len() + 3..].split('/').next().unwrap_or_default().rsplit('@').next().unwrap_or_default();
+            format!("{scheme}://{authority}/{path}")
+        }
+        None => format!("https://{host}/{path}"),
+    })
+}
+
 /// Inspects the worktree `dir` is in.
 pub fn inspect(dir: &Path) -> Result<Status, Error> {
     let dirs = git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]).map_err(|_| Error::NotRepo)?;
@@ -841,6 +860,18 @@ mod tests {
         assert_eq!(remote_place("D:/repos/x"), (None, "D:/repos/x"));
         assert_eq!(parse_commit("003c739\u{1f}feat: a\u{1f}b c\u{1f}1700000000"), Some(Commit { hash: "003c739".into(), subject: "feat: a".into(), author: "b c".into(), at: 1_700_000_000 }));
         assert_eq!(parse_commit("003c739\u{1f}no time"), None);
+    }
+
+    #[test]
+    fn a_remote_has_a_web_page_whatever_its_form_and_a_folder_has_none() {
+        assert_eq!(remote_web("https://github.com/KoukeNeko/Nekominal.git").as_deref(), Some("https://github.com/KoukeNeko/Nekominal"));
+        assert_eq!(remote_web("git@github.com:KoukeNeko/Nekominal.git").as_deref(), Some("https://github.com/KoukeNeko/Nekominal"));
+        assert_eq!(remote_web("ssh://git@gitlab.example.com:2222/group/sub/repo.git").as_deref(), Some("https://gitlab.example.com/group/sub/repo"), "no ssh port on a web page");
+        assert_eq!(remote_web("https://x-token:ghp_secret@git.example.com:8443/a/b/").as_deref(), Some("https://git.example.com:8443/a/b"), "the port of a web address stays, the token goes");
+        assert_eq!(remote_web("http://localhost:3000/a/b").as_deref(), Some("http://localhost:3000/a/b"));
+        assert_eq!(remote_web(r"C:\repos\shared.git"), None, "a folder is no page");
+        assert_eq!(remote_web("https://github.com"), None, "no repository in it");
+        assert_eq!(remote_web("HTTPS://GitHub.com/a/b").as_deref(), Some("https://GitHub.com/a/b"), "the scheme in any case");
     }
 
     #[test]
