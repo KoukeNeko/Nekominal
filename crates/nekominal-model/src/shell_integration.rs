@@ -198,13 +198,19 @@ fi
 pub const BASH_INIT_VAR: &str = "NEKOMINAL_BASH_INIT";
 
 /// Writes `text` to `name` in the folder of the shell scripts (`%LOCALAPPDATA%\Nekominal\shell`), unless it is there
-/// already, and returns its path. Line ends are LF whatever the checkout made of this source: bash fails on a CR.
+/// already, and returns its path. Line ends are LF whatever the checkout made of this source: bash fails on a CR. Written
+/// beside and moved over, under this process's name: another Nekominal starting a shell at the same moment reads the old
+/// script or the new one, never half of one.
 pub fn script_file(name: &str, text: &str) -> Option<PathBuf> {
     let file = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("shell").join(name);
     let text = text.replace('\r', "");
     if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
         std::fs::create_dir_all(file.parent()?).ok()?;
-        std::fs::write(&file, &text).ok()?;
+        let part = file.with_extension(format!("{}.part", std::process::id()));
+        if std::fs::write(&part, &text).and_then(|()| std::fs::rename(&part, &file)).is_err() {
+            let _ = std::fs::remove_file(&part);
+            return None;
+        }
     }
     Some(file)
 }

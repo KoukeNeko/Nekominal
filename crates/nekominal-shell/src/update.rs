@@ -85,11 +85,6 @@ pub fn contributors() -> Vec<String> {
     serde_json::from_str(CONTRIBUTORS).unwrap_or_default()
 }
 
-/// The PowerShell script that updates the app from its own console window, once process `pid` (this one) has closed:
-/// it waits for the process and for the OpenConsole it ran the shells on (Scoop does not replace a file that runs),
-/// brings Scoop and its buckets up to date (without that, the bucket on this computer may not know the new version
-/// yet), updates the app, and starts it again. When the version did not change it says so and waits for a key, so that
-/// what Scoop said stays on the screen.
 /// `text` as a single-quoted PowerShell string. PowerShell takes the curly quotes `‘ ’ ‚ ‛` for `'` too, so each of the
 /// five is doubled: `C:\Users\O’Neil` would otherwise end the string early.
 pub fn ps_quote(text: &str) -> String {
@@ -105,6 +100,11 @@ pub fn ps_quote(text: &str) -> String {
     quoted
 }
 
+/// The PowerShell script that updates the app from its own console window, once process `pid` (this one) has closed:
+/// it waits for the process and for the OpenConsole it ran the shells on (Scoop does not replace a file that runs),
+/// brings Scoop and its buckets up to date (without that, the bucket on this computer may not know the new version
+/// yet), updates the app, and starts it again. When the version did not change it says so and waits for a key, so that
+/// what Scoop said stays on the screen.
 pub fn update_script(pid: u32, app_dir: &Path) -> String {
     let quoted = |path: &Path| ps_quote(&path.display().to_string());
     let dir = quoted(app_dir);
