@@ -12,7 +12,7 @@ use windows::{
                 DWM_SYSTEMBACKDROP_TYPE, DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
                 DWMWA_WINDOW_CORNER_PREFERENCE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
             },
-            Gdi::{ClientToScreen, ScreenToClient, ValidateRect},
+            Gdi::{ClientToScreen, GetMonitorInfoW, MONITORINFO, MONITOR_DEFAULTTONEAREST, MonitorFromRect, ScreenToClient, ValidateRect},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -383,6 +383,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // bar is ours. When maximized the window overhangs the screen by the frame: keep the top inside it. Over the
         // whole monitor it is the whole window.
         WM_NCCALCSIZE if wparam.0 != 0 && is_fullscreen_marked(hwnd) => LRESULT(0),
+        // Full screen stays over a whole monitor: the style it keeps lets Snap (Win+arrows) half or maximize it. A move to
+        // another monitor (Win+Shift+arrows) covers that one; a minimize goes through.
+        WM_WINDOWPOSCHANGING if is_fullscreen_marked(hwnd) => {
+            // SAFETY: lParam points to the WINDOWPOS of the change.
+            unsafe {
+                let pos = &mut *(lparam.0 as *mut WINDOWPOS);
+                if !pos.flags.contains(SWP_NOMOVE) || !pos.flags.contains(SWP_NOSIZE) {
+                    let mut now = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut now);
+                    let (x, y) = if pos.flags.contains(SWP_NOMOVE) { (now.left, now.top) } else { (pos.x, pos.y) };
+                    let (w, h) = if pos.flags.contains(SWP_NOSIZE) { (now.right - now.left, now.bottom - now.top) } else { (pos.cx, pos.cy) };
+                    let to = RECT { left: x, top: y, right: x + w, bottom: y + h };
+                    let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+                    if !IsIconic(hwnd).as_bool() && x > -32000 && GetMonitorInfoW(MonitorFromRect(&to, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool() {
+                        let r = monitor.rcMonitor;
+                        (pos.x, pos.y, pos.cx, pos.cy) = (r.left, r.top, r.right - r.left, r.bottom - r.top);
+                        pos.flags &= !(SWP_NOMOVE | SWP_NOSIZE);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
         WM_NCCALCSIZE if wparam.0 != 0 => {
             // SAFETY: with wParam set, lParam points to an NCCALCSIZE_PARAMS.
             unsafe {
