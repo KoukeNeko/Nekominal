@@ -872,6 +872,42 @@ pub fn saved_environment() -> Option<Vec<(OsString, OsString)>> {
     }
 }
 
+/// How long the PATH of the registry stands before it is read again: a program installed meanwhile is found, and a command
+/// of the card is not a read of the registry.
+const FRESH_PATH_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The PATH Windows gives a program started anew (`saved_environment`), read at most every [`FRESH_PATH_AGE`].
+fn fresh_path() -> Option<OsString> {
+    static SEEN: std::sync::Mutex<Option<(std::time::Instant, Option<OsString>)>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, path)) = seen.as_ref().filter(|(at, _)| at.elapsed() < FRESH_PATH_AGE) {
+        return path.clone();
+    }
+    let path = saved_environment().and_then(|vars| vars.into_iter().find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("PATH")).map(|(_, value)| value));
+    *seen = Some((std::time::Instant::now(), path.clone()));
+    path
+}
+
+/// `program` (`git`, with `.exe` unless it has an extension) in the folders of `path`, never a relative one.
+fn find_exe(path: &OsStr, program: &str) -> Option<PathBuf> {
+    let file = if Path::new(program).extension().is_some() { program.to_owned() } else { format!("{program}.exe") };
+    std::env::split_paths(path).filter(|dir| dir.is_absolute()).map(|dir| dir.join(&file)).find(|candidate| candidate.is_file())
+}
+
+/// A command for a tool the app runs on its own account (`git`, `gh`), found and started with the PATH Windows gives a new
+/// program, as the panes have it. This process's own PATH may lack the folders of Scoop and Git: an update starts the app
+/// from a console of its own, and a launcher can hold an old environment. A tool that is on neither is started by its
+/// bare name, which fails as it always did.
+pub fn tool(program: &str) -> std::process::Command {
+    let path = fresh_path();
+    let found = path.as_deref().and_then(|path| find_exe(path, program));
+    let mut command = std::process::Command::new(found.as_deref().unwrap_or(Path::new(program)));
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command
+}
+
 /// A PATH whose quotes do not pair up (an installer that wrote `C:\Program Files\dotnet"`) loses its quotes. Windows
 /// ignores the stray one, but Go's `filepath.SplitList` (gh, and the tools agents run) reads it as an opening quote and
 /// takes every folder after it as part of one name: git and the rest of the user's PATH are then not found.
@@ -983,6 +1019,23 @@ mod tests {
             line,
             "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo -Command \"echo hi\""
         );
+    }
+
+    #[test]
+    fn a_tool_is_found_in_the_folders_of_the_path_and_started_with_that_path() {
+        let dir = std::env::temp_dir().join(format!("nekominal-tool-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mytool.exe"), b"").unwrap();
+        let path = std::env::join_paths([Path::new("relative"), dir.as_path()]).unwrap();
+        assert_eq!(find_exe(&path, "mytool"), Some(dir.join("mytool.exe")), "a bare name gets .exe");
+        assert_eq!(find_exe(&path, "mytool.exe"), Some(dir.join("mytool.exe")));
+        assert_eq!(find_exe(&path, "missing"), None);
+        let relative = std::env::join_paths([Path::new("relative")]).unwrap();
+        assert_eq!(find_exe(&relative, "mytool"), None, "never the current directory");
+        let _ = std::fs::remove_dir_all(&dir);
+        // cmd is found on the PATH of the registry and sees it as its own.
+        let output = tool("cmd").args(["/d", "/c", "echo %PATH%"]).output().expect("cmd runs through the PATH of Windows");
+        assert!(String::from_utf8_lossy(&output.stdout).to_ascii_lowercase().contains("system32"), "{output:?}");
     }
 
     #[test]

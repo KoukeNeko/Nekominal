@@ -126,13 +126,23 @@ pub fn add_args(path: &Path, branch: &str) -> Vec<OsString> {
     vec!["worktree".into(), "add".into(), "-b".into(), branch.into(), "--".into(), path.into()]
 }
 
+/// git, found on the PATH Windows gives a new program, as the panes have it (`nekominal_pty::conpty::tool`).
+fn git_command() -> Command {
+    nekominal_pty::conpty::tool("git")
+}
+
+/// Why git did not start, in words that say what is missing.
+fn git_not_run(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound { "git was not found on the PATH".to_owned() } else { format!("git: {e}") }
+}
+
 /// Runs git in `dir` with `args`: what it wrote, or the last line of what it complained of.
 fn git<I, S>(dir: &Path, args: I) -> Result<String, String>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new("git").arg("-C").arg(dir).args(args).creation_flags(CREATE_NO_WINDOW).output().map_err(|e| format!("git: {e}"))?;
+    let output = git_command().arg("-C").arg(dir).args(args).creation_flags(CREATE_NO_WINDOW).output().map_err(git_not_run)?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
@@ -145,7 +155,7 @@ where
 fn check_ignore(root: &Path, paths: &[&str]) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
-    let mut child = Command::new("git")
+    let mut child = git_command()
         .arg("-C")
         .arg(root)
         .args(["check-ignore", "--stdin", "-z"])
@@ -154,7 +164,7 @@ fn check_ignore(root: &Path, paths: &[&str]) -> Result<String, String> {
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
-        .map_err(|e| format!("git: {e}"))?;
+        .map_err(git_not_run)?;
     let input = paths.join("\0").into_bytes();
     let mut stdin = child.stdin.take().expect("piped");
     // Written from a thread of its own: git answers while it reads, and a full pipe both ways would hold both.

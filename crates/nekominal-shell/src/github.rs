@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc::{Receiver, Sender, channel},
     time::{Duration, Instant},
 };
@@ -142,7 +142,8 @@ pub fn parse(json: &str) -> Option<PullRequest> {
 /// Asks gh in `repo` for the pull request of the branch checked out there, stopping it after `GH_TIMEOUT`. Blocks: called on
 /// a thread of its own.
 fn ask_gh(repo: &Path) -> Option<PullRequest> {
-    let mut child = Command::new("gh")
+    // On the PATH Windows gives a new program, as the panes have it: the app's own may lack the folder of gh.
+    let mut child = nekominal_pty::conpty::tool("gh")
         .args(["pr", "view", "--json", FIELDS])
         .current_dir(repo)
         .env("GH_PROMPT_DISABLED", "1")
