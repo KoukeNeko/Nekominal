@@ -203,13 +203,11 @@ fn png(bytes: &[u8]) -> Result<Decoded, Failure> {
 }
 
 /// True for a path the terminal may delete after reading (`t=t`): kitty's rule, a file in the temporary folder whose
-/// path says `tty-graphics-protocol`.
+/// path says `tty-graphics-protocol`. Both read from the file the path leads to: Windows takes `..` away before it opens
+/// one, even after a folder that is not there, so `%TEMP%\tty-graphics-protocol\..\x` is `%TEMP%\x`.
 fn deletable(path: &std::path::Path) -> bool {
-    let temp = std::env::temp_dir();
-    let inside = |folder: &std::path::Path| {
-        path.canonicalize().ok().zip(folder.canonicalize().ok()).is_some_and(|(file, folder)| file.starts_with(folder))
-    };
-    path.to_string_lossy().contains("tty-graphics-protocol") && inside(&temp)
+    let (Ok(file), Ok(temp)) = (path.canonicalize(), std::env::temp_dir().canonicalize()) else { return false };
+    file.to_string_lossy().contains("tty-graphics-protocol") && file.starts_with(temp)
 }
 
 /// Reads the bytes a `t=f` / `t=t` transmission names. Only a file the protocol itself makes is read: in the temporary
@@ -323,11 +321,14 @@ mod tests {
         assert!(!temp.exists(), "the protocol's own temp file is deleted after the read");
 
         // A file that exists, one that does not, a folder, a share, a relative path: one answer, nothing to tell apart.
-        let refused = [path(&other), path(&folder.join("missing")), path(&folder), b64(b"\\\\server\\share\\x.png"), b64(b"relative.png")];
+        // And a path that names the marker on its way to another file: Windows goes up the `..` whether the folder is there or not.
+        let around = folder.join("tty-graphics-protocol").join("..").join("pixels.rgba");
+        let refused = [path(&other), path(&folder.join("missing")), path(&folder), b64(b"\\\\server\\share\\x.png"), b64(b"relative.png"), path(&around)];
         for payload in refused {
             assert_eq!(decode(&file, &payload).err().unwrap().code, "EPERM");
         }
-        assert!(other.exists());
+        assert_eq!(decode(&as_temp, &path(&around)).err().unwrap().code, "EPERM");
+        assert!(other.exists(), "not deleted by a path that only names the marker");
         let shm = Command::parse(b"t=s,f=32,s=1,v=1").unwrap();
         assert_eq!(decode(&shm, &b64(b"name")).err().unwrap().code, "EINVAL");
         let _ = std::fs::remove_dir_all(&folder);
