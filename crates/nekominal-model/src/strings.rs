@@ -586,6 +586,13 @@ texts! {
     BranchDetached "branch.detached";
     BranchReading "branch.reading";
     BranchFailed "branch.failed";
+    // {0} is the branch it pushes to (origin/master), {1} a count; the hours and days of the last commit's age.
+    BranchSynced "branch.synced";
+    BranchNoUpstream "branch.noUpstream";
+    BranchBehind "branch.behind";
+    BranchStashes "branch.stashes";
+    BranchHoursAgo "branch.hoursAgo";
+    BranchDaysAgo "branch.daysAgo";
     SubagentsTitle "subagents.title";
     SubagentsWorkflow "subagents.workflow";
     SubagentsRunning "subagents.running";

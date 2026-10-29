@@ -295,6 +295,73 @@ pub fn parse_ahead_behind(text: &str) -> Option<(usize, usize)> {
     }
 }
 
+/// The last commit of HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub hash: String,
+    pub subject: String,
+    pub author: String,
+    /// When it was committed, in seconds since 1970.
+    pub at: u64,
+}
+
+/// What the card of the branch in the title bar shows of a folder: what [`inspect`] finds, with where the branch pushes and
+/// how far from it it is, the last commit and the stashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overview {
+    pub status: Status,
+    /// The address of the remote (`https://github.com/a/b.git`, `git@github.com:a/b.git`).
+    pub url: Option<String>,
+    /// The branch it pushes to (`origin/master`), and how many commits that has that HEAD has not.
+    pub upstream: Option<String>,
+    pub behind: Option<usize>,
+    pub last: Option<Commit>,
+    pub stashes: usize,
+}
+
+/// [`inspect`] and the rest of what the card shows; a few more runs of git, read where nothing waits on them. What git said
+/// when the folder is not one it can read (no repository, a folder it does not trust), as it said it.
+pub fn overview(dir: &Path) -> Result<Overview, String> {
+    git(dir, ["rev-parse", "--show-toplevel"])?;
+    let status = inspect(dir).map_err(|e| match e {
+        Error::Git(said) => said,
+        other => format!("{other:?}"),
+    })?;
+    let path = status.path.clone();
+    let url = status.remote.as_ref().and_then(|remote| git(&path, ["remote", "get-url", remote]).ok()).filter(|url| !url.is_empty());
+    let upstream = git(&path, ["rev-parse", "--abbrev-ref", "@{upstream}"]).ok().filter(|name| !name.is_empty());
+    let behind = upstream.as_ref().and_then(|_| git(&path, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).ok()).and_then(|counts| parse_ahead_behind(&counts)).map(|(behind, _)| behind);
+    let last = git(&path, ["log", "-1", "--format=%h%x1f%s%x1f%an%x1f%ct"]).ok().and_then(|line| parse_commit(&line));
+    // No stash is no refs/stash, which git reports as an error.
+    let stashes = git(&path, ["rev-list", "--walk-reflogs", "--count", "refs/stash"]).ok().and_then(|n| n.parse().ok()).unwrap_or(0);
+    Ok(Overview { status, url, upstream, behind, last, stashes })
+}
+
+/// A commit from the line `git log --format=%h%x1f%s%x1f%an%x1f%ct` printed.
+fn parse_commit(line: &str) -> Option<Commit> {
+    let mut parts = line.split('\u{1f}');
+    let (hash, subject, author, at) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    Some(Commit { hash: hash.to_owned(), subject: subject.to_owned(), author: author.to_owned(), at: at.trim().parse().ok()? })
+}
+
+/// Where a remote is, as people name it: its host and its path without `.git` (`github.com`, `KoukeNeko/Nekominal`), from
+/// an https or ssh address or the `user@host:path` form of scp; a local folder is its path, with no host.
+pub fn remote_place(url: &str) -> (Option<&str>, &str) {
+    let url = url.trim().trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+    if let Some((_, rest)) = url.split_once("://") {
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        // Without the user (`git@`, a token) and the port.
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        return (Some(host.split(':').next().unwrap_or(host)).filter(|host| !host.is_empty()), path);
+    }
+    // `git@github.com:a/b`, not a drive (`C:\repo`, `C:/repo`).
+    match url.split_once(':') {
+        Some((host, path)) if host.len() > 1 && !host.contains(['/', '\\']) => (Some(host.rsplit_once('@').map_or(host, |(_, h)| h)), path),
+        _ => (None, url),
+    }
+}
+
 /// Inspects the worktree `dir` is in.
 pub fn inspect(dir: &Path) -> Result<Status, Error> {
     let dirs = git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]).map_err(|_| Error::NotRepo)?;
@@ -752,6 +819,39 @@ mod tests {
 
     fn commit(dir: &Path, message: &str) {
         git(dir, ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", message]).unwrap();
+    }
+
+    #[test]
+    fn a_remote_is_named_by_its_host_and_path_whatever_its_form() {
+        assert_eq!(remote_place("https://github.com/KoukeNeko/Nekominal.git"), (Some("github.com"), "KoukeNeko/Nekominal"));
+        assert_eq!(remote_place("https://x-token:ghp_secret@github.com:443/a/b/"), (Some("github.com"), "a/b"), "no user, token or port");
+        assert_eq!(remote_place("git@github.com:a/b.git"), (Some("github.com"), "a/b"));
+        assert_eq!(remote_place("ssh://git@gitlab.example.com:2222/group/sub/repo.git"), (Some("gitlab.example.com"), "group/sub/repo"));
+        assert_eq!(remote_place(r"C:\repos\shared.git"), (None, r"C:\repos\shared"), "a drive is no host");
+        assert_eq!(remote_place("D:/repos/x"), (None, "D:/repos/x"));
+        assert_eq!(parse_commit("003c739\u{1f}feat: a\u{1f}b c\u{1f}1700000000"), Some(Commit { hash: "003c739".into(), subject: "feat: a".into(), author: "b c".into(), at: 1_700_000_000 }));
+        assert_eq!(parse_commit("003c739\u{1f}no time"), None);
+    }
+
+    #[test]
+    fn the_overview_has_the_last_commit_the_stashes_and_how_far_from_upstream() {
+        let Some((base, repo)) = temp_repo("overview") else { return };
+        commit(&repo, "second");
+        let seen = overview(&repo).unwrap();
+        assert_eq!(seen.last.as_ref().map(|c| (c.subject.as_str(), c.author.as_str())), Some(("second", "t")));
+        assert_eq!((seen.upstream.as_deref(), seen.behind, seen.stashes, seen.url.as_deref()), (None, None, 0, None), "no remote, no upstream, no stash");
+        // A clone of it is one commit behind once the original moves on.
+        let clone = base.join("clone");
+        git(&base, [OsString::from("clone"), "-q".into(), repo.clone().into(), clone.clone().into()]).unwrap();
+        commit(&repo, "third");
+        git(&clone, ["fetch", "-q"]).unwrap();
+        std::fs::write(clone.join("a.txt"), "x").unwrap();
+        git(&clone, ["-c", "user.name=t", "-c", "user.email=t@example.com", "stash", "-q", "-u"]).unwrap();
+        let seen = overview(&clone).unwrap();
+        assert_eq!((seen.upstream.as_deref(), seen.behind, seen.stashes), (Some("origin/main"), Some(1), 1));
+        assert!(seen.url.is_some(), "the address of origin");
+        assert!(overview(&base).unwrap_err().contains("not a git repository"), "git's words when it is no repository");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

@@ -100,27 +100,41 @@ pub struct Facts {
 /// and whether it is merged into the default branch (by the pull request `pr`, when the window knows it). The dialog
 /// starts with them, and the card of the branch in the title bar shows them.
 pub fn status_checks(status: &Status, pr: Option<u64>, lang: Lang) -> Vec<Check> {
-    let line = |mark, text| Check { mark, text, files: Vec::new() };
-    let mut checks = Vec::new();
-    checks.push(if status.dirty() {
+    [Some(changes_check(status, lang)), push_check(status, lang), merge_check(status, pr, lang)].into_iter().flatten().collect()
+}
+
+fn line(mark: Mark, text: String) -> Check {
+    Check { mark, text, files: Vec::new() }
+}
+
+/// The changes of the folder with the first of their files, or that it has none.
+pub fn changes_check(status: &Status, lang: Lang) -> Check {
+    if status.dirty() {
         let files = status.files.iter().take(FILES).cloned().collect();
         Check { mark: Mark::Warn, text: Text::WorktreeChanged.format(lang, &[&(status.changed + status.untracked)]), files }
     } else {
         line(Mark::Ok, Text::WorktreeClean.get(lang).to_owned())
-    });
+    }
+}
+
+/// Whether the commits of the folder are pushed, or that there is nowhere to push to; none when git could not tell.
+pub fn push_check(status: &Status, lang: Lang) -> Option<Check> {
     match (&status.remote, status.unpushed) {
-        (None, _) => checks.push(line(Mark::Note, Text::WorktreeNoRemote.get(lang).to_owned())),
-        (Some(_), Some(n)) if n > 0 => checks.push(line(Mark::Warn, Text::WorktreeUnpushed.format(lang, &[&n]))),
-        (Some(remote), Some(_)) => checks.push(line(Mark::Ok, Text::WorktreePushed.format(lang, &[remote]))),
-        (Some(_), None) => {}
+        (None, _) => Some(line(Mark::Note, Text::WorktreeNoRemote.get(lang).to_owned())),
+        (Some(_), Some(n)) if n > 0 => Some(line(Mark::Warn, Text::WorktreeUnpushed.format(lang, &[&n]))),
+        (Some(remote), Some(_)) => Some(line(Mark::Ok, Text::WorktreePushed.format(lang, &[remote]))),
+        (Some(_), None) => None,
     }
+}
+
+/// Whether HEAD is merged into the default branch (by the pull request `pr`, when the window knows it).
+pub fn merge_check(status: &Status, pr: Option<u64>, lang: Lang) -> Option<Check> {
     match (&status.default_branch, status.merged, pr) {
-        (Some(default), Some(true), Some(pr)) => checks.push(line(Mark::Ok, Text::WorktreeMergedPr.format(lang, &[default, &pr]))),
-        (Some(default), Some(true), None) => checks.push(line(Mark::Ok, Text::WorktreeMerged.format(lang, &[default]))),
-        (Some(default), Some(false), _) => checks.push(line(Mark::Note, Text::WorktreeNotMerged.format(lang, &[default]))),
-        _ => {}
+        (Some(default), Some(true), Some(pr)) => Some(line(Mark::Ok, Text::WorktreeMergedPr.format(lang, &[default, &pr]))),
+        (Some(default), Some(true), None) => Some(line(Mark::Ok, Text::WorktreeMerged.format(lang, &[default]))),
+        (Some(default), Some(false), _) => Some(line(Mark::Note, Text::WorktreeNotMerged.format(lang, &[default]))),
+        _ => None,
     }
-    checks
 }
 
 /// The icon of a line of what was checked, and its colour.
@@ -138,7 +152,6 @@ pub fn model(status: &Status, facts: &Facts, lang: Lang) -> Result<Dialog, Refus
         return Err(Refusal::Main);
     }
     let Some(branch) = status.branch.as_deref() else { return Err(Refusal::Detached) };
-    let line = |mark, text| Check { mark, text, files: Vec::new() };
     let dirty = status.dirty();
     // With no remote there is nowhere to push to: nothing waits on it.
     let unpushed = status.remote.is_some() && status.unpushed.is_some_and(|n| n > 0);
