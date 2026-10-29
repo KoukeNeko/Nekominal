@@ -571,6 +571,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, |app| app.drop_files(at.x, at.y, &paths));
             LRESULT(0)
         }
+        crate::toast::WM_TOAST if wparam.0 as u64 == crate::toast::UPDATE => {
+            with_app(hwnd, App::open_about);
+            // SAFETY: a window of this thread. The click of a toast lets the app take the foreground.
+            unsafe {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+            }
+            LRESULT(0)
+        }
         crate::toast::WM_TOAST => {
             show_toast_tab(hwnd, wparam.0 as u64);
             LRESULT(0)

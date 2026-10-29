@@ -493,6 +493,7 @@ pub const TABLE: &[Descriptor] = &[
         },
     },
     toggle!("explorerMenu", Advanced, SettingsExplorerMenu, explorer_menu),
+    toggle!("checkUpdates", About, SettingsCheckUpdates, check_updates),
     toggle!("inheritEnvironment", Advanced, SettingsInheritEnvironment, inherit_environment),
     Descriptor {
         id: "editor",
@@ -764,7 +765,7 @@ mod tests {
         assert_eq!(ids(Section::Profiles), ["defaultProfile"]);
         assert_eq!(ids(Section::Keys), Vec::<&str>::new(), "the shortcuts page lists commands, not settings");
         assert_eq!(ids(Section::Advanced), ["explorerMenu", "inheritEnvironment", "editor", "language"]);
-        assert_eq!(ids(Section::About), Vec::<&str>::new(), "the About page shows the version, not settings");
+        assert_eq!(ids(Section::About), ["checkUpdates"], "the About page shows the version and whether to look for a newer one");
         assert_eq!(ids(Section::Triggers), Vec::<&str>::new(), "the Triggers page lists the rules, not settings");
         assert!(ids(Section::Terminal).contains(&"confirmClose"), "the close confirmation moved from General");
         assert!(ids(Section::Profiles).iter().chain(&ids(Section::Terminal)).all(|id| *id != "theme"));

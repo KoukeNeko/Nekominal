@@ -563,6 +563,10 @@ texts! {
     UpdateFailed "update.failed" "無法檢查更新，請確認網路連線" "Could not check for updates; check the connection";
     UpdateNotScoop "update.notScoop" "這份不是用 Scoop 安裝的" "This copy was not installed with Scoop";
     UpdateDownload "update.download" "開啟下載頁面" "Open the release page";
+    SettingsCheckUpdates "settings.checkUpdates" "自動檢查更新" "Check for updates automatically";
+    // The toast of a newer version the app found by itself. {0} is the version.
+    UpdateToastTitle "update.toastTitle" "Nekominal {0} 已推出" "Nekominal {0} is out";
+    UpdateToastBody "update.toastBody" "按一下開啟「關於」頁面更新" "Click to open the About page and update";
     SettingsConpty "settings.conpty" "ConPTY" "ConPTY";
     ConptyBundled "conpty.bundled" "隨附 {0}" "Bundled {0}";
     ConptySystem "conpty.system" "系統內建" "Built in";

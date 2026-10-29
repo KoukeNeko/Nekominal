@@ -59,6 +59,27 @@ pub fn check() -> Check {
     if newer(&latest, CURRENT) { Check::Newer(latest) } else { Check::Latest }
 }
 
+/// How long after the start the app first looks for a newer version by itself (`checkUpdates`), and how often after that.
+pub const AUTO_FIRST: std::time::Duration = std::time::Duration::from_secs(30);
+pub const AUTO_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// The file under the settings folder that holds the last version a toast told of.
+const ANNOUNCED_FILE: &str = "update-announced";
+
+/// Whether `latest` is still to be told of, and if so, records it: one toast per version, across starts.
+pub fn announce(latest: &str) -> bool {
+    let Some(file) = nekominal_model::store::config_dir().map(|dir| dir.join(ANNOUNCED_FILE)) else { return false };
+    announce_in(&file, latest)
+}
+
+fn announce_in(file: &Path, latest: &str) -> bool {
+    if std::fs::read_to_string(file).is_ok_and(|told| told.trim() == latest) {
+        return false;
+    }
+    let _ = file.parent().map(std::fs::create_dir_all);
+    let _ = std::fs::write(file, latest);
+    true
+}
+
 /// The people who have worked on the source, as the build took them in.
 pub fn contributors() -> Vec<String> {
     serde_json::from_str(CONTRIBUTORS).unwrap_or_default()
@@ -161,6 +182,18 @@ mod tests {
         assert_eq!(release_page(Some("0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(Some("v0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(None), "https://github.com/KoukeNeko/Nekominal/releases/latest");
+    }
+
+    #[test]
+    fn a_version_is_announced_once_across_starts_and_the_next_one_again() {
+        let dir = std::env::temp_dir().join(format!("nekominal-announce-{}", std::process::id()));
+        let file = dir.join("update-announced");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(announce_in(&file, "0.3.0"), "the first time, and the folder is made");
+        assert!(!announce_in(&file, "0.3.0"), "not again");
+        assert!(announce_in(&file, "0.3.1"), "a later version is told of");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "0.3.1");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -687,6 +687,8 @@ pub struct Settings {
     pub restore_session: bool,
     /// Explorer's right-click menu of a folder has "Open in Nekominal".
     pub explorer_menu: bool,
+    /// Looks for a newer version a while after the start and once a day, and says so once per version.
+    pub check_updates: bool,
     /// A new pane takes the environment Nekominal was started with, rather than the one Windows gives a program started
     /// anew (what Windows Terminal does by default, and its `compatibility.reloadEnvironmentVariables` turns off).
     pub inherit_environment: bool,
@@ -748,6 +750,7 @@ impl Default for Settings {
             confirm_close_threshold: 1,
             restore_session: false,
             explorer_menu: true,
+            check_updates: true,
             inherit_environment: false,
             editor: crate::editor::AUTO.to_owned(),
             welcomed: false,
@@ -1405,6 +1408,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
         confirm_close_threshold: number(&root, "confirmCloseThreshold", d.confirm_close_threshold as f64, (1.0, 1000.0), "", &mut problems) as u32,
         restore_session: boolean(&root, "restoreSession", d.restore_session, "", &mut problems),
         explorer_menu: boolean(&root, "explorerMenu", d.explorer_menu, "", &mut problems),
+        check_updates: boolean(&root, "checkUpdates", d.check_updates, "", &mut problems),
         inherit_environment: boolean(&root, "inheritEnvironment", d.inherit_environment, "", &mut problems),
         editor: text(&root, "editor", &d.editor, "", &mut problems),
         welcomed: boolean(&root, "welcomed", d.welcomed, "", &mut problems),
@@ -1825,6 +1829,13 @@ mod tests {
         assert_eq!(settings.schemes.len(), 3);
         assert!(import_schemes(&mut settings, "{ not json").is_err());
         assert_eq!(import_schemes(&mut settings, "{}"), Ok(Vec::new()), "a file without schemes adds none");
+    }
+
+    #[test]
+    fn updates_are_looked_for_unless_turned_off_and_that_is_written_back() {
+        assert!(Settings::default().check_updates);
+        let written = round_trips(Settings { check_updates: false, ..Settings::default() });
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), serde_json::json!({ "checkUpdates": false }));
     }
 
     #[test]

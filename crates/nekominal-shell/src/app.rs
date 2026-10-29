@@ -367,6 +367,8 @@ pub struct App {
     blink_since: Instant,
     /// What the last look for a newer version found, and whether the About page has not shown it yet: a thread fills it.
     update: Arc<std::sync::Mutex<(update::Check, bool)>>,
+    /// The look running now is one the app started by itself (`checkUpdates`): a newer version it finds gets a toast.
+    announce_update: bool,
     /// Claude Code as the Agent page last found it.
     claude: agent::Claude,
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
@@ -743,6 +745,7 @@ impl App {
             blink_armed: None,
             blink_since: Instant::now(),
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
+            announce_update: false,
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
@@ -2085,6 +2088,7 @@ impl App {
     /// A step of the scrolling a drag held outside the pane asks for.
     /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
     pub fn on_job_tick(&mut self) {
+        self.auto_update_check();
         let mut changed = false;
         // One snapshot of the processes of the system for every tab, and not at every tick: it costs the kernel some
         // milliseconds for a system of hundreds of processes, nearly all of a window's time at rest. It is taken again
@@ -2320,6 +2324,46 @@ impl App {
             // SAFETY: posting to a window that may be gone, which PostMessage reports and nothing else.
             unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)); }
         });
+    }
+
+    /// Looks for a newer version by itself (`checkUpdates`): `update::AUTO_FIRST` after the start, then every
+    /// `update::AUTO_EVERY`, once for the process whichever window's tick comes first; and tells of what it found once per
+    /// version, with a toast whose click opens the About page.
+    fn auto_update_check(&mut self) {
+        thread_local! {
+            static NEXT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+        }
+        if self.announce_update {
+            match self.update_check() {
+                update::Check::Checking => return,
+                update::Check::Newer(latest) if update::announce(&latest) => {
+                    let lang = self.language();
+                    let (title, body) = (Text::UpdateToastTitle.format(lang, &[&latest]), Text::UpdateToastBody.get(lang));
+                    if let Err(e) = crate::toast::show(self.hwnd, crate::toast::UPDATE, &title, body) {
+                        util::log(&format!("update toast: {e}"));
+                    }
+                }
+                _ => {}
+            }
+            self.announce_update = false;
+        }
+        let now = Instant::now();
+        let next = NEXT.with(|next| {
+            let at = next.get().unwrap_or(now + update::AUTO_FIRST);
+            next.set(Some(at));
+            at
+        });
+        if now < next || !self.settings.check_updates {
+            return;
+        }
+        NEXT.with(|n| n.set(Some(now + update::AUTO_EVERY)));
+        self.announce_update = true;
+        self.check_for_update();
+    }
+
+    /// The settings tab at the About page, the switch of the automatic look under the keyboard.
+    pub fn open_about(&mut self) {
+        self.open_settings_page(Some("checkUpdates"));
     }
 
     /// Updates with Scoop and starts the new version, the programs of every tab still running: a copy of this program in

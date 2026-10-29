@@ -24,6 +24,8 @@ pub const AUMID: &str = "KoukeNeko.Nekominal";
 /// Posted to a window when a toast it showed is clicked; the wParam is the uid of the tab.
 // Far from the WM_APP + n of the other modules, which count up from 1.
 pub const WM_TOAST: u32 = WM_APP + 0x50;
+/// The tab uid the toast of a newer version is shown with: no tab has it, and a click opens the About page.
+pub const UPDATE: u64 = u64::MAX;
 /// Toasts kept alive so their click still reaches the handler; the oldest go first.
 const KEPT: usize = 16;
 
