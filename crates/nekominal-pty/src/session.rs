@@ -530,6 +530,26 @@ mod tests {
     }
 
     #[test]
+    fn what_the_program_starts_does_not_take_its_place() {
+        let sessions = Sessions::default();
+        // cmd (root) -> powershell -> ping: the program the shell runs is powershell, however new ping is.
+        let config = cmd_config(&["/d", "/c", "powershell -NoProfile -Command ping -n 60 127.0.0.1"]);
+        let (id, session, _rx) = start(&sessions, &config);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let ping_started = || {
+            let list = crate::conpty::process_names().unwrap_or_default();
+            let ours = crate::conpty::with_descendants(session.job_process_ids(), &list);
+            list.iter().any(|(pid, _, name)| ours.contains(pid) && name.eq_ignore_ascii_case("ping.exe"))
+        };
+        while !ping_started() {
+            assert!(Instant::now() < deadline, "ping never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(session.job().map(|job| job.name.to_ascii_lowercase()).as_deref(), Some("powershell.exe"));
+        sessions.close(id);
+    }
+
+    #[test]
     fn a_shell_with_nothing_running_is_alone_in_its_job() {
         let sessions = Sessions::default();
         let config = cmd_config(&["/d", "/k"]);
