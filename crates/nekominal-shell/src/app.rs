@@ -64,6 +64,7 @@ mod drop;
 mod badges;
 mod tab_rows;
 mod context_card;
+mod branch_card;
 mod pr_card;
 mod subagents_card;
 mod subagents_drawer;
@@ -123,6 +124,8 @@ const PIECE_SIZE: f32 = 12.0;
 const SMALL_SIZE: f32 = 11.5;
 const PIECE_GAP: f32 = 14.0;
 const METER: f32 = 32.0;
+/// The glyph before the branch in the bar, which also tells the branch apart from the other pieces with a glyph.
+const BRANCH_GLYPH: char = '\u{E81C}';
 /// A tab of the strip narrower than this shows its number instead of its title, and one narrower than `ICON_FROM` leaves the
 /// icon of its program out, in DIP.
 const ORDINAL_BELOW: f32 = 64.0;
@@ -345,6 +348,11 @@ pub struct App {
     /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
     card_rect: Option<Rect>,
     remote_buttons: Option<[Rect; 2]>,
+    /// The branch of the bar and its card (with the gap above it) as they were drawn last, and what git said of the folder
+    /// the card is about, read on a thread of its own (`app/branch_card.rs`).
+    branch_rect: Option<Rect>,
+    branch_card_rect: Option<Rect>,
+    branch_read: Arc<std::sync::Mutex<branch_card::Read>>,
     /// The tab whose pull request's card is open with the badge it hangs from (its place in `badge_hits`), the card where
     /// it was drawn last (with the gap to its badge), and its buttons.
     pr_card: Option<(u64, usize)>,
@@ -761,6 +769,9 @@ impl App {
             meter_rect: None,
             card_rect: None,
             remote_buttons: None,
+            branch_rect: None,
+            branch_card_rect: None,
+            branch_read: Arc::default(),
             pr_card: None,
             pr_card_rect: None,
             pr_buttons: None,
@@ -1361,7 +1372,7 @@ impl App {
 
     /// The pointer is over the strip of tabs or what is empty of the title bar, where a tab can be put down.
     pub fn over_strip(&self, x: i32, y: i32) -> bool {
-        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Meter | Hit::Subagents | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
+        !self.mode().layout.is_side() && !matches!(self.hit_test(x, y), Hit::Pane | Hit::Waiting | Hit::Meter | Hit::Branch | Hit::Subagents | Hit::Badge(_) | Hit::None | Hit::Minimize | Hit::Maximize | Hit::Close)
     }
 
     /// The last tab (just handed over by another window) is held by the pointer, grab DIP from the left of its chip,
@@ -1580,6 +1591,10 @@ impl App {
         if answered {
             self.page_redraw();
         }
+        // git answered for the branch card.
+        if self.branch_read.lock().is_ok_and(|mut read| std::mem::take(&mut read.answered)) {
+            self.redraw();
+        }
         // The find bar searches the focused pane: only its output can change the matches.
         let focused_woke = self.focused().is_some_and(|entry| entry.wake.pending.load(Ordering::Acquire));
         self.output_seen |= self.tabs.iter().flat_map(|tab| &tab.panes).any(|entry| entry.wake.pending.load(Ordering::Acquire));
@@ -1752,6 +1767,12 @@ impl App {
         }
         if self.subagents_rect.is_some_and(|rect| rect.contains(x, y)) {
             return Hit::Subagents;
+        }
+        if self.branch_rect.is_some_and(|rect| rect.contains(x, y)) {
+            return Hit::Branch;
+        }
+        if self.branch_card_rect.is_some_and(|card| card.contains(x, y)) {
+            return Hit::BranchCard;
         }
         if self.sub_card_rect.is_some_and(|card| card.contains(x, y)) {
             return self.sub_rows.iter().position(|(row, _)| row.contains(x, y)).map_or(Hit::SubCard, Hit::SubRow);
@@ -3085,6 +3106,7 @@ impl App {
     fn paint_panels(&mut self) {
         self.panel_shapes.clear();
         self.paint_context_card();
+        self.paint_branch_card();
         self.paint_pr_card();
         self.paint_subagents_card();
         self.paint_subagents_drawer();
@@ -3555,6 +3577,7 @@ impl App {
         let right = self.layout.right;
         self.waiting_rect = None;
         self.meter_rect = None;
+        self.branch_rect = None;
         self.subagents_rect = None;
         self.ui.push_clip(right);
         let mut x = right.x;
@@ -3948,7 +3971,7 @@ impl App {
         // first when it said one. With an agent they follow what it says; without one they are all there is.
         let place = |pieces: &mut Vec<Piece>| {
             if let Some(branch) = entry.git.as_ref().map(|git| git.branch.clone()).filter(|_| show.branch) {
-                pieces.push(Piece::Glyph('\u{E81C}', branch));
+                pieces.push(Piece::Glyph(BRANCH_GLYPH, branch));
             }
             let cwd = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
             if let Some(cwd) = cwd.filter(|_| show.folder) {
@@ -4029,6 +4052,15 @@ impl App {
                 self.ui.text(x + METER + 6.0, text_y, &format!("{share:.0}%"), PIECE_SIZE, quiet, false);
             }
             Piece::Glyph(ch, text) => {
+                // The branch is what the pointer goes to for the branch card; lit while it is there, as the meter is.
+                if *ch == BRANCH_GLYPH {
+                    let w = ICON_SIZE + 6.0 + self.ui.measure(text, PIECE_SIZE, false);
+                    let plate = Rect::new(x - 6.0, (bar - 28.0) / 2.0, w + 12.0, 28.0);
+                    if matches!(self.hover, Hit::Branch | Hit::BranchCard) {
+                        widgets::plate(&mut self.ui, plate, col(g.hover()));
+                    }
+                    self.branch_rect = Some(plate);
+                }
                 let icon_line = self.ui.line_height(ICON_SIZE);
                 self.ui.icon(x, (bar - icon_line) / 2.0 + ICON_NUDGE, *ch, ICON_SIZE, quiet);
                 self.ui.text(x + ICON_SIZE + 6.0, text_y, text, PIECE_SIZE, quiet, false);

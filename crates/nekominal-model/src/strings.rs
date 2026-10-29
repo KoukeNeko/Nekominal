@@ -580,6 +580,12 @@ texts! {
     CardLines "card.lines";
     CardIn "card.in";
     CardOut "card.out";
+    // The card of the branch, under it in the title bar: what the folder is, and while git is asked, or when it cannot say.
+    BranchMain "branch.main";
+    BranchWorktree "branch.worktree";
+    BranchDetached "branch.detached";
+    BranchReading "branch.reading";
+    BranchFailed "branch.failed";
     SubagentsTitle "subagents.title";
     SubagentsWorkflow "subagents.workflow";
     SubagentsRunning "subagents.running";

@@ -96,6 +96,42 @@ pub struct Facts {
     pub agent: Option<String>,
 }
 
+/// What git says of a folder, a line each: its changes with the first of their files, whether its commits are pushed,
+/// and whether it is merged into the default branch (by the pull request `pr`, when the window knows it). The dialog
+/// starts with them, and the card of the branch in the title bar shows them.
+pub fn status_checks(status: &Status, pr: Option<u64>, lang: Lang) -> Vec<Check> {
+    let line = |mark, text| Check { mark, text, files: Vec::new() };
+    let mut checks = Vec::new();
+    checks.push(if status.dirty() {
+        let files = status.files.iter().take(FILES).cloned().collect();
+        Check { mark: Mark::Warn, text: Text::WorktreeChanged.format(lang, &[&(status.changed + status.untracked)]), files }
+    } else {
+        line(Mark::Ok, Text::WorktreeClean.get(lang).to_owned())
+    });
+    match (&status.remote, status.unpushed) {
+        (None, _) => checks.push(line(Mark::Note, Text::WorktreeNoRemote.get(lang).to_owned())),
+        (Some(_), Some(n)) if n > 0 => checks.push(line(Mark::Warn, Text::WorktreeUnpushed.format(lang, &[&n]))),
+        (Some(remote), Some(_)) => checks.push(line(Mark::Ok, Text::WorktreePushed.format(lang, &[remote]))),
+        (Some(_), None) => {}
+    }
+    match (&status.default_branch, status.merged, pr) {
+        (Some(default), Some(true), Some(pr)) => checks.push(line(Mark::Ok, Text::WorktreeMergedPr.format(lang, &[default, &pr]))),
+        (Some(default), Some(true), None) => checks.push(line(Mark::Ok, Text::WorktreeMerged.format(lang, &[default]))),
+        (Some(default), Some(false), _) => checks.push(line(Mark::Note, Text::WorktreeNotMerged.format(lang, &[default]))),
+        _ => {}
+    }
+    checks
+}
+
+/// The icon of a line of what was checked, and its colour.
+pub fn mark_glyph(g: &Glass, mark: Mark) -> (char, Color) {
+    match mark {
+        Mark::Ok => ('\u{E73E}', col(g.mark(g.success))),
+        Mark::Warn => ('\u{E7BA}', col(g.mark(g.warning))),
+        Mark::Note => ('\u{E737}', col(g.text_secondary())),
+    }
+}
+
 /// The dialog for the worktree `status` describes; the main checkout and a worktree on no branch are refused before it.
 pub fn model(status: &Status, facts: &Facts, lang: Lang) -> Result<Dialog, Refusal> {
     if status.main {
@@ -108,25 +144,7 @@ pub fn model(status: &Status, facts: &Facts, lang: Lang) -> Result<Dialog, Refus
     let unpushed = status.remote.is_some() && status.unpushed.is_some_and(|n| n > 0);
     let merged = status.merged == Some(true);
 
-    let mut checks = Vec::new();
-    checks.push(if dirty {
-        let files = status.files.iter().take(FILES).cloned().collect();
-        Check { mark: Mark::Warn, text: Text::WorktreeChanged.format(lang, &[&(status.changed + status.untracked)]), files }
-    } else {
-        line(Mark::Ok, Text::WorktreeClean.get(lang).to_owned())
-    });
-    match (&status.remote, status.unpushed) {
-        (None, _) => checks.push(line(Mark::Note, Text::WorktreeNoRemote.get(lang).to_owned())),
-        (Some(_), Some(n)) if n > 0 => checks.push(line(Mark::Warn, Text::WorktreeUnpushed.format(lang, &[&n]))),
-        (Some(remote), Some(_)) => checks.push(line(Mark::Ok, Text::WorktreePushed.format(lang, &[remote]))),
-        (Some(_), None) => {}
-    }
-    match (&status.default_branch, status.merged, facts.pr) {
-        (Some(default), Some(true), Some(pr)) => checks.push(line(Mark::Ok, Text::WorktreeMergedPr.format(lang, &[default, &pr]))),
-        (Some(default), Some(true), None) => checks.push(line(Mark::Ok, Text::WorktreeMerged.format(lang, &[default]))),
-        (Some(default), Some(false), _) => checks.push(line(Mark::Note, Text::WorktreeNotMerged.format(lang, &[default]))),
-        _ => {}
-    }
+    let mut checks = status_checks(status, facts.pr, lang);
     // Not a reason to refuse (git removes them without asking, and they are mostly build output), but the folder takes
     // them: a `.env` that exists only here goes too.
     if status.ignored > 0 {
@@ -252,11 +270,7 @@ pub fn paint(ui: &mut Ui, g: &Glass, view: &View, rows: &[Row], rects: &[Rect], 
     ui.text(PAD, PAD, &dialog.title, TITLE_SIZE, text_color, true);
     ui.mono(PAD, PAD + title + 4.0, &dialog.path, SMALL_SIZE, quiet);
     for (check, &y) in dialog.checks.iter().zip(&layout.checks) {
-        let (glyph, color) = match check.mark {
-            Mark::Ok => ('\u{E73E}', col(g.mark(g.success))),
-            Mark::Warn => ('\u{E7BA}', col(g.mark(g.warning))),
-            Mark::Note => ('\u{E737}', quiet),
-        };
+        let (glyph, color) = mark_glyph(g, check.mark);
         let icon_line = ui.line_height(ICON_SIZE);
         ui.icon(PAD, y + (text - icon_line) / 2.0, glyph, ICON_SIZE, color);
         ui.text(TEXT_LEFT, y, &check.text, TEXT_SIZE, if check.mark == Mark::Note { quiet } else { text_color }, false);

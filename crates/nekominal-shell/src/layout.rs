@@ -78,6 +78,10 @@ pub enum Hit {
     PrOpen,
     PrCopy,
     PrDismiss,
+    /// The branch of the focused pane's folder in the bar: the pointer on it shows the branch card (`app/branch_card.rs`);
+    /// and the card, which the pointer on it keeps open.
+    Branch,
+    BranchCard,
     /// The subagents piece of the bar, its card, and a row of the card (`App::sub_rows`), which opens the drawer.
     Subagents,
     SubCard,
