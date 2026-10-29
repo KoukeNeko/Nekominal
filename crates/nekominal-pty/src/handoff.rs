@@ -89,6 +89,19 @@ pub struct PaneState {
 pub struct WindowState {
     pub session: serde_json::Value,
     pub panes: Vec<PaneState>,
+    /// The settings tab, when the window had it open, which the session leaves out. A side that does not know the field
+    /// leaves the settings out, as before it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<SettingsTab>,
+}
+
+/// Where the settings tab was: its place among all the tabs of the window, whether it was in view, and the section of
+/// the page it showed (an index of the sections in their order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsTab {
+    pub at: usize,
+    pub selected: bool,
+    pub section: usize,
 }
 
 /// What a process hands over: its windows, and which program and version it was, to start again if the new one fails.
@@ -350,7 +363,7 @@ mod tests {
             pid: 7,
             exe: r"C:\Users\a\scoop\apps\nekominal\current\Nekominal.exe".into(),
             version: "0.2.3".into(),
-            windows: vec![WindowState {
+            windows: vec![WindowState { settings: None,
                 session: serde_json::json!({ "version": 1, "tabs": [] }),
                 panes: vec![PaneState {
                     tab: 0,

@@ -313,7 +313,7 @@ mod tests {
         let parts = || wire::Parts { job: event(), process: event(), input: event(), output: event(), signal: event(), reference: event(), console: event(), pid: 1 };
         let pane = |session: &str, parts| wire::PaneState { tab: 0, pane: 1, session: session.into(), title: String::new(), cols: 80, rows: 24, screen: String::new(), parts };
         let (taken, left) = (parts(), parts());
-        let window = WindowState { session: serde_json::json!({}), panes: vec![pane("1-1", Some(taken)), pane("1-2", Some(left)), pane("1-3", None)] };
+        let window = WindowState { settings: None, session: serde_json::json!({}), panes: vec![pane("1-1", Some(taken)), pane("1-2", Some(left)), pane("1-3", None)] };
         set_pending(window.clone());
         assert!(take_pending().is_some() && take_pending().is_none(), "taken once");
         consumed("1-1", true);
@@ -323,7 +323,7 @@ mod tests {
             assert!(CloseHandle(HANDLE(taken.job as *mut _)).is_ok(), "a pane's handles are the pane's");
             assert!(CloseHandle(HANDLE(left.job as *mut _)).is_err(), "the handles nobody took are closed");
         }
-        let window = WindowState { session: serde_json::json!({}), panes: vec![pane("1-1", Some(taken))] };
+        let window = WindowState { settings: None, session: serde_json::json!({}), panes: vec![pane("1-1", Some(taken))] };
         set_pending(window.clone());
         consumed("1-1", true);
         assert!(window_done(&window, false).is_empty(), "a window that was not made adopted nothing");

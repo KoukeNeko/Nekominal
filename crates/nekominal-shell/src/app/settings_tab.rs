@@ -95,6 +95,14 @@ pub(super) fn kept(tabs: &[Tab], selected: usize) -> (Vec<&Tab>, usize) {
     (kept, active)
 }
 
+/// Where the settings tab goes back among `count` other tabs (`selected` the one in view of them), as an update handed it
+/// over, and which tab is then in view: the inverse of [`kept`].
+pub(super) fn put_back(count: usize, selected: usize, settings: nekominal_pty::handoff::SettingsTab) -> (usize, usize) {
+    let at = settings.at.min(count);
+    let selected = if settings.selected || count == 0 { at } else if at <= selected { selected + 1 } else { selected };
+    (at, selected)
+}
+
 impl App {
     /// The settings tab is the tab in view, and the page is there to show in it.
     pub(super) fn page_shown(&self) -> bool {
@@ -278,6 +286,28 @@ mod tests {
         let alone = vec![Tab::settings()];
         let (nothing, active) = kept(&alone, 0);
         assert!(nothing.is_empty() && active == 0, "nothing to keep: the next run starts afresh");
+    }
+
+    /// An update hands the tabs over without the settings, then puts them back: the order and the tab in view are as before.
+    #[test]
+    fn the_settings_tab_comes_back_through_an_update_where_it_was_and_as_it_was_in_view() {
+        use nekominal_pty::handoff::SettingsTab;
+        for (count, settings_at) in [(2, 0), (2, 1), (2, 2), (0, 0), (1, 1)] {
+            for selected in 0..=count {
+                let mut tabs: Vec<Tab> = (0..count).map(|_| Tab::empty()).collect();
+                tabs.insert(settings_at, Tab::settings());
+                let order: Vec<u64> = tabs.iter().map(|tab| tab.uid).collect();
+                let (others, active) = kept(&tabs, selected);
+                let others: Vec<u64> = others.iter().map(|tab| tab.uid).collect();
+                let handed = SettingsTab { at: settings_at, selected: selected == settings_at, section: 7 };
+                let (at, now) = put_back(others.len(), active, handed);
+                let mut back = others.clone();
+                back.insert(at, order[settings_at]);
+                assert_eq!((back, now), (order.clone(), selected), "{count} tabs, the settings at {settings_at}, {selected} in view");
+            }
+        }
+        let gone = SettingsTab { at: 9, selected: false, section: 0 };
+        assert_eq!(put_back(2, 1, gone), (2, 1), "a place past the end is the end");
     }
 
     #[test]

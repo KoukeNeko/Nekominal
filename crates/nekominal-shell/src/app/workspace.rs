@@ -484,6 +484,16 @@ impl App {
         }
         if !self.tabs.is_empty() {
             self.selected = session.active_tab.min(self.tabs.len() - 1);
+        }
+        // The settings come back where they were, on the page they showed, and in view if they were.
+        if let Some(settings) = window.settings {
+            let at;
+            (at, self.selected) = settings_tab::put_back(self.tabs.len(), self.selected, settings);
+            self.tabs.insert(at, Tab::settings());
+            let section = settings.section.min(Section::ALL.len() - 1);
+            self.page = Some(Page { section, layouts: layout_names(), ..Page::default() });
+        }
+        if !self.tabs.is_empty() {
             self.relayout();
             self.sync_focus();
         }
@@ -516,7 +526,8 @@ impl App {
                 });
             }
         }
-        nekominal_pty::handoff::WindowState { session: session.to_value(), panes }
+        let settings = self.tabs.iter().position(|tab| tab.settings).zip(self.page.as_ref()).map(|(at, page)| nekominal_pty::handoff::SettingsTab { at, selected: self.selected == at, section: page.section });
+        nekominal_pty::handoff::WindowState { session: session.to_value(), panes, settings }
     }
 
     /// Every pane reads its output again, after a hand-off that went no further.

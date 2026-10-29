@@ -285,7 +285,7 @@ mod tests {
             pid: 1,
             exe: r"C:\x\Nekominal.exe".into(),
             version: "0.2.3".into(),
-            windows: vec![WindowState { session: serde_json::json!({}), panes: vec![pane("1-1", Some(kept)), pane("1-2", None), pane("1-3", Some(dropped))] }],
+            windows: vec![WindowState { settings: None, session: serde_json::json!({}), panes: vec![pane("1-1", Some(kept)), pane("1-2", None), pane("1-3", Some(dropped))] }],
         };
         assert_eq!(ask(&pipe, &Message::Give { v: PROTOCOL + 1, bundle: bundle.clone() }), Message::Error { message: format!("this updater speaks version {PROTOCOL}, not {}", PROTOCOL + 1) });
         assert_eq!(ask(&pipe, &Message::Give { v: PROTOCOL, bundle }), Message::Ok);

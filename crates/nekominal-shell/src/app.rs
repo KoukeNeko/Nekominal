@@ -162,6 +162,8 @@ const BLINK_IDLE: Duration = Duration::from_secs(5);
 /// How long the panels stay closed before their swap chain gives its memory back: moving between the meter and the card
 /// closes and opens them, and making the buffers again every time costs more than keeping them a few seconds.
 const PANELS_SHRINK_MS: u32 = 3000;
+/// How long after an update handed a pane over it gets its size back (`PaneEntry::regrow`).
+const REGROW_AFTER: Duration = Duration::from_millis(500);
 
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
@@ -1092,6 +1094,7 @@ impl App {
             }
         });
         let core = logic::core_config(&self.settings);
+        let regrow = matches!(start, Start::HandedOver(..)).then(Instant::now);
         let (session, pane, title) = match start {
             Start::Fresh(restored) => {
                 let session = agent::new_session();
@@ -1111,9 +1114,10 @@ impl App {
                 let pane = Pane::adopt_prepared(&parts, state.cols, state.rows, core, wake, |term| term.show_handoff(&state.screen));
                 if let Ok(pane) = &pane {
                     crate::handoff::consumed(&state.session, true);
-                    // Once smaller and back: a full-screen program (Claude Code, vim) draws its whole screen again.
+                    // A row smaller now and back on the next tick of the jobs (`regrow`), so that a full-screen program
+                    // (Claude Code, vim) draws its whole screen again. Both at once were missed: Node looks at the size
+                    // of the console when it hears of a change, and found the old one again.
                     pane.resize(state.cols, state.rows.saturating_sub(1).max(1));
-                    pane.resize(state.cols, state.rows);
                 }
                 (state.session.clone(), pane, state.title.clone())
             }
@@ -1124,6 +1128,7 @@ impl App {
             pane,
             view,
             grid: (cols as u16, rows as u16),
+            regrow,
             rect: PxRect { x: 0, y: 0, w: size_px.0 as i32, h: size_px.1 as i32 },
             title,
             cwd: None,
@@ -2111,6 +2116,11 @@ impl App {
     /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
     pub fn on_job_tick(&mut self) {
         self.auto_update_check();
+        // Not at once: a tick that comes just after the pane was adopted would make the two sizes one change again.
+        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()).filter(|entry| entry.regrow.is_some_and(|at| at.elapsed() >= REGROW_AFTER)) {
+            entry.regrow = None;
+            entry.pane.resize(entry.grid.0, entry.grid.1);
+        }
         let mut changed = false;
         // One snapshot of the processes of the system for every tab, and not at every tick: it costs the kernel some
         // milliseconds for a system of hundreds of processes, nearly all of a window's time at rest. It is taken again
