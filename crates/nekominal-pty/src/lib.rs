@@ -3,6 +3,7 @@
 
 pub mod conpty;
 pub mod handoff;
+pub mod netdrive;
 pub mod profiles;
 pub mod relocate;
 pub mod session;

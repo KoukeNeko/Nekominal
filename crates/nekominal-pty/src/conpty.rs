@@ -634,10 +634,12 @@ const MAX_CWD: usize = 258;
 
 /// Directory a child starts in: `requested` when it is an existing directory (its nearest parent
 /// short enough when it is too long to start in), otherwise the home directory, otherwise `None`
-/// (the child inherits this process's directory).
+/// (the child inherits this process's directory). A folder that is none here because it is on a network drive this
+/// process does not have (the drives of the user are not those of an administrator's session) is taken by its share.
 pub fn resolve_cwd(requested: Option<&Path>) -> Option<PathBuf> {
+    let on_share = requested.filter(|dir| !dir.is_dir()).and_then(crate::netdrive::unc_of).filter(|dir| dir.is_dir());
     pick_directory(
-        requested,
+        on_share.as_deref().or(requested),
         std::env::var_os("USERPROFILE").map(PathBuf::from),
     )
 }

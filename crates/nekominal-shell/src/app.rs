@@ -5285,6 +5285,9 @@ impl App {
         }
         let mut args = crate::integration::profile_arguments(&profile.id);
         if let Some(directory) = directory {
+            // On a mapped network drive it goes as the share: the elevated window has the drives of its own session, not
+            // of this one.
+            let directory = nekominal_pty::netdrive::unc_of(std::path::Path::new(directory)).map_or_else(|| directory.to_owned(), |share| share.display().to_string());
             // `\.` so that a drive root (`C:\`) does not escape the closing quote.
             args.push_str(&format!(" -d \"{}\\.\"", directory.trim_end_matches('\\').replace('"', "")));
         }
