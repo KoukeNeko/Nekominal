@@ -633,6 +633,12 @@ texts! {
     UpdateFailed "update.failed";
     UpdateNotScoop "update.notScoop";
     UpdateDownload "update.download";
+    // The row of the About page that names how this copy is updated, and what becomes of the open tabs while it is.
+    UpdateViaScoop "update.viaScoop";
+    UpdateViaInstaller "update.viaInstaller";
+    UpdateViaManual "update.viaManual";
+    UpdateKeepsSessions "update.keepsSessions";
+    UpdateEndsSessions "update.endsSessions";
     SettingsCheckUpdates "settings.checkUpdates";
     // The notes of the releases on the About page: of the versions after this one, or of this one.
     SettingsReleaseNotes "settings.releaseNotes";

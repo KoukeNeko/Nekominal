@@ -367,6 +367,8 @@ pub enum Entry {
     Claude,
     /// Nekominal itself: its version, whether a newer one is out, and the buttons that look and update.
     About,
+    /// Under it: how this copy is updated, and what becomes of its open tabs while it is.
+    UpdateWay,
     /// What is new: the notes of the versions after this one when one is out, else of this one, as GitHub has them.
     Notes,
     /// Where its source is, and who has worked on it.
@@ -400,7 +402,7 @@ impl Entry {
             Entry::Snippets | Entry::PushTest | Entry::ToastTest => Section::Terminal,
             Entry::Trigger(_) | Entry::TriggerPresets => Section::Triggers,
             Entry::Layouts => Section::Profiles,
-            Entry::About | Entry::Notes | Entry::Repo | Entry::Contributors => Section::About,
+            Entry::About | Entry::UpdateWay | Entry::Notes | Entry::Repo | Entry::Contributors => Section::About,
             Entry::NewProfile | Entry::ProfileHeader | Entry::ProfileField(_) => Section::Profiles,
         }
     }
@@ -439,6 +441,17 @@ pub fn step_focus(entries: &[Entry], focus: Option<usize>, down: bool) -> Option
 /// What a rule is called on its plate and to a screen reader: its name, or for the one being added what adds it.
 pub fn trigger_title(rule: &Trigger, lang: Lang) -> String {
     if rule.name.is_empty() { Text::TriggerAdd.get(lang).to_owned() } else { rule.name.clone() }
+}
+
+/// What the About page says of how this copy is updated, and of the open tabs while it is: those of an update by Scoop or by
+/// the installer go on, the programs in them with them; a copy updated by hand ends its tabs when it is closed.
+pub fn update_way_text(way: crate::update::Way, lang: Lang) -> (&'static str, &'static str) {
+    use crate::update::Way;
+    match way {
+        Way::Scoop => (Text::UpdateViaScoop.get(lang), Text::UpdateKeepsSessions.get(lang)),
+        Way::Installer => (Text::UpdateViaInstaller.get(lang), Text::UpdateKeepsSessions.get(lang)),
+        Way::Manual => (Text::UpdateViaManual.get(lang), Text::UpdateEndsSessions.get(lang)),
+    }
 }
 
 /// What the About page says of the look for a newer version.
@@ -492,7 +505,7 @@ pub struct View<'a> {
     pub area: Rect,
     /// What the last look for a newer version found, and whether this copy can update itself (Scoop or the installer put it in place).
     pub update: crate::update::Check,
-    pub updates_itself: bool,
+    pub update_way: crate::update::Way,
     /// The notes of the published releases, as the last look read them; the page shows those `update::notes_to_show` picks.
     pub notes: &'a [crate::update::Notes],
     /// What the last test push came to, and how long ago it was sent.
@@ -562,7 +575,7 @@ pub fn entries(page: &Page, lang: Lang, keymap: &Keymap, settings: &Settings, no
     } else {
         // The Agent page starts with the agents it knows, before the rows of the table.
         let agents = (section == Section::Agents).then_some(Entry::Claude);
-        let about = if section == Section::About { [Some(Entry::About), notes.then_some(Entry::Notes), Some(Entry::Repo), Some(Entry::Contributors)].into_iter().flatten().collect() } else { Vec::new() };
+        let about = if section == Section::About { [Some(Entry::About), Some(Entry::UpdateWay), notes.then_some(Entry::Notes), Some(Entry::Repo), Some(Entry::Contributors)].into_iter().flatten().collect() } else { Vec::new() };
         let new_profile = (section == Section::Profiles).then_some(Entry::NewProfile).into_iter().chain((section == Section::Profiles).then_some(Entry::Layouts));
         // The snippets are a section of their own, not the last rows' (the push rows end the Terminal page before them).
         let snippets = (section == Section::Terminal).then_some([Entry::Heading(Text::SettingsSnippetsHeading), Entry::Snippets]).into_iter().flatten();
@@ -1131,7 +1144,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let check_rect = controls.button(measure, check);
                 // Placed from the right, drawn from the left: the update comes first to the keyboard and to a screen reader.
                 if newer {
-                    let update = if view.updates_itself { Text::AppUpdate } else { Text::UpdateDownload }.get(lang);
+                    let update = if view.update_way.itself() { Text::AppUpdate } else { Text::UpdateDownload }.get(lang);
                     let update_rect = controls.button(measure, update);
                     text_button(&mut items, update_rect, Part::Update, update, true, hover);
                 }
@@ -1140,8 +1153,15 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let room = (controls.right - text.x - INNER).max(0.0);
                 let title = format!("Nekominal  {}", crate::update::CURRENT);
                 // A newer version Scoop did not install says so after what the look found.
-                let note = if newer && !view.updates_itself { format!("{} · {}", update_note(&view.update, lang), Text::UpdateNotScoop.get(lang)) } else { update_note(&view.update, lang) };
+                let note = if newer && !view.update_way.itself() { format!("{} · {}", update_note(&view.update, lang), Text::UpdateNotScoop.get(lang)) } else { update_note(&view.update, lang) };
                 row_label(&mut items, text, room, &title, Some(&note), Tone::Text);
+                y += ROW;
+            }
+            Entry::UpdateWay => {
+                let rect = Rect::new(x0, y, content_width, ROW - ROW_GAP);
+                row_plate(&mut items, rect, None, focus);
+                let (way, tabs) = update_way_text(view.update_way, lang);
+                row_label(&mut items, rect, rect.w - 2.0 * INNER, way, Some(tabs), Tone::Text);
                 y += ROW;
             }
             Entry::Notes => {
@@ -1636,7 +1656,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -1645,7 +1665,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let widest = |width: f32| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))).map(|item| item.rect.w).fold(0.0, f32::max)
         };
@@ -1669,7 +1689,7 @@ mod tests {
             // contributors.
             let own = match section {
                 Section::Agents => 1,
-                Section::About => 3,
+                Section::About => 4,
                 // The snippets under a heading of their own, and the tests of the push and of the notifications of Windows.
                 Section::Terminal => 4,
                 Section::Profiles => 2,
@@ -1748,7 +1768,7 @@ mod tests {
     fn the_search_line_is_lit_only_once_it_is_pressed_or_typed_in_and_not_while_a_row_has_the_keyboard() {
         let settings = Settings::default();
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, 900.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, 900.0, 650.0) };
         let lit = |page: &Page| {
             let frame = build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -1765,7 +1785,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for (width, height) in [(760.0, 480.0), (900.0, 650.0), (1400.0, 900.0)] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, width, height) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -1828,29 +1848,51 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
-        let parts = |update: Check, updates_itself: bool| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, updates_itself, notes: &[] };
+        let parts = |update: Check, update_way: crate::update::Way| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, update_way, notes: &[] };
             let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let texts: Vec<String> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect();
             (frame.items.iter().filter_map(|item| item.part).filter(|p| matches!(p, Part::Update | Part::CheckUpdate)).collect::<Vec<_>>(), texts)
         };
-        let (latest, texts) = parts(Check::Latest, true);
+        let (latest, texts) = parts(Check::Latest, crate::update::Way::Scoop);
         assert_eq!(latest, [Part::CheckUpdate]);
         assert!(texts.iter().any(|t| t.starts_with("Nekominal  ") && t.ends_with(crate::update::CURRENT)), "the version is on the page");
-        let (newer, texts) = parts(Check::Newer("9.9.9".into()), true);
+        let (newer, texts) = parts(Check::Newer("9.9.9".into()), crate::update::Way::Scoop);
         assert_eq!(newer, [Part::Update, Part::CheckUpdate]);
         assert!(texts.iter().any(|t| t.contains("9.9.9")));
         let all: Vec<Part> = {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, updates_itself: true, notes: &[] };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, update_way: crate::update::Way::Scoop, notes: &[] };
             build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5).items.iter().filter_map(|item| item.part).collect()
         };
         assert!(all.contains(&Part::OpenRepo), "the repository can be opened");
         let people = crate::update::contributors().len();
         assert_eq!(all.iter().filter(|p| matches!(p, Part::Contributor(_))).count(), people, "a chip for each contributor");
-        let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), false);
+        let (elsewhere, texts) = parts(Check::Newer("9.9.9".into()), crate::update::Way::Manual);
         assert_eq!(elsewhere, [Part::Update, Part::CheckUpdate], "a copy Scoop did not install opens the page of the release");
         assert!(texts.iter().any(|t| t == Text::UpdateDownload.get(Lang::EnUs)), "and says so on its button");
         assert!(texts.iter().any(|t| t.contains(Text::UpdateNotScoop.get(Lang::EnUs))), "said in the note of the row");
+    }
+
+    #[test]
+    fn the_about_page_names_how_it_is_updated_and_says_the_open_tabs_go_on_unless_it_is_updated_by_hand() {
+        use crate::update::Way;
+        let settings = Settings::default();
+        let keymap = keymap();
+        let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
+        let said = |way: Way| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: crate::update::Check::Latest, update_way: way, notes: &[] };
+            let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
+            frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect::<Vec<_>>()
+        };
+        for (way, title, tabs_go_on) in [(Way::Scoop, "Updated with Scoop", true), (Way::Installer, "Updated with the installer (MSI)", true), (Way::Manual, "Updated by downloading the release", false)] {
+            let texts = said(way);
+            assert!(texts.iter().any(|t| t == title), "{way:?} names itself: {texts:?}");
+            assert_eq!(texts.iter().any(|t| t == Text::UpdateKeepsSessions.get(Lang::EnUs)), tabs_go_on, "{way:?}");
+            assert_eq!(texts.iter().any(|t| t == Text::UpdateEndsSessions.get(Lang::EnUs)), !tabs_go_on, "{way:?}");
+        }
+        // And in Chinese, where the two ways of an update that goes on read alike for the tabs.
+        assert_eq!(update_way_text(Way::Scoop, Lang::ZhTw).1, update_way_text(Way::Installer, Lang::ZhTw).1);
+        assert_ne!(update_way_text(Way::Scoop, Lang::ZhTw).0, update_way_text(Way::Installer, Lang::ZhTw).0);
     }
 
     #[test]
@@ -1866,16 +1908,17 @@ mod tests {
             Notes { version: "0.0.1".into(), body: "old".into() },
         ];
         let build_with = |notes: &[Notes], lang: Lang| {
-            let view = View { lang, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Newer("99.0.1".into()), updates_itself: true, notes };
+            let view = View { lang, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Newer("99.0.1".into()), update_way: crate::update::Way::Scoop, notes };
             build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
         };
         let frame = build_with(&notes, Lang::EnUs);
-        assert!(matches!(frame.entries[..3], [Entry::About, Entry::Notes, Entry::Repo]), "{:?}", frame.entries);
+        assert!(matches!(frame.entries[..4], [Entry::About, Entry::UpdateWay, Entry::Notes, Entry::Repo]), "{:?}", frame.entries);
         let labels: Vec<(String, Rect)> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some((text.clone(), item.rect)), _ => None }).collect();
         let has = |text: &str| labels.iter().any(|(t, _)| t == text);
         assert!(has("What's new") && has("Nekominal 99.0.1") && has("Nekominal 99.0.0") && has("New") && has("short"), "{labels:?}");
         assert!(!has("Nekominal 0.0.1") && !has("中文"), "not the older versions, nor the other language");
-        let plate = frame.rows[1];
+        // The plate of the notes: the third row, after the version and how it is updated.
+        let plate = frame.rows[2];
         let words: Vec<&(String, Rect)> = labels.iter().filter(|(t, _)| t.starts_with("word")).collect();
         assert!(words.len() > 1, "the long paragraph is wrapped");
         assert!(words.iter().all(|(t, r)| t.chars().count() as f32 * 6.5 <= r.w + 0.01 && r.y + r.h <= plate.y + plate.h), "every line fits the plate");
@@ -2007,7 +2050,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         // The profiles come first on their page: the Agent page has a mark of its own.
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
@@ -2033,7 +2076,7 @@ mod tests {
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == Section::Profiles).unwrap();
         let build_for = |page: &Page| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
             build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
         };
         let parts = |frame: &Frame| frame.items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
@@ -2059,7 +2102,7 @@ mod tests {
         let mut settings = settings.clone();
         settings.profiles[0].options.env.insert("LANG".into(), "zh_TW".into());
         let profiles = nekominal_model::profiles::merge(&found, &settings.profiles);
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let page = Page { section, profile: Some("mine".into()), editing: Some((profile_edit::ENV_KEY_ID, "A B".into())), error: Some((profile_edit::ENV_KEY_ID, Text::ProfileBadVariable)), ..Page::default() };
         let with_var = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         for part in [Part::EnvKey(0), Part::EnvValue(0), Part::EnvDelete(0)] {
@@ -2263,7 +2306,7 @@ mod tests {
         let keymap = keymap();
         let sample = ["  Do you want to proceed?".to_owned(), "  \u{276F} 1. Yes  2. No".to_owned()];
         let page = Page { section: section_of(Section::Triggers), trigger: Some(1), ..Page::default() };
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         let open = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         let shown = parts(&open);
         for part in [Part::TriggerName(1), Part::TriggerPattern(1), Part::TriggerInstant(1), Part::TriggerProgram(1), Part::TriggerText(1)] {
@@ -2295,7 +2338,7 @@ mod tests {
         let keymap = keymap();
         let sample = ["  Do you want to proceed?".to_owned()];
         let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "Do you (want".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, text, .. } if text == Text::TriggerBadPattern.get(Lang::EnUs))));
         assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Edit { text, .. } if text == "Do you (want")), "the field stays open with what was typed");
@@ -2318,7 +2361,7 @@ mod tests {
         use nekominal_model::profiles::ProfileKind;
         let keymap = keymap();
         let profiles = [Profile { id: "mine".into(), name: "mine".into(), kind: ProfileKind::Other, icon: "terminal", program: "x.exe".into(), args: Vec::new(), cwd: None, custom: true, options: Default::default() }];
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None], claude: &CLAUDE, push_test: None, sample, update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None], claude: &CLAUDE, push_test: None, sample, update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
         let layouts = vec!["work".to_owned()];
         for section in 0..Section::ALL.len() {
             build_page(&Page { section, layouts: layouts.clone(), ..Page::default() }, &view);
@@ -2388,7 +2431,7 @@ mod tests {
             });
             // A refused pattern says why under its field, inside the rule's plate.
             let keymap = keymap();
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: Some((std::time::Duration::from_secs(90), crate::push::Test::Failed("curl.exe exited with 6".into()))), sample: &sample, update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: Some((std::time::Duration::from_secs(90), crate::push::Test::Failed("curl.exe exited with 6".into()))), sample: &sample, update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
             let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "(".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
             let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             check(&frame, "refused pattern");
@@ -2443,7 +2486,7 @@ mod tests {
         for (k, wanted) in [(0, "colours"), (1, "text"), (2, "nothing"), (3, "text"), (4, "nothing")] {
             let mut settings = rules();
             settings.triggers[0].action = Action::at(k).unwrap();
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
             let frame = build(&Page { section: section_of(Section::Triggers), trigger: Some(0), ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let shown = parts(&frame);
             let colours = shown.iter().filter(|p| matches!(p, Part::TriggerColor(0, _))).count();
@@ -2518,7 +2561,7 @@ mod tests {
         let keymap = keymap();
         let one = ROW - ROW_GAP;
         for section in 0..Section::ALL.len() {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 0.0, 1100.0, 4000.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 0.0, 1100.0, 4000.0) };
             let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             for item in frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))) {
                 // No item is shorter than one line (the profiles were); a taller one holds more lines.
@@ -2564,7 +2607,7 @@ mod tests {
         for width in [760.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, update_way: crate::update::Way::Manual, notes: &[], area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

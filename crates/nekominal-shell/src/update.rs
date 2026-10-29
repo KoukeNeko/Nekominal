@@ -298,6 +298,36 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     nekominal_pty::relocate::sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// How this copy of the app is brought up to date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Way {
+    /// `scoop update`, run by the copy that holds the tabs meanwhile.
+    Scoop,
+    /// The installer (MSI) of the release, run the same way.
+    Installer,
+    /// Neither: the new version is downloaded from the release page, and this copy is closed to start it.
+    Manual,
+}
+
+impl Way {
+    /// Whether the app updates itself, handing its tabs over to the new version.
+    pub fn itself(self) -> bool {
+        self != Way::Manual
+    }
+}
+
+/// The way this copy is updated: Scoop when Scoop installed it, the installer when that did (not in a window run as
+/// administrator, which the installer's update cannot take over from), by hand otherwise.
+pub fn way(elevated: bool) -> Way {
+    if scoop_dir().is_some() {
+        Way::Scoop
+    } else if msi_dir().is_some() && !elevated {
+        Way::Installer
+    } else {
+        Way::Manual
+    }
+}
+
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
 /// `...\apps\nekominal\<version or current>\Nekominal.exe`.
 pub fn scoop_dir() -> Option<PathBuf> {

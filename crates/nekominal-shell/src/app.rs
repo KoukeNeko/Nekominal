@@ -3068,6 +3068,10 @@ impl App {
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
                     settings_page::Entry::Claude => ("Claude Code".to_owned(), settings_page::claude_note(&self.claude, &self.settings).get(lang).to_owned()),
                     settings_page::Entry::About => (format!("Nekominal {}", update::CURRENT), settings_page::update_note(&self.update_check(), lang)),
+                    settings_page::Entry::UpdateWay => {
+                        let (way, tabs) = settings_page::update_way_text(update::way(elevated()), lang);
+                        (way.to_owned(), tabs.to_owned())
+                    }
                     settings_page::Entry::Notes => (Text::SettingsReleaseNotes.get(lang).to_owned(), notes.clone()),
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
@@ -4697,11 +4701,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::UpdateWay | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::UpdateWay | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         // What Enter presses on a row that is not a setting or a command: the button it stands for.
         let focused_part = focus.and_then(|i| frame.entries.get(i)).and_then(settings_page::enter_part);
