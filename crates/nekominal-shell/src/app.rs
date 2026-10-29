@@ -64,6 +64,7 @@ mod drop;
 mod badges;
 mod tab_rows;
 mod context_card;
+mod pr_card;
 mod subagents_card;
 mod subagents_drawer;
 pub(crate) mod automation;
@@ -318,6 +319,11 @@ pub struct App {
     /// The context card where it was drawn last (with the gap above it to the meter), and its Remote Control buttons.
     card_rect: Option<Rect>,
     remote_buttons: Option<[Rect; 2]>,
+    /// The tab whose pull request's card is open, the card where it was drawn last (with the gap to its badge), and its
+    /// buttons.
+    pr_card: Option<u64>,
+    pr_card_rect: Option<Rect>,
+    pr_buttons: Option<[Rect; 3]>,
     /// The subagents piece of the bar, its card (with the gap above it) and the card's rows as they were drawn last, and
     /// what the drawer shows while it is open.
     subagents_rect: Option<Rect>,
@@ -347,7 +353,7 @@ pub struct App {
     /// The edge of the sidebar is being dragged: the settings as they were before, for the change to be saved once.
     side_drag: Option<Settings>,
     /// The badges drawn in the last frame, where and what a click on each opens.
-    badge_hits: Vec<(Rect, String)>,
+    badge_hits: Vec<(Rect, badges::Chip)>,
     /// The room the right of the title bar takes (the waiting count and the numbers of the agent), the tabs of the
     /// sidebar by group, and what the badges add to each row of the list, as the layout was last made with them.
     right_width: f32,
@@ -729,6 +735,9 @@ impl App {
             meter_rect: None,
             card_rect: None,
             remote_buttons: None,
+            pr_card: None,
+            pr_card_rect: None,
+            pr_buttons: None,
             subagents_rect: None,
             sub_card_rect: None,
             sub_rows: Vec::new(),
@@ -1734,6 +1743,14 @@ impl App {
                 _ => Hit::Card,
             };
         }
+        if self.pr_card_rect.is_some_and(|card| card.contains(x, y)) {
+            return match self.pr_buttons {
+                Some([open, ..]) if open.contains(x, y) => Hit::PrOpen,
+                Some([_, copy, _]) if copy.contains(x, y) => Hit::PrCopy,
+                Some([.., dismiss]) if dismiss.contains(x, y) => Hit::PrDismiss,
+                _ => Hit::PrCard,
+            };
+        }
         if let Some(k) = badges::at(&self.badge_hits, x, y) {
             return Hit::Badge(k);
         }
@@ -1990,8 +2007,8 @@ impl App {
                     Hit::Menu => self.open_menu(),
                     Hit::Waiting => self.run(Command::TabNextNeedsResponse),
                     Hit::Badge(k) => {
-                        if let Some((_, url)) = self.badge_hits.get(k) {
-                            open_link(url);
+                        if let Some((_, chip)) = self.badge_hits.get(k) {
+                            open_link(&chip.url);
                         }
                     }
                     Hit::Sidebar => self.run(Command::ViewSidebar),
@@ -2001,6 +2018,7 @@ impl App {
                         }
                     }
                     Hit::Drawer(k) => self.drawer_action(k),
+                    Hit::PrOpen | Hit::PrCopy | Hit::PrDismiss => self.pr_card_action(hit),
                     Hit::RemoteOpen | Hit::RemoteCopy => {
                         if let Some(link) = self.focused().and_then(|e| e.usage.as_ref()).and_then(|u| u.remote.as_deref()).map(agent::remote_link) {
                             if hit == Hit::RemoteOpen {
@@ -3031,6 +3049,7 @@ impl App {
     fn paint_panels(&mut self) {
         self.panel_shapes.clear();
         self.paint_context_card();
+        self.paint_pr_card();
         self.paint_subagents_card();
         self.paint_subagents_drawer();
         self.paint_row_tip();

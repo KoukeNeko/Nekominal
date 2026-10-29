@@ -35,6 +35,8 @@ pub struct Chip {
     pub count: Option<u32>,
     /// What a click opens.
     pub url: String,
+    /// The tab whose pull request it is, for its card; none for a port.
+    pub tab: Option<u64>,
 }
 
 /// The badges of a pull request and of ports: the pull request first, then each port.
@@ -50,9 +52,9 @@ pub fn chips(pr: Option<&github::PullRequest>, listening: &[u16]) -> Vec<Chip> {
             github::State::Open if checks.passing > 0 => Look::Passing,
             github::State::Open => Look::Open,
         };
-        Chip { look, text: format!("#{}", pr.number), count: (look == Look::Failing).then_some(checks.failing), url: pr.url.clone() }
+        Chip { look, text: format!("#{}", pr.number), count: (look == Look::Failing).then_some(checks.failing), url: pr.url.clone(), tab: None }
     });
-    let ports = listening.iter().map(|&port| Chip { look: Look::Port, text: port.to_string(), count: None, url: ports::url(port) });
+    let ports = listening.iter().map(|&port| Chip { look: Look::Port, text: port.to_string(), count: None, url: ports::url(port), tab: None });
     pr.into_iter().chain(ports).collect()
 }
 
@@ -85,7 +87,7 @@ pub fn height(placed: &[Rect]) -> f32 {
 }
 
 /// The badge under (`x`, `y`) among those drawn, by its place in `drawn`.
-pub fn at(drawn: &[(Rect, String)], x: f32, y: f32) -> Option<usize> {
+pub fn at(drawn: &[(Rect, Chip)], x: f32, y: f32) -> Option<usize> {
     drawn.iter().position(|(rect, _)| rect.contains(x, y))
 }
 
@@ -126,6 +128,8 @@ pub struct Badges {
     pub pull_request: HashMap<u64, github::PullRequest>,
     /// By the uid of the tab: the ports its panes listen on, ascending; open one at `ports::url`.
     pub ports: HashMap<u64, Vec<u16>>,
+    /// The pull requests (their links) whose badge was dismissed on its card, until the app starts again.
+    pub dismissed: std::collections::HashSet<String>,
 }
 
 impl Badges {
@@ -136,8 +140,14 @@ impl Badges {
         (!parts.is_empty()).then(|| parts.join(" \u{b7} "))
     }
 
+    /// The badges of a tab, its pull request's naming the tab for its card; none for a pull request dismissed.
     pub fn chips(&self, uid: u64) -> Vec<Chip> {
-        chips(self.pull_request.get(&uid), self.ports.get(&uid).map_or(&[], Vec::as_slice))
+        let pr = self.pull_request.get(&uid).filter(|pr| !self.dismissed.contains(&pr.url));
+        let mut chips = chips(pr, self.ports.get(&uid).map_or(&[], Vec::as_slice));
+        if let Some(chip) = chips.first_mut().filter(|chip| chip.look != Look::Port) {
+            chip.tab = Some(uid);
+        }
+        chips
     }
 }
 
@@ -240,7 +250,7 @@ impl App {
             self.ui.rrect(bubble, bubble.h / 2.0, tint(77), None);
             self.ui.text(bubble.x + 4.0, rect.y + (rect.h - line) / 2.0, &n, size, color, false);
         }
-        self.badge_hits.push((rect, chip.url.clone()));
+        self.badge_hits.push((rect, chip.clone()));
     }
 }
 
@@ -299,7 +309,7 @@ mod tests {
         let failing = chips(Some(&pr("OPEN", false, &format!("{fail},{fail},{pass}"))), &[8080]);
         assert_eq!((failing[0].text.as_str(), failing[0].count), ("#142", Some(2)));
         assert_eq!(chips(Some(&pr("OPEN", false, pass)), &[])[0].count, None, "only failures are counted");
-        assert_eq!(failing[1], Chip { look: Look::Port, text: "8080".into(), count: None, url: ports::url(8080) });
+        assert_eq!(failing[1], Chip { look: Look::Port, text: "8080".into(), count: None, url: ports::url(8080), tab: None });
         assert_eq!(chips(None, &[3000, 5173]).iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["3000", "5173"]);
         assert!(chips(None, &[]).is_empty());
     }
@@ -347,14 +357,25 @@ mod tests {
     }
 
     #[test]
+    fn the_badge_of_a_pull_request_names_its_tab_for_the_card_until_it_is_dismissed() {
+        let mut badges = Badges::default();
+        badges.pull_request.insert(1, pr("OPEN", false, ""));
+        badges.ports.insert(1, vec![3000]);
+        let shown = badges.chips(1);
+        assert_eq!(shown.iter().map(|chip| chip.tab).collect::<Vec<_>>(), [Some(1), None], "the pull request's, not the port's");
+        badges.dismissed.insert(shown[0].url.clone());
+        assert_eq!(badges.chips(1).iter().map(|chip| chip.text.as_str()).collect::<Vec<_>>(), ["3000"], "dismissed: the ports stay");
+    }
+
+    #[test]
     fn a_click_on_a_badge_opens_its_pull_request_or_its_port() {
-        let drawn: Vec<(Rect, String)> = chips(Some(&pr("OPEN", false, "")), &[3000])
+        let drawn: Vec<(Rect, Chip)> = chips(Some(&pr("OPEN", false, "")), &[3000])
             .into_iter()
             .zip(place(&[40.0, 40.0], 200.0))
-            .map(|(chip, rect)| (rect, chip.url))
+            .map(|(chip, rect)| (rect, chip))
             .collect();
-        assert_eq!(at(&drawn, 10.0, 8.0).map(|k| drawn[k].1.as_str()), Some("https://github.com/o/r/pull/142"));
-        assert_eq!(at(&drawn, 50.0, 8.0).map(|k| drawn[k].1.as_str()), Some("http://localhost:3000"));
+        assert_eq!(at(&drawn, 10.0, 8.0).map(|k| drawn[k].1.url.as_str()), Some("https://github.com/o/r/pull/142"));
+        assert_eq!(at(&drawn, 50.0, 8.0).map(|k| drawn[k].1.url.as_str()), Some("http://localhost:3000"));
         assert_eq!(at(&drawn, 42.0, 8.0), None, "the gap between two badges");
         assert_eq!(at(&drawn, 10.0, 30.0), None);
     }

@@ -546,6 +546,25 @@ texts! {
     // Under the bar of the context card, when Claude Code's settings name a window it compacts at. {0} is that window, {1} the tokens until it.
     CardCompactAt "card.compactAt";
     CardCompactLeft "card.compactLeft";
+    // The card of a pull request, under its badge while the pointer is on it: its state, checks, review and merge, and
+    // its buttons. {0} is a login or a count.
+    PrOpenOnGitHub "pr.openOnGitHub";
+    PrDismiss "pr.dismiss";
+    PrStateOpen "pr.stateOpen";
+    PrStateDraft "pr.stateDraft";
+    PrStateMerged "pr.stateMerged";
+    PrStateClosed "pr.stateClosed";
+    PrBy "pr.by";
+    PrChecks "pr.checks";
+    PrChecksPassed "pr.checksPassed";
+    PrChecksFailed "pr.checksFailed";
+    PrChecksRunning "pr.checksRunning";
+    PrApproved "pr.approved";
+    PrChangesRequested "pr.changesRequested";
+    PrReviewRequired "pr.reviewRequired";
+    PrBehind "pr.behind";
+    PrConflicts "pr.conflicts";
+    PrBlocked "pr.blocked";
     CardCacheRead "card.cacheRead";
     CardCacheWrite "card.cacheWrite";
     CardNewInput "card.newInput";
@@ -797,9 +816,11 @@ mod tests {
     fn text_is_unique_within_a_language_except_for_documented_homonyms() {
         // The same words in two places are the same action (one id, reused) or a different role that
         // happens to share a noun. These are the second kind.
-        let homonyms: [&[Text]; 2] = [
+        let homonyms: [&[Text]; 3] = [
             &[Text::TabUntitled, Text::SettingsTerminal],
             &[Text::TabProfiles, Text::SettingsProfiles],
+            // English calls a pull request that is not merged or closed open, as the button that opens something.
+            &[Text::PrStateOpen, Text::CommonOpen],
         ];
         for lang in Lang::ALL {
             let mut by_text: BTreeMap<&str, Vec<Text>> = BTreeMap::new();

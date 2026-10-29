@@ -72,6 +72,12 @@ pub enum Hit {
     /// The buttons of the card's Remote Control row: open the session's link, copy it.
     RemoteOpen,
     RemoteCopy,
+    /// The card of a pull request under its badge (the pointer on it keeps it open), and its buttons: open the pull
+    /// request, copy its link, dismiss its badge.
+    PrCard,
+    PrOpen,
+    PrCopy,
+    PrDismiss,
     /// The subagents piece of the bar, its card, and a row of the card (`App::sub_rows`), which opens the drawer.
     Subagents,
     SubCard,

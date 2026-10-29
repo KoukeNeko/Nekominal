@@ -22,7 +22,7 @@ const SETTLED: Duration = Duration::from_secs(10 * 60);
 /// How long gh may take: one that hangs (the network, a credential helper waiting for nobody) is stopped, which answers
 /// none, so the branch is asked again later instead of never.
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
-const FIELDS: &str = "number,state,isDraft,url,reviewDecision,statusCheckRollup,mergeStateStatus";
+const FIELDS: &str = "number,state,isDraft,url,reviewDecision,statusCheckRollup,mergeStateStatus,title,headRefName,baseRefName,additions,deletions,author";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -50,6 +50,17 @@ pub struct PullRequest {
     /// `CLEAN`, `BEHIND`, `DIRTY`, `BLOCKED` and the like.
     pub merge_state: Option<String>,
     pub url: String,
+    pub title: String,
+    /// The branch it merges, and the one it merges into.
+    pub head: Option<String>,
+    pub base: Option<String>,
+    /// The lines it adds and deletes.
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    /// The login of who opened it.
+    pub author: Option<String>,
+    /// The names of the checks that failed, as GitHub lists them.
+    pub failing: Vec<String>,
 }
 
 impl PullRequest {
@@ -75,8 +86,9 @@ impl PullRequest {
 /// Counts the entries of `statusCheckRollup`: check runs (a `status`, then a `conclusion` once completed) and commit
 /// statuses (a `state`). As `gh pr checks` counts them: what is not a pass or a failure is pending, a check that went stale
 /// or a state GitHub adds later among them.
-fn checks(rollup: &[serde_json::Value]) -> Checks {
+fn checks(rollup: &[serde_json::Value]) -> (Checks, Vec<String>) {
     let mut checks = Checks::default();
+    let mut failing = Vec::new();
     for item in rollup {
         let text = |key: &str| item.get(key).and_then(|v| v.as_str()).unwrap_or("");
         let verdict = if item.get("status").is_some() {
@@ -86,11 +98,16 @@ fn checks(rollup: &[serde_json::Value]) -> Checks {
         };
         match verdict {
             "SUCCESS" | "NEUTRAL" | "SKIPPED" => checks.passing += 1,
-            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => checks.failing += 1,
+            "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                checks.failing += 1;
+                // A check run has a name, a commit status a context.
+                let name = [text("name"), text("context")].into_iter().find(|name| !name.is_empty());
+                failing.extend(name.map(str::to_owned));
+            }
             _ => checks.pending += 1,
         }
     }
-    checks
+    (checks, failing)
 }
 
 /// What `gh pr view --json` printed; none for anything else.
@@ -103,13 +120,22 @@ pub fn parse(json: &str) -> Option<PullRequest> {
         _ if value.get("isDraft").and_then(|v| v.as_bool()) == Some(true) => State::Draft,
         _ => State::Open,
     };
+    let (checks, failing) = checks(value.get("statusCheckRollup").and_then(|v| v.as_array()).map_or(&[], Vec::as_slice));
+    let count = |key: &str| value.get(key).and_then(serde_json::Value::as_u64);
     Some(PullRequest {
         number: value.get("number")?.as_u64()?,
         state,
-        checks: checks(value.get("statusCheckRollup").and_then(|v| v.as_array()).map_or(&[], Vec::as_slice)),
+        checks,
         review: text("reviewDecision"),
         merge_state: text("mergeStateStatus"),
         url: text("url")?,
+        title: text("title").unwrap_or_default(),
+        head: text("headRefName"),
+        base: text("baseRefName"),
+        additions: count("additions"),
+        deletions: count("deletions"),
+        author: value.pointer("/author/login").and_then(|v| v.as_str()).map(str::to_owned),
+        failing,
     })
 }
 
@@ -320,6 +346,20 @@ mod tests {
         assert_eq!((context("PENDING"), context("EXPECTED"), context("NEW_STATE")), (wait, wait, wait));
         assert_eq!(one(r#"{"__typename":"StatusContext","context":"ci"}"#), wait, "no state");
         assert_eq!(one("{}"), wait, "an entry of neither kind");
+    }
+
+    #[test]
+    fn the_card_reads_the_title_the_branches_the_lines_the_author_and_the_failing_checks() {
+        let json = r#"{"number":125,"state":"OPEN","isDraft":false,"url":"https://github.com/o/r/pull/125","title":"feat: lint negation",
+            "headRefName":"ui-microcopy","baseRefName":"main","additions":120,"deletions":30,"author":{"login":"KoukeNeko"},
+            "statusCheckRollup":[{"__typename":"CheckRun","name":"build (windows)","status":"COMPLETED","conclusion":"FAILURE"},
+                                 {"__typename":"StatusContext","context":"ci/lint","state":"ERROR"},
+                                 {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"SUCCESS"}]}"#;
+        let pr = parse(json).unwrap();
+        assert_eq!((pr.title.as_str(), pr.head.as_deref(), pr.base.as_deref()), ("feat: lint negation", Some("ui-microcopy"), Some("main")));
+        assert_eq!((pr.additions, pr.deletions, pr.author.as_deref()), (Some(120), Some(30), Some("KoukeNeko")));
+        assert_eq!(pr.failing, ["build (windows)", "ci/lint"], "a check run by its name, a status by its context");
+        assert_eq!((pr.checks.failing, pr.checks.passing), (2, 1));
     }
 
     #[test]
