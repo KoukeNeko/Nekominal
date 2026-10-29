@@ -3389,6 +3389,15 @@ impl App {
         if path.is_some_and(|path| program_icon(&mut self.ui, &path, square)) {
             return;
         }
+        if let Some((svg, rgb)) = self.tabs[i].job().and_then(icons::brand) {
+            use std::hash::{Hash, Hasher};
+            let rgb = rgb.unwrap_or([color.0[0], color.0[1], color.0[2]]);
+            let mut key = std::collections::hash_map::DefaultHasher::new();
+            (svg, rgb).hash(&mut key);
+            if self.ui.image(key.finish(), square.x, square.y, square.w, |px| icons::brand_pixels(svg, rgb, px)) {
+                return;
+            }
+        }
         let glyph = self.tabs[i].job().map_or('\u{E756}', logic::job_icon);
         // A tab with no icon of its own, nor a glyph for its kind of program, has the app's.
         static APP: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
