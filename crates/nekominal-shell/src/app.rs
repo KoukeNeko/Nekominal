@@ -189,7 +189,7 @@ const BLINK_IDLE: Duration = Duration::from_secs(5);
 /// How long the panels stay closed before their swap chain gives its memory back: moving between the meter and the card
 /// closes and opens them, and making the buffers again every time costs more than keeping them a few seconds.
 const PANELS_SHRINK_MS: u32 = 3000;
-/// How long after an update handed a pane over it gets its size back (`PaneEntry::regrow`).
+/// How long apart the steps are that make a pane an update handed over draw its screen again (`App::regrow`).
 const REGROW_AFTER: Duration = Duration::from_millis(500);
 
 fn open_link(uri: &str) {
@@ -1137,7 +1137,7 @@ impl App {
             }
         });
         let core = logic::core_config(&self.settings);
-        let regrow = matches!(start, Start::HandedOver(..)).then(Instant::now);
+        let regrow = matches!(start, Start::HandedOver(..)).then(|| (Instant::now(), false));
         let (session, pane, title) = match start {
             Start::Fresh(restored) => {
                 let session = agent::new_session();
@@ -1155,14 +1155,8 @@ impl App {
                 agent::reserve_session(&state.session);
                 crate::handoff::consumed(&state.session, false);
                 let pane = Pane::adopt_prepared(&parts, state.cols, state.rows, core, wake, |term| term.show_handoff(&state.screen));
-                if let Ok(pane) = &pane {
+                if pane.is_ok() {
                     crate::handoff::consumed(&state.session, true);
-                    // A row smaller now and back on the next tick of the jobs (`regrow`), so that a full-screen program
-                    // (Claude Code, vim) draws its whole screen again. Both at once were missed: Node looks at the size
-                    // of the console when it hears of a change, and found the old one again.
-                    if let Err(e) = pane.resize(state.cols, state.rows.saturating_sub(1).max(1)) {
-                        util::log(&format!("update: an adopted pane did not take a row less: {e}"));
-                    }
                 }
                 (state.session.clone(), pane, state.title.clone())
             }
@@ -2172,12 +2166,7 @@ impl App {
     /// Looks at the processes of the panes the tabs show: the program a tab runs is what its icon shows.
     pub fn on_job_tick(&mut self) {
         self.auto_update_check();
-        // Not at once: a tick that comes just after the pane was adopted would make the two sizes one change again.
-        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()).filter(|entry| entry.regrow.is_some_and(|at| at.elapsed() >= REGROW_AFTER)) {
-            entry.regrow = None;
-            let result = entry.pane.resize(entry.grid.0, entry.grid.1);
-            util::log(&format!("update: pane {} back to {}x{}: {result:?}", entry.session, entry.grid.0, entry.grid.1));
-        }
+        self.regrow();
         let mut changed = false;
         // One snapshot of the processes of the system for every tab, and not at every tick: it costs the kernel some
         // milliseconds for a system of hundreds of processes, nearly all of a window's time at rest. It is taken again
@@ -2421,6 +2410,22 @@ impl App {
             // SAFETY: posting to a window that may be gone, which PostMessage reports and nothing else.
             unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)); }
         });
+    }
+
+    /// A pane an update handed over is made a row smaller, then given its size back, each step on a tick of the jobs half
+    /// a second at least after the last: a full-screen program (Claude Code, vim) hears of two changes and draws its whole
+    /// screen. Not at once: the window settles its size first (its layout can give the pane another), and Node looks at
+    /// the size of the console when it hears of a change, so two changes close together were one, or none.
+    fn regrow(&mut self) {
+        for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
+            let Some((_, shrunk)) = entry.regrow.filter(|(at, _)| at.elapsed() >= REGROW_AFTER) else { continue };
+            let (cols, rows) = entry.grid;
+            let to = if shrunk { rows } else { rows.saturating_sub(1).max(1) };
+            if let Err(e) = entry.pane.resize(cols, to) {
+                util::log(&format!("update: pane {}: resize to {cols}x{to}: {e}", entry.session));
+            }
+            entry.regrow = (!shrunk).then(|| (Instant::now(), true));
+        }
     }
 
     /// Looks for a newer version by itself (`checkUpdates`): `update::AUTO_FIRST` after the start, then every

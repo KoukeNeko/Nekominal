@@ -22,9 +22,9 @@ pub struct PaneEntry {
     pub view: PaneRenderer,
     /// Cells the pane has now.
     pub grid: (u16, u16),
-    /// When an update handed the pane over and it was made a row smaller: a tick of the jobs a while after gives it `grid`
-    /// again.
-    pub regrow: Option<std::time::Instant>,
+    /// An update handed the pane over: when it was adopted, or made a row smaller since (`true`). Ticks of the jobs a while
+    /// apart make it a row smaller than `grid` and give it `grid` again (`App::regrow`).
+    pub regrow: Option<(std::time::Instant, bool)>,
     /// Where the pane is in the window, in pixels; set by [`Tab::place`].
     pub rect: PxRect,
     /// The title the program set.
