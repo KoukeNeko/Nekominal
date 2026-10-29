@@ -395,6 +395,17 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_tab_of_a_window_reads_back_and_a_window_of_an_older_version_has_none() {
+        let older: WindowState = serde_json::from_str(r#"{ "session": {}, "panes": [] }"#).unwrap();
+        assert_eq!(older.settings, None);
+        let window = WindowState { session: serde_json::json!({}), panes: Vec::new(), settings: Some(SettingsTab { at: 1, selected: true, section: 7 }) };
+        let line = serde_json::to_string(&window).unwrap();
+        assert_eq!(serde_json::from_str::<WindowState>(&line).unwrap(), window);
+        let none = serde_json::to_string(&WindowState { settings: None, ..window }).unwrap();
+        assert!(!none.contains("settings"), "a window without them says nothing an older version would trip on: {none}");
+    }
+
+    #[test]
     fn a_message_names_its_kind_and_version_so_another_version_can_tell() {
         let line = serde_json::to_string(&Message::Take { v: PROTOCOL }).unwrap();
         assert_eq!(line, r#"{"kind":"take","v":1}"#);
