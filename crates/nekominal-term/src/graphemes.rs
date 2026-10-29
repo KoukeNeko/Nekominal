@@ -120,10 +120,11 @@ impl<T: EventListener> Clusters<'_, T> {
 /// The viramas Unicode calls linkers (`InCB=Linker`): Devanagari, Bengali, Gujarati, Oriya, Telugu, Malayalam.
 const LINKERS: [char; 6] = ['\u{94d}', '\u{9cd}', '\u{acd}', '\u{b4d}', '\u{c4d}', '\u{d4d}'];
 
-/// Whether the last character of `joined` is a consonant that ConPTY's grapheme mode joins to the linker before it. It
-/// does whatever stands before the linker (`X्द` is one cluster there); Unicode (GB9c) only after a consonant, so with
-/// unicode-segmentation's answer alone a character typed before a virama put the rest of the line a column right of
-/// where the shell drew it (issue #3). Asked of unicode-segmentation with a consonant (क) in place of the base.
+/// Whether the last character of `joined` is a consonant that ConPTY's grapheme mode joins to the linker before it.
+/// ConPTY joins them whatever stands before the linker (`X्द` is one cluster there); Unicode (GB9c) joins them only after
+/// a consonant. With unicode-segmentation's answer alone, a character typed before a virama put the rest of the line a
+/// column right of where the shell drew it (issue #3). The question goes to unicode-segmentation with a consonant (क) in
+/// place of the base.
 fn links(joined: &str) -> bool {
     if !joined.contains(LINKERS) {
         return false;

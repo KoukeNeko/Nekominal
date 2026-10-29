@@ -9,7 +9,9 @@
 //! 1. asks every other running Nekominal (through its automation pipe) to hand over too, and asks those that cannot (run
 //!    as administrator, or without the API) to save their session and close;
 //! 2. runs `scoop update` and `scoop update nekominal`, again for a while when Scoop finds something still running from
-//!    the app's folder (the hooks of Claude Code run `Nekominal.exe` for a few milliseconds at a time);
+//!    the app's folder (the hooks of Claude Code run `Nekominal.exe` for a few milliseconds at a time); for a copy the
+//!    installer put in place (`--msi <folder>` instead of `--app`), downloads the installer of the new version, checks
+//!    its checksum and runs it (`msi.rs`);
 //! 3. starts the Nekominal Scoop now runs with `--adopt <pipe>`, which takes the windows; when it does not (it fails to
 //!    start, or to adopt), the version that handed over, which Scoop keeps;
 //! 4. ends, once one has adopted, closing its copies of the handles; the sessions nobody adopted end with it.
@@ -20,6 +22,7 @@
 //! processes, is what Defender's behaviour heuristics took for a trojan.
 
 mod holder;
+mod msi;
 mod scoop;
 mod window;
 
@@ -70,6 +73,8 @@ const ADOPT_TIMEOUT: Duration = Duration::from_secs(60);
 struct Args {
     pipe: String,
     app: Option<PathBuf>,
+    /// The folder the installer put the app in, for a copy it installed: updated with the installer of the release.
+    msi: Option<PathBuf>,
     version: String,
     /// The version the update goes to, as the app's check found it: shown from the start instead of being guessed.
     to: Option<String>,
@@ -83,6 +88,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         match arg.as_str() {
             "--hold" => parsed.pipe = value()?,
             "--app" => parsed.app = Some(PathBuf::from(value()?)).filter(|app| !app.as_os_str().is_empty()),
+            "--msi" => parsed.msi = Some(PathBuf::from(value()?)).filter(|dir| !dir.as_os_str().is_empty()),
             "--version" => parsed.version = value()?,
             "--to" => parsed.to = Some(value()?).filter(|to| !to.is_empty()),
             other => return Err(format!("unknown argument {other}")),
@@ -162,21 +168,30 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     let first = holder.givers()[0].clone();
 
     show(view, ui, |v| v.status = words.say("Asking the other Nekominal windows to hand over…", "正在請其他 Nekominal 視窗交接…"));
-    let asked = ask_others(&args.pipe, first.0, args.app.as_deref());
+    // The folder the update replaces: what runs from it must hand over or close first.
+    let folder = args.app.as_deref().or(args.msi.as_deref());
+    let asked = ask_others(&args.pipe, first.0, folder);
     holder.wait_for_bundles(1 + asked.len(), OTHERS_TIMEOUT);
     for process in &asked {
         process.exited_within(OTHERS_TIMEOUT);
     }
-    if let Some(app) = &args.app {
-        close_the_rest(app, view, ui, &words);
+    if let Some(folder) = folder {
+        close_the_rest(folder, view, ui, &words);
     }
     show(view, ui, |v| v.step = 1);
 
-    let mut scoop_said = None;
+    // What went wrong when the version did not change.
+    let mut not_updated = None;
+    let mut installed = None;
     if let Some(app) = &args.app {
-        scoop_said = run_scoop(app, view, ui, &words);
+        not_updated = run_scoop(app, view, ui, &words);
+        installed = scoop::installed(app);
+    } else if args.msi.is_some() {
+        match run_msi(args, view, ui, &words) {
+            Ok(version) => installed = Some(version),
+            Err(e) => not_updated = Some(e),
+        }
     }
-    let installed = args.app.as_deref().and_then(scoop::installed);
     show(view, ui, |v| {
         v.step = 2;
         v.to = installed.clone().or_else(|| args.to.clone()).or_else(|| Some(args.version.clone()));
@@ -186,7 +201,13 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     holder.close();
     let (all, live) = holder.panes();
     log(&format!("holding {all} panes, {live} of them running"));
-    let candidates = scoop::candidates(args.app.as_deref(), &first.2, Path::new(&first.1));
+    let mut candidates = scoop::candidates(args.app.as_deref(), &first.2, Path::new(&first.1));
+    // The installer keeps no earlier version: when the new one does not adopt, this copy of the one that handed over does.
+    if args.msi.is_some()
+        && let Ok(own) = std::env::current_exe()
+    {
+        candidates.push(own);
+    }
     let mut adopted = None;
     for exe in candidates.iter().filter(|exe| exe.is_file()) {
         let version = exe.parent().and_then(|dir| dir.file_name()).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
@@ -203,14 +224,18 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
         Some(sessions) => {
             let (kept, ended) = holder.finish(&sessions);
             log(&format!("adopted {kept}, ended {ended}"));
-            let failed = scoop_said.is_some();
+            let failed = not_updated.is_some();
             show(view, ui, |v| {
                 v.step = window::STEPS;
-                v.status = match &scoop_said {
-                    Some(_) => words.say(
+                v.status = match &not_updated {
+                    Some(_) if args.app.is_some() => words.say(
                         "Scoop did not update Nekominal; it was started again with every tab.",
                         "Scoop 沒有更新 Nekominal；已帶著所有分頁重新啟動。",
                     ),
+                    Some(why) => {
+                        v.detail = why.clone();
+                        words.say("The installer did not update Nekominal; it was started again with every tab.", "安裝程式沒有更新 Nekominal；已帶著所有分頁重新啟動。")
+                    }
                     None => {
                         if words.zh { format!("完成：{kept} 個窗格的程式繼續執行。") } else { format!("Done: the programs of {kept} panes kept running.") }
                     }
@@ -349,6 +374,35 @@ fn run_scoop(app: &Path, view: &Mutex<View>, ui: Ui, words: &Words) -> Option<St
     (after.is_none() || after == before).then_some(last)
 }
 
+/// Updates with the installer of the release: the version it installed, or what went wrong.
+fn run_msi(args: &Args, view: &Mutex<View>, ui: Ui, words: &Words) -> Result<String, String> {
+    let to = match &args.to {
+        Some(to) => to.clone(),
+        None => {
+            show(view, ui, |v| v.status = words.say("Looking for a newer version…", "正在檢查新版本…"));
+            match crate::update::check() {
+                crate::update::Check::Newer(to) => to,
+                crate::update::Check::Latest => return Err(words.say("No newer version is out.", "沒有新版本。")),
+                _ => return Err(words.say("Could not look for a newer version.", "無法檢查新版本。")),
+            }
+        }
+    };
+    if !crate::update::newer(&to, &args.version) {
+        return Err(words.say("No newer version is out.", "沒有新版本。"));
+    }
+    show(view, ui, |v| v.to = Some(to.clone()));
+    let result = msi::install(&to, |step| {
+        show(view, ui, |v| {
+            v.status = match step {
+                msi::Step::Download => if words.zh { format!("正在下載 Nekominal {to}…") } else { format!("Downloading Nekominal {to}…") },
+                msi::Step::Install => words.say("Installing…", "正在安裝…"),
+            }
+        })
+    });
+    log(&format!("msi {} -> {to}: {result:?}", args.version));
+    result.map(|()| to)
+}
+
 /// Starts `exe` to adopt the windows. The sessions it adopted; None when it did not start, ended, or did not answer in
 /// time (it is then ended, so that two never read one session).
 fn start_adopting(exe: &Path, holder: &Holder) -> Option<Vec<String>> {
@@ -381,8 +435,9 @@ mod tests {
         let args = |list: &[&str]| parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
             args(&["--hold", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3", "--to", "0.2.4"]).unwrap(),
-            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), version: "0.2.3".into(), to: Some("0.2.4".into()) }
+            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), msi: None, version: "0.2.3".into(), to: Some("0.2.4".into()) }
         );
+        assert_eq!(args(&["--hold", "p", "--msi", r"C:\P\Nekominal"]).unwrap().msi, Some(PathBuf::from(r"C:\P\Nekominal")));
         assert_eq!(args(&["--hold", "p", "--to", ""]).unwrap().to, None, "an empty version is none");
         assert_eq!(args(&["--hold", "p", "--app", ""]).unwrap().app, None, "an empty folder is none");
         assert_eq!(args(&["--app", "a"]).unwrap_err(), "--hold is missing");

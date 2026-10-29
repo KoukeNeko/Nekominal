@@ -154,6 +154,19 @@ pub(crate) fn write_string(path: &str, name: Option<&str>, value: &str) -> Resul
     }
 }
 
+/// The string value `name` of the key `path` under the current user; None when either is not there.
+pub(crate) fn read_string(path: &str, name: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{RegGetValueW, RRF_RT_REG_SZ};
+    let mut buffer = vec![0u16; 1024];
+    let mut size = (buffer.len() * 2) as u32;
+    // SAFETY: the buffer is as large as `size` says, and lives through the call.
+    unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(path), &HSTRING::from(name), RRF_RT_REG_SZ, None, Some(buffer.as_mut_ptr().cast()), Some(&mut size)).ok().ok()?;
+    }
+    buffer.truncate(size as usize / 2);
+    Some(String::from_utf16_lossy(&buffer).trim_end_matches('\0').to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +177,8 @@ mod tests {
         let path = format!(r"Software\Nekominal-test-{}", std::process::id());
         write_string(&format!(r"{path}\command"), None, r#""C:\x y\N.exe" -d "%V""#).expect("written");
         write_string(&path, Some("Icon"), "設定.exe").expect("written");
+        assert_eq!(read_string(&path, "Icon").as_deref(), Some("設定.exe"));
+        assert_eq!(read_string(&path, "Missing"), None);
         let query = std::process::Command::new("reg").args(["query", &format!(r"HKCU\{path}"), "/s"]).output().expect("reg runs");
         let text = String::from_utf8_lossy(&query.stdout);
         // SAFETY: removes the test's own key.

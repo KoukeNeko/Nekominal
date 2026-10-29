@@ -69,6 +69,16 @@ updater 就是 Nekominal 自己：同一個 `Nekominal.exe` 以 `--hold <pipe>` 
 - **為什麼不是另一個 exe**：起初 updater 是隨 zip 發布的小程式 `updater.exe`。Microsoft Defender 在執行時把它判為 `Trojan:Win32/Bearfoos.A!ml`（機器學習的行為判斷：一個沒簽章的小 exe 被複製到 `%LOCALAPPDATA%` 後執行、從其他程序複製 handle、接手 console、執行 PowerShell），靜態掃描則找不到問題。改成由 Nekominal 自己的複本保管分頁後，就沒有這個另外的小程式了。
 - **窗格的配對**：交出的窗格以「分頁的位置」和「它在該分頁版面樹裡的順序」標示，不用窗格 id。每個分頁的窗格 id 從 1 開始，但接手方讀回工作階段時，id 是跨分頁重新編號的（第二個分頁的第一個窗格變成 2），用 id 配對時只有第一個分頁接得回來。
 
+## MSI 安裝的版本
+
+安裝程式（`distribution/nekominal.wxs`）只裝給目前的使用者，位置是 `%LOCALAPPDATA%\Programs\Nekominal`，並把這個資料夾記在 `HKCU\Software\KoukeNeko\Nekominal` 的 `InstallDir`。執行檔就在這個資料夾裡時，「更新並重新啟動」走同一套交接，只有第 3 步不同。updater 改用 `--msi <資料夾>` 啟動（取代 `--app`），接著：
+
+1. 從 release 下載符合目前架構的 `Nekominal-<版本>-windows-<x64|arm64>.msi`，以及旁邊的 `.msi.sha256`。SHA-256 不符就不安裝。
+2. 執行 `msiexec /i <msi> /qn /norestart MSIRESTARTMANAGERCONTROL=Disable /l*v <log>`。因為只裝給目前的使用者，不需要系統管理員權限。關掉 Restart Manager，是為了不讓它在沒有視窗的情況下自行關閉其他程式。結束碼 0 或 3010 視為成功，其他結束碼會保留 log。
+3. 接回分頁時，先試資料夾裡的新版，再試 updater 自己；updater 就是交出分頁那一版的複本。安裝失敗時 Windows Installer 會還原，資料夾裡仍是舊版，一樣能接回。
+
+從以系統管理員身分執行的視窗按更新，或 updater 無法啟動時，改為開啟 release 頁面。SHA-256 只擋得住下載不完整或損壞的檔案，擋不住 release 本身被換掉；要防這一點，需要程式碼簽章。
+
 ## 測試
 
 - 單元測試：交接訊息的序列化和版本（`nekominal-pty` `handoff::tests`）、handle 複製失敗時的清理、updater 的參數、Scoop 輸出判斷、只把分頁交給同一程式的複本（`nekominal-shell` `hold::tests`）、窗格依它在分頁樹裡的位置配對（`handoff::tests::every_pane_of_every_tab_is_found_again_*`）、接手方關掉沒用到的 handle（`nekominal-shell` `handoff::tests`）、畫面交接後一格不差（`nekominal-term` `tests/restore.rs` 的 `a_handed_over_*`）。

@@ -784,7 +784,7 @@ impl App {
         // The entry of Explorer's menu is written again at each start while it is on: the program may have moved. Only by the
         // copy Scoop installed: a build run from elsewhere (a checkout) must not take the menu over; turning the setting on in
         // the settings still writes it.
-        if first_window && app.settings.explorer_menu && update::scoop_dir().is_some() {
+        if first_window && app.settings.explorer_menu && (update::scoop_dir().is_some() || update::msi_dir().is_some()) {
             app.sync_explorer_menu();
         }
         // The taskbar button's menu lists the profiles, each starting a window with it.
@@ -2327,8 +2327,8 @@ impl App {
     }
 
     /// Looks for a newer version by itself (`checkUpdates`): `update::AUTO_FIRST` after the start, then every
-    /// `update::AUTO_EVERY`, once for the process whichever window's tick comes first; and tells of what it found once per
-    /// version, with a toast whose click opens the About page.
+    /// `update::AUTO_EVERY`. The process looks once each time, on the tick of whichever window comes first. A newer version
+    /// gets one toast, whose click opens the About page.
     fn auto_update_check(&mut self) {
         thread_local! {
             static NEXT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
@@ -2374,26 +2374,30 @@ impl App {
     fn update_and_restart(&mut self) {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x10;
-        let Some(app_dir) = update::scoop_dir() else {
-            // A copy from a zip (or built here) has nothing to update it: the page of the release to download it from.
-            let to = match self.update_check() {
-                update::Check::Newer(version) => Some(version),
-                _ => None,
-            };
+        let to = match self.update_check() {
+            update::Check::Newer(version) => Some(version),
+            _ => None,
+        };
+        let scoop = update::scoop_dir();
+        let msi = if scoop.is_none() { update::msi_dir() } else { None };
+        // A copy from a zip (or built here) has nothing to update it, and the old way of a window run as administrator
+        // is Scoop's: the page of the release to download it from.
+        let Some((app_dir, by_msi)) = scoop.map(|dir| (dir, false)).or(msi.filter(|_| !elevated()).map(|dir| (dir, true))) else {
             open_link(&update::release_page(to.as_deref()));
             return;
         };
         if !elevated() {
-            let to = match self.update_check() {
-                update::Check::Newer(version) => Some(version),
-                _ => None,
-            };
-            match crate::handoff::start_holder(&app_dir, to.as_deref()) {
+            match crate::handoff::start_holder(&app_dir, by_msi, to.as_deref()) {
                 Ok(pipe) => {
                     // The hand-off borrows every window, this one included: it runs from the message loop.
                     crate::handoff::give_later(pipe);
                     // SAFETY: posting to our own window.
                     unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_HAND_OFF, WPARAM(0), LPARAM(0)); }
+                    return;
+                }
+                Err(e) if by_msi => {
+                    util::log(&format!("update: {e}; the release page instead"));
+                    open_link(&update::release_page(to.as_deref()));
                     return;
                 }
                 Err(e) => util::log(&format!("update: {e}; updating with the script instead")),

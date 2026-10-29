@@ -42,7 +42,7 @@ pub fn version_of(manifest: &str) -> Option<String> {
 }
 
 /// The body at `url`, or nothing when it cannot be read. Blocks for up to ten seconds: a thread of its own calls it.
-fn fetch(url: &str) -> Option<String> {
+pub fn fetch(url: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = std::process::Command::new("curl.exe")
@@ -161,6 +161,60 @@ pub fn release_page(version: Option<&str>) -> String {
     }
 }
 
+/// The key the installer (`distribution/nekominal.wxs`) writes the folder it installed into under.
+const MSI_KEY: &str = r"Software\KoukeNeko\Nekominal";
+
+/// The folder the installer put the app in (`%LOCALAPPDATA%\Programs\Nekominal`) when this program is the copy it installed:
+/// a newer installer then updates it in place.
+pub fn msi_dir() -> Option<PathBuf> {
+    let installed = PathBuf::from(crate::integration::read_string(MSI_KEY, "InstallDir")?);
+    let exe = std::env::current_exe().ok()?;
+    let here = exe.parent()?;
+    same_folder(here, &installed).then(|| here.to_owned())
+}
+
+/// Whether two folders are one, whatever their case and a trailing backslash.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    let name = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    name(a) == name(b)
+}
+
+/// The installer of `version` for the processor this build is for, as the release workflow names it.
+pub fn msi_name(version: &str) -> String {
+    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    format!("Nekominal-{}-windows-{arch}.msi", version.trim_start_matches('v'))
+}
+
+/// Where the release of `version` keeps the file `name`.
+pub fn release_file(version: &str, name: &str) -> String {
+    format!("{REPO}/releases/download/v{}/{name}", version.trim_start_matches('v'))
+}
+
+/// Downloads `url` into `to`. Blocks for up to five minutes: a thread of its own calls it.
+pub fn download(url: &str, to: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("curl.exe")
+        .args(["--silent", "--show-error", "--fail", "--location", "--max-time", "300", "--output"])
+        .arg(to)
+        .arg(url)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()) }
+}
+
+/// The SHA-256 a `.sha256` file of the release names (`<hex>  <file>`), in lower case.
+pub fn sha256_of_listing(listing: &str) -> Option<String> {
+    let hex = listing.split_whitespace().next()?.to_ascii_lowercase();
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
+}
+
+/// The SHA-256 of `bytes` in lower-case hex.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    nekominal_pty::relocate::sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
 /// `...\apps\nekominal\<version or current>\Nekominal.exe`.
 pub fn scoop_dir() -> Option<PathBuf> {
@@ -182,6 +236,21 @@ mod tests {
         assert_eq!(release_page(Some("0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(Some("v0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(None), "https://github.com/KoukeNeko/Nekominal/releases/latest");
+    }
+
+    #[test]
+    fn the_installer_of_a_version_is_found_by_name_and_checked_by_its_listing() {
+        let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+        assert_eq!(msi_name("v0.2.19"), format!("Nekominal-0.2.19-windows-{arch}.msi"));
+        assert_eq!(release_file("0.2.19", "a.msi"), "https://github.com/KoukeNeko/Nekominal/releases/download/v0.2.19/a.msi");
+        let hex = "F583C266DD5057FEFD22D6A346DFE1B665ED42F56774EA1615DDAFDDCF066F1E";
+        assert_eq!(sha256_of_listing(&format!("{hex}  Nekominal-0.2.18-windows-x64.msi\r\n")), Some(hex.to_ascii_lowercase()));
+        assert_eq!(sha256_of_listing("<html>Not Found</html>"), None);
+        assert_eq!(sha256_of_listing(""), None);
+        // SHA-256 of "abc".
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert!(same_folder(Path::new(r"C:\Users\a\AppData\Local\Programs\Nekominal"), Path::new(r"c:\users\A\appdata\local\programs\nekominal\")));
+        assert!(!same_folder(Path::new(r"C:\Programs\Nekominal"), Path::new(r"C:\Programs\Nekominal-old")));
     }
 
     #[test]

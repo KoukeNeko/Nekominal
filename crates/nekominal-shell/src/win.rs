@@ -383,8 +383,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // bar is ours. When maximized the window overhangs the screen by the frame: keep the top inside it. Over the
         // whole monitor it is the whole window.
         WM_NCCALCSIZE if wparam.0 != 0 && is_fullscreen_marked(hwnd) => LRESULT(0),
-        // Full screen stays over a whole monitor: the style it keeps lets Snap (Win+arrows) half or maximize it. A move to
-        // another monitor (Win+Shift+arrows) covers that one; a minimize goes through.
+        // Full screen stays over a whole monitor: the style it keeps would let Snap (Win+arrows) shrink it to half the screen
+        // or maximize it. Moved to another monitor (Win+Shift+arrows), it covers that one; a minimize goes through.
         WM_WINDOWPOSCHANGING if is_fullscreen_marked(hwnd) => {
             // SAFETY: lParam points to the WINDOWPOS of the change.
             unsafe {

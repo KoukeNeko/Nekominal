@@ -485,9 +485,9 @@ pub struct View<'a> {
     pub claude: &'a crate::agent::Claude,
     /// The area of the page in the coordinates of the window, in DIP.
     pub area: Rect,
-    /// What the last look for a newer version found, and whether Scoop installed this copy (so that it can update it).
+    /// What the last look for a newer version found, and whether this copy can update itself (Scoop or the installer put it in place).
     pub update: crate::update::Check,
-    pub scoop: bool,
+    pub updates_itself: bool,
     /// What the last test push came to, and how long ago it was sent.
     pub push_test: Option<(std::time::Duration, crate::push::Test)>,
     /// The last lines of the focused pane that are not blank, which the form of a rule matches its pattern against.
@@ -1124,7 +1124,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let check_rect = controls.button(measure, check);
                 // Placed from the right, drawn from the left: the update comes first to the keyboard and to a screen reader.
                 if newer {
-                    let update = if view.scoop { Text::AppUpdate } else { Text::UpdateDownload }.get(lang);
+                    let update = if view.updates_itself { Text::AppUpdate } else { Text::UpdateDownload }.get(lang);
                     let update_rect = controls.button(measure, update);
                     text_button(&mut items, update_rect, Part::Update, update, true, hover);
                 }
@@ -1133,7 +1133,7 @@ pub fn build(page: &Page, view: &View, measure: &mut dyn FnMut(&str, f32, bool) 
                 let room = (controls.right - text.x - INNER).max(0.0);
                 let title = format!("Nekominal  {}", crate::update::CURRENT);
                 // A newer version Scoop did not install says so after what the look found.
-                let note = if newer && !view.scoop { format!("{} · {}", update_note(&view.update, lang), Text::UpdateNotScoop.get(lang)) } else { update_note(&view.update, lang) };
+                let note = if newer && !view.updates_itself { format!("{} · {}", update_note(&view.update, lang), Text::UpdateNotScoop.get(lang)) } else { update_note(&view.update, lang) };
                 row_label(&mut items, text, room, &title, Some(&note), Tone::Text);
                 y += ROW;
             }
@@ -1595,7 +1595,7 @@ mod tests {
 
     fn frame(page: &Page, settings: &Settings) -> Frame {
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
     }
 
@@ -1604,7 +1604,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let widest = |width: f32| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, width, 650.0) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))).map(|item| item.rect.w).fold(0.0, f32::max)
         };
@@ -1707,7 +1707,7 @@ mod tests {
     fn the_search_line_is_lit_only_once_it_is_pressed_or_typed_in_and_not_while_a_row_has_the_keyboard() {
         let settings = Settings::default();
         let keymap = keymap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 900.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, 900.0, 650.0) };
         let lit = |page: &Page| {
             let frame = build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -1724,7 +1724,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         for (width, height) in [(760.0, 480.0), (900.0, 650.0), (1400.0, 900.0)] {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, width, height) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, width, height) };
             let frame = build(&Page::default(), &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             let nav_end = frame.items.iter().filter(|item| matches!(item.part, Some(Part::Nav(_)))).map(|item| item.rect.y + item.rect.h).fold(0.0, f32::max);
             let search = frame.items.iter().find(|item| item.part == Some(Part::Search)).expect("the search line is there");
@@ -1787,8 +1787,8 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let about = Section::ALL.iter().position(|s| *s == Section::About).unwrap();
-        let parts = |update: Check, scoop: bool| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, scoop };
+        let parts = |update: Check, updates_itself: bool| {
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update, updates_itself };
             let frame = build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let texts: Vec<String> = frame.items.iter().filter_map(|item| match &item.visual { Visual::Label { text, .. } => Some(text.clone()), _ => None }).collect();
             (frame.items.iter().filter_map(|item| item.part).filter(|p| matches!(p, Part::Update | Part::CheckUpdate)).collect::<Vec<_>>(), texts)
@@ -1800,7 +1800,7 @@ mod tests {
         assert_eq!(newer, [Part::Update, Part::CheckUpdate]);
         assert!(texts.iter().any(|t| t.contains("9.9.9")));
         let all: Vec<Part> = {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, scoop: true };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], area: Rect::new(0.0, 0.0, 1000.0, 700.0), update: Check::Latest, updates_itself: true };
             build(&Page { section: about, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5).items.iter().filter_map(|item| item.part).collect()
         };
         assert!(all.contains(&Part::OpenRepo), "the repository can be opened");
@@ -1921,7 +1921,7 @@ mod tests {
         let settings = Settings::default();
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == row("defaultProfile").section).unwrap();
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         // The profiles come first on their page: the Agent page has a mark of its own.
         let marks: Vec<&Item> = frame.items.iter().filter(|item| matches!(item.visual, Visual::Program { .. })).collect();
@@ -1947,7 +1947,7 @@ mod tests {
         let keymap = keymap();
         let section = Section::ALL.iter().position(|s| *s == Section::Profiles).unwrap();
         let build_for = |page: &Page| {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
             build(page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5)
         };
         let parts = |frame: &Frame| frame.items.iter().filter_map(|item| item.part).collect::<Vec<_>>();
@@ -1973,7 +1973,7 @@ mod tests {
         let mut settings = settings.clone();
         settings.profiles[0].options.env.insert("LANG".into(), "zh_TW".into());
         let profiles = nekominal_model::profiles::merge(&found, &settings.profiles);
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &found, programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, 1000.0, 700.0) };
         let page = Page { section, profile: Some("mine".into()), editing: Some((profile_edit::ENV_KEY_ID, "A B".into())), error: Some((profile_edit::ENV_KEY_ID, Text::ProfileBadVariable)), ..Page::default() };
         let with_var = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         for part in [Part::EnvKey(0), Part::EnvValue(0), Part::EnvDelete(0)] {
@@ -2177,7 +2177,7 @@ mod tests {
         let keymap = keymap();
         let sample = ["  Do you want to proceed?".to_owned(), "  \u{276F} 1. Yes  2. No".to_owned()];
         let page = Page { section: section_of(Section::Triggers), trigger: Some(1), ..Page::default() };
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         let open = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         let shown = parts(&open);
         for part in [Part::TriggerName(1), Part::TriggerPattern(1), Part::TriggerInstant(1), Part::TriggerProgram(1), Part::TriggerText(1)] {
@@ -2209,7 +2209,7 @@ mod tests {
         let keymap = keymap();
         let sample = ["  Do you want to proceed?".to_owned()];
         let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "Do you (want".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
-        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+        let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &sample, update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
         let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
         assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Label { tone: Tone::Error, text, .. } if text == Text::TriggerBadPattern.get(Lang::EnUs))));
         assert!(frame.items.iter().any(|item| matches!(&item.visual, Visual::Edit { text, .. } if text == "Do you (want")), "the field stays open with what was typed");
@@ -2232,7 +2232,7 @@ mod tests {
         use nekominal_model::profiles::ProfileKind;
         let keymap = keymap();
         let profiles = [Profile { id: "mine".into(), name: "mine".into(), kind: ProfileKind::Other, icon: "terminal", program: "x.exe".into(), args: Vec::new(), cwd: None, custom: true, options: Default::default() }];
-        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None], claude: &CLAUDE, push_test: None, sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+        let view = View { lang: Lang::EnUs, settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None], claude: &CLAUDE, push_test: None, sample, update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, width, 650.0) };
         let layouts = vec!["work".to_owned()];
         for section in 0..Section::ALL.len() {
             build_page(&Page { section, layouts: layouts.clone(), ..Page::default() }, &view);
@@ -2302,7 +2302,7 @@ mod tests {
             });
             // A refused pattern says why under its field, inside the rule's plate.
             let keymap = keymap();
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: Some((std::time::Duration::from_secs(90), crate::push::Test::Failed("curl.exe exited with 6".into()))), sample: &sample, update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: Some((std::time::Duration::from_secs(90), crate::push::Test::Failed("curl.exe exited with 6".into()))), sample: &sample, update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, width, 650.0) };
             let page = Page { section: section_of(Section::Triggers), trigger: Some(1), env_row: 1, editing: Some((TRIGGER_PATTERN_ID, "(".into())), error: Some((TRIGGER_PATTERN_ID, Text::TriggerBadPattern)), ..Page::default() };
             let frame = build(&page, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.55);
             check(&frame, "refused pattern");
@@ -2357,7 +2357,7 @@ mod tests {
         for (k, wanted) in [(0, "colours"), (1, "text"), (2, "nothing"), (3, "text"), (4, "nothing")] {
             let mut settings = rules();
             settings.triggers[0].action = Action::at(k).unwrap();
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, 1100.0, 650.0) };
             let frame = build(&Page { section: section_of(Section::Triggers), trigger: Some(0), ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             let shown = parts(&frame);
             let colours = shown.iter().filter(|p| matches!(p, Part::TriggerColor(0, _))).count();
@@ -2432,7 +2432,7 @@ mod tests {
         let keymap = keymap();
         let one = ROW - ROW_GAP;
         for section in 0..Section::ALL.len() {
-            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 0.0, 1100.0, 4000.0) };
+            let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &profiles, found: &[], programs: &[None, None], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 0.0, 1100.0, 4000.0) };
             let frame = build(&Page { section, ..Page::default() }, &view, &mut |text, size, _| text.chars().count() as f32 * size * 0.5);
             for item in frame.items.iter().filter(|item| matches!(item.visual, Visual::Plate(Fill::Row { .. }))) {
                 // No item is shorter than one line (the profiles were); a taller one holds more lines.
@@ -2478,7 +2478,7 @@ mod tests {
         for width in [760.0, 900.0, 1100.0, 1600.0] {
             for section in 0..Section::ALL.len() {
                 let page = Page { section, ..Page::default() };
-                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, scoop: false, area: Rect::new(0.0, 48.0, width, 650.0) };
+                let view = View { lang: Lang::EnUs, settings: &settings, keymap: &keymap, profiles: &[], found: &[], programs: &[], claude: &CLAUDE, push_test: None, sample: &[], update: crate::update::Check::Idle, updates_itself: false, area: Rect::new(0.0, 48.0, width, 650.0) };
                 let frame = build(&page, &view, &mut |text, size, _| measure(text, size));
                 for (entry, row) in frame.entries.iter().zip(&frame.rows) {
                     let Entry::Setting(setting) = entry else { continue };

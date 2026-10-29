@@ -561,7 +561,7 @@ texts! {
     UpdateLatest "update.latest" "已是最新版本" "Up to date";
     UpdateNewer "update.newer" "有新版本 {0}" "Version {0} is available";
     UpdateFailed "update.failed" "無法檢查更新，請確認網路連線" "Could not check for updates; check the connection";
-    UpdateNotScoop "update.notScoop" "這份不是用 Scoop 安裝的" "This copy was not installed with Scoop";
+    UpdateNotScoop "update.notScoop" "這份不是用 Scoop 或安裝程式安裝的" "This copy was not installed with Scoop or the installer";
     UpdateDownload "update.download" "開啟下載頁面" "Open the release page";
     SettingsCheckUpdates "settings.checkUpdates" "自動檢查更新" "Check for updates automatically";
     // The toast of a newer version the app found by itself. {0} is the version.
