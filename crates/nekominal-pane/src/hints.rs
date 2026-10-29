@@ -31,6 +31,9 @@ pub fn find(snapshot: &Snapshot) -> Vec<Hint> {
     let mut found: Vec<Hint> = Vec::new();
     for line in logical_lines(snapshot) {
         for (start, token) in tokens(&line) {
+            let chars: Vec<char> = token.iter().map(|(c, _, _)| *c).collect();
+            // As Ctrl+click has it: a path glued to the word before it starts at its drive.
+            let token = &token[links::drive_start(&chars)..];
             let text: String = token.iter().map(|(c, _, _)| *c).collect();
             let Some((kind, length)) = classify(&text) else { continue };
             let text: String = text.chars().take(length).collect();
@@ -152,6 +155,14 @@ mod tests {
             ]
         );
         assert_eq!((hints[0].row, hints[0].column), (2, 7));
+    }
+
+    #[test]
+    fn a_path_glued_to_a_label_before_it_is_a_hint_from_its_drive() {
+        let hints = find(&screen(80, "分組列：C:\\Temp\\shots\\a-group-rows.png"));
+        assert_eq!(texts(&hints), [("C:\\Temp\\shots\\a-group-rows.png", HintKind::Path, "f")]);
+        // The label is four wide characters, eight columns: the hint sits on the drive.
+        assert_eq!((hints[0].row, hints[0].column), (0, 8));
     }
 
     #[test]

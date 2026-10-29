@@ -149,10 +149,11 @@ pub fn find_paths(cells: &[char]) -> Vec<Range<usize>> {
             at += 1;
             continue;
         }
-        let start = at;
+        let mut start = at;
         while at < cells.len() && !breaks(cells[at]) {
             at += 1;
         }
+        start += drive_start(&cells[start..at]);
         let word: String = cells[start..at].iter().collect();
         let trimmed = word.trim_end_matches(['.', ',', ';', ':', '!', '?']);
         if looks_like_path(split_position(trimmed).0) {
@@ -160,6 +161,14 @@ pub fn find_paths(cells: &[char]) -> Vec<Range<usize>> {
         }
     }
     found
+}
+
+/// Where in a word between blanks its path starts: at a drive glued to a word before it (`分組列：C:\x.png`, `out=C:\x`),
+/// which no character of a drive letter's own word comes before; else at its first character.
+pub fn drive_start(word: &[char]) -> usize {
+    (1..word.len().saturating_sub(2))
+        .find(|&i| word[i].is_ascii_alphabetic() && word[i + 1] == ':' && matches!(word[i + 2], '\\' | '/') && !word[i - 1].is_ascii_alphanumeric())
+        .unwrap_or(0)
 }
 
 /// Whether a word (without its position) is a path as [`find_paths`] means it.
@@ -473,6 +482,18 @@ mod tests {
         assert_eq!(position("C:\\x.txt"), None, "the colon of a drive is no position");
         assert_eq!(position("a.rs:0"), None, "no file has a line 0");
         assert_eq!(position("a.rs:99999999999"), None, "a number no file has");
+    }
+
+    #[test]
+    fn a_path_glued_to_the_word_before_it_starts_at_its_drive() {
+        let paths = |line: &str| {
+            let cells: Vec<char> = line.chars().collect();
+            find_paths(&cells).into_iter().map(|range| cells[range].iter().collect::<String>()).collect::<Vec<_>>()
+        };
+        assert_eq!(paths("分組列：C:\\Temp\\shots\\a-group-rows.png"), ["C:\\Temp\\shots\\a-group-rows.png"], "after a full-width colon");
+        assert_eq!(paths("out=D:/build/app.log:12"), ["D:/build/app.log:12"]);
+        assert_eq!(paths("C:\\新資料夾（2）\\a.txt"), ["C:\\新資料夾（2）\\a.txt"], "full-width brackets inside a path stay");
+        assert_eq!(paths("abC:\\x\\y.txt"), ["abC:\\x\\y.txt"], "a letter glued to a letter is not a drive");
     }
 
     #[test]

@@ -44,10 +44,13 @@ struct Program {
 
 /// A mark from Simple Icons, kept unchanged in `assets/brands` and named in THIRD-PARTY-NOTICES.md with its licence.
 struct Mark {
+    // The file and the licence are for the test that keeps the folder and the notices in step.
+    #[cfg_attr(not(test), allow(dead_code))]
     file: &'static str,
     svg: &'static str,
     /// The brand's colour; none for a dark one, drawn in the colour of the text, which a dark tab bar would hide.
     rgb: Option<[u8; 3]>,
+    #[cfg_attr(not(test), allow(dead_code))]
     license: License,
 }
 
