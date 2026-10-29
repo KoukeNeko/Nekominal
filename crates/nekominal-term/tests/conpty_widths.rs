@@ -69,6 +69,26 @@ fn cases() -> Vec<Case> {
         cps("VS16 alone", "curated", &[0xFE0F]),
         cps("ideographic space", "curated", &[0x3000]),
         cps("arabic lam+alef", "curated", &[0x644, 0x627]),
+        // Issue #3: Devanagari words, and an X typed at each place inside हिन्दी.
+        cps("devanagari ka+i", "curated", &[0x915, 0x93F]),
+        cps("devanagari namaste", "curated", &[0x928, 0x92E, 0x938, 0x94D, 0x924, 0x947]),
+        cps("devanagari hindi", "curated", &[0x939, 0x93F, 0x928, 0x94D, 0x926, 0x940]),
+        cps("devanagari ka+nukta", "curated", &[0x915, 0x93C]),
+        cps("devanagari ha+candrabindu", "curated", &[0x939, 0x901]),
+        cps("hindi X before ii", "curated", &[0x939, 0x93F, 0x928, 0x94D, 0x926, 0x58, 0x940]),
+        cps("hindi X before da", "curated", &[0x939, 0x93F, 0x928, 0x94D, 0x58, 0x926, 0x940]),
+        cps("hindi X before virama", "curated", &[0x939, 0x93F, 0x928, 0x58, 0x94D, 0x926, 0x940]),
+        cps("hindi X before na", "curated", &[0x939, 0x93F, 0x58, 0x928, 0x94D, 0x926, 0x940]),
+        cps("hindi X before i", "curated", &[0x939, 0x58, 0x93F, 0x928, 0x94D, 0x926, 0x940]),
+        // A virama joins the consonant after it whatever stands before it; the vowel sign makes the join show in the width.
+        cps("probe X virama da ii", "curated", &[0x58, 0x94D, 0x926, 0x940]),
+        cps("probe ka virama da ii", "curated", &[0x915, 0x94D, 0x926, 0x940]),
+        cps("probe virama da ii", "curated", &[0x94D, 0x926, 0x940]),
+        cps("probe space virama da ii", "curated", &[0x20, 0x94D, 0x926, 0x940]),
+        cps("probe a acute virama da ii", "curated", &[0x61, 0x301, 0x94D, 0x926, 0x940]),
+        cps("probe X virama X ii", "curated", &[0x58, 0x94D, 0x58, 0x940]),
+        cps("probe X virama bengali ka aa", "curated", &[0x58, 0x9CD, 0x995, 0x9BE]),
+        cps("probe na X virama da ii", "curated", &[0x928, 0x58, 0x94D, 0x926, 0x940]),
     ];
 
     let sweeps: &[(&str, u32, u32)] = &[
@@ -273,7 +293,7 @@ fn glyph_width_modes_against_the_emulator() {
     for (i, case) in cases.iter().enumerate().filter(|(_, c)| c.category == "curated") {
         let cols: Vec<String> = results
             .iter()
-            .map(|(_, o)| o.get(i).map(|o| format!("{}{}", o.console, if o.emulator.is_some_and(|e| e != o.console) { "!" } else { "" })).unwrap_or_default())
+            .map(|(_, o)| o.get(i).map(|o| format!("{}{}", o.console, match o.emulator { Some(e) if e != o.console => format!("!{e}"), _ => String::new() })).unwrap_or_default())
             .collect();
         println!("{:46} {:>4} {:>4} | {}", case.label, emulator_width(&case.text), case.text.width(), cols.join("    "));
     }

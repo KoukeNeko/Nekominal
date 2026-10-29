@@ -324,6 +324,26 @@ fn cursor_advance_always_equals_the_string_width_of_each_grapheme() {
     }
 }
 
+/// The columns ConPTY's grapheme mode gave the shell for these (tests/conpty_widths.rs): a virama joins the consonant
+/// after it whatever stands before it, so the line ends where the shell put it (issue #3).
+#[test]
+fn a_consonant_after_a_virama_joins_it_whatever_is_before_as_conpty_does() {
+    for (sample, conpty) in [
+        ("\u{939}\u{93f}\u{928}\u{94d}\u{926}\u{940}", 4),        // हिन्दी
+        ("\u{939}\u{93f}\u{928}X\u{94d}\u{926}\u{940}", 5),       // X typed before the virama
+        ("X\u{94d}\u{926}\u{940}", 2),
+        (" \u{94d}\u{926}\u{940}", 2),
+        ("a\u{301}\u{94d}\u{926}\u{940}", 2),
+        ("\u{915}\u{94d}\u{926}\u{940}", 2),
+        ("X\u{94d}X\u{940}", 3),                                  // X is no consonant: nothing joins it
+        ("\u{94d}\u{926}\u{940}", 2),
+    ] {
+        let mut core = core(80, 3);
+        feed(&mut core, sample);
+        assert_eq!(core.cursor_cell(), (0, conpty), "{sample:?}");
+    }
+}
+
 // --- screens, scrollback, resize --------------------------------------------------------------
 
 #[test]
