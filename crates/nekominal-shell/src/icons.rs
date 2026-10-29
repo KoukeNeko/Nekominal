@@ -30,25 +30,92 @@ pub fn load(path: &Path, px: u32) -> Option<Vec<u8>> {
     from_file(path, px).or_else(|| from_file(&alias_target(path)?, px)).or_else(|| from_file(&sibling(path)?, px))
 }
 
-/// The mark of a program whose file has no icon (git, npm, esbuild…), by its file name: the SVG of Simple Icons it is drawn
-/// from (`assets/brands`, see THIRD-PARTY-NOTICES.md) and its brand colour, or none for a dark one, drawn in the colour of
-/// the text instead.
+/// What a tab shows for a program whose file has no icon of its own, in this order: the icon of the program installed
+/// beside it that people know it by, its mark, its glyph.
+struct Program {
+    /// Its file names without the extension, in lower case.
+    names: &'static [&'static str],
+    /// The program beside it, looked for in up to this many folders above it (`Git\usr\bin\bash.exe` → `Git\git-bash.exe`).
+    sibling: Option<(&'static str, usize)>,
+    mark: Option<Mark>,
+    /// Of Segoe Fluent Icons.
+    glyph: char,
+}
+
+/// A mark from Simple Icons, kept unchanged in `assets/brands` and named in THIRD-PARTY-NOTICES.md with its licence.
+struct Mark {
+    file: &'static str,
+    svg: &'static str,
+    /// The brand's colour; none for a dark one, drawn in the colour of the text, which a dark tab bar would hide.
+    rgb: Option<[u8; 3]>,
+    license: License,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum License {
+    Cc0,
+    CcBy3,
+    CcBy4,
+}
+
+macro_rules! mark {
+    ($file:literal, $rgb:expr, $license:ident) => {
+        Some(Mark { file: $file, svg: include_str!(concat!("../../../assets/brands/", $file)), rgb: $rgb, license: License::$license })
+    };
+}
+
+const EDITOR: char = '\u{E70F}';
+const NETWORK: char = '\u{E774}';
+const PAGER: char = '\u{E8A5}';
+const GIT: char = '\u{E81C}';
+const FILES: char = '\u{E838}';
+const CODE: char = '\u{E943}';
+/// The terminal's, for a shell and a program nobody knows.
+const TERMINAL: char = '\u{E756}';
+
+#[rustfmt::skip]
+const PROGRAMS: &[Program] = &[
+    Program { names: &["git"], sibling: Some(("git-bash.exe", 3)), mark: mark!("git.svg", Some([0xF0, 0x3C, 0x2E]), CcBy3), glyph: GIT },
+    Program { names: &["bash"], sibling: Some(("git-bash.exe", 3)), mark: None, glyph: TERMINAL },
+    Program { names: &["gh"], sibling: None, mark: mark!("github.svg", None, Cc0), glyph: GIT },
+    Program { names: &["lazygit", "tig", "gitui"], sibling: None, mark: None, glyph: GIT },
+    Program { names: &["npm", "npx"], sibling: Some(("node.exe", 1)), mark: mark!("npm.svg", Some([0xCB, 0x38, 0x37]), Cc0), glyph: CODE },
+    Program { names: &["pnpm", "pnpx"], sibling: Some(("node.exe", 1)), mark: mark!("pnpm.svg", Some([0xF6, 0x92, 0x20]), Cc0), glyph: CODE },
+    Program { names: &["yarn"], sibling: Some(("node.exe", 1)), mark: mark!("yarn.svg", Some([0x2C, 0x8E, 0xBB]), CcBy4), glyph: CODE },
+    Program { names: &["corepack"], sibling: Some(("node.exe", 1)), mark: None, glyph: CODE },
+    Program { names: &["uv", "uvx"], sibling: None, mark: mark!("uv.svg", Some([0xDE, 0x5F, 0xE9]), Cc0), glyph: CODE },
+    Program { names: &["esbuild"], sibling: None, mark: mark!("esbuild.svg", Some([0xFF, 0xCF, 0x00]), Cc0), glyph: TERMINAL },
+    Program { names: &["vite"], sibling: None, mark: mark!("vite.svg", Some([0x91, 0x35, 0xFF]), Cc0), glyph: TERMINAL },
+    Program { names: &["curl"], sibling: None, mark: mark!("curl.svg", None, Cc0), glyph: NETWORK },
+    Program { names: &["7z", "7za", "7zr"], sibling: Some(("7zFM.exe", 1)), mark: mark!("7zip.svg", None, Cc0), glyph: TERMINAL },
+    // The Rust and Neovim marks are share-alike: cargo and nvim keep their glyph.
+    Program { names: &["node", "bun", "deno", "pip", "py", "python", "cargo", "rustc", "go", "dotnet", "java", "ruby", "php", "make", "cmake",
+                       "claude", "codex", "gemini", "aider", "opencode"], sibling: None, mark: None, glyph: CODE },
+    Program { names: &["vim", "vi", "nvim", "gvim", "nvim-qt", "nano", "micro", "hx", "helix", "kak", "emacs", "code", "notepad"], sibling: None, mark: None, glyph: EDITOR },
+    Program { names: &["ssh", "mosh", "telnet", "scp", "sftp", "wget", "ping", "tracert", "nc"], sibling: None, mark: None, glyph: NETWORK },
+    Program { names: &["less", "more", "man", "bat", "glow", "cat", "type"], sibling: None, mark: None, glyph: PAGER },
+    Program { names: &["yazi", "ranger", "nnn", "mc", "lf", "explorer"], sibling: None, mark: None, glyph: FILES },
+];
+
+/// The row of a program by its file name, whatever its case and extension (`NPM.CMD`, `python3.12.exe`).
+fn program(file_name: &str) -> Option<&'static Program> {
+    let lower = file_name.to_lowercase();
+    let name = ["exe", "cmd", "bat", "com"]
+        .iter()
+        .find_map(|extension| lower.strip_suffix(extension).and_then(|rest| rest.strip_suffix('.')))
+        .unwrap_or(&lower);
+    let name = if name.starts_with("python") { "python" } else { name };
+    PROGRAMS.iter().find(|program| program.names.contains(&name))
+}
+
+/// The glyph a tab shows for the program it runs when it has neither an icon nor a mark.
+pub fn glyph(file_name: &str) -> char {
+    program(file_name).map_or(TERMINAL, |program| program.glyph)
+}
+
+/// The mark of a program by its file name: its SVG and its colour, none for the colour of the text.
 pub fn brand(file_name: &str) -> Option<(&'static str, Option<[u8; 3]>)> {
-    let lower = file_name.to_ascii_lowercase();
-    let name = lower.strip_suffix(".exe").or_else(|| lower.strip_suffix(".cmd")).unwrap_or(&lower);
-    Some(match name {
-        "git" => (include_str!("../../../assets/brands/git.svg"), Some([0xF0, 0x3C, 0x2E])),
-        "gh" => (include_str!("../../../assets/brands/github.svg"), None),
-        "npm" | "npx" => (include_str!("../../../assets/brands/npm.svg"), Some([0xCB, 0x38, 0x37])),
-        "pnpm" | "pnpx" => (include_str!("../../../assets/brands/pnpm.svg"), Some([0xF6, 0x92, 0x20])),
-        "yarn" => (include_str!("../../../assets/brands/yarn.svg"), Some([0x2C, 0x8E, 0xBB])),
-        "uv" | "uvx" => (include_str!("../../../assets/brands/uv.svg"), Some([0xDE, 0x5F, 0xE9])),
-        "esbuild" => (include_str!("../../../assets/brands/esbuild.svg"), Some([0xFF, 0xCF, 0x00])),
-        "vite" => (include_str!("../../../assets/brands/vite.svg"), Some([0x91, 0x35, 0xFF])),
-        "curl" => (include_str!("../../../assets/brands/curl.svg"), None),
-        "7z" | "7za" | "7zr" => (include_str!("../../../assets/brands/7zip.svg"), None),
-        _ => return None,
-    })
+    program(file_name)?.mark.as_ref().map(|mark| (mark.svg, mark.rgb))
 }
 
 /// A mark of [`brand`] `px` pixels square in `rgb`, as premultiplied RGBA: its one path, on a square of 24 units.
@@ -77,18 +144,10 @@ fn plain(path: &Path) -> std::path::PathBuf {
     out
 }
 
-/// The program installed beside one without an icon whose icon people know it by: the `git-bash.exe` of the Git for Windows
-/// a `bash.exe` or `git.exe` belongs to (`Git\usr\bin\bash.exe`, `Git\cmd\git.exe`), the `node.exe` beside `npm.exe` and
-/// the other launchers of Node, the `7zFM.exe` of a `7z.exe`.
+/// The program of the table installed beside `path` (the `git-bash.exe` of the Git a `git.exe` belongs to).
 fn sibling(path: &Path) -> Option<std::path::PathBuf> {
-    let name = path.file_stem()?.to_string_lossy().to_ascii_lowercase();
-    let (program, up) = match name.as_str() {
-        "bash" | "git" => ("git-bash.exe", 3),
-        "npm" | "npx" | "pnpm" | "pnpx" | "yarn" | "corepack" => ("node.exe", 1),
-        "7z" | "7za" => ("7zFM.exe", 1),
-        _ => return None,
-    };
-    path.ancestors().skip(1).take(up).map(|dir| dir.join(program)).find(|launcher| launcher.is_file())
+    let (beside, up) = program(&path.file_name()?.to_string_lossy())?.sibling?;
+    path.ancestors().skip(1).take(up).map(|dir| dir.join(beside)).find(|launcher| launcher.is_file())
 }
 
 fn from_file(path: &Path, px: u32) -> Option<Vec<u8>> {
@@ -259,6 +318,46 @@ mod tests {
             assert!(pixels.chunks_exact(4).any(|p| p[3] == 255) && pixels.chunks_exact(4).any(|p| p[3] < 128), "{name} is drawn");
         }
         assert_eq!(brand("pwsh.exe"), None, "a program with an icon of its own needs none");
+    }
+
+    #[test]
+    fn a_tab_shows_the_glyph_of_the_program_it_runs_whatever_the_case_or_the_extension() {
+        assert_eq!(glyph("vim.exe"), glyph("NVIM.EXE"));
+        assert_eq!(glyph("ssh.exe"), NETWORK);
+        assert_eq!(glyph("git"), GIT);
+        assert_eq!(glyph("python3.12.exe"), glyph("py.exe"));
+        assert_eq!(glyph("npm.cmd"), glyph("node.exe"));
+        // A shell and a program nobody knows have the terminal's glyph; a name that only ends like an extension is no extension.
+        assert_eq!(glyph("pwsh.exe"), TERMINAL);
+        assert_eq!(glyph("whatever.exe"), TERMINAL);
+        assert_ne!(glyph("exe"), EDITOR);
+    }
+
+    #[test]
+    fn every_name_is_in_one_row_and_every_mark_is_a_file_with_its_licence_noticed() {
+        let names: Vec<&str> = PROGRAMS.iter().flat_map(|program| program.names.iter().copied()).collect();
+        for name in &names {
+            assert_eq!(names.iter().filter(|other| *other == name).count(), 1, "{name} is in one row");
+            assert_eq!(*name, name.to_lowercase(), "{name} is in lower case");
+        }
+        let marks: Vec<&Mark> = PROGRAMS.iter().filter_map(|program| program.mark.as_ref()).collect();
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/brands");
+        let mut files: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut used: Vec<String> = marks.iter().map(|mark| mark.file.to_owned()).collect();
+        files.sort();
+        used.sort();
+        used.dedup();
+        assert_eq!(files, used, "every file of assets/brands is a mark of the table, and no other");
+        let notices = include_str!("../../../THIRD-PARTY-NOTICES.md");
+        for mark in marks {
+            let stem = mark.file.trim_end_matches(".svg");
+            let named = match mark.license {
+                License::Cc0 => notices.contains(&format!("`{stem}`")),
+                License::CcBy3 => notices.contains(&format!("`{}`", mark.file)) && notices.contains("CC BY 3.0"),
+                License::CcBy4 => notices.contains(&format!("`{}`", mark.file)) && notices.contains("CC BY 4.0"),
+            };
+            assert!(named, "THIRD-PARTY-NOTICES.md names {} under its licence ({:?})", mark.file, mark.license);
+        }
     }
 
     #[test]

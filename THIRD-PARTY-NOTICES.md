@@ -46,7 +46,8 @@ Nekominal. Two marks carry their own licence:
   [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 The others (`github`, `npm`, `pnpm`, `uv`, `esbuild`, `vite`, `curl`, `7zip`) come under Simple Icons' CC0. Marks under
-a share-alike licence (Rust's, Neovim's) are left out.
+a share-alike licence (Rust's, Neovim's) are left out. Which program takes which mark is the table `PROGRAMS` in
+`crates/nekominal-shell/src/icons.rs`; a test there keeps it, this folder and this list in step.
 
 ## Rust crates
 

@@ -3398,7 +3398,7 @@ impl App {
                 return;
             }
         }
-        let glyph = self.tabs[i].job().map_or('\u{E756}', logic::job_icon);
+        let glyph = self.tabs[i].job().map_or('\u{E756}', icons::glyph);
         // A tab with no icon of its own, nor a glyph for its kind of program, has the app's.
         static APP: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
         let app = APP.get_or_init(|| std::env::current_exe().ok());
