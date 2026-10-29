@@ -2427,7 +2427,7 @@ impl App {
             return;
         };
         if !elevated() {
-            match crate::handoff::start_holder(&app_dir, by_msi, to.as_deref()) {
+            match crate::handoff::start_holder(&app_dir, by_msi, to.as_deref(), self.language()) {
                 Ok(pipe) => {
                     // The hand-off borrows every window, this one included: it runs from the message loop.
                     crate::handoff::give_later(pipe);

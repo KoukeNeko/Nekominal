@@ -59,6 +59,7 @@ fn is_copy_in(image: &Path, exe: &Path, root: &Path) -> bool {
 }
 
 use holder::Holder;
+use nekominal_model::strings::{Lang, Text};
 use window::{Ui, View};
 
 /// How long the Nekominal that started the update has to hand over, another Nekominal to hand over or close, Scoop to
@@ -78,6 +79,8 @@ struct Args {
     version: String,
     /// The version the update goes to, as the app's check found it: shown from the start instead of being guessed.
     to: Option<String>,
+    /// The language of the app, which the window speaks.
+    lang: Option<Lang>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -91,6 +94,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--msi" => parsed.msi = Some(PathBuf::from(value()?)).filter(|dir| !dir.as_os_str().is_empty()),
             "--version" => parsed.version = value()?,
             "--to" => parsed.to = Some(value()?).filter(|to| !to.is_empty()),
+            "--lang" => parsed.lang = Lang::from_tag(&value()?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -100,20 +104,25 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(parsed)
 }
 
-/// What the window says, in the user's language: Chinese for a Chinese Windows, English otherwise, as the app.
+/// What the window says, in the language of the app that started it (`--lang`); without it, Chinese for a Chinese
+/// Windows and English otherwise, as the app's `auto`.
 struct Words {
-    zh: bool,
+    lang: Lang,
 }
 
 impl Words {
-    fn new() -> Words {
+    fn new(lang: Option<Lang>) -> Words {
         // SAFETY: a plain query.
-        let lang = unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() };
-        Words { zh: lang & 0x3ff == 0x04 }
+        let system = || if unsafe { windows_sys::Win32::Globalization::GetUserDefaultUILanguage() } & 0x3ff == 0x04 { Lang::ZhTw } else { Lang::EnUs };
+        Words { lang: lang.unwrap_or_else(system) }
     }
 
-    fn say(&self, en: &str, zh: &str) -> String {
-        if self.zh { zh } else { en }.to_owned()
+    fn say(&self, text: Text) -> String {
+        text.get(self.lang).to_owned()
+    }
+
+    fn format(&self, text: Text, arg: &dyn std::fmt::Display) -> String {
+        text.format(self.lang, &[arg])
     }
 }
 
@@ -144,7 +153,7 @@ pub fn hold_main() -> bool {
     };
     let view = Arc::new(Mutex::new(View { from: args.version.clone(), to: args.to.clone(), ..View::default() }));
     let shared = view.clone();
-    let title = Words::new().say("Nekominal update", "更新 Nekominal");
+    let title = Words::new(args.lang).say(Text::UpdateHoldTitle);
     window::run(&title, view, move |ui| update(&args, &holder, &shared, ui));
     true
 }
@@ -156,18 +165,18 @@ fn show(view: &Mutex<View>, ui: Ui, change: impl FnOnce(&mut View)) {
 }
 
 fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
-    let words = Words::new();
-    show(view, ui, |v| v.status = words.say("Taking over the tabs…", "正在接手分頁…"));
+    let words = Words::new(args.lang);
+    show(view, ui, |v| v.status = words.say(Text::UpdateHoldTaking));
     if holder.wait_for_bundles(1, GIVE_TIMEOUT) == 0 {
         show(view, ui, |v| {
-            v.status = words.say("Nekominal did not hand its tabs over; nothing was updated.", "Nekominal 沒有交出分頁，所以沒有更新。");
+            v.status = words.say(Text::UpdateHoldNotGiven);
             v.failed = true;
         });
         return ui.finish(0);
     }
     let first = holder.givers()[0].clone();
 
-    show(view, ui, |v| v.status = words.say("Asking the other Nekominal windows to hand over…", "正在請其他 Nekominal 視窗交接…"));
+    show(view, ui, |v| v.status = words.say(Text::UpdateHoldAsking));
     // The folder the update replaces: what runs from it must hand over or close first.
     let folder = args.app.as_deref().or(args.msi.as_deref());
     let asked = ask_others(&args.pipe, first.0, folder);
@@ -212,7 +221,7 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
     for exe in candidates.iter().filter(|exe| exe.is_file()) {
         let version = exe.parent().and_then(|dir| dir.file_name()).map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         let version = if version.eq_ignore_ascii_case("current") { installed.clone().unwrap_or(version) } else { version };
-        show(view, ui, |v| v.status = if words.zh { format!("正在啟動 Nekominal {version}…") } else { format!("Starting Nekominal {version}…") });
+        show(view, ui, |v| v.status = words.format(Text::UpdateHoldStarting, &version));
         if let Some(sessions) = start_adopting(exe, holder) {
             adopted = Some(sessions);
             break;
@@ -228,17 +237,14 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
             show(view, ui, |v| {
                 v.step = window::STEPS;
                 v.status = match &not_updated {
-                    Some(_) if args.app.is_some() => words.say(
-                        "Scoop did not update Nekominal; it was started again with every tab.",
-                        "Scoop 沒有更新 Nekominal；已帶著所有分頁重新啟動。",
-                    ),
+                    Some(_) if args.app.is_some() => words.say(Text::UpdateHoldScoopFailed),
+
                     Some(why) => {
                         v.detail = why.clone();
-                        words.say("The installer did not update Nekominal; it was started again with every tab.", "安裝程式沒有更新 Nekominal；已帶著所有分頁重新啟動。")
+                        words.say(Text::UpdateHoldInstallerFailed)
                     }
-                    None => {
-                        if words.zh { format!("完成：{kept} 個窗格的程式繼續執行。") } else { format!("Done: the programs of {kept} panes kept running.") }
-                    }
+                    None => words.format(Text::UpdateHoldDone, &kept),
+
                 };
                 v.failed = failed;
             });
@@ -248,10 +254,8 @@ fn update(args: &Args, holder: &Arc<Holder>, view: &Mutex<View>, ui: Ui) {
         None => {
             holder.finish(&[]);
             show(view, ui, |v| {
-                v.status = words.say(
-                    "Nekominal could not be started again, so the programs of its tabs have ended.",
-                    "無法重新啟動 Nekominal，分頁裡的程式已結束。",
-                );
+                v.status = words.say(Text::UpdateHoldNotStarted);
+
                 v.failed = true;
             });
             ui.finish(0);
@@ -312,11 +316,8 @@ fn close_the_rest(app: &Path, view: &Mutex<View>, ui: Ui, words: &Words) {
         post_to_windows_of(*pid, message);
     }
     show(view, ui, |v| {
-        v.status = if words.zh {
-            format!("正在等 {} 個無法交接的 Nekominal 視窗關閉（以系統管理員身分執行的視窗會關閉，並用儲存的文字還原）…", staying.len())
-        } else {
-            format!("Waiting for {} Nekominal windows that cannot hand over to close (a window run as administrator closes, and its text is restored)…", staying.len())
-        };
+        v.status = words.format(Text::UpdateHoldWaiting, &staying.len());
+
     });
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     while Instant::now() < deadline && scoop::running_from(app).iter().any(|pid| staying.contains(pid)) {
@@ -350,7 +351,7 @@ fn post_to_windows_of(pid: u32, message: u32) {
 /// Runs the update with Scoop, showing its last line. None when the version changed, else what Scoop said last.
 fn run_scoop(app: &Path, view: &Mutex<View>, ui: Ui, words: &Words) -> Option<String> {
     let before = scoop::installed(app);
-    show(view, ui, |v| v.status = words.say("Updating with Scoop…", "正在用 Scoop 更新…"));
+    show(view, ui, |v| v.status = words.say(Text::UpdateHoldScoop));
     let line = |text: &str| show(view, ui, |v| v.detail = text.to_owned());
     // The buckets first: without them the bucket on this computer may not know the new version yet.
     if let Err(e) = scoop::run(app, "update", line) {
@@ -363,7 +364,7 @@ fn run_scoop(app: &Path, view: &Mutex<View>, ui: Ui, words: &Words) -> Option<St
                 if !scoop::refused_as_running(&output) || started.elapsed() > RUNNING_RETRY {
                     break output.last().cloned().unwrap_or_default();
                 }
-                show(view, ui, |v| v.status = words.say("Something still runs from the Nekominal folder; trying again…", "Nekominal 資料夾裡仍有程式在執行，稍後再試…"));
+                show(view, ui, |v| v.status = words.say(Text::UpdateHoldStillRunning));
                 std::thread::sleep(Duration::from_secs(2));
             }
             Err(e) => break format!("scoop: {e}"),
@@ -379,23 +380,23 @@ fn run_msi(args: &Args, view: &Mutex<View>, ui: Ui, words: &Words) -> Result<Str
     let to = match &args.to {
         Some(to) => to.clone(),
         None => {
-            show(view, ui, |v| v.status = words.say("Looking for a newer version…", "正在檢查新版本…"));
+            show(view, ui, |v| v.status = words.say(Text::UpdateChecking));
             match crate::update::check() {
                 crate::update::Check::Newer(to) => to,
-                crate::update::Check::Latest => return Err(words.say("No newer version is out.", "沒有新版本。")),
-                _ => return Err(words.say("Could not look for a newer version.", "無法檢查新版本。")),
+                crate::update::Check::Latest => return Err(words.say(Text::UpdateLatest)),
+                _ => return Err(words.say(Text::UpdateFailed)),
             }
         }
     };
     if !crate::update::newer(&to, &args.version) {
-        return Err(words.say("No newer version is out.", "沒有新版本。"));
+        return Err(words.say(Text::UpdateLatest));
     }
     show(view, ui, |v| v.to = Some(to.clone()));
     let result = msi::install(&to, |step| {
         show(view, ui, |v| {
             v.status = match step {
-                msi::Step::Download => if words.zh { format!("正在下載 Nekominal {to}…") } else { format!("Downloading Nekominal {to}…") },
-                msi::Step::Install => words.say("Installing…", "正在安裝…"),
+                msi::Step::Download => words.format(Text::UpdateHoldDownloading, &to),
+                msi::Step::Install => words.say(Text::UpdateHoldInstalling),
             }
         })
     });
@@ -435,9 +436,11 @@ mod tests {
         let args = |list: &[&str]| parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
         assert_eq!(
             args(&["--hold", r"\\.\pipe\x", "--app", r"C:\s\apps\nekominal", "--version", "0.2.3", "--to", "0.2.4"]).unwrap(),
-            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), msi: None, version: "0.2.3".into(), to: Some("0.2.4".into()) }
+            Args { pipe: r"\\.\pipe\x".into(), app: Some(PathBuf::from(r"C:\s\apps\nekominal")), msi: None, version: "0.2.3".into(), to: Some("0.2.4".into()), lang: None }
         );
         assert_eq!(args(&["--hold", "p", "--msi", r"C:\P\Nekominal"]).unwrap().msi, Some(PathBuf::from(r"C:\P\Nekominal")));
+        assert_eq!(args(&["--hold", "p", "--lang", "zh-TW"]).unwrap().lang, Some(Lang::ZhTw));
+        assert_eq!(args(&["--hold", "p", "--lang", "xx"]).unwrap().lang, None, "a language there is not: the system's");
         assert_eq!(args(&["--hold", "p", "--to", ""]).unwrap().to, None, "an empty version is none");
         assert_eq!(args(&["--hold", "p", "--app", ""]).unwrap().app, None, "an empty folder is none");
         assert_eq!(args(&["--app", "a"]).unwrap_err(), "--hold is missing");

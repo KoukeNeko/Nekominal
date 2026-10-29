@@ -1,6 +1,6 @@
-//! Every user-visible string of the shell, in Traditional Chinese (Taiwan) and English.
-//!
-//! One row per string holds both languages, so a language can never miss an id. A command's label is the
+//! Every user-visible string of the shell. The rows below name each string (its variant and its id) and say what it is
+//! for; the words are in `lang/<tag>.json`, a file a language, built into the program. A string a language does not
+//! have shows in English, and the tests hold English and Traditional Chinese to having all of them. A command's label is the
 //! row named by the command id (`Command::text`), and everything that offers the same action (tab strip
 //! tooltip, tool button, menu, palette) shows that row: the same action keeps one label. Strings with
 //! `{0}`, `{1}` placeholders are filled by [`Text::format`].
@@ -27,6 +27,11 @@ impl Lang {
         }
     }
 
+    /// The language whose [`tag`](Lang::tag) is `tag`, in any case.
+    pub fn from_tag(tag: &str) -> Option<Lang> {
+        Lang::ALL.into_iter().find(|lang| lang.tag().eq_ignore_ascii_case(tag))
+    }
+
     /// The language for a system locale name such as `zh-Hant-TW`, `zh-HK` or `en-GB`: any Chinese locale
     /// gets Traditional Chinese (Taiwan), everything else English.
     pub fn from_system_tag(tag: &str) -> Lang {
@@ -40,538 +45,577 @@ impl Lang {
 }
 
 macro_rules! texts {
-    ($($variant:ident $id:literal $zh:literal $en:literal;)*) => {
+    ($($variant:ident $id:literal;)*) => {
         /// A string of the interface; see the module documentation.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Text {
             $($variant,)*
         }
 
-        /// (string, id, zh-TW, en-US), in declaration order: the one source of truth of this module.
-        const TABLE: &[(Text, &str, &str, &str)] = &[
-            $((Text::$variant, $id, $zh, $en),)*
+        /// (string, id), in declaration order.
+        const TABLE: &[(Text, &str)] = &[
+            $((Text::$variant, $id),)*
         ];
     };
 }
 
+/// The words of each language, a file of `lang/` (`<tag>.json`, an object from id to text) built into the program.
+fn file(lang: Lang) -> &'static str {
+    match lang {
+        Lang::ZhTw => include_str!("../lang/zh-TW.json"),
+        Lang::EnUs => include_str!("../lang/en-US.json"),
+    }
+}
+
+/// The text of every string in `lang`, in the order of [`TABLE`]; None where its file does not have it. Read once.
+fn words(lang: Lang) -> &'static [Option<String>] {
+    static READ: std::sync::OnceLock<Vec<Vec<Option<String>>>> = std::sync::OnceLock::new();
+    let all = READ.get_or_init(|| {
+        Lang::ALL
+            .iter()
+            .map(|lang| {
+                // A file that does not read is a language with no words of its own: every string falls back to English.
+                let mut map: std::collections::HashMap<String, String> = serde_json::from_str(file(*lang)).unwrap_or_default();
+                TABLE.iter().map(|(_, id)| map.remove(*id)).collect()
+            })
+            .collect()
+    });
+    &all[Lang::ALL.iter().position(|l| *l == lang).unwrap_or(0)]
+}
+
 texts! {
     // Commands: the id is the command id.
-    TabNew "tab.new" "新增分頁" "New tab";
-    TabClose "tab.close" "關閉分頁" "Close tab";
-    TabNext "tab.next" "下一個分頁" "Next tab";
-    TabPrevious "tab.previous" "上一個分頁" "Previous tab";
-    TabGoto "tab.goto" "切換到分頁 {0}" "Go to tab {0}";
-    TabSelectLeft "tab.selectLeft" "切換到左側分頁" "Go to tab on the left";
-    TabSelectRight "tab.selectRight" "切換到右側分頁" "Go to tab on the right";
-    TabNextNeedsResponse "tab.nextNeedsResponse" "下一個需要回應的分頁" "Next tab needing a response";
-    TabMoveLeft "tab.moveLeft" "向左移動分頁" "Move tab left";
-    TabMoveRight "tab.moveRight" "向右移動分頁" "Move tab right";
-    TabProfiles "tab.profiles" "設定檔" "Profiles";
-    PaneSplitRight "pane.splitRight" "向右分割窗格" "Split pane right";
-    PaneSplitDown "pane.splitDown" "向下分割窗格" "Split pane down";
-    PaneClose "pane.close" "關閉窗格" "Close pane";
-    PaneZoom "pane.zoom" "縮放窗格" "Zoom pane";
-    PaneRestart "pane.restart" "重新啟動工作階段" "Restart session";
-    PaneFocusLeft "pane.focusLeft" "移到左側窗格" "Focus pane on the left";
-    PaneFocusRight "pane.focusRight" "移到右側窗格" "Focus pane on the right";
-    PaneFocusUp "pane.focusUp" "移到上方窗格" "Focus pane above";
-    PaneFocusDown "pane.focusDown" "移到下方窗格" "Focus pane below";
-    PaneResizeLeft "pane.resizeLeft" "向左調整窗格大小" "Resize pane left";
-    PaneResizeRight "pane.resizeRight" "向右調整窗格大小" "Resize pane right";
-    PaneResizeUp "pane.resizeUp" "向上調整窗格大小" "Resize pane up";
-    PaneResizeDown "pane.resizeDown" "向下調整窗格大小" "Resize pane down";
-    EditCopy "edit.copy" "複製" "Copy";
-    EditSmartCopy "edit.smartCopy" "有選取時複製，否則送出按鍵" "Copy the selection, else send the key";
-    EditPaste "edit.paste" "貼上" "Paste";
-    EditSelectAll "edit.selectAll" "全選" "Select all";
-    EditFind "edit.find" "尋找" "Find";
-    EditClear "edit.clear" "清除緩衝區" "Clear buffer";
-    ScrollPageUp "scroll.pageUp" "向上捲動一頁" "Scroll up one page";
-    ScrollPageDown "scroll.pageDown" "向下捲動一頁" "Scroll down one page";
-    ScrollTop "scroll.top" "捲動到頂端" "Scroll to top";
-    ScrollBottom "scroll.bottom" "捲動到底端" "Scroll to bottom";
-    PromptPrevious "prompt.previous" "上一個提示字元" "Previous prompt";
-    PromptNext "prompt.next" "下一個提示字元" "Next prompt";
-    ViewFullscreen "view.fullscreen" "全螢幕" "Full screen";
-    ViewSidebar "view.sidebar" "切換側邊欄" "Toggle sidebar";
-    ViewAgents "view.agents" "代理程式面板" "Agents panel";
-    AppUpdate "app.update" "更新並重新啟動" "Update and restart";
-    TabColor "tab.color" "分頁顏色" "Tab color";
-    PaneSwapLeft "pane.swapLeft" "與左側窗格交換" "Swap with the pane on the left";
-    PaneSwapRight "pane.swapRight" "與右側窗格交換" "Swap with the pane on the right";
-    PaneSwapUp "pane.swapUp" "與上方窗格交換" "Swap with the pane above";
-    PaneSwapDown "pane.swapDown" "與下方窗格交換" "Swap with the pane below";
-    PaneToTab "pane.toTab" "將窗格移到新分頁" "Move pane to a new tab";
-    PaneBroadcast "pane.broadcast" "廣播輸入到所有窗格" "Broadcast input to all panes";
-    EditExport "edit.export" "匯出文字到檔案" "Export text to a file";
-    EditMarkMode "edit.markMode" "用鍵盤選取" "Select with the keyboard";
-    EditCopyFormatted "edit.copyFormatted" "複製（含格式）" "Copy with formatting";
-    EditSelectOutput "edit.selectOutput" "選取指令輸出" "Select command output";
-    EditCopyOutput "edit.copyOutput" "複製指令輸出" "Copy command output";
-    EditHints "edit.hints" "提示選取（網址、路徑、雜湊）" "Hints (URLs, paths, hashes)";
-    ViewAlwaysOnTop "view.alwaysOnTop" "視窗置頂" "Always on top";
-    SettingsExplorerMenu "settings.explorerMenu" "在檔案總管的右鍵選單加入「在 Nekominal 開啟」" "Add “Open in Nekominal” to Explorer's menu";
-    SettingsInheritEnvironment "settings.inheritEnvironment" "新分頁沿用 Nekominal 啟動時的環境變數" "New tabs inherit the starting environment";
-    SettingsEditor "settings.editor" "開啟「檔案:行」的編輯器" "Editor that opens file:line";
-    EditSearchTabs "edit.searchTabs" "搜尋所有分頁" "Search all tabs";
-    ExplorerOpenHere "explorer.openHere" "在 Nekominal 開啟" "Open in Nekominal";
-    ExplorerOpen "explorer.open" "在這裡開啟" "Open here";
-    ExplorerOpenAdmin "explorer.openAdmin" "以系統管理員身分開啟" "Open as administrator";
-    ViewFocusMode "view.focusMode" "專注模式" "Focus mode";
-    ViewQuake "view.quake" "下拉式視窗（Win+`）" "Drop-down window (Win+`)";
-    QuakeKeyTaken "quake.keyTaken" "Win+` 已被其他程式使用（例如 Windows Terminal 的 quake 模式），下拉式視窗只能從命令選擇區開啟。在那個程式取消這個快速鍵後，Nekominal 會在視窗下次啟用時接手" "Win+` is held by another program (Windows Terminal's quake mode, for example), so the drop-down window opens only from the palette. Unbind it there, and Nekominal takes it the next time one of its windows is active";
-    QuakeKeyMissing "quake.keyMissing" "目前的鍵盤配置沒有不按 Shift 就能輸入 ` 的按鍵，下拉式視窗只能從命令選擇區開啟" "The keyboard layout has no key that types ` without Shift, so the drop-down window opens only from the palette";
-    TabRenameTo "tab.renameTo" "命名為「{0}」" "Name it “{0}”";
-    TabRenameAuto "tab.renameAuto" "使用自動標題" "Use the automatic title";
-    DialogCloseTabs "dialog.closeTabs" "關閉 {0} 個分頁？" "Close {0} tabs?";
-    ColorRed "color.red" "紅" "Red";
-    ColorOrange "color.orange" "橘" "Orange";
-    ColorYellow "color.yellow" "黃" "Yellow";
-    ColorGreen "color.green" "綠" "Green";
-    ColorTeal "color.teal" "青" "Teal";
-    ColorBlue "color.blue" "藍" "Blue";
-    ColorPurple "color.purple" "紫" "Purple";
-    ColorPink "color.pink" "粉紅" "Pink";
-    ViewZoomIn "view.zoomIn" "放大字型" "Increase font size";
-    ViewZoomOut "view.zoomOut" "縮小字型" "Decrease font size";
-    ViewZoomReset "view.zoomReset" "重設字型大小" "Reset font size";
-    AppPalette "app.palette" "命令選擇區" "Command palette";
-    AppNewWindow "app.newWindow" "新增視窗" "New window";
-    AppSettings "app.settings" "設定" "Settings";
+    TabNew "tab.new";
+    TabClose "tab.close";
+    TabNext "tab.next";
+    TabPrevious "tab.previous";
+    TabGoto "tab.goto";
+    TabSelectLeft "tab.selectLeft";
+    TabSelectRight "tab.selectRight";
+    TabNextNeedsResponse "tab.nextNeedsResponse";
+    TabMoveLeft "tab.moveLeft";
+    TabMoveRight "tab.moveRight";
+    TabProfiles "tab.profiles";
+    PaneSplitRight "pane.splitRight";
+    PaneSplitDown "pane.splitDown";
+    PaneClose "pane.close";
+    PaneZoom "pane.zoom";
+    PaneRestart "pane.restart";
+    PaneFocusLeft "pane.focusLeft";
+    PaneFocusRight "pane.focusRight";
+    PaneFocusUp "pane.focusUp";
+    PaneFocusDown "pane.focusDown";
+    PaneResizeLeft "pane.resizeLeft";
+    PaneResizeRight "pane.resizeRight";
+    PaneResizeUp "pane.resizeUp";
+    PaneResizeDown "pane.resizeDown";
+    EditCopy "edit.copy";
+    EditSmartCopy "edit.smartCopy";
+    EditPaste "edit.paste";
+    EditSelectAll "edit.selectAll";
+    EditFind "edit.find";
+    EditClear "edit.clear";
+    ScrollPageUp "scroll.pageUp";
+    ScrollPageDown "scroll.pageDown";
+    ScrollTop "scroll.top";
+    ScrollBottom "scroll.bottom";
+    PromptPrevious "prompt.previous";
+    PromptNext "prompt.next";
+    ViewFullscreen "view.fullscreen";
+    ViewSidebar "view.sidebar";
+    ViewAgents "view.agents";
+    AppUpdate "app.update";
+    TabColor "tab.color";
+    PaneSwapLeft "pane.swapLeft";
+    PaneSwapRight "pane.swapRight";
+    PaneSwapUp "pane.swapUp";
+    PaneSwapDown "pane.swapDown";
+    PaneToTab "pane.toTab";
+    PaneBroadcast "pane.broadcast";
+    EditExport "edit.export";
+    EditMarkMode "edit.markMode";
+    EditCopyFormatted "edit.copyFormatted";
+    EditSelectOutput "edit.selectOutput";
+    EditCopyOutput "edit.copyOutput";
+    EditHints "edit.hints";
+    ViewAlwaysOnTop "view.alwaysOnTop";
+    SettingsExplorerMenu "settings.explorerMenu";
+    SettingsInheritEnvironment "settings.inheritEnvironment";
+    SettingsEditor "settings.editor";
+    EditSearchTabs "edit.searchTabs";
+    ExplorerOpenHere "explorer.openHere";
+    ExplorerOpen "explorer.open";
+    ExplorerOpenAdmin "explorer.openAdmin";
+    ViewFocusMode "view.focusMode";
+    ViewQuake "view.quake";
+    QuakeKeyTaken "quake.keyTaken";
+    QuakeKeyMissing "quake.keyMissing";
+    TabRenameTo "tab.renameTo";
+    TabRenameAuto "tab.renameAuto";
+    DialogCloseTabs "dialog.closeTabs";
+    ColorRed "color.red";
+    ColorOrange "color.orange";
+    ColorYellow "color.yellow";
+    ColorGreen "color.green";
+    ColorTeal "color.teal";
+    ColorBlue "color.blue";
+    ColorPurple "color.purple";
+    ColorPink "color.pink";
+    ViewZoomIn "view.zoomIn";
+    ViewZoomOut "view.zoomOut";
+    ViewZoomReset "view.zoomReset";
+    AppPalette "app.palette";
+    AppNewWindow "app.newWindow";
+    AppSettings "app.settings";
     // "設定檔" already names a profile, so the settings file is spelled out by its format.
-    AppOpenSettingsFile "app.openSettingsFile" "開啟設定 JSON" "Open settings file";
-    AppReloadSettings "app.reloadSettings" "重新載入設定" "Reload settings";
-    AppImportSchemes "app.importSchemes" "從 Windows Terminal 匯入色彩配置" "Import color schemes from Windows Terminal";
-    AppImportItermColors "app.importItermColors" "匯入 iTerm2 色彩配置（.itermcolors）" "Import iTerm2 color presets (.itermcolors)";
-    SchemesImported "schemes.imported" "已匯入 {0} 個色彩配置：{1}" "Imported {0} color schemes: {1}";
-    SchemesNoneNew "schemes.noneNew" "沒有新的色彩配置可以匯入" "No new color schemes to import";
-    SchemesNotImported "schemes.notImported" "無法匯入：{0}" "Could not import: {0}";
-    TabNewWorktree "tab.newWorktree" "在新的 git 工作樹開啟分頁" "New tab in a git worktree";
-    TabRemoveWorktree "tab.removeWorktree" "移除這個 git 工作樹" "Remove this worktree";
-    AppSaveLayout "app.saveLayout" "儲存視窗配置" "Save window layout";
-    AppearanceBackdropNext "appearance.backdrop.next" "切換背景材質" "Switch backdrop";
-    AppearanceOpacityUp "appearance.opacity.up" "提高背景不透明度" "Increase background opacity";
-    AppearanceOpacityDown "appearance.opacity.down" "降低背景不透明度" "Decrease background opacity";
+    AppOpenSettingsFile "app.openSettingsFile";
+    AppReloadSettings "app.reloadSettings";
+    AppImportSchemes "app.importSchemes";
+    AppImportItermColors "app.importItermColors";
+    SchemesImported "schemes.imported";
+    SchemesNoneNew "schemes.noneNew";
+    SchemesNotImported "schemes.notImported";
+    TabNewWorktree "tab.newWorktree";
+    TabRemoveWorktree "tab.removeWorktree";
+    AppSaveLayout "app.saveLayout";
+    AppearanceBackdropNext "appearance.backdrop.next";
+    AppearanceOpacityUp "appearance.opacity.up";
+    AppearanceOpacityDown "appearance.opacity.down";
 
     // Tab strip and menus that have no command of their own.
-    TabUntitled "tab.untitled" "終端機" "Terminal";
-    TabRename "tab.rename" "重新命名分頁" "Rename tab";
-    TabDuplicate "tab.duplicate" "複製分頁" "Duplicate tab";
-    TabCloseOthers "tab.closeOthers" "關閉其他分頁" "Close other tabs";
-    TabCloseRight "tab.closeRight" "關閉右側分頁" "Close tabs to the right";
-    TabMoveToNewWindow "tab.moveToNewWindow" "移至新視窗" "Move to new window";
-    MenuTerminal "menu.terminal" "終端機功能表" "Terminal menu";
+    TabUntitled "tab.untitled";
+    TabRename "tab.rename";
+    TabDuplicate "tab.duplicate";
+    TabCloseOthers "tab.closeOthers";
+    TabCloseRight "tab.closeRight";
+    TabMoveToNewWindow "tab.moveToNewWindow";
+    MenuTerminal "menu.terminal";
     // The button of the top bar that opens the menu of everything the bar folds away, and the row of that menu that
     // opens the appearance flyout (its backdrop row is `SettingsBackdrop`).
-    MenuApp "menu.app" "功能表" "Menu";
-    MenuOpacity "menu.opacity" "背景不透明度…" "Background opacity…";
-    DropPastePath "drop.pastePath" "貼上路徑" "Paste path";
+    MenuApp "menu.app";
+    MenuOpacity "menu.opacity";
+    DropPastePath "drop.pastePath";
 
     // The position plate of the tab strip and the list of every tab (the palette in its tab mode).
-    TabAll "tab.all" "所有分頁" "All tabs";
-    TabListPlaceholder "tabs.placeholder" "輸入分頁名稱" "Type a tab name";
-    TabListEmpty "tabs.empty" "沒有符合的分頁" "No matching tabs";
-    TabPaneCount "tab.paneCount" "{0} 個窗格" "{0} panes";
+    TabAll "tab.all";
+    TabListPlaceholder "tabs.placeholder";
+    TabListEmpty "tabs.empty";
+    TabPaneCount "tab.paneCount";
     // Which pane of a tab waits for the user: the list of every tab says it in place of the pane count.
-    TabPanePosition "tab.panePosition" "窗格 {0} / {1}" "Pane {0} of {1}";
-    TabZoomed "tab.zoomed" "已縮放" "Zoomed";
+    TabPanePosition "tab.panePosition";
+    TabZoomed "tab.zoomed";
     // The accessible name of a tab that is not at rest: its title, then its state.
-    TabNameStatus "tab.nameStatus" "{0}，{1}" "{0}, {1}";
+    TabNameStatus "tab.nameStatus";
 
     // Tab and pane indicators.
-    AgentWorking "agent.working" "執行中" "Running";
-    AgentBlocked "agent.blocked" "等待輸入" "Waiting for input";
-    AgentDone "agent.done" "已完成" "Done";
-    AgentError "agent.error" "錯誤" "Error";
-    AgentNotification "agent.notification" "通知" "Notification";
-    AgentBell "agent.bell" "鈴聲" "Bell";
+    AgentWorking "agent.working";
+    AgentBlocked "agent.blocked";
+    AgentDone "agent.done";
+    AgentError "agent.error";
+    AgentNotification "agent.notification";
+    AgentBell "agent.bell";
     // The agents panel: its last row, and its only row when no pane runs an agent.
-    AgentsToday "agents.today" "今天的費用：{0}" "Spent today: {0}";
-    AgentsNone "agents.none" "沒有執行中的代理程式" "No agents are running";
+    AgentsToday "agents.today";
+    AgentsNone "agents.none";
 
     // Find bar. Its text box is labelled `EditFind`.
-    FindNone "find.none" "沒有結果" "No results";
-    FindCount "find.count" "{0} / {1}" "{0} / {1}";
-    FindMatchCase "find.matchCase" "區分大小寫" "Match case";
-    FindRegex "find.regex" "規則運算式" "Regular expression";
-    FindWholeWord "find.wholeWord" "完整單字" "Whole word";
-    FindPrevious "find.previous" "上一個" "Previous";
-    FindNext "find.next" "下一個" "Next";
+    FindNone "find.none";
+    FindCount "find.count";
+    FindMatchCase "find.matchCase";
+    FindRegex "find.regex";
+    FindWholeWord "find.wholeWord";
+    FindPrevious "find.previous";
+    FindNext "find.next";
 
     // Command palette. A profile entry starts with the label of `TabNew`.
-    PalettePlaceholder "palette.placeholder" "輸入命令" "Type a command";
-    PaletteEmpty "palette.empty" "沒有符合的命令" "No matching commands";
-    PaletteNewTabWith "palette.newTabWith" "新增分頁：{0}" "New tab: {0}";
-    PaletteColorScheme "palette.colorScheme" "色彩配置：{0}" "Color scheme: {0}";
-    PaletteGotoTab "palette.gotoTab" "切換到分頁：{0}" "Go to tab: {0}";
+    PalettePlaceholder "palette.placeholder";
+    PaletteEmpty "palette.empty";
+    PaletteNewTabWith "palette.newTabWith";
+    PaletteColorScheme "palette.colorScheme";
+    PaletteGotoTab "palette.gotoTab";
     // An entry that opens the settings drawer at a row.
-    PaletteSetting "palette.setting" "設定：{0}" "Settings: {0}";
-    PaletteSnippet "palette.snippet" "片段：{0}" "Snippet: {0}";
+    PaletteSetting "palette.setting";
+    PaletteSnippet "palette.snippet";
     // The entries of a saved layout, by its name.
-    PaletteOpenLayout "palette.openLayout" "開啟配置：{0}" "Open layout: {0}";
-    PaletteOpenLayoutWindow "palette.openLayoutWindow" "在新視窗開啟配置：{0}" "Open layout in a new window: {0}";
-    PaletteRenameLayout "palette.renameLayout" "重新命名配置：{0}" "Rename layout: {0}";
-    PaletteDeleteLayout "palette.deleteLayout" "刪除配置：{0}" "Delete layout: {0}";
+    PaletteOpenLayout "palette.openLayout";
+    PaletteOpenLayoutWindow "palette.openLayoutWindow";
+    PaletteRenameLayout "palette.renameLayout";
+    PaletteDeleteLayout "palette.deleteLayout";
     // The palette as a line to type a name in: the row Enter chooses, or what is wrong with the line.
-    LayoutTypeName "layout.typeName" "輸入配置名稱" "Type a name for the layout";
-    LayoutSaveAs "layout.saveAs" "儲存為配置「{0}」" "Save as layout “{0}”";
-    LayoutRenameTo "layout.renameTo" "將配置重新命名為「{0}」" "Rename the layout to “{0}”";
-    LayoutFailed "layout.failed" "無法儲存配置：{0}" "The layout could not be saved: {0}";
-    WorktreeTypeBranch "worktree.typeBranch" "輸入新分支的名稱" "Type a name for the new branch";
-    WorktreeCreate "worktree.create" "建立分支「{0}」與它的工作樹" "Create branch “{0}” and its worktree";
-    WorktreeBadBranch "worktree.badBranch" "「{0}」不能當分支名稱" "“{0}” cannot be a branch name";
-    WorktreeReservedBranch "worktree.reservedBranch" "「{0}」是 Windows 保留給裝置的名稱，不能出現在分支名稱裡" "“{0}” is a name Windows keeps for a device and cannot be part of a branch name";
-    WorktreeCopyFailed "worktree.copyFailed" "工作樹已建立，但 .worktreeinclude 列出的檔案沒有複製過去：{0}" "The worktree is made, but the files .worktreeinclude names were not copied: {0}";
-    WorktreeNotRepo "worktree.notRepo" "這個窗格的資料夾不在 git 儲存庫裡" "The folder of this pane is not in a git repository";
-    WorktreeFailed "worktree.failed" "無法建立工作樹：{0}" "The worktree could not be made: {0}";
-    WorktreeIsMain "worktree.isMain" "這是儲存庫的主要簽出，不會被移除" "This is the main checkout of the repository: it is never removed";
-    WorktreeDirty "worktree.dirty" "工作樹有 {0} 個未提交的變更與 {1} 個未追蹤的檔案：請先提交或捨棄它們" "The worktree has {0} uncommitted changes and {1} untracked files: commit or discard them first";
-    WorktreeDetached "worktree.detached" "工作樹不在任何分支上：移除它會遺失它的提交" "The worktree is on no branch: removing it would lose its commits";
+    LayoutTypeName "layout.typeName";
+    LayoutSaveAs "layout.saveAs";
+    LayoutRenameTo "layout.renameTo";
+    LayoutFailed "layout.failed";
+    WorktreeTypeBranch "worktree.typeBranch";
+    WorktreeCreate "worktree.create";
+    WorktreeBadBranch "worktree.badBranch";
+    WorktreeReservedBranch "worktree.reservedBranch";
+    WorktreeCopyFailed "worktree.copyFailed";
+    WorktreeNotRepo "worktree.notRepo";
+    WorktreeFailed "worktree.failed";
+    WorktreeIsMain "worktree.isMain";
+    WorktreeDirty "worktree.dirty";
+    WorktreeDetached "worktree.detached";
     // The dialog of Remove this worktree: its title, the lines of what was checked, the two choices and the main button.
-    DialogRemoveWorktree "dialog.removeWorktree" "移除工作樹 {0}？" "Remove the worktree {0}?";
-    WorktreeClean "worktree.clean" "沒有未提交的變更" "No uncommitted changes";
-    WorktreeChanged "worktree.changed" "{0} 個檔案有未提交的變更" "{0} files have uncommitted changes";
-    WorktreePushed "worktree.pushed" "所有提交都已推送到 {0}" "Every commit is pushed to {0}";
-    WorktreeUnpushed "worktree.unpushed" "{0} 個提交還沒推送" "{0} commits are not pushed";
-    WorktreeNoRemote "worktree.noRemote" "這個儲存庫沒有遠端" "The repository has no remote";
-    WorktreeMerged "worktree.merged" "已合併到 {0}" "Merged into {0}";
-    WorktreeMergedPr "worktree.mergedPr" "已合併到 {0}（PR #{1}）" "Merged into {0} (PR #{1})";
-    WorktreeNotMerged "worktree.notMerged" "還沒合併到 {0}" "Not merged into {0}";
-    WorktreeTabsClose "worktree.tabsClose" "{0} 個分頁在這個資料夾，會一起關閉" "{0} tabs in this folder close with it";
-    WorktreeAgentRuns "worktree.agentRuns" "{0} 正在這個資料夾執行" "{0} is running in this folder";
-    WorktreeIgnored "worktree.ignored" "{0} 個被 git 忽略的檔案或資料夾（例如 .env、建置結果）會隨資料夾刪除" "{0} files or folders git ignores (.env, build output) are deleted with the folder";
-    WorktreeMergedIgnoredLost "worktree.mergedIgnoredLost" "分支已合併，但被忽略的檔案會刪除" "The branch is merged, but the ignored files are deleted";
-    WorktreeDeleteBranch "worktree.deleteBranch" "移除資料夾並刪除分支" "Remove the folder and delete the branch";
-    WorktreeNothingLost "worktree.nothingLost" "分支已合併，不會遺失任何東西" "The branch is merged: nothing is lost";
-    WorktreeOnlyMerged "worktree.onlyMerged" "git 只刪除已合併的分支" "git deletes the branch only once it is merged";
-    WorktreeArchive "worktree.archive" "只移除資料夾" "Only remove the folder";
-    WorktreeKeepsBranch "worktree.keepsBranch" "保留分支 {0}，之後可以再建立工作樹" "Keeps the branch {0} to make a worktree of again later";
-    WorktreeCommitPushFirst "worktree.commitPushFirst" "要先提交並推送" "Commit and push first";
-    WorktreeCommitFirst "worktree.commitFirst" "要先提交" "Commit first";
-    WorktreePushFirst "worktree.pushFirst" "要先推送" "Push first";
-    WorktreeChangesLost "worktree.changesLost" "未提交的變更會遺失" "The uncommitted changes would be lost";
-    WorktreeRemove "worktree.remove" "移除" "Remove";
-    WorktreeShowTab "worktree.showTab" "開啟分頁查看" "Show the tab";
-    WorktreeBranchKept "worktree.branchKept" "工作樹已移除；分支「{0}」保留：{1}" "The worktree is removed; its branch “{0}” is kept: {1}";
-    WorktreeRemoveFailed "worktree.removeFailed" "無法移除工作樹：{0}" "The worktree could not be removed: {0}";
-    SuggestionHistory "suggestion.history" "最近的指令" "Recent command";
-    SuggestionSnippet "suggestion.snippet" "片段" "Snippet";
-    EditSuggestions "edit.suggestions" "建議（片段與最近的指令）" "Suggestions (snippets and recent commands)";
+    DialogRemoveWorktree "dialog.removeWorktree";
+    WorktreeClean "worktree.clean";
+    WorktreeChanged "worktree.changed";
+    WorktreePushed "worktree.pushed";
+    WorktreeUnpushed "worktree.unpushed";
+    WorktreeNoRemote "worktree.noRemote";
+    WorktreeMerged "worktree.merged";
+    WorktreeMergedPr "worktree.mergedPr";
+    WorktreeNotMerged "worktree.notMerged";
+    WorktreeTabsClose "worktree.tabsClose";
+    WorktreeAgentRuns "worktree.agentRuns";
+    WorktreeIgnored "worktree.ignored";
+    WorktreeMergedIgnoredLost "worktree.mergedIgnoredLost";
+    WorktreeDeleteBranch "worktree.deleteBranch";
+    WorktreeNothingLost "worktree.nothingLost";
+    WorktreeOnlyMerged "worktree.onlyMerged";
+    WorktreeArchive "worktree.archive";
+    WorktreeKeepsBranch "worktree.keepsBranch";
+    WorktreeCommitPushFirst "worktree.commitPushFirst";
+    WorktreeCommitFirst "worktree.commitFirst";
+    WorktreePushFirst "worktree.pushFirst";
+    WorktreeChangesLost "worktree.changesLost";
+    WorktreeRemove "worktree.remove";
+    WorktreeShowTab "worktree.showTab";
+    WorktreeBranchKept "worktree.branchKept";
+    WorktreeRemoveFailed "worktree.removeFailed";
+    SuggestionHistory "suggestion.history";
+    SuggestionSnippet "suggestion.snippet";
+    EditSuggestions "edit.suggestions";
 
     // Buttons shared by dialogs. A confirmation's button names the action; Paste uses `EditPaste`.
-    CommonClose "common.close" "關閉" "Close";
-    CommonCancel "common.cancel" "取消" "Cancel";
-    CommonOk "common.ok" "確定" "OK";
-    CommonRetry "common.retry" "重試" "Retry";
-    CommonAuto "common.auto" "自動" "Automatic";
+    CommonClose "common.close";
+    CommonCancel "common.cancel";
+    CommonOk "common.ok";
+    CommonRetry "common.retry";
+    CommonAuto "common.auto";
     // A row of the settings drawer that differs from its default: the button that puts it back, and the two buttons that
     // step a number.
-    CommonRestore "common.restore" "還原" "Restore";
-    CommonRestoreDefault "common.restoreDefault" "還原預設" "Restore default";
-    CommonDecrease "common.decrease" "減少" "Decrease";
-    CommonIncrease "common.increase" "增加" "Increase";
+    CommonRestore "common.restore";
+    CommonRestoreDefault "common.restoreDefault";
+    CommonDecrease "common.decrease";
+    CommonIncrease "common.increase";
 
     // Confirmations: titles that name the action, answered by the buttons above.
-    DialogPasteLines "dialog.pasteLines" "貼上 {0} 行？" "Paste {0} lines?";
-    DialogPasteSize "dialog.pasteSize" "貼上 {0}？" "Paste {0}?";
-    DialogCloseSessions "dialog.closeSessions" "關閉 {0} 個執行中的工作階段？" "Close running sessions ({0})?";
-    DialogCloseTab "dialog.closeTab" "關閉「{0}」？" "Close \"{0}\"?";
-    DialogRestartSession "dialog.restartSession" "重新啟動「{0}」？" "Restart \"{0}\"?";
-    DialogRestoreKeys "dialog.restoreKeys" "還原所有快速鍵？" "Restore all shortcuts?";
+    DialogPasteLines "dialog.pasteLines";
+    DialogPasteSize "dialog.pasteSize";
+    DialogCloseSessions "dialog.closeSessions";
+    DialogCloseTab "dialog.closeTab";
+    DialogRestartSession "dialog.restartSession";
+    DialogRestoreKeys "dialog.restoreKeys";
 
     // A setting that was changed and could not be put in effect: the InfoBar names it, the row of the opacity says it.
-    SettingNotApplied "setting.notApplied" "未套用" "Not applied";
+    SettingNotApplied "setting.notApplied";
     // The shortcuts page: the button of a row that adds a binding, what a row says while a key is waited for and when
     // the key is taken (by a command or by a program in the terminal), and the buttons that answer that.
-    KeyAdd "keys.add" "新增快速鍵" "Add shortcut";
-    KeyRecord "keys.record" "按下按鍵" "Press keys";
-    KeyConflict "keys.conflict" "與「{0}」衝突" "Conflicts with \"{0}\"";
-    KeysPress "keys.press" "按下新的快速鍵（Esc 取消，Delete 清除）" "Press a shortcut (Esc cancels, Delete clears)";
-    KeyReserved "keys.reserved" "終端機程式使用此組合鍵，再按一次仍要指定" "Terminal programs use this shortcut: press it again to take it anyway";
-    SettingsSnippetsHeading "settings.snippetsHeading" "文字片段" "Snippets";
-    SettingsSnippets "settings.snippets" "從命令選擇區或建議清單輸入的文字" "Text the palette and the suggestions type";
-    SettingsNotificationsHeading "settings.notificationsHeading" "Windows 通知" "Windows notifications";
-    SettingsLayouts "settings.layouts" "已儲存的視窗配置" "Saved window layouts";
-    SnippetsAdd "snippets.add" "新增片段" "Add snippet";
-    SnippetInput "snippets.input" "要輸入的文字，\\r 代表 Enter" "Text to type; \\r is Enter";
-    KeysResetAll "keys.resetAll" "將所有快速鍵還原為預設值" "Reset all shortcuts to their defaults";
-    KeyReplace "keys.replace" "取代" "Replace";
+    KeyAdd "keys.add";
+    KeyRecord "keys.record";
+    KeyConflict "keys.conflict";
+    KeysPress "keys.press";
+    KeyReserved "keys.reserved";
+    SettingsSnippetsHeading "settings.snippetsHeading";
+    SettingsSnippets "settings.snippets";
+    SettingsNotificationsHeading "settings.notificationsHeading";
+    SettingsLayouts "settings.layouts";
+    SnippetsAdd "snippets.add";
+    SnippetInput "snippets.input";
+    KeysResetAll "keys.resetAll";
+    KeyReplace "keys.replace";
     // The tag of a row whose value in the settings file was not valid, and the heading of the list of those problems.
-    SettingInvalid "setting.invalid" "設定檔值無效" "Invalid value in file";
-    SettingsProblems "settings.problems" "問題" "Problems";
-    LabelValue "common.labelValue" "{0}：{1}" "{0}: {1}";
+    SettingInvalid "setting.invalid";
+    SettingsProblems "settings.problems";
+    LabelValue "common.labelValue";
 
     // Messages: what happened, and the recovery when there is one.
-    StatusExited "status.exited" "[已結束，代碼 {0}]" "[Exited with code {0}]";
-    StatusSpawnFailed "status.spawnFailed" "無法啟動 {0}：{1}" "Cannot start {0}: {1}";
-    StatusNoProfile "status.noProfile" "找不到可用的設定檔" "No usable profile found";
-    StatusSettingsProblems "status.settingsProblems" "設定 JSON 有 {0} 個問題" "Settings file has {0} problems";
+    StatusExited "status.exited";
+    StatusSpawnFailed "status.spawnFailed";
+    StatusNoProfile "status.noProfile";
+    StatusSettingsProblems "status.settingsProblems";
     // What a value of the settings file should have been (the key comes before it, see `LabelValue`).
-    ProblemNumber "problem.number" "需要 {0} 到 {1} 的數字" "Needs a number from {0} to {1}";
-    ProblemBool "problem.bool" "需要 true 或 false" "Needs true or false";
-    ProblemText "problem.text" "需要文字" "Needs text";
-    ProblemObject "problem.object" "需要物件" "Needs an object";
-    ProblemArray "problem.array" "需要陣列" "Needs an array";
-    ProblemTextOrList "problem.textOrList" "需要文字或文字陣列" "Needs text or an array of text";
-    ProblemFontFamily "problem.fontFamily" "需要字型名稱的陣列或以逗號分隔的文字" "Needs an array of font names or a comma separated text";
-    ProblemOneOf "problem.oneOf" "需要 {0} 其中之一" "Needs one of {0}";
-    ProblemRequired "problem.required" "必填" "Required";
-    ProblemColor "problem.color" "需要 #RRGGBB 格式的顏色" "Needs a color such as #RRGGBB";
-    ProblemUnknownTheme "problem.unknownTheme" "找不到「{0}」" "No color scheme \"{0}\"";
-    ProblemUnknownCommand "problem.unknownCommand" "找不到命令" "No such command";
-    ProblemBadShortcut "problem.badShortcut" "「{0}」不是有效的快速鍵" "\"{0}\" is not a valid shortcut";
-    ProblemRegex "problem.regex" "不是有效的正規表示式：{0}" "Not a valid regular expression: {0}";
-    ProblemMostEntries "problem.mostEntries" "最多 {0} 個，其餘略過" "At most {0}; the rest are left out";
-    ProblemMostChars "problem.mostChars" "最多 {0} 個字元" "At most {0} characters";
-    ProblemUnparsable "problem.unparsable" "無法解析：{0}" "Cannot parse: {0}";
-    ProblemJsonObject "problem.jsonObject" "需要是 JSON 物件" "Needs to be a JSON object";
-    StatusSettingsSaveFailed "status.settingsSaveFailed" "無法儲存設定：{0}" "Cannot save settings: {0}";
-    StatusSettingsLoadFailed "status.settingsLoadFailed" "無法讀取設定：{0}" "Cannot read settings: {0}";
-    StatusOpenFailed "status.openFailed" "無法開啟 {0}：{1}" "Cannot open {0}: {1}";
-    StatusRestoreFailed "status.restoreFailed" "無法還原工作階段：{0}" "Cannot restore sessions: {0}";
-    InfobarWidthModel "infobar.widthModel" "未使用隨附的 ConPTY，字元寬度可能不一致" "Bundled ConPTY is not in use, so character widths may not match";
-    InfobarNoColor "infobar.noColor" "已設定 NO_COLOR，PowerShell 輸出不含色彩" "NO_COLOR is set, so PowerShell output has no color";
+    ProblemNumber "problem.number";
+    ProblemBool "problem.bool";
+    ProblemText "problem.text";
+    ProblemObject "problem.object";
+    ProblemArray "problem.array";
+    ProblemTextOrList "problem.textOrList";
+    ProblemFontFamily "problem.fontFamily";
+    ProblemOneOf "problem.oneOf";
+    ProblemRequired "problem.required";
+    ProblemColor "problem.color";
+    ProblemUnknownTheme "problem.unknownTheme";
+    ProblemUnknownCommand "problem.unknownCommand";
+    ProblemBadShortcut "problem.badShortcut";
+    ProblemRegex "problem.regex";
+    ProblemMostEntries "problem.mostEntries";
+    ProblemMostChars "problem.mostChars";
+    ProblemUnparsable "problem.unparsable";
+    ProblemJsonObject "problem.jsonObject";
+    StatusSettingsSaveFailed "status.settingsSaveFailed";
+    StatusSettingsLoadFailed "status.settingsLoadFailed";
+    StatusOpenFailed "status.openFailed";
+    StatusRestoreFailed "status.restoreFailed";
+    InfobarWidthModel "infobar.widthModel";
+    InfobarNoColor "infobar.noColor";
 
     // Settings drawer: sections, then one row label per setting followed by its choices.
-    SettingsSearch "settings.search" "搜尋設定" "Search settings";
-    SettingsEmpty "settings.empty" "沒有符合的設定" "No matching settings";
-    SettingsAppearance "settings.appearance" "外觀" "Appearance";
-    SettingsTerminal "settings.terminal" "終端機" "Terminal";
-    SettingsProfiles "settings.profiles" "設定檔" "Profiles";
-    SettingsAgents "settings.agents" "Agent" "Agents";
-    SettingsKeys "settings.keys" "快速鍵" "Shortcuts";
-    SettingsAdvanced "settings.advanced" "進階" "Advanced";
+    SettingsSearch "settings.search";
+    SettingsEmpty "settings.empty";
+    SettingsAppearance "settings.appearance";
+    SettingsTerminal "settings.terminal";
+    SettingsProfiles "settings.profiles";
+    SettingsAgents "settings.agents";
+    SettingsKeys "settings.keys";
+    SettingsAdvanced "settings.advanced";
     // The two choices of a row that is on or off (and the "off" of the clipboard row).
-    ToggleOn "toggle.on" "開" "On";
-    ToggleOff "toggle.off" "關" "Off";
+    ToggleOn "toggle.on";
+    ToggleOff "toggle.off";
 
-    SettingsLanguage "settings.language" "語言" "Language";
-    LanguageZhTw "language.zhTw" "繁體中文" "繁體中文";
-    LanguageEnUs "language.enUs" "English" "English";
-    SettingsRestoreSession "settings.restoreSession" "啟動時還原工作階段" "Restore sessions on start";
+    SettingsLanguage "settings.language";
+    LanguageZhTw "language.zhTw";
+    LanguageEnUs "language.enUs";
+    SettingsRestoreSession "settings.restoreSession";
     // The line under the text a restored pane shows again from the last session; {0} is when that session ended.
-    PaneRestored "pane.restored" "已還原 {0} 的內容" "Restored from {0}";
+    PaneRestored "pane.restored";
     // The line under the text of a pane whose program could not be kept through an update: a new shell runs below it.
-    PaneNotKept "pane.notKept" "更新時無法接回原本的程式，以下是新的 shell" "The program could not be kept through the update; a new shell runs below";
+    PaneNotKept "pane.notKept";
     // The update could not start: the tabs stay as they are. {0} is what went wrong.
-    UpdateHandOffFailed "update.handOffFailed" "無法把分頁交給更新程式，所以沒有更新：{0}" "The tabs could not be handed to the updater, so nothing was updated: {0}";
-    SettingsConfirmClose "settings.confirmClose" "關閉前確認" "Confirm before closing";
-    SettingsConfirmCloseThreshold "settings.confirmCloseThreshold" "觸發確認的工作階段數" "Sessions that trigger confirmation";
+    UpdateHandOffFailed "update.handOffFailed";
+    SettingsConfirmClose "settings.confirmClose";
+    SettingsConfirmCloseThreshold "settings.confirmCloseThreshold";
 
-    SettingsTabBarDensity "settings.tabBarDensity" "分頁列密度" "Tab bar density";
-    DensityComfortable "density.comfortable" "寬鬆" "Comfortable";
-    DensityCompact "density.compact" "精簡" "Compact";
-    SettingsBackdrop "settings.backdrop" "背景材質" "Backdrop";
-    BackdropAcrylic "backdrop.acrylic" "壓克力" "Acrylic";
-    BackdropMica "backdrop.mica" "Mica" "Mica";
-    BackdropMicaAlt "backdrop.micaAlt" "Mica Alt" "Mica Alt";
-    BackdropNone "backdrop.none" "無" "None";
-    SettingsOpacity "settings.opacity" "背景不透明度" "Background opacity";
-    SettingsTheme "settings.theme" "色彩配置" "Color scheme";
-    SettingsTabTitle "settings.tabTitle" "標題格式" "Title format";
-    SettingsFontFamily "settings.fontFamily" "字型" "Font";
-    SettingsFontSize "settings.fontSize" "字型大小" "Font size";
-    SettingsLineHeight "settings.lineHeight" "行高" "Line height";
-    SettingsLigatures "settings.ligatures" "字型連字" "Font ligatures";
-    NoteLigatures "settings.ligaturesNote" "=>、>= 等組合顯示為一個字形" "Show => or >= as one glyph";
-    SettingsCursorStyle "settings.cursorStyle" "游標形狀" "Cursor shape";
-    CursorBlock "cursor.block" "區塊" "Block";
-    CursorBar "cursor.bar" "直線" "Bar";
-    CursorUnderline "cursor.underline" "底線" "Underline";
-    SettingsCursorBlink "settings.cursorBlink" "游標閃爍" "Cursor blink";
-    SettingsCursorBlinkRate "settings.cursorBlinkRate" "游標閃爍間隔（毫秒）" "Cursor blink interval (ms)";
+    SettingsTabBarDensity "settings.tabBarDensity";
+    DensityComfortable "density.comfortable";
+    DensityCompact "density.compact";
+    SettingsBackdrop "settings.backdrop";
+    BackdropAcrylic "backdrop.acrylic";
+    BackdropMica "backdrop.mica";
+    BackdropMicaAlt "backdrop.micaAlt";
+    BackdropNone "backdrop.none";
+    SettingsOpacity "settings.opacity";
+    SettingsTheme "settings.theme";
+    SettingsTabTitle "settings.tabTitle";
+    SettingsFontFamily "settings.fontFamily";
+    SettingsFontSize "settings.fontSize";
+    SettingsLineHeight "settings.lineHeight";
+    SettingsLigatures "settings.ligatures";
+    NoteLigatures "settings.ligaturesNote";
+    SettingsCursorStyle "settings.cursorStyle";
+    CursorBlock "cursor.block";
+    CursorBar "cursor.bar";
+    CursorUnderline "cursor.underline";
+    SettingsCursorBlink "settings.cursorBlink";
+    SettingsCursorBlinkRate "settings.cursorBlinkRate";
 
-    SettingsScrollback "settings.scrollback" "捲動緩衝區行數" "Scrollback lines";
-    SettingsDefaultProfile "settings.defaultProfile" "預設設定檔" "Default profile";
-    ProfileName "profile.name" "名稱" "Name";
-    ProfileProgram "profile.program" "程式" "Program";
-    ProfileArgs "profile.args" "引數" "Arguments";
-    ProfileCwd "profile.cwd" "起始資料夾" "Starting folder";
-    ProfileEnv "profile.env" "環境變數" "Environment variables";
-    ProfileElevate "profile.elevate" "以系統管理員身分執行" "Run as administrator";
-    ProfileSameAsWindow "profile.sameAsWindow" "與視窗相同" "Same as the window";
-    ProfileNew "profile.new" "新增設定檔" "New profile";
-    ProfileDelete "profile.delete" "刪除設定檔" "Delete profile";
-    ProfileRestore "profile.restore" "還原為偵測到的設定" "Restore as found";
-    ProfileBack "profile.back" "所有設定檔" "All profiles";
-    ProfileNeedsValue "profile.needsValue" "不能空白" "Cannot be empty";
-    ProfileBadVariable "profile.badVariable" "名稱不能有空格或 =" "A name cannot have spaces or =";
-    ProfileDuplicateVariable "profile.duplicateVariable" "已經有這個變數" "This variable is already set";
-    ProfileAddVariable "profile.addVariable" "新增變數" "Add variable";
-    ProfileValue "profile.value" "值" "Value";
-    ProfileBrowse "profile.browse" "瀏覽…" "Browse…";
-    SettingsCopyOnSelect "settings.copyOnSelect" "選取時複製" "Copy on select";
-    SettingsStickyHeader "settings.stickyHeader" "捲動時將指令列固定在頂端" "Pin the command line while scrolling";
-    SettingsRightClick "settings.rightClick" "右鍵" "Right click";
-    RightClickSmart "rightClick.smart" "複製或貼上" "Copy or paste";
-    RightClickMenu "rightClick.menu" "顯示功能表" "Show menu";
-    SettingsWarnMultiline "settings.warnMultiline" "貼上多行前確認" "Confirm before pasting multiple lines";
-    SettingsWarnLarge "settings.warnLarge" "貼上大量文字前確認（KiB）" "Confirm before pasting large text (KiB)";
-    SettingsBellVisual "settings.bellVisual" "鈴聲視覺提示" "Visual bell";
-    SettingsBellTaskbar "settings.bellTaskbar" "工作列提示" "Taskbar alert";
-    SettingsBellSound "settings.bellSound" "鈴聲音效" "Bell sound";
-    BellSoundBackground "bellSound.background" "僅背景" "Background only";
-    BellSoundAlways "bellSound.always" "一律" "Always";
-    SettingsToast "settings.toast" "顯示 Windows 通知" "Show Windows notifications";
-    SettingsLongCommand "settings.longCommand" "長指令結束時通知（秒，0 為關閉）" "Notify when a long command ends (seconds, 0 is off)";
+    SettingsScrollback "settings.scrollback";
+    SettingsDefaultProfile "settings.defaultProfile";
+    ProfileName "profile.name";
+    ProfileProgram "profile.program";
+    ProfileArgs "profile.args";
+    ProfileCwd "profile.cwd";
+    ProfileEnv "profile.env";
+    ProfileElevate "profile.elevate";
+    ProfileSameAsWindow "profile.sameAsWindow";
+    ProfileNew "profile.new";
+    ProfileDelete "profile.delete";
+    ProfileRestore "profile.restore";
+    ProfileBack "profile.back";
+    ProfileNeedsValue "profile.needsValue";
+    ProfileBadVariable "profile.badVariable";
+    ProfileDuplicateVariable "profile.duplicateVariable";
+    ProfileAddVariable "profile.addVariable";
+    ProfileValue "profile.value";
+    ProfileBrowse "profile.browse";
+    SettingsCopyOnSelect "settings.copyOnSelect";
+    SettingsStickyHeader "settings.stickyHeader";
+    SettingsRightClick "settings.rightClick";
+    RightClickSmart "rightClick.smart";
+    RightClickMenu "rightClick.menu";
+    SettingsWarnMultiline "settings.warnMultiline";
+    SettingsWarnLarge "settings.warnLarge";
+    SettingsBellVisual "settings.bellVisual";
+    SettingsBellTaskbar "settings.bellTaskbar";
+    SettingsBellSound "settings.bellSound";
+    BellSoundBackground "bellSound.background";
+    BellSoundAlways "bellSound.always";
+    SettingsToast "settings.toast";
+    SettingsLongCommand "settings.longCommand";
     // The phone notifications of the Terminal page: the rows, the notes under their labels, and the test row.
-    SettingsPushHeading "settings.pushHeading" "手機通知" "Phone notifications";
-    SettingsPushUrl "settings.pushUrl" "傳送到" "Send to";
-    NotePushUrl "settings.pushUrlNote" "ntfy 主題，或接收 POST 的 https 網址" "An ntfy topic, or an https URL taking POSTs";
-    SettingsPushKind "settings.pushKind" "格式" "Format";
-    PushKindNtfy "pushKind.ntfy" "ntfy" "ntfy";
-    PushKindWebhook "pushKind.webhook" "Webhook" "Webhook";
-    SettingsPushWhen "settings.pushWhen" "何時傳送" "When to send";
-    PushWhenAway "pushWhen.away" "不在電腦前" "When away";
-    SettingsPushToken "settings.pushToken" "存取權杖" "Access token";
-    NotePushToken "settings.pushTokenNote" "選填，以 Bearer 傳送，不寫進記錄" "Optional, sent as Bearer, never logged";
-    SettingsPushEvents "settings.pushEvents" "傳送哪些事件" "Events to send";
-    PushEventFailed "pushEvent.failed" "失敗" "Failed";
-    PushEventDone "pushEvent.done" "完成" "Finished";
-    PushEventLongCommand "pushEvent.longCommand" "長指令結束" "Long command ended";
-    PushEventMessage "pushEvent.message" "程式的通知" "Program notifications";
-    PushBadUrl "push.badUrl" "網址要是 https://（http:// 只能連到這台電腦）" "Needs https:// (http:// only to this computer)";
-    PushTest "push.test" "測試" "Test";
-    PushTestSend "push.testSend" "傳送測試通知" "Send a test notification";
-    PushTestBody "push.testBody" "Nekominal 的測試通知" "A test notification from Nekominal";
-    PushSending "push.sending" "傳送中" "Sending";
-    PushDelivered "push.delivered" "已送達" "Delivered";
-    PushLastSent "push.lastSent" "上次傳送：{0}，手機已收到" "Last sent {0}; the phone has it";
-    PushLastTried "push.lastTried" "上次傳送：{0}" "Last sent {0}";
-    PushJustNow "push.justNow" "剛才" "just now";
-    PushMinutesAgo "push.minutesAgo" "{0} 分鐘前" "{0} min ago";
+    SettingsPushHeading "settings.pushHeading";
+    SettingsPushUrl "settings.pushUrl";
+    NotePushUrl "settings.pushUrlNote";
+    SettingsPushKind "settings.pushKind";
+    PushKindNtfy "pushKind.ntfy";
+    PushKindWebhook "pushKind.webhook";
+    SettingsPushWhen "settings.pushWhen";
+    PushWhenAway "pushWhen.away";
+    SettingsPushToken "settings.pushToken";
+    NotePushToken "settings.pushTokenNote";
+    SettingsPushEvents "settings.pushEvents";
+    PushEventFailed "pushEvent.failed";
+    PushEventDone "pushEvent.done";
+    PushEventLongCommand "pushEvent.longCommand";
+    PushEventMessage "pushEvent.message";
+    PushBadUrl "push.badUrl";
+    PushTest "push.test";
+    PushTestSend "push.testSend";
+    PushTestBody "push.testBody";
+    PushSending "push.sending";
+    PushDelivered "push.delivered";
+    PushLastSent "push.lastSent";
+    PushLastTried "push.lastTried";
+    PushJustNow "push.justNow";
+    PushMinutesAgo "push.minutesAgo";
     // The Triggers page: its title and intro, the form of a rule, its actions and the ready-made rules.
-    SettingsTriggers "settings.triggers" "觸發規則" "Triggers";
-    TriggersIntro "triggers.intro" "輸出出現符合的文字時做一件事" "Do something when the output shows matching text";
-    TriggerAdd "triggers.add" "新增規則" "Add rule";
-    TriggerPattern "triggers.pattern" "符合的文字" "Matching text";
-    TriggerInstant "triggers.instant" "還沒換行也算" "Before the line ends";
-    TriggerProgram "triggers.program" "只在執行" "Only while running";
-    TriggerProgramNote "triggers.programNote" "時；空白就是任何程式" "Empty is any program";
-    TriggerAction "triggers.action" "動作" "Action";
-    TriggerHighlight "triggers.highlight" "標示" "Highlight";
-    TriggerBadge "triggers.badge" "分頁徽章" "Tab badge";
-    TriggerSend "triggers.send" "送出文字" "Send text";
-    TriggerBell "triggers.bell" "響鈴" "Ring";
-    TriggerNotifyText "triggers.notifyText" "通知內容" "Notification text";
-    TriggerSendText "triggers.sendText" "送出的文字" "Text to send";
-    TriggerColor "triggers.color" "標示顏色" "Highlight color";
-    TriggerBadPattern "triggers.badPattern" "不是有效的正規表示式" "Not a valid regular expression";
-    TriggerPresetErrors "triggers.presetErrors" "錯誤標紅" "Errors in red";
-    TriggerPresetTests "triggers.presetTests" "測試失敗加徽章" "Badge failed tests";
-    TriggerPresetDeploy "triggers.presetDeploy" "部署完成通知" "Notify when a deploy ends";
-    TriggerPresetPassword "triggers.presetPassword" "密碼提示時響鈴" "Ring at a password prompt";
-    ToastCommandDone "toast.commandDone" "指令完成，耗時 {0} 秒" "Command finished after {0} s";
-    ToastCommandFailed "toast.commandFailed" "指令失敗，結束代碼 {0}，耗時 {1} 秒" "Command failed with exit code {0} after {1} s";
-    SettingsKitty "settings.kitty" "kitty 鍵盤協定" "kitty keyboard protocol";
-    SettingsAgentEnvironment "settings.agentEnvironment" "代理程式環境變數" "Agent environment variables";
-    SettingsShellIntegration "settings.shellIntegration" "Shell 整合" "Shell integration";
-    SettingsOsc52 "settings.osc52" "OSC 52 剪貼簿" "OSC 52 clipboard";
-    Osc52Write "osc52.write" "僅寫入" "Write only";
-    Osc52ReadWrite "osc52.readWrite" "讀取與寫入" "Read and write";
-    SettingsTabLayout "settings.tabLayout" "分頁版面" "Tab layout";
-    LayoutTop "layout.top" "上方分頁" "Tabs on top";
-    LayoutList "layout.list" "側邊欄 · 清單" "Sidebar · list";
-    LayoutIcons "layout.icons" "側邊欄 · 圖示" "Sidebar · icons";
-    SettingsTabStyle "settings.tabStyle" "側邊欄的分頁" "Sidebar tabs";
-    NoteTabStyle "settings.tabStyleNote" "側邊欄 · 清單時，每個分頁顯示多少" "How much each tab shows in the sidebar list";
-    StyleActivity "style.activity" "活動清單" "Activity";
-    StyleCards "style.cards" "Agent 卡片" "Agent cards";
-    StyleRepo "style.repo" "依專案分組" "By repository";
-    RepoTabs "group.repoTabs" "{0} 個分頁" "{0} tabs";
-    SettingsSidebarOpen "settings.sidebarOpen" "開啟時顯示側邊欄" "Show the sidebar";
-    SettingsGroupByState "settings.groupByState" "依狀態分組" "Group by state";
-    TabsWaiting "tabs.waiting" "{0} 個等待回應" "{0} waiting";
-    GroupWaiting "group.waiting" "等待回應" "Waiting";
-    GroupOther "group.other" "其他" "Other";
-    SettingsResults "settings.results" "搜尋結果" "Results";
-    WelcomeTitle "welcome.title" "選擇分頁的擺法" "Choose where the tabs go";
-    WelcomeLater "welcome.later" "之後可以在「設定 › 外觀」隨時更改" "You can change this any time in Settings › Appearance";
-    WelcomeTopNote "welcome.topNote" "分頁排在標題列，終端機最寬。開幾個分頁時最省空間" "Tabs in the title bar, the terminal at its widest. The most room with a few tabs";
-    WelcomeSide "welcome.side" "側邊欄" "Sidebar";
-    WelcomeSideNote "welcome.sideNote" "分頁排在左邊，狀態和位置一眼看完。同時跑很多 agent 時好找" "Tabs down the left, each with its state and place. Easy to find with many agents";
-    WelcomeStyle "welcome.style" "樣式" "Style";
-    StyleList "style.list" "清單" "List";
-    StyleIcons "style.icons" "圖示" "Icons";
-    WelcomeStart "welcome.start" "開始使用" "Get started";
-    SettingsStatusBar "settings.statusBar" "顯示狀態列" "Show the status bar";
-    SettingsStatusBarNoAgent "settings.statusBarNoAgent" "沒有 agent 時" "Without an agent";
-    StatusBarPlace "statusBar.place" "只留資料夾和分支" "Folder and branch only";
-    StatusBarHide "statusBar.hide" "整條隱藏" "Hide the bar";
-    SettingsStatusState "settings.statusState" "狀態列：工作狀態" "Status bar: agent state";
-    SettingsStatusModel "settings.statusModel" "狀態列：模型" "Status bar: model";
-    SettingsStatusContext "settings.statusContext" "狀態列：脈絡用量" "Status bar: context used";
-    SettingsStatusCost "settings.statusCost" "狀態列：費用" "Status bar: cost";
-    SettingsStatusTime "settings.statusTime" "狀態列：工作階段時間" "Status bar: session time";
-    SettingsStatusBranch "settings.statusBranch" "狀態列：Git 分支" "Status bar: Git branch";
-    SettingsStatusFolder "settings.statusFolder" "狀態列：資料夾" "Status bar: folder";
-    WindowMove "window.move" "移動" "Move";
-    WindowSize "window.size" "大小" "Size";
-    WindowMinimize "window.minimize" "最小化" "Minimize";
-    WindowMaximize "window.maximize" "最大化" "Maximize";
-    ClaudeAuto "claude.auto" "在 PowerShell 分頁打開 Claude Code，狀態列就會顯示模型、脈絡用量和費用" "Open Claude Code in a PowerShell tab and the status bar shows its model, context and cost";
-    ClaudeBarOff "claude.barOff" "狀態列關閉時，不會向 Claude Code 取得用量" "With the status bar off, nothing is asked of Claude Code";
-    CardContext "card.context" "脈絡" "Context";
-    CardUsed "card.used" "已使用" "used";
-    CardWindow "card.window" "{0} 視窗" "{0} window";
-    CardCacheRead "card.cacheRead" "從快取讀取" "Read from cache";
-    CardCacheWrite "card.cacheWrite" "寫入快取" "Written to cache";
-    CardNewInput "card.newInput" "新的輸入" "New input";
-    CardFree "card.free" "剩餘" "Free";
-    CardSession "card.session" "這個工作階段" "This session";
-    CardRemote "card.remote" "Remote Control" "Remote Control";
-    CardRemoteOn "card.remoteOn" "已連線" "Connected";
-    CardCopyLink "card.copyLink" "複製連結" "Copy link";
-    CardCost "card.cost" "費用" "Cost";
-    CardTime "card.time" "時間" "Time";
-    CardTokens "card.tokens" "Token" "Tokens";
-    CardLastReply "card.lastReply" "最後一次回覆" "Last reply";
-    CardLines "card.lines" "行數" "Lines";
-    CardIn "card.in" "{0} 輸入" "{0} in";
-    CardOut "card.out" "{0} 輸出" "{0} out";
-    SubagentsTitle "subagents.title" "子代理" "Subagents";
-    SubagentsWorkflow "subagents.workflow" "Workflow" "Workflow";
-    SubagentsRunning "subagents.running" "{0} 個執行中" "{0} running";
-    SubagentsDone "subagents.done" "{0} 個已完成" "{0} done";
-    SubagentsMore "subagents.more" "還有 {0} 個" "{0} more";
-    SubagentsRunningFor "subagents.runningFor" "執行中 {0}" "Running {0}";
-    SubagentsFinishedAfter "subagents.finishedAfter" "已完成 · {0}" "Finished · {0}";
-    SubagentsFailedCount "subagents.failedCount" "{0} 個失敗" "{0} failed";
-    SubagentsReply "subagents.reply" "回覆" "Reply";
-    SubagentsResult "subagents.result" "結果" "Result";
-    SubagentsPrompt "subagents.prompt" "任務" "Prompt";
-    SubagentsToolCalls "subagents.toolCalls" "{0} 次工具呼叫" "{0} tool calls";
-    SubagentsEarlier "subagents.earlier" "更早的 {0} 次" "{0} earlier";
-    SubagentsCopyReply "subagents.copyReply" "複製回覆" "Copy reply";
-    SubagentsOpenTranscript "subagents.openTranscript" "開啟紀錄" "Open transcript";
-    SubagentsOpenJournal "subagents.openJournal" "開啟日誌" "Open journal";
-    SubagentsEscBack "subagents.escBack" "Esc 返回" "Esc to go back";
-    CardNoStatusLine "card.noStatusLine" "statusLine 由其他外掛使用，沒有費用與時間" "No cost or time: a plugin has the status line";
-    ClaudeForeign "claude.foreign" "Claude Code 已有自訂的 statusLine，Nekominal 不會取代它；模型與脈絡用量改由 hooks 取得，費用則不會顯示" "Claude Code has a custom statusLine, which Nekominal leaves alone; the model and context come from its hooks instead, without the cost";
-    ClaudeMissing "claude.missing" "找不到 claude.exe" "claude.exe was not found";
+    SettingsTriggers "settings.triggers";
+    TriggersIntro "triggers.intro";
+    TriggerAdd "triggers.add";
+    TriggerPattern "triggers.pattern";
+    TriggerInstant "triggers.instant";
+    TriggerProgram "triggers.program";
+    TriggerProgramNote "triggers.programNote";
+    TriggerAction "triggers.action";
+    TriggerHighlight "triggers.highlight";
+    TriggerBadge "triggers.badge";
+    TriggerSend "triggers.send";
+    TriggerBell "triggers.bell";
+    TriggerNotifyText "triggers.notifyText";
+    TriggerSendText "triggers.sendText";
+    TriggerColor "triggers.color";
+    TriggerBadPattern "triggers.badPattern";
+    TriggerPresetErrors "triggers.presetErrors";
+    TriggerPresetTests "triggers.presetTests";
+    TriggerPresetDeploy "triggers.presetDeploy";
+    TriggerPresetPassword "triggers.presetPassword";
+    ToastCommandDone "toast.commandDone";
+    ToastCommandFailed "toast.commandFailed";
+    SettingsKitty "settings.kitty";
+    SettingsAgentEnvironment "settings.agentEnvironment";
+    SettingsShellIntegration "settings.shellIntegration";
+    SettingsOsc52 "settings.osc52";
+    Osc52Write "osc52.write";
+    Osc52ReadWrite "osc52.readWrite";
+    SettingsTabLayout "settings.tabLayout";
+    LayoutTop "layout.top";
+    LayoutList "layout.list";
+    LayoutIcons "layout.icons";
+    SettingsTabStyle "settings.tabStyle";
+    NoteTabStyle "settings.tabStyleNote";
+    StyleActivity "style.activity";
+    StyleCards "style.cards";
+    StyleRepo "style.repo";
+    RepoTabs "group.repoTabs";
+    SettingsSidebarOpen "settings.sidebarOpen";
+    SettingsGroupByState "settings.groupByState";
+    TabsWaiting "tabs.waiting";
+    GroupWaiting "group.waiting";
+    GroupOther "group.other";
+    SettingsResults "settings.results";
+    WelcomeTitle "welcome.title";
+    WelcomeLater "welcome.later";
+    WelcomeTopNote "welcome.topNote";
+    WelcomeSide "welcome.side";
+    WelcomeSideNote "welcome.sideNote";
+    WelcomeStyle "welcome.style";
+    StyleList "style.list";
+    StyleIcons "style.icons";
+    WelcomeStart "welcome.start";
+    SettingsStatusBar "settings.statusBar";
+    SettingsStatusBarNoAgent "settings.statusBarNoAgent";
+    StatusBarPlace "statusBar.place";
+    StatusBarHide "statusBar.hide";
+    SettingsStatusState "settings.statusState";
+    SettingsStatusModel "settings.statusModel";
+    SettingsStatusContext "settings.statusContext";
+    SettingsStatusCost "settings.statusCost";
+    SettingsStatusTime "settings.statusTime";
+    SettingsStatusBranch "settings.statusBranch";
+    SettingsStatusFolder "settings.statusFolder";
+    WindowMove "window.move";
+    WindowSize "window.size";
+    WindowMinimize "window.minimize";
+    WindowMaximize "window.maximize";
+    ClaudeAuto "claude.auto";
+    ClaudeBarOff "claude.barOff";
+    CardContext "card.context";
+    CardUsed "card.used";
+    CardWindow "card.window";
+    CardCacheRead "card.cacheRead";
+    CardCacheWrite "card.cacheWrite";
+    CardNewInput "card.newInput";
+    CardFree "card.free";
+    CardSession "card.session";
+    CardRemote "card.remote";
+    CardRemoteOn "card.remoteOn";
+    CardCopyLink "card.copyLink";
+    CardCost "card.cost";
+    CardTime "card.time";
+    CardTokens "card.tokens";
+    CardLastReply "card.lastReply";
+    CardLines "card.lines";
+    CardIn "card.in";
+    CardOut "card.out";
+    SubagentsTitle "subagents.title";
+    SubagentsWorkflow "subagents.workflow";
+    SubagentsRunning "subagents.running";
+    SubagentsDone "subagents.done";
+    SubagentsMore "subagents.more";
+    SubagentsRunningFor "subagents.runningFor";
+    SubagentsFinishedAfter "subagents.finishedAfter";
+    SubagentsFailedCount "subagents.failedCount";
+    SubagentsReply "subagents.reply";
+    SubagentsResult "subagents.result";
+    SubagentsPrompt "subagents.prompt";
+    SubagentsToolCalls "subagents.toolCalls";
+    SubagentsEarlier "subagents.earlier";
+    SubagentsCopyReply "subagents.copyReply";
+    SubagentsOpenTranscript "subagents.openTranscript";
+    SubagentsOpenJournal "subagents.openJournal";
+    SubagentsEscBack "subagents.escBack";
+    CardNoStatusLine "card.noStatusLine";
+    ClaudeForeign "claude.foreign";
+    ClaudeMissing "claude.missing";
 
-    SettingsFile "settings.file" "設定 JSON" "Settings file";
-    SettingsVersion "settings.version" "版本" "Version";
-    SettingsAbout "settings.about" "關於" "About";
-    SettingsRepo "settings.repo" "原始碼" "Source code";
-    SettingsContributors "settings.contributors" "貢獻者" "Contributors";
-    CommonOpen "common.open" "開啟" "Open";
-    UpdateCheck "update.check" "檢查更新" "Check for updates";
-    UpdateChecking "update.checking" "正在檢查更新" "Checking for updates";
-    UpdateLatest "update.latest" "已是最新版本" "Up to date";
-    UpdateNewer "update.newer" "有新版本 {0}" "Version {0} is available";
-    UpdateFailed "update.failed" "無法檢查更新，請確認網路連線" "Could not check for updates; check the connection";
-    UpdateNotScoop "update.notScoop" "這份不是用 Scoop 或安裝程式安裝的" "This copy was not installed with Scoop or the installer";
-    UpdateDownload "update.download" "開啟下載頁面" "Open the release page";
-    SettingsCheckUpdates "settings.checkUpdates" "自動檢查更新" "Check for updates automatically";
+    SettingsFile "settings.file";
+    SettingsVersion "settings.version";
+    SettingsAbout "settings.about";
+    SettingsRepo "settings.repo";
+    SettingsContributors "settings.contributors";
+    CommonOpen "common.open";
+    UpdateCheck "update.check";
+    UpdateChecking "update.checking";
+    UpdateLatest "update.latest";
+    UpdateNewer "update.newer";
+    UpdateFailed "update.failed";
+    UpdateNotScoop "update.notScoop";
+    UpdateDownload "update.download";
+    SettingsCheckUpdates "settings.checkUpdates";
     // The notes of the releases on the About page: of the versions after this one, or of this one.
-    SettingsReleaseNotes "settings.releaseNotes" "更新內容" "What's new";
+    SettingsReleaseNotes "settings.releaseNotes";
+    // The window of the updater (the hold mode), which holds the tabs while the app is replaced. {0} is a version or a count.
+    UpdateHoldTitle "update.holdTitle";
+    UpdateHoldTaking "update.holdTaking";
+    UpdateHoldNotGiven "update.holdNotGiven";
+    UpdateHoldAsking "update.holdAsking";
+    UpdateHoldWaiting "update.holdWaiting";
+    UpdateHoldScoop "update.holdScoop";
+    UpdateHoldStillRunning "update.holdStillRunning";
+    UpdateHoldDownloading "update.holdDownloading";
+    UpdateHoldInstalling "update.holdInstalling";
+    UpdateHoldStarting "update.holdStarting";
+    UpdateHoldScoopFailed "update.holdScoopFailed";
+    UpdateHoldInstallerFailed "update.holdInstallerFailed";
+    UpdateHoldDone "update.holdDone";
+    UpdateHoldNotStarted "update.holdNotStarted";
     // The toast of a newer version the app found by itself. {0} is the version.
-    UpdateToastTitle "update.toastTitle" "Nekominal {0} 已推出" "Nekominal {0} is out";
-    UpdateToastBody "update.toastBody" "按一下開啟「關於」頁面更新" "Click to open the About page and update";
-    SettingsConpty "settings.conpty" "ConPTY" "ConPTY";
-    ConptyBundled "conpty.bundled" "隨附 {0}" "Bundled {0}";
-    ConptySystem "conpty.system" "系統內建" "Built in";
+    UpdateToastTitle "update.toastTitle";
+    UpdateToastBody "update.toastBody";
+    SettingsConpty "settings.conpty";
+    ConptyBundled "conpty.bundled";
+    ConptySystem "conpty.system";
 }
 
 impl Text {
@@ -580,7 +624,7 @@ impl Text {
         TABLE.iter().map(|row| row.0)
     }
 
-    fn row(self) -> &'static (Text, &'static str, &'static str, &'static str) {
+    fn row(self) -> &'static (Text, &'static str) {
         // Every variant has exactly one row, in declaration order.
         &TABLE[self as usize]
     }
@@ -594,13 +638,10 @@ impl Text {
         TABLE.iter().find(|row| row.1 == id).map(|row| row.0)
     }
 
-    /// The string with its `{0}` placeholders still in place.
+    /// The string with its `{0}` placeholders still in place: in `lang`, else in English, else its id.
     pub fn get(self, lang: Lang) -> &'static str {
-        let row = self.row();
-        match lang {
-            Lang::ZhTw => row.2,
-            Lang::EnUs => row.3,
-        }
+        let at = self as usize;
+        words(lang)[at].as_deref().or_else(|| words(Lang::EnUs)[at].as_deref()).unwrap_or(self.id())
     }
 
     /// The string with `{0}`, `{1}`, ... replaced by `args`. A placeholder without an argument stays as
@@ -670,6 +711,20 @@ mod tests {
             assert_eq!(Text::from_id(row.1), Some(row.0));
         }
         assert_eq!(Text::from_id("no.such.id"), None);
+    }
+
+    #[test]
+    fn every_language_file_reads_and_names_only_strings_there_are_and_english_and_chinese_have_them_all() {
+        for lang in Lang::ALL {
+            let map: BTreeMap<String, String> = serde_json::from_str(file(lang)).unwrap_or_else(|e| panic!("lang/{}.json: {e}", lang.tag()));
+            for id in map.keys() {
+                assert!(Text::from_id(id).is_some(), "lang/{}.json names {id}, which is no string", lang.tag());
+            }
+        }
+        for lang in [Lang::EnUs, Lang::ZhTw] {
+            let missing: Vec<&str> = TABLE.iter().filter(|(text, _)| words(lang)[*text as usize].is_none()).map(|(_, id)| *id).collect();
+            assert!(missing.is_empty(), "lang/{}.json has no {missing:?}", lang.tag());
+        }
     }
 
     #[test]
