@@ -134,7 +134,7 @@ pub fn request(push: &Push, message: &Message) -> (Vec<(&'static str, String)>, 
             headers.push(("Content-Type", "application/json".into()));
             // Discord refuses a post without `content` (of at most 2000 characters) and Slack reads `text`; both ignore the rest.
             let text: String = format!("**{}**\n{}", message.title, message.body).chars().take(2000).collect();
-            serde_json::json!({
+            let mut json = serde_json::json!({
                 "content": text,
                 "text": text,
                 "title": message.title,
@@ -142,8 +142,13 @@ pub fn request(push: &Push, message: &Message) -> (Vec<(&'static str, String)>, 
                 "kind": message.kind,
                 "tab": message.tab,
                 "at": message.at,
-            })
-            .to_string()
+            });
+            // Discord shows the post under this name and picture instead of the ones the webhook was made with.
+            if matches!(host(&push.url), Some("discord.com" | "discordapp.com" | "canary.discord.com" | "ptb.discord.com")) {
+                json["username"] = "Nekominal".into();
+                json["avatar_url"] = "https://koukeneko.github.io/Nekominal/img/icon.png".into();
+            }
+            json.to_string()
         }
     };
     (headers, body)
@@ -307,6 +312,9 @@ mod tests {
             json,
             serde_json::json!({ "content": "**claude · api**\nWaiting for input\nAllow edit?", "text": "**claude · api**\nWaiting for input\nAllow edit?", "title": "claude · api", "body":"Waiting for input\nAllow edit?", "kind": "commandFailed", "tab": 7, "at": 1_700_000_000u64 })
         );
+        let discord = Push { url: "https://discord.com/api/webhooks/1/x".into(), ..push(PushKind::Webhook, "") };
+        let json: serde_json::Value = serde_json::from_str(&request(&discord, &message("done")).1).unwrap();
+        assert_eq!((json["username"].as_str(), json["avatar_url"].as_str()), (Some("Nekominal"), Some("https://koukeneko.github.io/Nekominal/img/icon.png")));
     }
 
     #[test]
