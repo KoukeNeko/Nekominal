@@ -11,7 +11,7 @@ use crate::{
     fuzzy,
     keymap::Keymap,
     settings::{
-        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, TabStyle,OPACITY_RANGE, Osc52Policy, PushEvent, PushKind,
+        BLINK_RATE_RANGE, Backdrop, BellSound, CursorStyle, FONT_SIZE_RANGE, LONG_COMMAND_RANGE, Language, NoAgent, TabLayout, TabStyle,OPACITY_RANGE, Osc52Policy, PREVIEW_SIZE_RANGE, PushEvent, PushKind,
         PushWhen, RightClick, Settings, TabTitle, check_push_url, split_font_families,
     },
     strings::{Lang, Text},
@@ -24,6 +24,8 @@ pub enum Section {
     Terminal,
     Profiles,
     Agents,
+    /// What pointing at something in a pane shows: the preview of an image.
+    Previews,
     /// Regular expressions matched against the output (`triggers`): a page of its own, not rows of the table.
     Triggers,
     Keys,
@@ -34,8 +36,8 @@ pub enum Section {
 
 impl Section {
     /// In the order of the section strip.
-    pub const ALL: [Section; 8] =
-        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Triggers, Section::Keys, Section::Advanced, Section::About];
+    pub const ALL: [Section; 9] =
+        [Section::Appearance, Section::Terminal, Section::Profiles, Section::Agents, Section::Previews, Section::Triggers, Section::Keys, Section::Advanced, Section::About];
 
     pub fn text(self) -> Text {
         match self {
@@ -43,6 +45,7 @@ impl Section {
             Section::Terminal => Text::SettingsTerminal,
             Section::Profiles => Text::SettingsProfiles,
             Section::Agents => Text::SettingsAgents,
+            Section::Previews => Text::SettingsPreviews,
             Section::Triggers => Text::SettingsTriggers,
             Section::Keys => Text::SettingsKeys,
             Section::Advanced => Text::SettingsAdvanced,
@@ -131,6 +134,7 @@ impl Descriptor {
             // Tabs under their repositories are not grouped by their states as well.
             "tabs.groupByState" => settings.tabs.layout == crate::settings::TabLayout::List && settings.tabs.style != TabStyle::Repo,
             "cursor.blinkRate" => settings.cursor.blink,
+            "previews.size" => settings.previews.images,
             _ => true,
         }
     }
@@ -242,6 +246,7 @@ const LARGE_PASTE: Range = Range { min: 0.0, max: 97_656.0, step: 1.0, large: 10
 const CLOSE_THRESHOLD: Range = Range { min: 1.0, max: 1000.0, step: 1.0, large: 5.0 };
 const BLINK_RATE: Range = Range { min: BLINK_RATE_RANGE.0, max: BLINK_RATE_RANGE.1, step: 50.0, large: 250.0 };
 const LONG_COMMAND: Range = Range { min: LONG_COMMAND_RANGE.0, max: LONG_COMMAND_RANGE.1, step: 5.0, large: 60.0 };
+const PREVIEW_SIZE: Range = Range { min: PREVIEW_SIZE_RANGE.0, max: PREVIEW_SIZE_RANGE.1, step: 20.0, large: 100.0 };
 
 /// Every row of the drawer, section by section, in the order the section shows them.
 pub const TABLE: &[Descriptor] = &[
@@ -558,6 +563,9 @@ pub const TABLE: &[Descriptor] = &[
             }
         },
     },
+    // Previews
+    toggle!("previews.images", Previews, SettingsPreviewImages, previews.images),
+    count!("previews.size", Previews, SettingsPreviewSize, PREVIEW_SIZE, previews.size),
     // Advanced
     Descriptor {
         id: "language",
@@ -786,6 +794,21 @@ mod tests {
             ]
         );
         assert_eq!(ids(Section::Agents).last(), Some(&"osc52"));
+        assert_eq!(ids(Section::Previews), ["previews.images", "previews.size"]);
+    }
+
+    #[test]
+    fn the_size_of_a_preview_means_nothing_with_previews_off_and_stays_within_its_range() {
+        let mut settings = Settings::default();
+        let size = find("previews.size").unwrap();
+        assert!(size.applies(&settings));
+        settings.previews.images = false;
+        assert!(!size.applies(&settings), "no picture, no size");
+        assert_eq!((size.get)(&Settings::default()), Value::Number(480.0), "larger than the 320 it began with");
+        (size.set)(&mut settings, Value::Number(5000.0));
+        assert_eq!(settings.previews.size, PREVIEW_SIZE_RANGE.1 as u32, "kept to the largest");
+        (size.set)(&mut settings, Value::Number(10.0));
+        assert_eq!(settings.previews.size, PREVIEW_SIZE_RANGE.0 as u32, "and to the smallest");
     }
 
     #[test]

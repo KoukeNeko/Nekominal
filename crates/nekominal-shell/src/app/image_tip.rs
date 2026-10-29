@@ -7,12 +7,10 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::preview;
 
-const PAD: f32 = 8.0;
-/// The largest a preview is drawn, in DIP.
-const MAX_W: f32 = 320.0;
-const MAX_H: f32 = 220.0;
+/// As the other cards have it: the acrylic shows around the picture.
+const PAD: f32 = 16.0;
 /// The narrowest card, so that a small icon still has room for its name.
-const MIN_W: f32 = 160.0;
+const MIN_W: f32 = 200.0;
 
 /// The image under the pointer: its file, its size in pixels, a key for the picture that changes with the file, and where
 /// the link is (its first row, in DIP).
@@ -48,13 +46,16 @@ impl App {
         let Some(tip) = self.image_tip.clone() else { return };
         let g = self.glass;
         let small = self.ui.line_height(SMALL_SIZE);
-        // Also within the store of the UI's pictures, at most 1024 pixels on a side, at any scale of the window.
-        let room = |dip: f32| dip.min(1000.0 / self.scale);
-        let (w, h) = preview::fit(tip.size.0, tip.size.1, room(MAX_W), room(MAX_H), self.scale);
+        let (width, window_h) = (self.layout.size.0, self.layout.size.1);
+        // The longest side the settings give, within the store of the UI's pictures (at most 1024 pixels on a side) at any
+        // scale of the window, and within a window that is lower than that.
+        let side = self.settings.previews.size as f32;
+        let room_w = side.min(1000.0 / self.scale).min(width - 2.0 * PAD - 16.0);
+        let room_h = side.min(1000.0 / self.scale).min(window_h - 3.0 * PAD - small - 6.0 - 16.0).max(40.0);
+        let (w, h) = preview::fit(tip.size.0, tip.size.1, room_w.max(40.0), room_h, self.scale);
         let card_w = (w + 2.0 * PAD).max(MIN_W);
         let card_h = PAD + h + 6.0 + small + PAD;
         // Under the link, or over it when the window has no room below.
-        let (width, window_h) = (self.layout.size.0, self.layout.size.1);
         let x = tip.anchor.x.clamp(8.0, (width - card_w - 8.0).max(8.0));
         let below = tip.anchor.y + tip.anchor.h + 4.0;
         let y = if below + card_h <= window_h - 8.0 { below } else { (tip.anchor.y - 4.0 - card_h).max(8.0) };
@@ -80,6 +81,13 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::popup::LinkAction::{Copy, Open, Reveal};
+
+    #[test]
+    fn the_menu_of_a_file_can_show_it_and_copy_its_path_and_that_of_an_address_only_copies() {
+        assert_eq!(link_menu_items(true), [(Text::CommonOpen, Open), (Text::LinkReveal, Reveal), (Text::LinkCopyPath, Copy)]);
+        assert_eq!(link_menu_items(false), [(Text::CommonOpen, Open), (Text::CardCopyLink, Copy)], "no file to show for an address");
+    }
 
     #[test]
     fn only_an_image_that_windows_reads_gets_a_tip_and_the_same_file_is_not_read_again() {

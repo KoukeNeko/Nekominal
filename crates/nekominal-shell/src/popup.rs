@@ -45,9 +45,21 @@ const SEPARATOR_HEIGHT: f32 = 9.0;
 /// How far the pop-up hangs below the point it is anchored at.
 const GAP: f32 = 4.0;
 
+/// What a row of the menu of a link (a path or an address under the pointer) does with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkAction {
+    Open,
+    /// Puts the address, or the path of the file, on the clipboard.
+    Copy,
+    /// Shows the file in File Explorer.
+    Reveal,
+}
+
 /// What choosing a row does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    /// Do this with the link the menu was opened on (`App::link_menu`).
+    Link(LinkAction),
     Confirm,
     Cancel,
     Command(Command),

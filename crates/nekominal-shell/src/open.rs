@@ -13,6 +13,18 @@ use crate::util::log;
 /// scenarios set it, so a click on a link can be checked without starting a browser.
 pub const NO_LAUNCH: &str = "NEKOMINAL_NO_LAUNCH";
 
+/// Shows the file at `path` selected in a window of File Explorer. The callers hand over a path `links::openable` checked,
+/// which has none of the characters (`"` among them) that would end the argument early.
+pub fn reveal(path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    if std::env::var_os(NO_LAUNCH).is_some() {
+        log(&format!("not shown ({NO_LAUNCH} is set): {path}"));
+        return Ok(());
+    }
+    // Raw: Explorer reads `/select,` and the path from the command line as one argument, in its own way of quoting.
+    std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{path}\"")).spawn().map(drop).map_err(|e| format!("explorer.exe: {e}"))
+}
+
 /// Opens `target` (a URL or a path) with its default program.
 pub fn shell_open(target: &str) -> Result<(), String> {
     if std::env::var_os(NO_LAUNCH).is_some() {

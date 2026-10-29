@@ -370,6 +370,10 @@ texts! {
     SettingsAgents "settings.agents";
     SettingsKeys "settings.keys";
     SettingsAdvanced "settings.advanced";
+    // The Previews page: the section, and its two rows (the preview of an image under the pointer).
+    SettingsPreviews "settings.previews";
+    SettingsPreviewImages "settings.previewImages";
+    SettingsPreviewSize "settings.previewSize";
     // The two choices of a row that is on or off (and the "off" of the clipboard row).
     ToggleOn "toggle.on";
     ToggleOff "toggle.off";
@@ -580,6 +584,9 @@ texts! {
     CardLines "card.lines";
     CardIn "card.in";
     CardOut "card.out";
+    // The menu of the right button on a path or an address of a pane: open it (`CommonOpen`, `CardCopyLink` copy an address).
+    LinkCopyPath "link.copyPath";
+    LinkReveal "link.reveal";
     // The card of the branch, under it in the title bar: what the folder is, and while git is asked, or when it cannot say.
     BranchMain "branch.main";
     BranchWorktree "branch.worktree";

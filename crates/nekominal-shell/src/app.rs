@@ -196,6 +196,12 @@ const PANELS_SHRINK_MS: u32 = 3000;
 /// How long apart the steps are that make a pane an update handed over draw its screen again (`App::regrow`).
 const REGROW_AFTER: Duration = Duration::from_millis(500);
 
+/// The rows of the menu of a link: a file can be shown in File Explorer and its path copied, an address only copied.
+fn link_menu_items(file: bool) -> Vec<(Text, popup::LinkAction)> {
+    use popup::LinkAction::{Copy, Open, Reveal};
+    if file { vec![(Text::CommonOpen, Open), (Text::LinkReveal, Reveal), (Text::LinkCopyPath, Copy)] } else { vec![(Text::CommonOpen, Open), (Text::CardCopyLink, Copy)] }
+}
+
 fn open_link(uri: &str) {
     if let Err(e) = open::shell_open(uri) {
         util::log(&format!("open link: {e}"));
@@ -328,6 +334,8 @@ pub struct App {
     context_release: bool,
     /// The button of the bar that opened the pop-up that is open: it stays lit while the pop-up hangs from it.
     popup_from: Option<Hit>,
+    /// The link the menu of the right button is open on: what its rows open, copy or show.
+    link_menu: Option<nekominal_term::Link>,
     /// Where each tab chip is drawn now, by the number of its tab, while it slides to the place the layout gives it.
     chip_view: HashMap<u64, Rect>,
     /// The same, in the order of the tabs, for the frame being drawn.
@@ -760,6 +768,7 @@ impl App {
             badges: badges::Badges::default(),
             context_release: false,
             popup_from: None,
+            link_menu: None,
             chip_view: HashMap::new(),
             chip_rects: Vec::new(),
             chip_clock: None,
@@ -1892,19 +1901,49 @@ impl App {
         self.refresh_hover_link(x, y, if dragging { None } else { under });
     }
 
+    /// The link that may be opened under the point (`x`, `y`) of the window, in pane `id`: what is underlined when the
+    /// pointer is there, and what the menu of the right button is about.
+    fn link_at_point(&self, id: PaneId, x: i32, y: i32) -> Option<nekominal_term::Link> {
+        let entry = self.tab()?.entry(id)?;
+        let grid = Self::pointer_grid(entry);
+        let (px, py) = ((x - entry.rect.x) as f32, (y - entry.rect.y) as f32);
+        let inside = px >= 0.0 && py >= 0.0 && px < grid.cell_width * f32::from(grid.columns) && py < grid.cell_height * f32::from(grid.rows);
+        let (col, row) = inside.then(|| nekominal_input::cell_at(px, py, &grid))?;
+        entry.pane.link_at(usize::from(row), usize::from(col))
+    }
+
+    /// The menu of the right button on a path or an address of a pane: open it (a file at its line, in the editor), show
+    /// the file in File Explorer, copy the path or the address.
+    fn open_link_menu(&mut self, link: nekominal_term::Link, x: i32, y: i32) {
+        let lang = self.language();
+        let rows = link_menu_items(std::path::Path::new(&link.target).is_absolute())
+            .into_iter()
+            .map(|(label, action)| popup::Row { label: label.get(lang).to_owned(), hint: String::new(), action: Some(popup::Action::Link(action)), current: false, mark: None, program: None })
+            .collect();
+        self.link_menu = Some(link);
+        let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
+        self.open_popup(rows, popup::Kind::List, anchor);
+    }
+
+    fn link_menu_action(&mut self, action: popup::LinkAction) {
+        use popup::LinkAction;
+        let Some(link) = self.link_menu.take() else { return };
+        match action {
+            LinkAction::Open => crate::editor::open(&link.target, nekominal_term::links::position(&link.uri), &self.settings.editor),
+            LinkAction::Copy => {
+                clipboard::write_text(&link.target);
+            }
+            LinkAction::Reveal => {
+                if let Err(e) = open::reveal(&link.target) {
+                    util::log(&format!("show in File Explorer: {e}"));
+                }
+            }
+        }
+    }
+
     /// Underlines the link under the pointer (and asks for the hand cursor); removes both when there is none.
     fn refresh_hover_link(&mut self, x: i32, y: i32, over: Option<PaneId>) {
-        let link = over.and_then(|id| {
-            let entry = self.tab()?.entry(id)?;
-            let grid = Self::pointer_grid(entry);
-            let (px, py) = ((x - entry.rect.x) as f32, (y - entry.rect.y) as f32);
-            let inside = px >= 0.0
-                && py >= 0.0
-                && px < grid.cell_width * f32::from(grid.columns)
-                && py < grid.cell_height * f32::from(grid.rows);
-            let (col, row) = inside.then(|| nekominal_input::cell_at(px, py, &grid))?;
-            entry.pane.link_at(usize::from(row), usize::from(col)).map(|link| (id, link))
-        });
+        let link = over.and_then(|id| self.link_at_point(id, x, y).map(|link| (id, link)));
         let hand = link.is_some();
         let spans: Vec<r::RowSpan> = link
             .iter()
@@ -1913,7 +1952,7 @@ impl App {
             .collect();
         let hovered = link.as_ref().map(|(id, _)| *id);
         // An image the link names: its preview hangs under the first row of the link.
-        let tip = link.as_ref().and_then(|(id, link)| {
+        let tip = link.as_ref().filter(|_| self.settings.previews.images).and_then(|(id, link)| {
             let entry = self.tab()?.entry(*id)?;
             let m = entry.view.metrics();
             let &(row, start, end) = link.spans.first()?;
@@ -2128,6 +2167,13 @@ impl App {
             .tab()
             .and_then(|t| t.entry(target))
             .is_some_and(|e| e.pane.input_modes().program_gets_pointer(input_mods(held())));
+        // On a path or an address the right button opens what can be done with it, whatever the setting says of the rest.
+        if down && button == MouseButton::Right && !program_has_it && let Some(link) = self.link_at_point(target, x, y) {
+            self.buttons[index] = false;
+            self.open_link_menu(link, x, y);
+            self.context_release = self.popup.is_some();
+            return Capture::None;
+        }
         if down && button == MouseButton::Right && !program_has_it && self.settings.right_click == RightClick::Menu {
             self.buttons[index] = false;
             self.open_context_menu(x, y);
@@ -6215,6 +6261,7 @@ impl App {
             },
             Some(popup::Action::Cancel) => {},
             Some(popup::Action::Command(command)) => self.run(command),
+            Some(popup::Action::Link(action)) => self.link_menu_action(action),
             Some(popup::Action::Tab(index)) => self.select(index),
             Some(popup::Action::Backdrop(backdrop)) => self.set_appearance(backdrop, self.settings.appearance.opacity),
             Some(popup::Action::ShowSetting(id)) => self.open_settings_page(Some(id)),

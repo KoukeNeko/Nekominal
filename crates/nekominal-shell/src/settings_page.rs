@@ -459,6 +459,7 @@ fn section_glyph(section: Section) -> char {
         Section::Terminal => '\u{E756}',
         Section::Profiles => '\u{E77B}',
         Section::Agents => '\u{E99A}',
+        Section::Previews => '\u{E91B}',
         Section::Triggers => '\u{E945}',
         Section::Keys => '\u{E765}',
         Section::Advanced => '\u{E713}',

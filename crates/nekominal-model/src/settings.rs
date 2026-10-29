@@ -627,6 +627,25 @@ impl NoAgent {
     }
 }
 
+/// The longest side of the preview of an image, in pixels at 100%: from a thumbnail to most of a window.
+pub const PREVIEW_SIZE_RANGE: (f64, f64) = (160.0, 960.0);
+
+/// What pointing at something in a pane shows under the pointer.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Previews {
+    /// The picture of an image whose path the pointer is on.
+    pub images: bool,
+    /// The longest side of that picture, in pixels at 100% (it is also kept within what the window and its pictures hold).
+    pub size: u32,
+}
+
+impl Default for Previews {
+    fn default() -> Self {
+        Self { images: true, size: 480 }
+    }
+}
+
 /// The bar at the bottom of the window: what the agent of the focused pane is doing, and where the pane is.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -677,6 +696,7 @@ pub struct Settings {
     /// Sets environment variables that make coding-agent CLIs use their full terminal features.
     pub agent_environment: bool,
     pub status_bar: StatusBar,
+    pub previews: Previews,
     /// Makes PowerShell report its working directory and prompt marks.
     pub shell_integration: bool,
     /// Ask before closing a window, tab or pane that holds running sessions.
@@ -745,6 +765,7 @@ impl Default for Settings {
             api: Api { enabled: true },
             agent_environment: true,
             status_bar: StatusBar::default(),
+            previews: Previews::default(),
             shell_integration: true,
             confirm_close: true,
             confirm_close_threshold: 1,
@@ -1255,6 +1276,7 @@ pub fn parse(source: Option<&str>) -> Parsed {
     let keyboard = section(&root, "keyboard", "", &mut problems);
     let api = section(&root, "api", "", &mut problems);
     let status_bar = section(&root, "statusBar", "", &mut problems);
+    let previews = section(&root, "previews", "", &mut problems);
     let tabs = section(&root, "tabs", "", &mut problems);
     let tab_title = section(&tabs, "title", "tabs", &mut problems);
 
@@ -1402,6 +1424,10 @@ pub fn parse(source: Option<&str>) -> Parsed {
                 branch: flag("branch", b.branch, &mut problems),
                 folder: flag("folder", b.folder, &mut problems),
             }
+        },
+        previews: Previews {
+            images: boolean(&previews, "images", d.previews.images, "previews", &mut problems),
+            size: number(&previews, "size", f64::from(d.previews.size), PREVIEW_SIZE_RANGE, "previews", &mut problems).round() as u32,
         },
         shell_integration: boolean(&root, "shellIntegration", d.shell_integration, "", &mut problems),
         confirm_close: boolean(&root, "confirmClose", d.confirm_close, "", &mut problems),
