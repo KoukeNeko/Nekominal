@@ -3390,6 +3390,12 @@ impl App {
             return;
         }
         let glyph = self.tabs[i].job().map_or('\u{E756}', logic::job_icon);
+        // A tab with no icon of its own, nor a glyph for its kind of program, has the app's.
+        static APP: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        let app = APP.get_or_init(|| std::env::current_exe().ok());
+        if glyph == '\u{E756}' && app.as_ref().is_some_and(|app| program_icon(&mut self.ui, app, square)) {
+            return;
+        }
         self.icon_centered(square, glyph, ICON_SIZE, color);
     }
 
