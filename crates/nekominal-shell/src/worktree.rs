@@ -70,6 +70,8 @@ pub struct Status {
     pub remote: Option<String>,
     /// Commits ahead of the upstream, or, with no upstream, on no remote branch; None when git could not tell.
     pub unpushed: Option<usize>,
+    /// Commits the upstream has that HEAD has not; None with no upstream.
+    pub behind: Option<usize>,
     /// The default branch (`origin/HEAD`, else `main` or `master`) and whether HEAD is merged into it.
     pub default_branch: Option<String>,
     pub merged: Option<bool>,
@@ -312,9 +314,8 @@ pub struct Overview {
     pub status: Status,
     /// The address of the remote (`https://github.com/a/b.git`, `git@github.com:a/b.git`).
     pub url: Option<String>,
-    /// The branch it pushes to (`origin/master`), and how many commits that has that HEAD has not.
+    /// The branch it pushes to (`origin/master`).
     pub upstream: Option<String>,
-    pub behind: Option<usize>,
     pub last: Option<Commit>,
     pub stashes: usize,
 }
@@ -330,11 +331,10 @@ pub fn overview(dir: &Path) -> Result<Overview, String> {
     let path = status.path.clone();
     let url = status.remote.as_ref().and_then(|remote| git(&path, ["remote", "get-url", remote]).ok()).filter(|url| !url.is_empty());
     let upstream = git(&path, ["rev-parse", "--abbrev-ref", "@{upstream}"]).ok().filter(|name| !name.is_empty());
-    let behind = upstream.as_ref().and_then(|_| git(&path, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).ok()).and_then(|counts| parse_ahead_behind(&counts)).map(|(behind, _)| behind);
     let last = git(&path, ["log", "-1", "--format=%h%x1f%s%x1f%an%x1f%ct"]).ok().and_then(|line| parse_commit(&line));
     // No stash is no refs/stash, which git reports as an error.
     let stashes = git(&path, ["rev-list", "--walk-reflogs", "--count", "refs/stash"]).ok().and_then(|n| n.parse().ok()).unwrap_or(0);
-    Ok(Overview { status, url, upstream, behind, last, stashes })
+    Ok(Overview { status, url, upstream, last, stashes })
 }
 
 /// A commit from the line `git log --format=%h%x1f%s%x1f%an%x1f%ct` printed.
@@ -376,15 +376,15 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
         .and_then(|b| git(&path, ["config", "--get", &format!("branch.{b}.remote")]).ok())
         .or_else(|| git(&path, ["remote"]).ok().and_then(|names| names.lines().next().map(str::to_owned)))
         .filter(|name| !name.is_empty());
-    let unpushed = match git(&path, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]) {
-        Ok(counts) => parse_ahead_behind(&counts).map(|(_, ahead)| ahead),
-        Err(_) => git(&path, ["rev-list", "--count", "HEAD", "--not", "--remotes"]).ok().and_then(|n| n.parse().ok()),
+    let (unpushed, behind) = match git(&path, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]) {
+        Ok(counts) => parse_ahead_behind(&counts).map_or((None, None), |(behind, ahead)| (Some(ahead), Some(behind))),
+        Err(_) => (git(&path, ["rev-list", "--count", "HEAD", "--not", "--remotes"]).ok().and_then(|n| n.parse().ok()), None),
     };
     let default_branch = git(&path, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         .ok()
         .or_else(|| ["main", "master"].into_iter().find(|b| git(&path, ["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok()).map(str::to_owned));
     let merged = default_branch.as_ref().map(|b| git(&path, ["merge-base", "--is-ancestor", "HEAD", b]).is_ok());
-    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, ignored, files: parse_files(&porcelain), remote, unpushed, default_branch, merged })
+    Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, ignored, files: parse_files(&porcelain), remote, unpushed, behind, default_branch, merged })
 }
 
 /// Paths git wrote, compared as Windows does: either slash, any case, no trailing separator.
@@ -787,7 +787,7 @@ mod tests {
     }
 
     fn status(main: bool, branch: Option<&str>, changed: usize, untracked: usize) -> Status {
-        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, ignored: 0, files: Vec::new(), remote: None, unpushed: Some(0), default_branch: None, merged: None }
+        Status { path: PathBuf::from(r"D:\src\app-x"), branch: branch.map(str::to_owned), main, changed, untracked, ignored: 0, files: Vec::new(), remote: None, unpushed: Some(0), behind: None, default_branch: None, merged: None }
     }
 
     #[test]
@@ -839,7 +839,7 @@ mod tests {
         commit(&repo, "second");
         let seen = overview(&repo).unwrap();
         assert_eq!(seen.last.as_ref().map(|c| (c.subject.as_str(), c.author.as_str())), Some(("second", "t")));
-        assert_eq!((seen.upstream.as_deref(), seen.behind, seen.stashes, seen.url.as_deref()), (None, None, 0, None), "no remote, no upstream, no stash");
+        assert_eq!((seen.upstream.as_deref(), seen.status.behind, seen.stashes, seen.url.as_deref()), (None, None, 0, None), "no remote, no upstream, no stash");
         // A clone of it is one commit behind once the original moves on.
         let clone = base.join("clone");
         git(&base, [OsString::from("clone"), "-q".into(), repo.clone().into(), clone.clone().into()]).unwrap();
@@ -848,7 +848,7 @@ mod tests {
         std::fs::write(clone.join("a.txt"), "x").unwrap();
         git(&clone, ["-c", "user.name=t", "-c", "user.email=t@example.com", "stash", "-q", "-u"]).unwrap();
         let seen = overview(&clone).unwrap();
-        assert_eq!((seen.upstream.as_deref(), seen.behind, seen.stashes), (Some("origin/main"), Some(1), 1));
+        assert_eq!((seen.upstream.as_deref(), seen.status.behind, seen.stashes), (Some("origin/main"), Some(1), 1));
         assert!(seen.url.is_some(), "the address of origin");
         assert!(overview(&base).unwrap_err().contains("not a git repository"), "git's words when it is no repository");
         std::fs::remove_dir_all(&base).unwrap();

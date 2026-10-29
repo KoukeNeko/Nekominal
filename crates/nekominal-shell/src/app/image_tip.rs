@@ -48,7 +48,9 @@ impl App {
         let Some(tip) = self.image_tip.clone() else { return };
         let g = self.glass;
         let small = self.ui.line_height(SMALL_SIZE);
-        let (w, h) = preview::fit(tip.size.0, tip.size.1, MAX_W, MAX_H, self.scale);
+        // Also within the store of the UI's pictures, at most 1024 pixels on a side, at any scale of the window.
+        let room = |dip: f32| dip.min(1000.0 / self.scale);
+        let (w, h) = preview::fit(tip.size.0, tip.size.1, room(MAX_W), room(MAX_H), self.scale);
         let card_w = (w + 2.0 * PAD).max(MIN_W);
         let card_h = PAD + h + 6.0 + small + PAD;
         // Under the link, or over it when the window has no room below.

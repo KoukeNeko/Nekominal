@@ -360,6 +360,7 @@ mod tests {
             files: Vec::new(),
             remote: Some("origin".into()),
             unpushed: Some(0),
+            behind: Some(0),
             default_branch: Some("main".into()),
             merged: Some(true),
         }

@@ -65,7 +65,7 @@ fn lines(seen: &worktree::Overview, pr: Option<&github::PullRequest>, lang: Lang
     let status = &seen.status;
     let note = |text: String| Check { mark: Mark::Note, text, files: Vec::new() };
     let mut lines = vec![remove_dialog::changes_check(status, lang)];
-    if let (Some(n @ 1..), Some(remote)) = (seen.behind, &status.remote) {
+    if let (Some(n @ 1..), Some(remote)) = (status.behind, &status.remote) {
         lines.push(Check { mark: Mark::Warn, text: Text::BranchBehind.format(lang, &[remote, &n]), files: Vec::new() });
     }
     let is_default = status.branch.as_ref().zip(status.default_branch.as_ref()).is_some_and(|(branch, default)| default == branch || default.ends_with(&format!("/{branch}")));
@@ -227,8 +227,8 @@ impl App {
 
         // Where it pushes: the remote by its host and path, and the name git knows it by.
         let icon_line = self.ui.line_height(SMALL_SIZE);
-        match seen.url.as_deref().map(worktree::remote_place) {
-            Some((host, path)) => {
+        match (seen.url.as_deref().map(worktree::remote_place), seen.status.remote.as_deref()) {
+            (Some((host, path)), _) => {
                 self.ui.icon(x, y + (line - icon_line) / 2.0, '\u{E71B}', SMALL_SIZE, quiet);
                 let where_ = [host, seen.status.remote.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" \u{b7} ");
                 let ww = self.ui.measure(&where_, SMALL_SIZE, false);
@@ -236,7 +236,12 @@ impl App {
                 let path = subagents_card::fit(&mut self.ui, path, TEXT_SIZE, false, inner - TEXT_LEFT - ww - 10.0);
                 self.ui.text(x + TEXT_LEFT, y, &path, TEXT_SIZE, col(g.accent), false);
             }
-            None => {
+            // A remote whose address git does not give (only a push address set): its name.
+            (None, Some(remote)) => {
+                self.ui.icon(x, y + (line - icon_line) / 2.0, '\u{E71B}', SMALL_SIZE, quiet);
+                self.ui.text(x + TEXT_LEFT, y, remote, TEXT_SIZE, col(g.accent), false);
+            }
+            (None, None) => {
                 self.ui.text(x, y, Text::WorktreeNoRemote.get(lang), TEXT_SIZE, quiet, false);
             }
         }
@@ -247,7 +252,7 @@ impl App {
         self.ui.rrect(sync, RADIUS, col(g.tab_rest()), None);
         let mid_y = y + (SYNC - line) / 2.0;
         let ahead = seen.status.unpushed.unwrap_or(0);
-        match (&seen.upstream, seen.behind) {
+        match (&seen.upstream, seen.status.behind) {
             (Some(upstream), Some(0)) if ahead == 0 => {
                 let ok = col(g.mark(g.success));
                 self.ui.icon(x + 10.0, y + (SYNC - icon_line) / 2.0, '\u{E73E}', SMALL_SIZE, ok);
@@ -276,7 +281,7 @@ impl App {
         // The last commit: its hash and subject, who made it and when.
         if let Some(last) = &seen.last {
             self.ui.fill(Rect::new(x, y, inner, 1.0), col(g.divider()));
-            y += 10.0;
+            y += 1.0 + 10.0;
             let hw = self.ui.mono(x, y + (line - small) / 2.0, &last.hash, SMALL_SIZE, col(g.accent)) + 8.0;
             let subject = subagents_card::fit(&mut self.ui, &last.subject, TEXT_SIZE, false, inner - hw);
             self.ui.text(x + hw, y, &subject, TEXT_SIZE, text, false);
@@ -286,7 +291,7 @@ impl App {
             y += small + 10.0;
         }
         self.ui.fill(Rect::new(x, y, inner, 1.0), col(g.divider()));
-        y += 8.0;
+        y += 1.0 + 8.0;
 
         // A line each, as the dialog of Remove this worktree has them, and the files under the line of changes.
         for check in &checks {
@@ -341,17 +346,19 @@ mod tests {
             files: Vec::new(),
             remote: Some("origin".into()),
             unpushed: Some(0),
+            behind: Some(0),
             default_branch: Some(default.into()),
             merged: Some(true),
         };
-        worktree::Overview { status, url: None, upstream: Some(format!("origin/{branch}")), behind: Some(0), last: None, stashes: 0 }
+        worktree::Overview { status, url: None, upstream: Some(format!("origin/{branch}")), last: None, stashes: 0 }
     }
 
     #[test]
     fn the_lines_say_what_the_remote_has_and_leave_out_the_merge_of_the_default_branch_into_itself() {
         let texts = |seen: &worktree::Overview| lines(seen, None, Lang::EnUs).into_iter().map(|c| c.text).collect::<Vec<_>>();
         assert_eq!(texts(&overview("master", "origin/master")), ["No uncommitted changes"], "master is not merged into itself");
-        let behind = worktree::Overview { behind: Some(3), stashes: 2, ..overview("fix", "origin/master") };
+        let mut behind = worktree::Overview { stashes: 2, ..overview("fix", "origin/master") };
+        behind.status.behind = Some(3);
         assert_eq!(texts(&behind), ["No uncommitted changes", "origin has 3 new commits not pulled yet", "Merged into origin/master", "2 stashed"]);
     }
 
