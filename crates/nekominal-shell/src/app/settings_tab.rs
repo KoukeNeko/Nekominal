@@ -128,7 +128,8 @@ impl App {
         let ui = &mut self.ui;
         let update = self.update.lock().map(|state| state.0.clone()).unwrap_or(update::Check::Failed);
         let push_test = crate::push::test_status().map(|(at, test)| (at.elapsed(), test));
-        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, updates_itself: update::scoop_dir().is_some() || (update::msi_dir().is_some() && !super::elevated()), push_test, sample: &sample };
+        let notes = self.release_notes.lock().map(|notes| notes.clone()).unwrap_or_default();
+        let view = settings_page::View { lang, settings: &self.settings, keymap: &self.keymap, profiles: &self.profiles, found: &self.found, programs: &self.programs, claude: &self.claude, area, update, updates_itself: update::scoop_dir().is_some() || (update::msi_dir().is_some() && !super::elevated()), notes: &notes, push_test, sample: &sample };
         Some(settings_page::build(page, &view, &mut |text, size, bold| ui.measure(text, size, bold)))
     }
 

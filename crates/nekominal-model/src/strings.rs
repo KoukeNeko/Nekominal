@@ -564,6 +564,8 @@ texts! {
     UpdateNotScoop "update.notScoop" "這份不是用 Scoop 或安裝程式安裝的" "This copy was not installed with Scoop or the installer";
     UpdateDownload "update.download" "開啟下載頁面" "Open the release page";
     SettingsCheckUpdates "settings.checkUpdates" "自動檢查更新" "Check for updates automatically";
+    // The notes of the releases on the About page: of the versions after this one, or of this one.
+    SettingsReleaseNotes "settings.releaseNotes" "更新內容" "What's new";
     // The toast of a newer version the app found by itself. {0} is the version.
     UpdateToastTitle "update.toastTitle" "Nekominal {0} 已推出" "Nekominal {0} is out";
     UpdateToastBody "update.toastBody" "按一下開啟「關於」頁面更新" "Click to open the About page and update";

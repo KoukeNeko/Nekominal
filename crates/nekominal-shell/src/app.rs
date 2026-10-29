@@ -172,26 +172,43 @@ fn open_link(uri: &str) {
 /// `text` in lines no wider than `width`: broken between words, or anywhere in a run without spaces (Chinese). At most
 /// `max_lines` of them: the rest of a long text is not measured at all.
 pub(crate) fn wrap(ui: &mut Ui, text: &str, size: f32, width: f32, max_lines: usize) -> Vec<String> {
+    wrap_by(&mut |line| ui.measure(line, size, false), text, width, max_lines)
+}
+
+/// [`wrap`] with the width of text as `measure` gives it, which is the sum of the widths of its characters (as
+/// `Ui::measure` adds advances): each character is measured once, not the line again with each.
+pub(crate) fn wrap_by(measure: &mut dyn FnMut(&str) -> f32, text: &str, width: f32, max_lines: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
+    let mut line_width = 0.0;
     for ch in text.chars() {
-        line.push(ch);
-        if ui.measure(&line, size, false) <= width {
+        let advance = measure(ch.encode_utf8(&mut [0; 4]));
+        if line_width + advance <= width {
+            line.push(ch);
+            line_width += advance;
             continue;
         }
-        line.pop();
-        // A word that does not fit goes to the next line whole.
-        let rest = match line.rfind(' ').filter(|_| ch != ' ') {
-            Some(at) => { let rest = line[at + 1..].to_owned(); line.truncate(at); rest }
-            None => String::new(),
+        // A word that does not fit goes to the next line whole, from the space or the Chinese character before it; Chinese
+        // breaks anywhere, so the run of it after the last space stays where it is.
+        let anywhere = |c: char| u32::from(c) >= 0x2E80;
+        let rest = if ch == ' ' || anywhere(ch) {
+            String::new()
+        } else {
+            match line.char_indices().rev().find(|(_, c)| *c == ' ' || anywhere(*c)) {
+                Some((at, ' ')) => { let rest = line[at + 1..].to_owned(); line.truncate(at); rest }
+                Some((at, c)) => { let cut = at + c.len_utf8(); let rest = line[cut..].to_owned(); line.truncate(cut); rest }
+                None => String::new(),
+            }
         };
         lines.push(std::mem::take(&mut line));
         if lines.len() == max_lines {
             return lines;
         }
+        line_width = measure(&rest);
         line = rest;
         if ch != ' ' {
             line.push(ch);
+            line_width += advance;
         }
     }
     if !line.is_empty() {
@@ -369,6 +386,8 @@ pub struct App {
     update: Arc<std::sync::Mutex<(update::Check, bool)>>,
     /// The look running now is one the app started by itself (`checkUpdates`): a newer version it finds gets a toast.
     announce_update: bool,
+    /// The notes of the published releases, as the last look read them from GitHub: the thread of the look fills it.
+    release_notes: Arc<std::sync::Mutex<Vec<update::Notes>>>,
     /// Claude Code as the Agent page last found it.
     claude: agent::Claude,
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
@@ -746,6 +765,7 @@ impl App {
             blink_since: Instant::now(),
             update: Arc::new(std::sync::Mutex::new((update::Check::Idle, false))),
             announce_update: false,
+            release_notes: Arc::new(std::sync::Mutex::new(Vec::new())),
             claude: agent::claude(),
             settings_readable,
             settings_stamp: settings_stamp(),
@@ -2317,9 +2337,17 @@ impl App {
             state.0 = update::Check::Checking;
         }
         self.page_redraw();
-        let (shared, hwnd) = (Arc::clone(&self.update), self.hwnd.0 as isize);
+        let (shared, notes, hwnd) = (Arc::clone(&self.update), Arc::clone(&self.release_notes), self.hwnd.0 as isize);
         std::thread::spawn(move || {
             let found = update::check();
+            // The notes before the answer: the page drawn for the answer shows them with it. What could not be read keeps
+            // what was read before.
+            if found != update::Check::Failed
+                && let Some(read) = update::releases()
+                && let Ok(mut notes) = notes.lock()
+            {
+                *notes = read;
+            }
             if let Ok(mut state) = shared.lock() {
                 *state = (found, true);
             }
@@ -2826,6 +2854,20 @@ impl App {
         let frame = self.page_frame()?;
         let (lang, page) = (self.language(), self.page.as_ref()?);
         let searching = !page.query.trim().is_empty();
+        // The release notes the page shows, as one text: each version's name, then its lines.
+        let notes: String = {
+            let all = self.release_notes.lock().map(|notes| notes.clone()).unwrap_or_default();
+            update::notes_to_show(&all, update::CURRENT)
+                .iter()
+                .map(|notes| {
+                    let lines = update::note_lines(&notes.body, lang == Lang::ZhTw).into_iter().map(|line| match line {
+                        update::NoteLine::Heading(text) | update::NoteLine::Paragraph(text) => text,
+                    });
+                    std::iter::once(format!("Nekominal {}", notes.version)).chain(lines).collect::<Vec<_>>().join("\n")
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
         let tab_bounds = |i: usize| {
             let rect = frame.items.iter().find(|item| item.part == Some(Part::Nav(i))).map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |item| item.rect);
             [f64::from(rect.x) * scale, f64::from(rect.y) * scale, f64::from(rect.x + rect.w) * scale, f64::from(rect.y + rect.h) * scale]
@@ -2835,13 +2877,14 @@ impl App {
             sections: Section::ALL.iter().enumerate().map(|(i, section)| (section.text().get(lang).to_owned(), !searching && i == page.section, tab_bounds(i))).collect(),
             search_label: Text::SettingsSearch.get(lang).to_owned(),
             query: page.query.clone(),
-            rows: settings_page::entries(page, lang, &self.keymap, &self.settings)
+            rows: settings_page::entries(page, lang, &self.keymap, &self.settings, !notes.is_empty())
                 .iter()
                 .map(|entry| match entry {
                     settings_page::Entry::Setting(row) => (row.label(lang).to_owned(), settings_page::value_text(row, &self.settings, &self.profiles, lang)),
                     settings_page::Entry::Key(command) => (command.label(lang), self.keymap.shortcut_text(*command)),
                     settings_page::Entry::Claude => ("Claude Code".to_owned(), settings_page::claude_note(&self.claude, &self.settings).get(lang).to_owned()),
                     settings_page::Entry::About => (format!("Nekominal {}", update::CURRENT), settings_page::update_note(&self.update_check(), lang)),
+                    settings_page::Entry::Notes => (Text::SettingsReleaseNotes.get(lang).to_owned(), notes.clone()),
                     settings_page::Entry::Repo => (Text::SettingsRepo.get(lang).to_owned(), update::REPO.to_owned()),
                     settings_page::Entry::Contributors => (Text::SettingsContributors.get(lang).to_owned(), update::contributors().join(", ")),
                     settings_page::Entry::NewProfile => (Text::ProfileNew.get(lang).to_owned(), String::new()),
@@ -4435,11 +4478,11 @@ impl App {
         let focus = page.focus;
         let focused_row = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Setting(row) => Some(*row),
-            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Key(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         let focused_command = focus.and_then(|i| frame.entries.get(i)).and_then(|entry| match entry {
             settings_page::Entry::Key(command) => Some(*command),
-            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
+            settings_page::Entry::Setting(_) | settings_page::Entry::Heading(_) | settings_page::Entry::Snippets | settings_page::Entry::Layouts | settings_page::Entry::Claude | settings_page::Entry::About | settings_page::Entry::Notes | settings_page::Entry::Repo | settings_page::Entry::Contributors | settings_page::Entry::NewProfile | settings_page::Entry::ProfileHeader | settings_page::Entry::ProfileField(_) | settings_page::Entry::PushTest | settings_page::Entry::ToastTest | settings_page::Entry::Trigger(_) | settings_page::Entry::TriggerPresets => None,
         });
         // What Enter presses on a row that is not a setting or a command: the button it stands for.
         let focused_part = focus.and_then(|i| frame.entries.get(i)).and_then(settings_page::enter_part);

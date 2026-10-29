@@ -161,6 +161,89 @@ pub fn release_page(version: Option<&str>) -> String {
     }
 }
 
+/// The releases of the repository, newest first, as GitHub's API lists them.
+const RELEASES: &str = "https://api.github.com/repos/KoukeNeko/Nekominal/releases?per_page=30";
+/// The most versions the About page shows the notes of.
+pub const MAX_NOTES: usize = 5;
+
+/// The notes of a release, as written on GitHub (`distribution/release-notes`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notes {
+    pub version: String,
+    pub body: String,
+}
+
+/// The notes of the published releases, newest first. Blocks for up to ten seconds: a thread of its own calls it.
+pub fn releases() -> Option<Vec<Notes>> {
+    parse_releases(&fetch(RELEASES)?)
+}
+
+fn parse_releases(json: &str) -> Option<Vec<Notes>> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(json).ok()?;
+    let published = |r: &&serde_json::Value| !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false);
+    Some(
+        list.iter()
+            .filter(published)
+            .filter_map(|r| Some(Notes { version: r["tag_name"].as_str()?.trim_start_matches('v').to_owned(), body: r["body"].as_str().unwrap_or_default().to_owned() }))
+            .collect(),
+    )
+}
+
+/// The notes the About page shows: those of every version after `current` when one is out, newest first and at most
+/// [`MAX_NOTES`]; else those of `current` itself.
+pub fn notes_to_show<'a>(all: &'a [Notes], current: &str) -> Vec<&'a Notes> {
+    let later: Vec<&Notes> = all.iter().filter(|notes| newer(&notes.version, current)).take(MAX_NOTES).collect();
+    if later.is_empty() { all.iter().filter(|notes| !newer(current, &notes.version) && !newer(&notes.version, current)).take(1).collect() } else { later }
+}
+
+/// A line of release notes as the page shows it.
+#[derive(Debug, PartialEq)]
+pub enum NoteLine {
+    Heading(String),
+    Paragraph(String),
+}
+
+/// The part of `body` in the language asked, as headings and paragraphs with the Markdown taken off. The notes are in
+/// English, then in Traditional Chinese under `## 繁體中文`; notes with only one language give that one.
+pub fn note_lines(body: &str, zh: bool) -> Vec<NoteLine> {
+    let body = body.replace("\r\n", "\n");
+    let part = match body.split_once("## 繁體中文") {
+        Some((english, chinese)) => if zh { chinese.to_owned() } else { english.to_owned() },
+        None => body,
+    };
+    part.lines()
+        .map(str::trim)
+        // The link between the languages, and the rule before the second.
+        .filter(|line| !line.is_empty() && *line != "---" && !line.starts_with("**English**"))
+        .map(|line| match line.strip_prefix("## ").or_else(|| line.strip_prefix("# ")).or_else(|| line.strip_prefix("### ")) {
+            Some(heading) => NoteLine::Heading(plain(heading)),
+            None => NoteLine::Paragraph(plain(line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line))),
+        })
+        .collect()
+}
+
+/// `text` without the marks of Markdown: `**` and backticks go, and a link keeps its words.
+fn plain(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let link = rest[open..].find("](").map(|close| open + close).and_then(|close| rest[close..].find(')').map(|end| (close, close + end)));
+        match link {
+            Some((close, end)) => {
+                out.push_str(&rest[..open]);
+                out.push_str(&rest[open + 1..close]);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace('`', "")
+}
+
 /// The key the installer (`distribution/nekominal.wxs`) writes the folder it installed into under.
 const MSI_KEY: &str = r"Software\KoukeNeko\Nekominal";
 
@@ -236,6 +319,30 @@ mod tests {
         assert_eq!(release_page(Some("0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(Some("v0.2.9")), "https://github.com/KoukeNeko/Nekominal/releases/tag/v0.2.9");
         assert_eq!(release_page(None), "https://github.com/KoukeNeko/Nekominal/releases/latest");
+    }
+
+    #[test]
+    fn release_notes_are_read_from_the_api_and_shown_in_the_language_of_the_app() {
+        let json = r#"[
+            { "tag_name": "v0.2.20", "draft": true, "prerelease": false, "body": "draft" },
+            { "tag_name": "v0.2.19", "draft": false, "prerelease": false, "body": "**English** · [繁體中文](#繁體中文)\r\n\r\n## New\r\n\r\n🔔 It looks for a `newer` version. Thanks to [@a](https://github.com/a).\r\n\r\n---\r\n\r\n## 繁體中文\r\n\r\n## 新功能\r\n\r\n🔔 會自己檢查**新版本**。" },
+            { "tag_name": "v0.2.18", "draft": false, "prerelease": false, "body": "- one [x" },
+            { "tag_name": "v0.2.17", "draft": false, "prerelease": true, "body": "pre" }
+        ]"#;
+        let all = parse_releases(json).unwrap();
+        assert_eq!(all.iter().map(|n| n.version.as_str()).collect::<Vec<_>>(), ["0.2.19", "0.2.18"], "no draft, no prerelease");
+        assert_eq!(parse_releases("{\"message\":\"API rate limit exceeded\"}"), None);
+
+        assert_eq!(notes_to_show(&all, "0.2.17").iter().map(|n| n.version.as_str()).collect::<Vec<_>>(), ["0.2.19", "0.2.18"], "the versions after this one");
+        assert_eq!(notes_to_show(&all, "0.2.19").iter().map(|n| n.version.as_str()).collect::<Vec<_>>(), ["0.2.19"], "else this one's");
+        assert!(notes_to_show(&all, "0.3.0").is_empty(), "a build newer than any release has none");
+
+        assert_eq!(
+            note_lines(&all[0].body, false),
+            [NoteLine::Heading("New".into()), NoteLine::Paragraph("🔔 It looks for a newer version. Thanks to @a.".into())]
+        );
+        assert_eq!(note_lines(&all[0].body, true), [NoteLine::Heading("新功能".into()), NoteLine::Paragraph("🔔 會自己檢查新版本。".into())]);
+        assert_eq!(note_lines(&all[1].body, true), [NoteLine::Paragraph("one [x".into())], "one language only, and a [ that opens no link");
     }
 
     #[test]
