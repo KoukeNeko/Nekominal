@@ -103,6 +103,9 @@ impl App {
         let (label, action) = match &self.entry {
             Some(Entry::Branch(_)) if typed.is_empty() => (Text::WorktreeTypeBranch.get(lang).to_owned(), popup::Action::Cancel),
             Some(Entry::Branch(_)) if !crate::worktree::valid_branch(typed) => (Text::WorktreeBadBranch.format(lang, &[&typed]), popup::Action::Cancel),
+            Some(Entry::Branch(_)) if crate::worktree::reserved_part(typed).is_some() => {
+                (Text::WorktreeReservedBranch.format(lang, &[&crate::worktree::reserved_part(typed).unwrap_or_default()]), popup::Action::Cancel)
+            }
             Some(Entry::Branch(_)) => (Text::WorktreeCreate.format(lang, &[&typed]), popup::Action::Entered),
             Some(_) if typed.is_empty() => (Text::LayoutTypeName.get(lang).to_owned(), popup::Action::Cancel),
             Some(Entry::RenameLayout(_)) => (Text::LayoutRenameTo.format(lang, &[&typed]), popup::Action::Entered),
@@ -154,8 +157,8 @@ impl App {
     /// Makes the worktree of `branch` for the repository `folder` is in, and a tab of the default profile there named after
     /// the branch.
     fn open_worktree_tab(&mut self, folder: &str, branch: &str) {
-        let path = match crate::worktree::create(std::path::Path::new(folder), branch) {
-            Ok(path) => path.display().to_string(),
+        let (path, copy_failed) = match crate::worktree::create(std::path::Path::new(folder), branch) {
+            Ok((path, copy_failed)) => (path.display().to_string(), copy_failed),
             Err(e) => {
                 util::log(&format!("worktree {branch} in {folder}: {e:?}"));
                 return self.inform(self.worktree_error(Text::WorktreeFailed, e));
@@ -181,6 +184,12 @@ impl App {
                 self.relayout();
                 self.sync_focus();
                 self.redraw();
+                // The worktree is there, but without the files .worktreeinclude names (.env…): said, as its programs may
+                // not run without them.
+                if let Some(e) = copy_failed {
+                    let lang = self.language();
+                    self.inform(Text::WorktreeCopyFailed.format(lang, &[&e]));
+                }
             }
             Err(e) => util::log(&format!("worktree tab: {e}")),
         }
@@ -294,6 +303,7 @@ impl App {
             Error::Refused(Refusal::Main) => Text::WorktreeIsMain.get(lang).to_owned(),
             Error::Refused(Refusal::Dirty { changed, untracked }) => Text::WorktreeDirty.format(lang, &[&changed, &untracked]),
             Error::Refused(Refusal::Detached) => Text::WorktreeDetached.get(lang).to_owned(),
+            Error::Reserved(part) => Text::WorktreeReservedBranch.format(lang, &[&part]),
         }
     }
 

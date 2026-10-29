@@ -628,8 +628,13 @@ fn release(api: &Api, hpc: HPCON) {
     }
 }
 
-/// Directory a child starts in: `requested` when it is an existing directory, otherwise the home
-/// directory, otherwise `None` (the child inherits this process's directory).
+/// The longest directory CreateProcessW starts a child in, in UTF-16 units: longer ones fail with
+/// ERROR_DIRECTORY whether or not long paths are enabled.
+const MAX_CWD: usize = 258;
+
+/// Directory a child starts in: `requested` when it is an existing directory (its nearest parent
+/// short enough when it is too long to start in), otherwise the home directory, otherwise `None`
+/// (the child inherits this process's directory).
 pub fn resolve_cwd(requested: Option<&Path>) -> Option<PathBuf> {
     pick_directory(
         requested,
@@ -638,10 +643,12 @@ pub fn resolve_cwd(requested: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn pick_directory(requested: Option<&Path>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let fits = |dir: &Path| dir.as_os_str().encode_wide().count() <= MAX_CWD;
     requested
         .filter(|dir| dir.is_dir())
+        .and_then(|dir| dir.ancestors().find(|dir| fits(dir)))
         .map(Path::to_path_buf)
-        .or_else(|| home.filter(|dir| dir.is_dir()))
+        .or_else(|| home.filter(|dir| dir.is_dir() && fits(dir)))
 }
 
 fn coord(cols: u16, rows: u16) -> COORD {
@@ -1233,6 +1240,27 @@ mod tests {
         );
         assert_eq!(pick_directory(Some(&missing), Some(missing.clone())), None);
         assert_eq!(pick_directory(None, None), None);
+    }
+
+    #[test]
+    fn a_directory_too_long_to_start_in_gives_way_to_its_nearest_parent_that_fits() {
+        let base = std::env::temp_dir().join(format!("nekominal-long-cwd-{}", std::process::id()));
+        let mut deep = base.clone();
+        while deep.as_os_str().len() < 300 {
+            deep.push("a folder of some length");
+        }
+        // `\\?\` lets the folders be made past MAX_PATH whatever the system allows.
+        std::fs::create_dir_all(format!(r"\\?\{}", deep.display())).unwrap();
+        let picked = pick_directory(Some(&deep), None).unwrap();
+        assert!(picked.as_os_str().encode_wide().count() <= MAX_CWD, "{}", picked.display());
+        assert!(deep.starts_with(&picked) && picked.starts_with(&base));
+        let next = deep.ancestors().take_while(|dir| *dir != picked).last().unwrap();
+        assert!(next.as_os_str().encode_wide().count() > MAX_CWD, "the nearest parent that fits");
+        // The child really starts there.
+        let mut child = std::process::Command::new("cmd.exe");
+        child.args(["/c", "cd"]).current_dir(&picked);
+        assert!(child.output().unwrap().status.success());
+        std::fs::remove_dir_all(format!(r"\\?\{}", base.display())).unwrap();
     }
 }
 

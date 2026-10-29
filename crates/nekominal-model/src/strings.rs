@@ -220,6 +220,8 @@ texts! {
     WorktreeTypeBranch "worktree.typeBranch" "輸入新分支的名稱" "Type a name for the new branch";
     WorktreeCreate "worktree.create" "建立分支「{0}」與它的工作樹" "Create branch “{0}” and its worktree";
     WorktreeBadBranch "worktree.badBranch" "「{0}」不能當分支名稱" "“{0}” cannot be a branch name";
+    WorktreeReservedBranch "worktree.reservedBranch" "「{0}」是 Windows 保留給裝置的名稱，不能出現在分支名稱裡" "“{0}” is a name Windows keeps for a device and cannot be part of a branch name";
+    WorktreeCopyFailed "worktree.copyFailed" "工作樹已建立，但 .worktreeinclude 列出的檔案沒有複製過去：{0}" "The worktree is made, but the files .worktreeinclude names were not copied: {0}";
     WorktreeNotRepo "worktree.notRepo" "這個窗格的資料夾不在 git 儲存庫裡" "The folder of this pane is not in a git repository";
     WorktreeFailed "worktree.failed" "無法建立工作樹：{0}" "The worktree could not be made: {0}";
     WorktreeIsMain "worktree.isMain" "這是儲存庫的主要簽出，不會被移除" "This is the main checkout of the repository: it is never removed";

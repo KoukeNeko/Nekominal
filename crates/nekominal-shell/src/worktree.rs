@@ -34,6 +34,8 @@ pub enum Error {
     Git(String),
     /// Asked of nobody: the rules below say no before git is run.
     Refused(Refusal),
+    /// A part of the branch name is a name Windows keeps for a device (`aux`, `con`…), which git cannot store.
+    Reserved(String),
 }
 
 /// Why a worktree is not removed or archived.
@@ -94,6 +96,16 @@ pub fn valid_branch(name: &str) -> bool {
         && name.split('/').all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
+/// The part of `name` that is a name Windows keeps for a device (`aux`, `con`, `nul`, `prn`, `com1`…`com9`, `lpt1`…`lpt9`,
+/// in any case, with any extension): git stores a branch as files named after its parts, and no file can have such a name.
+pub fn reserved_part(name: &str) -> Option<&str> {
+    name.split('/').find(|part| {
+        let stem = part.split('.').next().unwrap_or(part).trim_end().to_ascii_lowercase();
+        matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+            || (stem.len() == 4 && (stem.starts_with("com") || stem.starts_with("lpt")) && stem.as_bytes()[3].is_ascii_digit() && stem.as_bytes()[3] != b'0')
+    })
+}
+
 /// The folder of the worktree for `branch` beside the repository at `root`: `<root>-<branch>`, with what a folder name
 /// cannot hold (the `/` of `fix/login`, and `<>|"`, which git allows) made `-`; `-2`, `-3`… after it while one exists.
 pub fn worktree_path(root: &Path, branch: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
@@ -126,6 +138,34 @@ where
     Err(said.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("git failed").trim().to_owned())
 }
 
+/// Which of `paths` git ignores in the repository `root`, separated by NUL. The paths go to git on its standard input, as
+/// many as there are. Exit status 1 is "none of them is ignored"; any other failure is an error, not an empty answer.
+fn check_ignore(root: &Path, paths: &[&str]) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "--stdin", "-z"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("git: {e}"))?;
+    let input = paths.join("\0").into_bytes();
+    let mut stdin = child.stdin.take().expect("piped");
+    // Written from a thread of its own: git answers while it reads, and a full pipe both ways would hold both.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().map_err(|e| format!("git: {e}"))?;
+    let _ = writer.join();
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        Some(1) => Ok(String::new()),
+        _ => Err(String::from_utf8_lossy(&output.stderr).lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("git check-ignore failed").trim().to_owned()),
+    }
+}
+
 /// The folder of the main checkout of the repository `dir` is in, also when `dir` is in one of its worktrees: the worktrees
 /// of a repository then all sit beside the same folder.
 pub fn repository_root(dir: &Path) -> Result<PathBuf, Error> {
@@ -141,17 +181,27 @@ pub fn repository_root(dir: &Path) -> Result<PathBuf, Error> {
 /// Makes a worktree on the new branch `branch` for the repository `dir` is in; its folder.
 // shortcut: runs on the thread of the window, which waits while git checks the files out; move it to a thread if a large
 // repository makes that wait felt.
-pub fn create(dir: &Path, branch: &str) -> Result<PathBuf, Error> {
+pub fn create(dir: &Path, branch: &str) -> Result<(PathBuf, Option<String>), Error> {
     let root = repository_root(dir)?;
     git(&root, ["check-ref-format", "--branch", branch]).map_err(Error::Git)?;
+    if let Some(part) = reserved_part(branch) {
+        return Err(Error::Reserved(part.to_owned()));
+    }
     let path = worktree_path(&root, branch, Path::exists);
     git(&root, add_args(&path, branch)).map_err(Error::Git)?;
-    match copy_included(&root, &path) {
-        Ok(copied) if !copied.is_empty() => crate::util::log(&format!("worktree: copied {}", copied.join(", "))),
-        Ok(_) => {}
-        Err(e) => crate::util::log(&format!("worktree: .worktreeinclude: {e}")),
-    }
-    Ok(path)
+    let copy_failed = match copy_included(&root, &path) {
+        Ok(copied) => {
+            if !copied.is_empty() {
+                crate::util::log(&format!("worktree: copied {} files", copied.len()));
+            }
+            None
+        }
+        Err(e) => {
+            crate::util::log(&format!("worktree: .worktreeinclude: {e}"));
+            Some(e)
+        }
+    };
+    Ok((path, copy_failed))
 }
 
 /// Copies into the new worktree `dest` the files of the main checkout `root` that `.worktreeinclude` names and git ignores
@@ -172,12 +222,10 @@ pub fn copy_included(root: &Path, dest: &Path) -> Result<Vec<String>, String> {
     if candidates.is_empty() {
         return Ok(Vec::new());
     }
-    // shortcut: the paths go on the command line, which holds about 32 000 characters; feed them on stdin if a
-    // .worktreeinclude ever names that many files.
-    // Exit status 1 is "none of them is ignored". `-z` needs `--stdin`, so these come back a line each, not quoted.
-    let ignored = git(root, ["-c", "core.quotePath=false", "check-ignore", "--"].into_iter().chain(candidates.iter().copied())).unwrap_or_default();
+    // On stdin, not the command line: that holds about 32 000 characters, a few hundred paths of node_modules.
+    let ignored = check_ignore(root, &candidates)?;
     let mut copied = Vec::new();
-    for file in ignored.lines().filter(|p| !p.is_empty()) {
+    for file in ignored.split('\0').filter(|p| !p.is_empty()) {
         let to = dest.join(file);
         if to.exists() {
             continue;
@@ -407,11 +455,32 @@ mod tests {
     }
 
     #[test]
+    fn a_part_named_for_a_windows_device_is_found_whatever_its_case_or_extension() {
+        for name in ["aux", "AUX", "aux.txt", "fix/aux", "x/con/y", "com1", "lpt9", "nul ", "Prn.c"] {
+            assert!(reserved_part(name).is_some(), "{name}");
+        }
+        assert_eq!(reserved_part("fix/Aux.v2"), Some("Aux.v2"));
+        for name in ["com0", "auxx", "fix", "my-con", "lpt", "conx/a"] {
+            assert_eq!(reserved_part(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_branch_named_for_a_windows_device_is_refused_and_leaves_nothing_behind() {
+        let Some((base, repo)) = temp_repo("reserved") else { return };
+        assert_eq!(create(&repo, "fix/aux"), Err(Error::Reserved("aux".to_owned())));
+        let folders: Vec<_> = std::fs::read_dir(&base).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(folders, ["repo"], "no folder for the worktree");
+        assert_eq!(git(&repo, ["branch", "--list"]).unwrap(), "* main", "no branch");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn a_real_worktree_takes_the_next_free_folder_in_a_path_with_spaces_and_unicode() {
         let Some((base, repo)) = temp_repo("my repo 新") else { return };
         std::fs::create_dir_all(base.join("repo-feature-新")).unwrap();
         std::fs::create_dir_all(base.join("repo-feature-新-2")).unwrap();
-        let made = create(&repo, "feature/新").unwrap();
+        let made = create(&repo, "feature/新").unwrap().0;
         assert_eq!(made.file_name().unwrap(), "repo-feature-新-3");
         let status = inspect(&made).unwrap();
         assert_eq!((status.branch.as_deref(), status.main), (Some("feature/新"), false));
@@ -432,7 +501,7 @@ mod tests {
         assert_eq!(status.branch.as_deref(), Some("main"), "the branch to be");
         assert_eq!((status.unpushed, &status.default_branch, status.merged), (None, &None, None));
         // git 2.42 and later make an orphan branch; older ones refuse. Either way nothing breaks.
-        match create(&repo, "first") {
+        match create(&repo, "first").map(|(path, _)| path) {
             Ok(made) => assert_eq!(inspect(&made).unwrap().branch.as_deref(), Some("first")),
             Err(e) => assert!(matches!(e, Error::Git(_)), "{e:?}"),
         }
@@ -463,7 +532,7 @@ mod tests {
         assert!(status.main, "a submodule is never removed as a worktree");
         assert_eq!(check_remove(&status, true), Err(Refusal::Main));
         assert_eq!(repository_root(&sub).unwrap().canonicalize().unwrap(), sub.canonicalize().unwrap());
-        let made = create(&sub, "x").unwrap();
+        let made = create(&sub, "x").unwrap().0;
         assert_eq!(made.parent().unwrap().canonicalize().unwrap(), repo.canonicalize().unwrap(), "beside the folder of the submodule");
         git(&sub, [OsString::from("worktree"), "remove".into(), made.into()]).unwrap();
         std::fs::remove_dir_all(&base).unwrap();
@@ -472,7 +541,7 @@ mod tests {
     #[test]
     fn a_detached_head_has_no_branch_and_is_not_archived() {
         let Some((base, repo)) = temp_repo("detached") else { return };
-        let made = create(&repo, "agent/detached").unwrap();
+        let made = create(&repo, "agent/detached").unwrap().0;
         git(&made, ["checkout", "-q", "--detach"]).unwrap();
         let status = inspect(&made).unwrap();
         assert_eq!((status.branch.as_deref(), status.main), (None, false));
@@ -540,7 +609,7 @@ mod tests {
         git(&repo, ["pull", "-q", "--ff-only"]).unwrap();
 
         // A branch never pushed: no upstream, so the commits on no remote branch.
-        let made = create(&repo, "agent/remote").unwrap();
+        let made = create(&repo, "agent/remote").unwrap().0;
         let fresh = inspect(&made).unwrap();
         assert_eq!((fresh.remote.as_deref(), fresh.unpushed), (Some("origin"), Some(0)));
         commit(&made, "work");
@@ -581,7 +650,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(create(&base, "x"), Err(Error::NotRepo), "a folder outside the repository");
 
-        let made = create(&sub, "agent/one").unwrap();
+        let made = create(&sub, "agent/one").unwrap().0;
         assert_eq!(made.file_name().unwrap(), "repo-agent-one");
         assert!(made.join(".git").is_file(), "a worktree has a .git file");
         assert_eq!(git(&made, ["branch", "--show-current"]).unwrap(), "agent/one");
@@ -692,7 +761,7 @@ mod tests {
         assert!(main.main && !main.dirty());
         assert_eq!(remove(&main, true, false), Err(Error::Refused(Refusal::Main)));
 
-        let made = create(&repo, "agent/two").unwrap();
+        let made = create(&repo, "agent/two").unwrap().0;
         let fresh = inspect(&made).unwrap();
         assert!(!fresh.main);
         assert_eq!(fresh.branch.as_deref(), Some("agent/two"));
@@ -716,7 +785,7 @@ mod tests {
         assert!(!made.exists());
         assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/two"]).is_ok());
 
-        let merged = create(&repo, "agent/three").unwrap();
+        let merged = create(&repo, "agent/three").unwrap().0;
         assert_eq!(remove(&inspect(&merged).unwrap(), false, true), Ok(None));
         assert!(git(&repo, ["rev-parse", "--verify", "refs/heads/agent/three"]).is_err(), "a merged branch goes");
         std::fs::remove_dir_all(&base).unwrap();
@@ -726,7 +795,7 @@ mod tests {
     #[test]
     fn a_worktree_a_process_still_sits_in_loses_its_branch_as_asked() {
         let Some((base, repo)) = temp_repo("held") else { return };
-        let made = create(&repo, "agent/held").unwrap();
+        let made = create(&repo, "agent/held").unwrap().0;
         let status = inspect(&made).unwrap();
         // ping, not cmd running it: killing cmd would leave its ping in the folder.
         let mut shell = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).current_dir(&made).creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
@@ -746,7 +815,7 @@ mod tests {
         std::fs::write(repo.join(".gitignore"), ".env\nbuild/\n").unwrap();
         git(&repo, ["add", ".gitignore"]).unwrap();
         commit(&repo, "ignore");
-        let made = create(&repo, "agent/ignored").unwrap();
+        let made = create(&repo, "agent/ignored").unwrap().0;
         assert_eq!(inspect(&made).unwrap().ignored, 0);
         std::fs::write(made.join(".env"), "SECRET=1").unwrap();
         std::fs::create_dir_all(made.join("build")).unwrap();
@@ -763,7 +832,7 @@ mod tests {
     #[test]
     fn an_archive_keeps_the_branch_and_refuses_changes() {
         let Some((base, repo)) = temp_repo("archive") else { return };
-        let made = create(&repo, "agent/four").unwrap();
+        let made = create(&repo, "agent/four").unwrap().0;
         commit(&made, "work");
         std::fs::write(made.join("note.txt"), "x").unwrap();
         git(&made, ["add", "note.txt"]).unwrap();
@@ -796,7 +865,7 @@ mod tests {
         write("build/out.bin", "ignored, not named");
         write("notes.txt", "named but not ignored");
 
-        let made = create(&repo, "agent/five").unwrap();
+        let made = create(&repo, "agent/five").unwrap().0;
         let read = |rel: &str| std::fs::read_to_string(made.join(rel)).ok();
         assert_eq!(read(".env").as_deref(), Some("A=1"));
         assert_eq!(read(".env.local").as_deref(), Some("B=2"));
@@ -823,6 +892,24 @@ mod tests {
             assert_eq!(copy_included(&repo, &dest), Ok(Vec::new()), "{text:?}");
         }
         assert!(!dest.join(".env").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Thousands of paths are more than a command line holds: they go to git on its standard input.
+    #[test]
+    fn a_worktreeinclude_naming_thousands_of_files_copies_them_all() {
+        let Some((base, repo)) = temp_repo("include-many") else { return };
+        std::fs::write(repo.join(".gitignore"), "cache/\n").unwrap();
+        std::fs::write(repo.join(".worktreeinclude"), "cache/\n").unwrap();
+        for i in 0..1500 {
+            let dir = repo.join("cache").join(format!("a fairly long folder name {}", i / 100));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("entry number {i}.bin")), "x").unwrap();
+        }
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        assert_eq!(copy_included(&repo, &dest).unwrap().len(), 1500);
+        assert!(dest.join("cache").join("a fairly long folder name 14").join("entry number 1499.bin").exists());
         std::fs::remove_dir_all(&base).unwrap();
     }
 
