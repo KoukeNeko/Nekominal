@@ -137,7 +137,7 @@ pub struct Ui {
     raster: Rasterizer,
     cache: FxHashMap<GlyphKey, Cached>,
     /// Pictures by their key and size in pixels; `None` for one that could not be made.
-    images: FxHashMap<(u64, u32), Option<Bitmap>>,
+    images: FxHashMap<(u64, u32, u32), Option<Bitmap>>,
     quads: Vec<QuadInstance>,
     glyphs: Vec<GlyphInstance>,
     cmds: Vec<Cmd>,
@@ -355,15 +355,21 @@ impl Ui {
     /// drawn. `key` names the picture; the first time it is drawn at a size in pixels, `pixels` makes it for that size,
     /// `px * px` premultiplied RGBA. False when it could not be made, and the caller draws something else.
     pub fn image(&mut self, key: u64, x: f32, y: f32, size: f32, pixels: impl FnOnce(u32) -> Option<Vec<u8>>) -> bool {
-        let px = (size * self.scale).round().max(1.0) as u32;
-        let bitmap = match self.images.get(&(key, px)) {
+        self.picture(key, x, y, size, size, |w, _| pixels(w))
+    }
+
+    /// [`Ui::image`] of any shape: `w` by `h` DIP, `pixels` making it `w * h` pixels of premultiplied RGBA for the sizes in
+    /// pixels it is handed.
+    pub fn picture(&mut self, key: u64, x: f32, y: f32, w: f32, h: f32, pixels: impl FnOnce(u32, u32) -> Option<Vec<u8>>) -> bool {
+        let (pw, ph) = ((w * self.scale).round().max(1.0) as u32, (h * self.scale).round().max(1.0) as u32);
+        let bitmap = match self.images.get(&(key, pw, ph)) {
             Some(cached) => *cached,
             None => {
-                let made = pixels(px).filter(|data| px > 0 && data.len() == (px * px * 4) as usize).and_then(|data| {
-                    let src = self.insert(true, px, px, &data)?;
-                    Some(Bitmap { src, size: [px as u16, px as u16], left: 0, top: 0, kind: KIND_COLOR })
+                let made = pixels(pw, ph).filter(|data| data.len() == (pw * ph * 4) as usize).and_then(|data| {
+                    let src = self.insert(true, pw, ph, &data)?;
+                    Some(Bitmap { src, size: [pw as u16, ph as u16], left: 0, top: 0, kind: KIND_COLOR })
                 });
-                self.images.insert((key, px), made);
+                self.images.insert((key, pw, ph), made);
                 made
             }
         };

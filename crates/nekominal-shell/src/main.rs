@@ -32,6 +32,7 @@ mod panels;
 mod popup;
 mod push;
 mod ports;
+mod preview;
 mod remove_dialog;
 mod search_tabs;
 mod settings_page;

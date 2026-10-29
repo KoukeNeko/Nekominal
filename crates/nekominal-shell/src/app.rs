@@ -65,6 +65,7 @@ mod badges;
 mod tab_rows;
 mod context_card;
 mod branch_card;
+mod image_tip;
 mod pr_card;
 mod subagents_card;
 mod subagents_drawer;
@@ -472,6 +473,8 @@ pub struct App {
     pointer_pane: Option<PaneId>,
     /// The pointer is over a link: the window shows the hand.
     hand: bool,
+    /// The image the link under the pointer names, previewed under it (`app/image_tip.rs`).
+    image_tip: Option<image_tip::Tip>,
     /// The axis of the divider under the pointer (the window shows a resize cursor).
     over_splitter: Option<Axis>,
     /// The path of the divider being dragged.
@@ -841,6 +844,7 @@ impl App {
             buttons: [false; 3],
             pointer_pane: None,
             hand: false,
+            image_tip: None,
             over_splitter: None,
             dragged_splitter: None,
             popup: None,
@@ -1908,12 +1912,23 @@ impl App {
             .map(|&(row, start, end)| r::RowSpan { row: row as u16, start: start as u16, end: end as u16 })
             .collect();
         let hovered = link.as_ref().map(|(id, _)| *id);
+        // An image the link names: its preview hangs under the first row of the link.
+        let tip = link.as_ref().and_then(|(id, link)| {
+            let entry = self.tab()?.entry(*id)?;
+            let m = entry.view.metrics();
+            let &(row, start, end) = link.spans.first()?;
+            let (cw, ch, s) = (m.width as f32, m.height as f32, self.scale);
+            let anchor = Rect::new((entry.rect.x as f32 + start as f32 * cw) / s, (entry.rect.y as f32 + row as f32 * ch) / s, (end - start) as f32 * cw / s, ch / s);
+            image_tip::Tip::of(&link.target, anchor, self.image_tip.as_ref())
+        });
         if let Some(tab) = self.tabs.get_mut(self.selected) {
             for entry in &mut tab.panes {
                 entry.view.set_hover_link(if Some(entry.id) == hovered { spans.clone() } else { Vec::new() });
             }
         }
-        if hand != self.hand {
+        let tip_changed = tip != self.image_tip;
+        self.image_tip = tip;
+        if hand != self.hand || tip_changed {
             self.hand = hand;
             self.redraw();
         }
@@ -3111,6 +3126,7 @@ impl App {
         self.paint_subagents_card();
         self.paint_subagents_drawer();
         self.paint_row_tip();
+        self.paint_image_tip();
     }
 
     /// Draws the panels in their own window, over the acrylic of the system like the pop-ups (`panels.rs`), and hides that
