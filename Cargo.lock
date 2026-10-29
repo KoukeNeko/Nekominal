@@ -43,7 +43,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-probe"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "nekominal-input",
  "nekominal-pty",
@@ -410,7 +410,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-input"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "alacritty_terminal",
  "nekominal-pty",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-model"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "base64",
  "nekominal-input",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-pane"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "nekominal-input",
  "nekominal-pty",
@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-pty"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "serde",
  "serde_json",
@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-render"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "bytemuck",
  "etagere",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-shell"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-term"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "alacritty_terminal",
  "base64",
@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "nekominal-ui"
-version = "0.2.29"
+version = "0.2.30"
 dependencies = [
  "bytemuck",
  "nekominal-render",
