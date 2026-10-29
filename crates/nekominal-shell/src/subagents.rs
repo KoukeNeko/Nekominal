@@ -159,7 +159,10 @@ fn parse_meta(id: &str, meta: &serde_json::Value, created: SystemTime, modified:
     if kind == "workflow-subagent" || meta.get("workflowPhase").is_some() {
         return None;
     }
-    let finished = meta.get("finished").and_then(serde_json::Value::as_bool) == Some(true);
+    // Ended: it finished, the user stopped it, or (an observer, which watches another agent) it was stopped. Claude Code
+    // writes one of the three; a stopped agent never gets `finished`.
+    let flag = |name: &str| meta.get(name).and_then(serde_json::Value::as_bool) == Some(true);
+    let finished = flag("finished") || flag("stoppedByUser") || flag("observerStopped");
     Some(Agent {
         id: id.to_owned(),
         kind: kind.to_owned(),
@@ -412,6 +415,10 @@ mod tests {
         assert_eq!((got.kind.as_str(), got.title.as_str(), got.finished), ("general-purpose", "say hi", Some(at(9))));
         let running = serde_json::json!({"agentType":"Explore","description":"look"});
         assert_eq!(parse_meta("a2", &running, at(5), Some(at(6))).unwrap().finished, None);
+        for ended in [r#"{"agentType":"Explore","stoppedByUser":true}"#, r#"{"agentType":"observer","isObserver":true,"observerStopped":true}"#] {
+            let meta: serde_json::Value = serde_json::from_str(ended).unwrap();
+            assert_eq!(parse_meta("a4", &meta, at(5), Some(at(7))).unwrap().finished, Some(at(7)), "stopped is ended: {ended}");
+        }
         let step = serde_json::json!({"agentType":"workflow-subagent","description":"beta","workflowPhase":"Beta"});
         assert_eq!(parse_meta("a3", &step, at(5), None), None);
     }
