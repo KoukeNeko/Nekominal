@@ -636,12 +636,15 @@ impl Pane {
     }
 
     /// Term and PTY are resized together under the terminal lock so a snapshot never sees half a resize.
-    pub fn resize(&self, cols: u16, rows: u16) {
+    /// What went wrong telling the console of the session the new size; the emulator has it whatever happens.
+    pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
         let mut core = self.term.lock();
         core.resize(cols as usize, rows as usize);
         let live = self.live.borrow();
-        if let Ok(session) = live.sessions.get(live.id) {
-            let _ = session.resize(cols, rows);
+        match live.sessions.get(live.id) {
+            Ok(session) => session.resize(cols, rows),
+            // A session that ended has no console to tell.
+            Err(_) => Ok(()),
         }
     }
 

@@ -139,6 +139,32 @@ fn piece_width(ui: &mut Ui, piece: &Piece) -> f32 {
     }
 }
 
+/// How much a piece of the right of the bar matters, for the room it gets: what has the least goes first when they do
+/// not all fit. The agent's state and its context stay longest; the folder and the subagents next; the branch and the pull
+/// request; then the ports; the plain numbers (model, cost, time) first.
+fn piece_rank(piece: &Piece) -> u8 {
+    match piece {
+        Piece::State(..) | Piece::Meter(..) => 5,
+        Piece::Subagents(_) | Piece::Glyph('\u{E8B7}', _) => 4,
+        Piece::Glyph(..) => 3,
+        Piece::Badge(chip) if chip.look != badges::Look::Port => 3,
+        Piece::Badge(_) => 2,
+        Piece::Text(_) => 1,
+    }
+}
+
+/// Which pieces of these `ranks` and `widths` stay in `room`, each with the gap after it: the lowest rank goes first, the
+/// rightmost of a rank before the others, until the rest fit.
+fn fitting(ranks: &[u8], widths: &[f32], room: f32) -> Vec<bool> {
+    let mut kept = vec![true; widths.len()];
+    let used = |kept: &[bool]| widths.iter().zip(kept).filter(|(_, k)| **k).map(|(w, _)| w + PIECE_GAP).sum::<f32>();
+    while used(&kept) > room {
+        let Some(drop) = (0..widths.len()).filter(|&i| kept[i]).min_by_key(|&i| (ranks[i], std::cmp::Reverse(i))) else { break };
+        kept[drop] = false;
+    }
+    kept
+}
+
 /// Whether this process runs as administrator (elevated by UAC): its shells do too, which the shield in the bar says.
 /// Asked once; elevation does not change while a process runs.
 pub(crate) fn elevated() -> bool {
@@ -1134,7 +1160,9 @@ impl App {
                     // A row smaller now and back on the next tick of the jobs (`regrow`), so that a full-screen program
                     // (Claude Code, vim) draws its whole screen again. Both at once were missed: Node looks at the size
                     // of the console when it hears of a change, and found the old one again.
-                    pane.resize(state.cols, state.rows.saturating_sub(1).max(1));
+                    if let Err(e) = pane.resize(state.cols, state.rows.saturating_sub(1).max(1)) {
+                        util::log(&format!("update: an adopted pane did not take a row less: {e}"));
+                    }
                 }
                 (state.session.clone(), pane, state.title.clone())
             }
@@ -1538,7 +1566,9 @@ impl App {
             let (cols, rows) = entry.view.grid_for((entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32));
             if (cols as u16, rows as u16) != entry.grid {
                 entry.grid = (cols as u16, rows as u16);
-                entry.pane.resize(cols as u16, rows as u16);
+                if let Err(e) = entry.pane.resize(cols as u16, rows as u16) {
+                    util::log(&format!("pane {}: resize: {e}", entry.session));
+                }
             }
             entry.view.invalidate();
         }
@@ -2145,7 +2175,8 @@ impl App {
         // Not at once: a tick that comes just after the pane was adopted would make the two sizes one change again.
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()).filter(|entry| entry.regrow.is_some_and(|at| at.elapsed() >= REGROW_AFTER)) {
             entry.regrow = None;
-            entry.pane.resize(entry.grid.0, entry.grid.1);
+            let result = entry.pane.resize(entry.grid.0, entry.grid.1);
+            util::log(&format!("update: pane {} back to {}x{}: {result:?}", entry.session, entry.grid.0, entry.grid.1));
         }
         let mut changed = false;
         // One snapshot of the processes of the system for every tab, and not at every tick: it costs the kernel some
@@ -3419,11 +3450,14 @@ impl App {
         let badge = (waiting > 0).then(|| Text::TabsWaiting.format(lang, &[&waiting]));
         let badge_width = badge.as_ref().map_or(0.0, |text| 23.0 + self.ui.measure(text, PIECE_SIZE, false) + 10.0);
         let mut widths: Vec<f32> = pieces.iter().map(|piece| piece_width(&mut self.ui, piece)).collect();
-        // A narrow window keeps its room for the tabs: the numbers go before the tabs shrink to their numbers.
+        // A narrow window keeps its room for the tabs: the pieces that matter least go before the tabs shrink to their
+        // numbers.
         let room = ((width - 640.0).clamp(0.0, width * 0.45) - badge_width).max(0.0);
-        while widths.iter().map(|w| w + PIECE_GAP).sum::<f32>() > room && widths.pop().is_some() {
-            pieces.pop();
-        }
+        let kept = fitting(&pieces.iter().map(piece_rank).collect::<Vec<_>>(), &widths, room);
+        let mut keep = kept.iter();
+        pieces.retain(|_| *keep.next().unwrap_or(&false));
+        let mut keep = kept.iter();
+        widths.retain(|_| *keep.next().unwrap_or(&false));
         let right_width = badge_width + if badge.is_some() { 12.0 } else { 0.0 } + widths.iter().map(|w| w + PIECE_GAP).sum::<f32>();
         // The groups of the sidebar follow the states of the tabs, but not while the pointer is over the sidebar: a row does
         // not move from under it.

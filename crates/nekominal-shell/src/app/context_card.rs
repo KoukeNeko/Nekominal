@@ -287,6 +287,23 @@ mod tests {
         assert_eq!((facts.parts, facts.window, facts.last_out, facts.status_line), (Some([0, 48_916, 2]), Some(200_000), Some(4), false), "a part not reported is none of the window");
     }
 
+    /// The bar of a window too narrow for all it says: the numbers go, then the ports, before the folder.
+    #[test]
+    fn the_pieces_that_matter_least_give_way_first_and_the_folder_stays() {
+        use super::super::{fitting, PIECE_GAP};
+        // A port badge, the state, the model, the meter, the subagents, the branch, the folder: as the bar orders them.
+        let ranks = [2, 5, 1, 5, 4, 3, 4];
+        let widths = [40.0; 7];
+        let all = 7.0 * (40.0 + PIECE_GAP);
+        assert_eq!(fitting(&ranks, &widths, all), [true; 7], "room for all");
+        assert_eq!(fitting(&ranks, &widths, all - 1.0), [true, true, false, true, true, true, true], "the model first");
+        assert_eq!(fitting(&ranks, &widths, all - (40.0 + PIECE_GAP) - 1.0), [false, true, false, true, true, true, true], "then the port");
+        assert_eq!(fitting(&ranks, &widths, 4.0 * (40.0 + PIECE_GAP)), [false, true, false, true, true, false, true], "the branch before the folder");
+        assert_eq!(fitting(&ranks, &widths, 0.0), [false; 7], "no room, nothing");
+        let same = [3, 3];
+        assert_eq!(fitting(&same, &[40.0, 40.0], 60.0), [true, false], "of a rank, the rightmost first");
+    }
+
     #[test]
     fn the_compaction_window_is_marked_only_inside_the_window_of_the_model() {
         let usage = agent::Usage { context: Some(22.0), context_window: Some(1_000_000), auto_compact: Some(400_000), ..Default::default() };

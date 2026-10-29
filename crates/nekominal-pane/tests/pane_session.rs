@@ -236,7 +236,7 @@ fn a_bracketed_paste_is_data_and_starts_no_command_but_typed_and_unbracketed_lin
 fn restarting_runs_a_new_session_in_the_same_pane_and_the_old_one_is_not_heard_from_again() {
     let pane = powershell_session("Write-Host first-session", Osc52::OnlyCopy);
     assert!(wait_for_text(&pane, |text| text.contains("first-session")));
-    pane.resize(100, 30);
+    pane.resize(100, 30).expect("the console takes the size");
     pane.restart(powershell_config("Write-Host second-session")).expect("the new session starts");
     assert!(wait_for_text(&pane, |text| text.contains("second-session")));
     let mut snapshot = nekominal_term::Snapshot::default();
