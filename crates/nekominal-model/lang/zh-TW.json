@@ -192,6 +192,7 @@
   "dialog.pasteLines": "貼上 {0} 行？",
   "dialog.pasteSize": "貼上 {0}？",
   "dialog.closeSessions": "關閉 {0} 個執行中的工作階段？",
+  "dialog.dontAsk": "不再提醒",
   "dialog.closeTab": "關閉「{0}」？",
   "dialog.restartSession": "重新啟動「{0}」？",
   "dialog.restoreKeys": "還原所有快速鍵？",

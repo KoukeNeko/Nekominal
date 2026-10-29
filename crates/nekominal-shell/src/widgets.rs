@@ -106,6 +106,19 @@ pub fn radio(ui: &mut Ui, g: &Glass, rect: Rect, on: bool, hover: bool) {
     }
 }
 
+/// A checkbox: a square with a ring, filled with the accent and ticked when it is on.
+pub fn checkbox(ui: &mut Ui, g: &Glass, rect: Rect, on: bool, hover: bool) {
+    if on {
+        ui.rrect(rect, 3.0, col(g.accent), None);
+        let size = rect.h - 4.0;
+        let (width, line) = (ui.measure_icon('\u{E73E}', size), ui.line_height(size));
+        ui.icon(rect.x + (rect.w - width) / 2.0, rect.y + (rect.h - line) / 2.0 + 1.0, '\u{E73E}', size, col(g.background));
+    } else {
+        let ring = if hover { col(g.text()) } else { col(g.text_secondary()) };
+        ui.rrect(rect, 3.0, Color::TRANSPARENT, Some((ring, 1.5)));
+    }
+}
+
 /// The track of a slider inside the rectangle that takes its presses (it reaches half a thumb beyond the track on each side).
 pub fn slider_track(area: Rect) -> Rect {
     Rect::new(area.x + THUMB / 2.0, area.y + (area.h - TRACK) / 2.0, area.w - THUMB, TRACK)

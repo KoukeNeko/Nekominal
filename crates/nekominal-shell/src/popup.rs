@@ -121,6 +121,42 @@ impl Row {
     }
 }
 
+/// The checkbox of a confirmation ("Don't ask again"), under its question.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Check {
+    pub label: String,
+    pub on: bool,
+    /// The pointer is on it, or the keyboard is (`focus`).
+    pub hover: bool,
+    pub focus: bool,
+}
+
+/// Where the keyboard is in a confirmation with a checkbox: on one of its buttons, or on the checkbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    Row(usize),
+    Check,
+}
+
+/// Where Tab (forward) or Shift+Tab (back) takes the keyboard from `from`, round the buttons and the checkbox: Cancel, the
+/// main button, the checkbox, and Cancel again.
+pub fn tab_focus(rows: usize, from: Focus, forward: bool) -> Focus {
+    let last = rows.saturating_sub(1);
+    match (from, forward) {
+        (Focus::Check, true) => Focus::Row(0),
+        (Focus::Check, false) => Focus::Row(last),
+        (Focus::Row(i), true) if i >= last => Focus::Check,
+        (Focus::Row(i), true) => Focus::Row(i + 1),
+        (Focus::Row(0), false) => Focus::Check,
+        (Focus::Row(i), false) => Focus::Row(i - 1),
+    }
+}
+
+/// Where the checkbox and its label are in a confirmation `width` wide, in DIP: under the question, over the buttons.
+pub fn check_rect(width: f32) -> Rect {
+    Rect::new(16.0, DIALOG_HEADER - 36.0, width - 32.0, 24.0)
+}
+
 pub struct Popup {
     pub hwnd: HWND,
     pub surface: Surface,
@@ -152,9 +188,16 @@ pub struct Popup {
     pub has_keys: bool,
     /// The dialog of Remove this worktree, drawn above the buttons of a confirmation in place of its question.
     pub remove: Option<crate::remove_dialog::View>,
+    /// A checkbox under the question of a confirmation.
+    pub check: Option<Check>,
 }
 
 impl Popup {
+    /// Whether the point (DIP) is on the checkbox of a confirmation, which has one.
+    pub fn check_hit(&self, x: f32, y: f32) -> bool {
+        self.check.is_some() && check_rect(self.size.0).contains(x, y)
+    }
+
     /// The height of the window below the query line, where the rows are.
     pub fn view_height(&self) -> f32 {
         self.size.1 - self.header
@@ -247,11 +290,13 @@ pub fn dialog_buttons(width: f32, count: usize) -> (Vec<Rect>, (f32, f32)) {
 }
 
 /// Draws the question and its two buttons into the current UI frame, also usable offscreen.
-pub fn paint_confirmation(ui: &mut Ui, heading: &str, rows: &[Row], hover: Option<usize>, width: f32, glass: Glass) {
+pub fn paint_confirmation(ui: &mut Ui, heading: &str, check: Option<&Check>, rows: &[Row], hover: Option<usize>, width: f32, glass: Glass) {
     let color = |c: nekominal_model::themes::Color| Color([c.r, c.g, c.b, c.a]);
     let font_size = 13.0;
     let line = ui.line_height(font_size);
-    ui.push_clip(Rect::new(16.0, 12.0, width - 32.0, DIALOG_HEADER - 24.0));
+    // The question has what is left over the checkbox, when there is one.
+    let room = if check.is_some() { DIALOG_HEADER - 24.0 - 30.0 } else { DIALOG_HEADER - 24.0 };
+    ui.push_clip(Rect::new(16.0, 12.0, width - 32.0, room));
     let mut text = String::new();
     let mut y = 16.0;
     for ch in heading.chars() {
@@ -266,6 +311,17 @@ pub fn paint_confirmation(ui: &mut Ui, heading: &str, rows: &[Row], hover: Optio
     }
     ui.text(16.0, y, &text, font_size, color(glass.text()), false);
     ui.pop_clip();
+    if let Some(check) = check {
+        let row = check_rect(width);
+        let boxed = Rect::new(row.x, row.y + (row.h - 16.0) / 2.0, 16.0, 16.0);
+        crate::widgets::checkbox(ui, &glass, boxed, check.on, check.hover);
+        let label_color = if check.hover { color(glass.text()) } else { color(glass.text_secondary()) };
+        ui.text(boxed.x + 16.0 + 8.0, row.y + (row.h - line) / 2.0, &check.label, font_size, label_color, false);
+        // The keyboard is on it: a ring round the box, as a button has one when it is the choice.
+        if check.focus {
+            ui.rrect(Rect::new(boxed.x - 3.0, boxed.y - 3.0, 22.0, 22.0), 5.0, Color::TRANSPARENT, Some((color(glass.accent), 1.5)));
+        }
+    }
     let (rects, _) = dialog_buttons(width, rows.len());
     for (i, (row, rect)) in rows.iter().zip(rects).enumerate() {
         let rect = Rect::new(rect.x, rect.y + DIALOG_HEADER, rect.w, rect.h);
@@ -418,7 +474,7 @@ pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i
             }
         };
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true, remove: None };
+        let mut popup = Popup { hwnd, surface, rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true, remove: None, check: None };
         if popup.query.is_some() {
             popup.set_rows(rows);
         } else {
@@ -508,7 +564,7 @@ mod tests {
             ui.begin_frame(size, scale);
             let line_height = ui.line_height(13.0);
             paint_confirmation(&mut ui, "關閉「專案終端機：測試一個很長的分頁名稱，確認對話框能自動換行而且不遮住按鈕」？",
-                               &rows, Some(0), DIALOG_WIDTH, glass);
+                               None, &rows, Some(0), DIALOG_WIDTH, glass);
             ui.end_frame(&target.view);
             let rgba = target.read_rgba(&gpu).expect("readback");
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../target/ui-test/confirmation-{scale}.png"));
@@ -531,6 +587,70 @@ mod tests {
                         "button label missing at {scale}x");
             }
         }
+    }
+
+    #[test]
+    fn tab_goes_round_the_buttons_and_the_checkbox_and_back_round() {
+        use Focus::{Check, Row};
+        assert_eq!([tab_focus(2, Row(0), true), tab_focus(2, Row(1), true), tab_focus(2, Check, true)], [Row(1), Check, Row(0)]);
+        assert_eq!([tab_focus(2, Row(1), false), tab_focus(2, Row(0), false), tab_focus(2, Check, false)], [Row(0), Check, Row(1)]);
+        assert_eq!(tab_focus(1, Row(0), true), Check, "a notice has one button");
+    }
+
+    #[test]
+    fn the_checkbox_lies_under_the_question_and_over_the_buttons_and_only_it_is_hit() {
+        let rect = check_rect(DIALOG_WIDTH);
+        assert!(rect.y >= 12.0 + (DIALOG_HEADER - 24.0 - 30.0) && rect.y + rect.h <= DIALOG_HEADER, "{rect:?}");
+        let rows = vec![Row { action: Some(Action::Cancel), ..row("Cancel") }, Row { action: Some(Action::Confirm), ..row("Close") }];
+        for (y, expected) in [(rect.y + rect.h / 2.0, true), (rect.y - 8.0, false), (DIALOG_HEADER + 20.0, false)] {
+            let hits = |check: Option<Check>| {
+                let popup_rects = dialog_buttons(DIALOG_WIDTH, 2).0;
+                let on = check.is_some() && check_rect(DIALOG_WIDTH).contains(20.0, y);
+                (on, row_at(&rows, &popup_rects, 20.0, y - DIALOG_HEADER))
+            };
+            assert_eq!(hits(Some(Check { label: "x".into(), on: false, hover: false, focus: false })).0, expected, "y {y}");
+            assert!(!hits(None).0, "no checkbox, nothing to hit");
+        }
+    }
+
+    #[test]
+    fn a_confirmation_with_a_checkbox_draws_it_under_the_question_without_covering_a_long_one() {
+        use nekominal_render::offscreen::{AdapterKind, OffscreenTarget, create_gpu};
+        let gpu = create_gpu(AdapterKind::Warp).expect("D3D11 WARP");
+        let glass = Glass::from_scheme(nekominal_model::themes::scheme("Tokyo Night"));
+        let rows = vec![Row { action: Some(Action::Cancel), ..row("取消") }, Row { action: Some(Action::Confirm), ..row("關閉") }];
+        let check = |on: bool| Check { label: "不再提醒".into(), on, hover: false, focus: false };
+        let long = "關閉「專案終端機：測試一個很長的分頁名稱，確認對話框能自動換行而且不遮住按鈕，也不遮住下面的勾選框，一直寫到超過三行為止，再多寫幾個字，讓它真的超出去」？";
+        let scale = 1.0;
+        let height = DIALOG_HEADER + dialog_buttons(DIALOG_WIDTH, 2).1.1;
+        let size = (DIALOG_WIDTH as u32, height as u32);
+        let draw = |check: Option<&Check>| {
+            let target = OffscreenTarget::new(&gpu, size.0, size.1);
+            gpu.clear(&target.view, [0.03, 0.03, 0.03, 1.0]);
+            let mut ui = Ui::new(&gpu).expect("UI");
+            ui.begin_frame(size, scale);
+            paint_confirmation(&mut ui, long, check, &rows, Some(0), DIALOG_WIDTH, glass);
+            ui.end_frame(&target.view);
+            target.read_rgba(&gpu).expect("readback")
+        };
+        let ink = |rgba: &[u8], rect: Rect| {
+            let mut count = 0;
+            for y in rect.y as u32..(rect.y + rect.h) as u32 {
+                for x in rect.x as u32..(rect.x + rect.w) as u32 {
+                    let at = ((y * size.0 + x) * 4) as usize;
+                    if rgba[at..at + 3].iter().any(|c| *c > 90) { count += 1; }
+                }
+            }
+            count
+        };
+        let (off, on) = (draw(Some(&check(false))), draw(Some(&check(true))));
+        let row_rect = check_rect(DIALOG_WIDTH);
+        let boxed = Rect::new(row_rect.x, row_rect.y, 16.0, row_rect.h);
+        let label = Rect::new(row_rect.x + 24.0, row_rect.y, 120.0, row_rect.h);
+        assert!(ink(&off, boxed) > 10 && ink(&on, boxed) > ink(&off, boxed), "the box is drawn, and filled when it is on");
+        assert!(ink(&off, label) > 20, "its words are drawn");
+        // The question stops over the checkbox: nothing between its last line and the box, however long it is.
+        assert_eq!(ink(&off, Rect::new(16.0, 12.0 + (DIALOG_HEADER - 24.0 - 30.0), DIALOG_WIDTH - 32.0, row_rect.y - 12.0 - (DIALOG_HEADER - 24.0 - 30.0) - 1.0)), 0, "the question is cut over the checkbox");
     }
 
     #[test]

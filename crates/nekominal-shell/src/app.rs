@@ -2672,6 +2672,8 @@ impl App {
             return;
         }
         self.close_popup();
+        // Closing something that runs asks "Don't ask again", which turns the setting `confirmClose` off.
+        let dont_ask = matches!(action, Confirmation::ClosePane { .. } | Confirmation::CloseTab(_) | Confirmation::CloseTabs(_) | Confirmation::CloseWindow);
         let remove = remove.map(|dialog| {
             let layout = crate::remove_dialog::place(&mut self.ui, &dialog);
             (crate::remove_dialog::View { dialog, layout }, crate::remove_dialog::buttons(&mut self.ui, &rows))
@@ -2685,6 +2687,7 @@ impl App {
             Ok(mut popup) => {
                 popup.heading = title;
                 popup.hover = Some(0);
+                popup.check = dont_ask.then(|| popup::Check { label: Text::DialogDontAsk.get(self.language()).to_owned(), on: false, hover: false, focus: false });
                 if let Some((view, rects)) = remove {
                     popup.hover = None;
                     popup.rects = rects;
@@ -3102,7 +3105,15 @@ impl App {
                 popup::Kind::Confirm => access::PopupKind::Dialog,
                 popup::Kind::Palette | popup::Kind::Find | popup::Kind::Wide => access::PopupKind::List,
             },
-            heading: if popup.kind == popup::Kind::Confirm { popup.heading.clone() } else { popup.query.clone().unwrap_or_default() },
+            // The checkbox of a confirmation is read after its question, with whether it is ticked.
+            heading: if popup.kind == popup::Kind::Confirm {
+                match &popup.check {
+                    Some(check) => format!("{}\n{}: {}", popup.heading, check.label, (if check.on { Text::ToggleOn } else { Text::ToggleOff }).get(lang)),
+                    None => popup.heading.clone(),
+                }
+            } else {
+                popup.query.clone().unwrap_or_default()
+            },
             rows: popup.rows.iter().filter(|row| !row.is_separator()).map(|row| (row.label.clone(), row.hint.clone())).collect(),
             focused: popup.hover.map(|at| popup.rows[..at].iter().filter(|row| !row.is_separator()).count()),
         }).map(|view| match self.popup.as_ref().and_then(|popup| popup.remove.as_ref()) {
@@ -6093,7 +6104,9 @@ impl App {
         let scale = self.scale;
         let Some(popup) = self.popup.as_mut() else { return };
         let row = at.and_then(|(x, y)| popup.row_at_point(x as f32 / scale, y as f32 / scale));
-        if row != popup.hover {
+        let over_check = at.is_some_and(|(x, y)| popup.check_hit(x as f32 / scale, y as f32 / scale));
+        let check_changed = popup.check.as_mut().is_some_and(|check| std::mem::replace(&mut check.hover, over_check || check.focus) != (over_check || check.focus));
+        if row != popup.hover || check_changed {
             popup.hover = row;
             // SAFETY: invalidating our own window.
             unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
@@ -6107,6 +6120,15 @@ impl App {
         }
         let scale = self.scale;
         let (x, y) = (x as f32 / scale, y as f32 / scale);
+        // The checkbox of a confirmation is ticked or not, and the dialog stays.
+        if let Some(popup) = self.popup.as_mut().filter(|popup| popup.check_hit(x, y)) {
+            if let Some(check) = popup.check.as_mut() {
+                check.on = !check.on;
+            }
+            // SAFETY: invalidating our own window.
+            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            return;
+        }
         // A choice of Remove this worktree is taken, and the dialog stays.
         if let Some(remove) = self.popup.as_mut().and_then(|popup| popup.remove.as_mut())
             && let Some(i) = remove.layout.choices.iter().position(|rect| rect.contains(x, y))
@@ -6204,11 +6226,28 @@ impl App {
             }
             match vk_code {
                 0x09 | 0x25 | 0x27 => {
-                    popup.hover = popup::step(&popup.rows, popup.hover, vk_code != 0x25 && !(vk_code == 0x09 && held().shift));
+                    let forward = vk_code != 0x25 && !(vk_code == 0x09 && held().shift);
+                    if let Some(check) = popup.check.as_mut() {
+                        // Round the buttons and the checkbox: the keyboard is on one of them.
+                        let from = if check.focus { popup::Focus::Check } else { popup::Focus::Row(popup.hover.unwrap_or(0)) };
+                        let (hover, focus) = match popup::tab_focus(popup.rows.len(), from, forward) {
+                            popup::Focus::Check => (None, true),
+                            popup::Focus::Row(row) => (Some(row), false),
+                        };
+                        (popup.hover, check.focus, check.hover) = (hover, focus, focus);
+                    } else {
+                        popup.hover = popup::step(&popup.rows, popup.hover, forward);
+                    }
                     unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
                 }
                 VK_RETURN | 0x20 => {
-                    if let Some(row) = popup.hover { self.choose(row); }
+                    // On the checkbox they tick it; on a button they press it.
+                    if let Some(check) = popup.check.as_mut().filter(|check| check.focus) {
+                        check.on = !check.on;
+                        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                    } else if let Some(row) = popup.hover {
+                        self.choose(row);
+                    }
                 }
                 _ => {}
             }
@@ -6268,6 +6307,12 @@ impl App {
     fn choose(&mut self, row: usize) {
         let action = self.popup.as_ref().and_then(|p| p.rows[row].action);
         let confirmation = if action == Some(popup::Action::Confirm) { self.confirmation.take() } else { None };
+        // "Don't ask again" counts when the answer is to go on: the setting `confirmClose` goes off, as its row of the settings
+        // page does, and the close that was asked for follows.
+        let dont_ask = action == Some(popup::Action::Confirm) && self.popup.as_ref().and_then(|p| p.check.as_ref()).is_some_and(|check| check.on);
+        if dont_ask && let Some(row) = settings_ui::find("confirmClose") {
+            self.set_setting(row, settings_ui::Value::Bool(false));
+        }
         // What the line of a rename held, and the tab it was for, and what the suggestions were, before the pop-up goes.
         let renamed = self.renaming.zip(self.popup.as_ref().and_then(|p| p.query.clone()));
         let entered = self.entry.take().zip(self.popup.as_ref().and_then(|p| p.query.clone()));
@@ -6524,7 +6569,7 @@ impl App {
         if let Some(remove) = &popup.remove {
             crate::remove_dialog::paint(ui, &g, remove, &popup.rows, &popup.rects, popup.hover);
         } else if popup.kind == popup::Kind::Confirm {
-            popup::paint_confirmation(ui, &popup.heading, &popup.rows, popup.hover, popup.size.0, g);
+            popup::paint_confirmation(ui, &popup.heading, popup.check.as_ref(), &popup.rows, popup.hover, popup.size.0, g);
         }
         if popup.kind == popup::Kind::Confirm {
             ui.end_frame(&view);

@@ -304,6 +304,8 @@ texts! {
     DialogPasteLines "dialog.pasteLines";
     DialogPasteSize "dialog.pasteSize";
     DialogCloseSessions "dialog.closeSessions";
+    // The checkbox of the confirmation of a close: ticked, and the answer to go on, it turns the confirmation off.
+    DialogDontAsk "dialog.dontAsk";
     DialogCloseTab "dialog.closeTab";
     DialogRestartSession "dialog.restartSession";
     DialogRestoreKeys "dialog.restoreKeys";
