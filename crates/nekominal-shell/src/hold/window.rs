@@ -132,7 +132,8 @@ pub fn run(title: &str, view: Arc<Mutex<View>>, work: impl FnOnce(Ui) + Send + '
             ..Default::default()
         };
         RegisterClassW(&class);
-        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+        // Without WS_SYSMENU DWM draws no caption buttons of its own over the drawn ones, as for the main window.
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_MINIMIZEBOX;
         let dpi = GetDpiForSystem();
         let px = |dip: f32| (dip * dpi as f32 / 96.0).round() as i32;
         let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
