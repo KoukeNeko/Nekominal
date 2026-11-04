@@ -33,6 +33,8 @@ if (-not $NoBuild) {
 
 $files = @{
     'Nekominal.exe'   = Join-Path $release 'nekominal-next.exe'
+    # `nekominal-sudo command`: a program with a console of its own, which a shell waits for (Nekominal.exe has none).
+    'nekominal-sudo.exe' = Join-Path $release 'nekominal-sudo.exe'
     'conpty.dll'      = Join-Path $release 'conpty.dll'
     'OpenConsole.exe' = Join-Path $release 'OpenConsole.exe'
 }

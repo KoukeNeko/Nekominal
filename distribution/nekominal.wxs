@@ -24,6 +24,7 @@
           <!-- a fixed GUID: a component with files and a registry key path cannot have one made from its parts -->
           <Component Id="Program" Guid="5304D083-3BFD-41F2-AD3B-853A035B5280">
             <File Id="NekominalExe" Source="$(Source)\Nekominal.exe" KeyPath="no" />
+            <File Id="NekominalSudoExe" Source="$(Source)\nekominal-sudo.exe" KeyPath="no" />
             <File Id="ConptyDll" Source="$(Source)\conpty.dll" KeyPath="no" />
             <File Id="OpenConsoleExe" Source="$(Source)\OpenConsole.exe" KeyPath="no" />
             <File Id="Readme" Source="$(Source)\README.md" KeyPath="no" />

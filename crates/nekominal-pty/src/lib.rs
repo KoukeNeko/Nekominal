@@ -7,3 +7,4 @@ pub mod netdrive;
 pub mod profiles;
 pub mod relocate;
 pub mod session;
+pub mod sudo;

@@ -72,6 +72,9 @@ meter for the details, and for the session's Remote Control link when it has one
 - Tabs show their pull request and the ports they listen on, and an agent that needs you can reach your phone through
   ntfy or a webhook.
 - `nekominal cli` lists, opens, splits and reads panes, so your own tools can drive it.
+- Run one command as administrator without leaving the shell: `nekominal-sudo winget upgrade --all` asks Windows once,
+  runs the command in the same pane and gives its exit code back. "Elevate this pane" instead starts the pane's shell
+  again as administrator, under the text it showed. A pane that runs as administrator takes only what you type.
 
 ## A terminal first
 

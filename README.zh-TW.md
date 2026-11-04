@@ -66,7 +66,7 @@ Remote Control 時，也能在那裡開啟或複製連結。
 - 每個 agent 可以有自己的 git worktree：從命令選擇區在新的 worktree 開分頁，移除前會先告訴你會失去什麼。
 - 按「更新並重新啟動」，每個 shell 與 agent 都會在新版本中繼續執行。
 - 分頁上會顯示 pull request 與正在監聽的 port；agent 需要你時，可以透過 ntfy 或 webhook 傳到手機。
-- `nekominal cli` 能列出、開啟、分割與讀取窗格，讓你自己的工具來操作它。
+- 不離開 shell，只讓一個指令以系統管理員身分執行：`nekominal-sudo winget upgrade --all` 會請 Windows 確認一次，在同一個窗格執行，並傳回結束碼。「將這個 pane 提權」則是讓窗格的 shell 以系統管理員身分重新啟動，並保留畫面上的文字；以系統管理員身分執行的窗格只接受你自己打的字。
 
 ## 首先是一個好用的終端機
 
