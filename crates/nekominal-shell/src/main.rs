@@ -11,6 +11,7 @@ mod cli;
 mod clipboard;
 mod design;
 mod editor;
+mod effects;
 mod find;
 mod glass;
 mod handoff;

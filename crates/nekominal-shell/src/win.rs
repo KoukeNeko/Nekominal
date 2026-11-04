@@ -517,6 +517,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             with_app(hwnd, |app| app.on_dpi(scale));
             LRESULT(0)
         }
+        // A Remote Desktop session that begins or ends changes the display, and the transparency effects switch with a
+        // change of the settings; the default handling follows.
+        WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
+            with_app(hwnd, App::effects_changed);
+            // SAFETY: default handling of the message.
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
         WM_PAINT => {
             let started = std::time::Instant::now();
             let next_frame = with_app(hwnd, App::paint).unwrap_or(false);
@@ -899,20 +906,23 @@ fn is_fullscreen_marked(hwnd: HWND) -> bool {
 }
 
 /// The DWM backdrop the window shows through: 1 none, 2 Mica, 3 acrylic, 4 Mica Alt. Needs the frame extended over
-/// the whole client area.
+/// the whole client area. Where the system draws none (`effects`) it is none and the frame is not extended: the
+/// extended frame is what shows through the translucent terminal there.
 pub(crate) fn set_backdrop(hwnd: HWND, backdrop: Backdrop, dark: bool) {
     let kind = match backdrop {
+        _ if !crate::effects::on() => 1,
         Backdrop::Acrylic => 3,
         Backdrop::Mica => 2,
         Backdrop::MicaAlt => 4,
         Backdrop::None => 1,
     };
+    let margin = if crate::effects::on() { -1 } else { 0 };
     let dark = i32::from(dark);
     // SAFETY: attribute values of the sizes DWM documents, on a window of this thread.
     unsafe {
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, (&dark as *const i32).cast(), 4);
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, (&DWM_SYSTEMBACKDROP_TYPE(kind) as *const DWM_SYSTEMBACKDROP_TYPE).cast(), 4);
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 });
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS { cxLeftWidth: margin, cxRightWidth: margin, cyTopHeight: margin, cyBottomHeight: margin });
     }
 }
 
@@ -979,6 +989,7 @@ pub(crate) unsafe extern "system" fn popup_proc(hwnd: HWND, msg: u32, wparam: WP
 /// A window for the application. `at` is the screen position of its top left corner (the system chooses without it);
 /// `first_tab` false leaves it without a tab, for the caller to give it one.
 fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, first_tab: bool) -> Result<HWND, String> {
+    crate::effects::refresh();
     unsafe {
         let module = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         // No GDI surface: the window shows the DirectComposition content only.
@@ -1018,7 +1029,8 @@ fn create_window(shared_gpu: Option<crate::gpu::Gpu>, at: Option<(i32, i32)>, fi
         // for it and the timers of other programs.
         SetCoalescableTimer(Some(hwnd), JOB_TIMER, 1000, None, 500);
         // An updater, which is not elevated, may ask an elevated window to close: Windows lets that one message through.
-        if crate::app::elevated() {
+        // (Where UAC is off nothing stops the message, and the filter is not there to open.)
+        if crate::app::behind_uac() {
             let _ = ChangeWindowMessageFilterEx(hwnd, update_close_message(), MSGFLT_ALLOW, None);
         }
         // Files dropped from Explorer come as WM_DROPFILES. shortcut: Windows blocks that message from a program of lower

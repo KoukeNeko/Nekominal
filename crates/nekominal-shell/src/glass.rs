@@ -127,7 +127,13 @@ pub struct Material {
 
 impl Material {
     /// The window is active and the effects are on: the backdrop shows as asked.
+    #[cfg(test)]
     pub const NORMAL: Material = Material { window_active: true, effects_on: true };
+
+    /// The material as the system gives it now: no effects where it draws no backdrop (`effects`).
+    pub fn current(window_active: bool) -> Material {
+        Material { window_active, effects_on: crate::effects::on() }
+    }
 
     /// Nothing shows through whatever the backdrop is: it is none, or the system made it flat.
     pub fn is_flat(self, backdrop: Backdrop) -> bool {

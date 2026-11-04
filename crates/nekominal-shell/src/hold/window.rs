@@ -164,6 +164,7 @@ pub fn run(title: &str, view: Arc<Mutex<View>>, work: impl FnOnce(Ui) + Send + '
         };
         let (settings, _, _) = crate::app::load_settings();
         let glass = Glass::from_scheme(themes::find(&settings.schemes, &settings.theme));
+        crate::effects::refresh();
         let drawn = crate::gpu::create(hwnd, size(hwnd)).and_then(|(gpu, surface)| Ok((nekominal_ui::Ui::new(&gpu)?, gpu, surface)));
         match drawn {
             Ok((ui, gpu, surface)) => {
@@ -341,7 +342,7 @@ fn paint(state: &mut State, scale: f32) {
     ui.begin_frame(size, scale);
     let (width, height) = (size.0 as f32 / scale, size.1 as f32 / scale);
     // The tint of the app's bar over the backdrop, opaque where the backdrop shows nothing.
-    let opacity = glass::terminal_opacity(state.backdrop, state.opacity, glass::Material { window_active: state.active, effects_on: true });
+    let opacity = glass::terminal_opacity(state.backdrop, state.opacity, glass::Material::current(state.active));
     let alpha = (glass::bar_tint_alpha(opacity) * 255.0).round() as u8;
     ui.fill(Rect::new(0.0, 0.0, width, height), Color([g.background.r, g.background.g, g.background.b, alpha]));
     ui.fill(Rect::new(0.0, 0.0, width, height), col(g.tab_rest()));

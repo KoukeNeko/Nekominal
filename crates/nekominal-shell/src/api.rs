@@ -548,11 +548,13 @@ impl Drop for Running {
 /// Starts the API, from the UI thread before its first window, so that the first panes get its variables. What fails
 /// goes to the log, and the terminal works without it.
 ///
-/// Not in an elevated process: the pipe is open to the user, and any program of the user, elevated or not, could then
-/// type into an administrator's shell, which is what UAC is there to stop. (A High mandatory label on the pipe would
-/// keep them out too, but nothing of the user's could use it then; an elevated window simply has no API.)
+/// Not in a process elevated across a UAC boundary: the pipe is open to the user, and any program of the user, elevated
+/// or not, could then type into an administrator's shell, which is what UAC is there to stop. (A High mandatory label
+/// on the pipe would keep them out too, but nothing of the user's could use it then; an elevated window simply has no
+/// API.) Where UAC is off, as it often is on a Server, the administrator's token is not split: the programs of the user
+/// are all as elevated as it is, there is nothing to stop, and the API runs.
 pub fn start() -> Running {
-    if crate::app::elevated() {
+    if crate::app::behind_uac() {
         crate::util::log("api: not started, the process is elevated");
         return Running(None);
     }
@@ -919,6 +921,12 @@ mod tests {
         let this = elevated_process(unsafe { GetCurrentProcess() });
         assert!(this.is_some(), "a process can read its own token");
         assert_eq!(server_elevated(&connect(&served()).unwrap()), this == Some(true));
+    }
+
+    #[test]
+    fn a_boundary_of_uac_is_only_where_the_process_is_an_administrator() {
+        // Whatever the token: elevated across a UAC boundary implies an administrator, and a UAC-off one is the other case.
+        assert!(!crate::app::behind_uac() || crate::app::elevated());
     }
 
     #[test]

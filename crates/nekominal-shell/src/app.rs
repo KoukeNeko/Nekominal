@@ -169,12 +169,39 @@ fn fitting(ranks: &[u8], widths: &[f32], room: f32) -> Vec<bool> {
     kept
 }
 
-/// Whether this process runs as administrator (elevated by UAC): its shells do too, which the shield in the bar says.
+/// Whether this process runs as administrator (elevated by UAC, or an administrator where UAC is off): its shells do too,
+/// which the shield in the bar says, and a profile that asks for administrator needs no window of its own then.
 /// Asked once; elevation does not change while a process runs.
 pub(crate) fn elevated() -> bool {
     static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // SAFETY: a plain query of the token of this process.
     *ELEVATED.get_or_init(|| unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().as_bool() })
+}
+
+/// Whether this process is elevated across a UAC boundary: it holds the full half of a split token, which a program of
+/// the same user that is not elevated cannot reach (it may not drive the window, nor send it most messages). Where UAC
+/// is off, as it often is on a Server, an administrator's token is not split, nothing stands between the programs of the
+/// user, and there is no boundary for the window to guard. When the token cannot be asked, the answer is [`elevated`].
+pub(crate) fn behind_uac() -> bool {
+    use windows::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        Security::{GetTokenInformation, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TokenElevationType, TokenElevationTypeFull},
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+    static BEHIND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BEHIND.get_or_init(|| {
+        // SAFETY: the token is closed below; TOKEN_ELEVATION_TYPE is as large as the size given.
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+                return elevated();
+            }
+            let (mut kind, mut size) = (TOKEN_ELEVATION_TYPE::default(), 0u32);
+            let asked = GetTokenInformation(token, TokenElevationType, Some((&raw mut kind).cast()), size_of::<TOKEN_ELEVATION_TYPE>() as u32, &mut size);
+            let _ = CloseHandle(token);
+            asked.map_or_else(|_| elevated(), |()| kind == TokenElevationTypeFull)
+        }
+    })
 }
 
 /// Opens an address in the browser, or a file with its program; what goes wrong goes to the log.
@@ -476,6 +503,8 @@ pub struct App {
     /// The settings file could be read when it was last loaded: a file that could not is never written over. And when
     /// it was last written, by this window or another, as this window last saw it.
     settings_readable: bool,
+    /// Whether the backdrop showed when the look was last put in effect (`effects`): what `effects_changed` compares.
+    effects: bool,
     settings_stamp: Option<std::time::SystemTime>,
     /// What was wrong in the settings file when it was last loaded, not yet told: the next tick of the jobs tells it, out
     /// of the activation or the creation of the window that loaded it.
@@ -754,7 +783,7 @@ impl App {
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
         let scheme = themes::find(&settings.schemes, &settings.theme);
         let glass = Glass::from_scheme(scheme);
-        let opacity = glass::terminal_opacity(settings.appearance.backdrop, settings.appearance.opacity, glass::Material::NORMAL);
+        let opacity = glass::terminal_opacity(settings.appearance.backdrop, settings.appearance.opacity, glass::Material::current(true));
         let theme = glass::render_theme(scheme, opacity);
 
         let found: Vec<DiscoveredProfile> = nekominal_pty::profiles::discover().iter().map(discovered).collect();
@@ -861,6 +890,7 @@ impl App {
             release_notes: Arc::new(std::sync::Mutex::new(Vec::new())),
             claude: agent::claude(),
             settings_readable,
+            effects: crate::effects::on(),
             settings_stamp: settings_stamp(),
             settings_problems,
             placement: None,
@@ -3619,7 +3649,7 @@ impl App {
             self.rebuild_layout();
         }
 
-        let opacity = glass::terminal_opacity(self.settings.appearance.backdrop, self.settings.appearance.opacity, glass::Material { window_active: self.active, effects_on: true });
+        let opacity = glass::terminal_opacity(self.settings.appearance.backdrop, self.settings.appearance.opacity, glass::Material::current(self.active));
         let tint = {
             let alpha = glass::bar_tint_alpha(opacity);
             Color([g.background.r, g.background.g, g.background.b, (alpha * 255.0).round() as u8])
@@ -4378,13 +4408,24 @@ impl App {
         let (backdrop, opacity) = (self.settings.appearance.backdrop, self.settings.appearance.opacity);
         let scheme = themes::find(&self.settings.schemes, &self.settings.theme);
         self.glass = Glass::from_scheme(scheme);
-        let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::NORMAL);
+        self.effects = crate::effects::on();
+        let shown = glass::terminal_opacity(backdrop, opacity, glass::Material::current(true));
         self.theme = glass::render_theme(scheme, shown);
         for entry in self.tabs.iter_mut().flat_map(|tab| tab.panes.iter_mut()) {
             let theme = entry.scheme.as_deref().map_or_else(|| self.theme.clone(), |name| glass::render_theme(themes::find(&self.settings.schemes, name), shown));
             entry.view.set_theme(theme);
         }
         crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
+    }
+
+    /// The system's settings or displays changed (a Remote Desktop session began or ended, the transparency effects were
+    /// switched): the look is put in effect again when the backdrop shows differently now.
+    pub(crate) fn effects_changed(&mut self) {
+        crate::effects::refresh();
+        if self.effects != crate::effects::on() {
+            self.apply_look();
+            self.redraw();
+        }
     }
 
     /// The settings as they are before a change, taking the file first when it changed since this window last read or

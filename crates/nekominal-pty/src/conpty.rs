@@ -135,7 +135,9 @@ impl Backend {
 /// Build number reported for the bundled ConPTY, which behaves like a current Windows.
 const BUNDLED_BUILD_NUMBER: u32 = 26100;
 
-fn os_build_number() -> u32 {
+/// The build number of the running Windows (what `RtlGetVersion` says, not what a manifest lets `GetVersionEx` say); 0
+/// when it cannot be asked.
+pub fn os_build_number() -> u32 {
     // SAFETY: the struct is zero-initialised with its size set, as RtlGetVersion requires.
     unsafe {
         let mut info: OSVERSIONINFOW = zeroed();
