@@ -60,7 +60,7 @@ const GLYPH_WIDTH_WCSWIDTH: u32 = 0x10;
 
 /// Cell-width model ConPTY uses to place the cursor. It must match the width model of the
 /// emulator that consumes the output, otherwise the cursor drifts after wide characters.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WidthModel {
     /// Per-code-point `wcswidth` widths (`PSEUDOCONSOLE_GLYPH_WIDTH_WCSWIDTH`): plain alacritty_terminal.
     /// A ZWJ family is 6 columns here and 2 in the programs (string-width, Claude Code).
@@ -291,7 +291,8 @@ fn create_pipe() -> io::Result<(Handle, Handle)> {
     Ok((Handle(read), Handle(write)))
 }
 
-#[derive(Clone, Debug)]
+/// Serializable: an elevated process starts the session of a pane for the window that asked (`handoff::Message::Elevate`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnConfig {
     /// Absolute path of the executable.
     pub program: PathBuf,

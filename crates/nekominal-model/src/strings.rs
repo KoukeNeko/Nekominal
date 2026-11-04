@@ -188,6 +188,10 @@ texts! {
     TabDuplicate "tab.duplicate";
     TabOpenElevated "tab.openElevated";
     TabAlreadyElevated "tab.alreadyElevated";
+    PaneElevate "pane.elevate";
+    PaneElevatedLine "pane.elevatedLine";
+    PaneElevateFailed "pane.elevateFailed";
+    DialogElevatePane "dialog.elevatePane";
     TabCloseOthers "tab.closeOthers";
     TabCloseRight "tab.closeRight";
     TabMoveToNewWindow "tab.moveToNewWindow";

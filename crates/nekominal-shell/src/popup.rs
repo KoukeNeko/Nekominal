@@ -258,8 +258,8 @@ pub fn fit_width(rows: &[Row], mut measure: impl FnMut(&str) -> f32) -> f32 {
         .filter(|row| !row.is_separator())
         .map(|row| {
             let mark = if row.mark.is_some() { MARK_SIZE + MARK_GAP } else { 0.0 };
-            let hint = if row.hint.is_empty() { 0.0 } else { 8.0 + measure(&row.hint) };
-            12.0 + mark + measure(&row.label) + hint + 12.0
+            // The label ends 8 before the hint, which is empty for most rows: the paint keeps that gap all the same.
+            12.0 + mark + measure(&row.label) + 8.0 + measure(&row.hint) + 12.0
         })
         .fold(0.0, f32::max);
     (widest + 2.0 * PADDING).ceil().clamp(FIT.0, FIT.1)
@@ -496,7 +496,7 @@ mod tests {
         let measure = |text: &str| 7.0 * text.chars().count() as f32;
         assert_eq!(fit_width(&[row("cmd", true)], measure), 180.0, "a short list keeps the width of a menu");
         let long = row("Developer PowerShell for VS 2022 Preview (x64)", true);
-        let wanted = 12.0 + MARK_SIZE + MARK_GAP + measure(&long.label) + 12.0 + 2.0 * PADDING;
+        let wanted = 12.0 + MARK_SIZE + MARK_GAP + measure(&long.label) + 8.0 + 12.0 + 2.0 * PADDING;
         assert_eq!(fit_width(&[row("cmd", true), Row::separator(), long.clone()], measure), wanted.ceil(), "the longest name whole");
         assert!(wanted > WIDTH, "wider than the fixed width it had");
         assert_eq!(fit_width(&[row(&"x".repeat(200), false)], measure), 560.0, "no wider than this");

@@ -86,6 +86,17 @@ enum Start {
     Fresh(Option<(String, String)>),
     /// The session an update handed over: the pane it was, and its handles (in this process).
     HandedOver(nekominal_pty::handoff::PaneState, nekominal_pty::handoff::Parts),
+    /// The session an elevated copy of this program started for the pane (`elevate.rs`): the pane it replaces, the text it
+    /// showed (as the state's screen) and the handles of the new session (in this process).
+    Elevated(nekominal_pty::handoff::PaneState, nekominal_pty::handoff::Parts),
+}
+
+/// A pane whose shell is being started as administrator: which one, and the name its new session has.
+struct Elevating {
+    id: u64,
+    tab_uid: u64,
+    pane: PaneId,
+    session: String,
 }
 
 /// What the window does with the mouse capture after a button event.
@@ -505,6 +516,8 @@ pub struct App {
     settings_readable: bool,
     /// Whether the backdrop showed when the look was last put in effect (`effects`): what `effects_changed` compares.
     effects: bool,
+    /// The pane being elevated, while the elevated copy and the user's answer to Windows are awaited.
+    elevating: Option<Elevating>,
     settings_stamp: Option<std::time::SystemTime>,
     /// What was wrong in the settings file when it was last loaded, not yet told: the next tick of the jobs tells it, out
     /// of the activation or the creation of the window that loaded it.
@@ -598,6 +611,8 @@ enum Confirmation {
     /// The tabs with these uids, closed together.
     CloseTabs(Vec<u64>),
     CloseWindow,
+    /// The pane of the tab with this uid, which runs something that elevating ends (`elevate.rs`).
+    ElevatePane { tab_uid: u64, pane: PaneId },
     /// The git worktree at this path, with its branch or keeping it (`workspace.rs`).
     RemoveWorktree { path: std::path::PathBuf, delete_branch: bool },
     /// Show the tab in this folder: a worktree not removed for its changes or its commits not pushed.
@@ -696,6 +711,7 @@ fn wired(command: Command) -> bool {
             | Command::ViewZoomOut
             | Command::ViewZoomReset
             | Command::PaneRestart
+            | Command::PaneElevate
             | Command::EditSelectOutput
             | Command::EditCopyOutput
             | Command::EditHints
@@ -892,6 +908,7 @@ impl App {
             claude: agent::claude(),
             settings_readable,
             effects: crate::effects::on(),
+            elevating: None,
             settings_stamp: settings_stamp(),
             settings_problems,
             placement: None,
@@ -1060,9 +1077,11 @@ impl App {
         PxRect { x: left, y: top, w: (w as i32 - left).max(1), h: (h as i32 - top).max(1) }
     }
 
-    /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them.
+    /// Where the tabs are shown, as the settings say, and whether the shield of an elevated process stands before them: also
+    /// while the selected tab has a pane whose shell runs as administrator.
     fn mode(&self) -> layout::Mode {
-        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin: elevated(), width: self.settings.tabs.sidebar_width as f32, full_screen: self.fullscreen.is_some() }
+        let admin = elevated() || self.tab().is_some_and(|tab| tab.panes.iter().any(|entry| entry.elevated));
+        layout::Mode { layout: self.settings.tabs.layout, style: self.settings.tabs.style, sidebar_open: self.settings.tabs.sidebar_open && !self.focus_mode, admin, width: self.settings.tabs.sidebar_width as f32, full_screen: self.fullscreen.is_some() }
     }
 
     /// The tabs in the order the sidebar lists them, by group: the user's own order in one group, under their repositories
@@ -1204,7 +1223,7 @@ impl App {
         config.font_size_pt = zoomed(profile.options.font_size.unwrap_or(self.settings.font.size), self.zoom);
         let view = PaneRenderer::new_sharing(&self.gpu, config, self.pane_theme(profile.options.color_scheme.as_deref()), sibling)?;
         let (cols, rows) = match &start {
-            Start::HandedOver(state, _) => (usize::from(state.cols), usize::from(state.rows)),
+            Start::HandedOver(state, _) | Start::Elevated(state, _) => (usize::from(state.cols), usize::from(state.rows)),
             Start::Fresh(_) => view.grid_for(size_px),
         };
         let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
@@ -1218,6 +1237,7 @@ impl App {
         });
         let core = logic::core_config(&self.settings);
         let regrow = matches!(start, Start::HandedOver(..)).then(|| (Instant::now(), false));
+        let elevated = matches!(start, Start::Elevated(..));
         let (session, pane, title) = match start {
             Start::Fresh(restored) => {
                 let session = agent::new_session();
@@ -1238,6 +1258,16 @@ impl App {
                 if pane.is_ok() {
                     crate::handoff::consumed(&state.session, true);
                 }
+                (state.session.clone(), pane, state.title.clone())
+            }
+            Start::Elevated(state, parts) => {
+                // The text of the old shell goes in as that of a restored pane does: without the modes it had set, which the
+                // new shell knows nothing of.
+                let text = nekominal_term::restore::sanitize(&state.screen);
+                // Not the empty rows of the screen below the last line: they would push the text up out of sight.
+                let text = text.trim_end();
+                let label = Text::PaneElevatedLine.get(self.language()).to_owned();
+                let pane = Pane::adopt_prepared(&parts, state.cols, state.rows, core, wake, |term| term.show_restored(text, &label));
                 (state.session.clone(), pane, state.title.clone())
             }
         };
@@ -1274,6 +1304,7 @@ impl App {
             scheme: profile.options.color_scheme.clone(),
             font_size: profile.options.font_size,
             sends: Default::default(),
+            elevated,
         })
     }
 
@@ -2803,6 +2834,7 @@ impl App {
                 self.relayout();
             }
             Command::PaneRestart => self.restart_pane(),
+            Command::PaneElevate => self.elevate_pane(),
             Command::EditHints => self.start_hints(),
             Command::PaneSwap(direction) => {
                 if self.tabs.get_mut(self.selected).is_some_and(|tab| tab.swap_focused(direction)) {
@@ -5331,6 +5363,96 @@ impl App {
         }
     }
 
+    /// The shell of the focused pane starts again as administrator, in the pane and under the text it showed: an elevated
+    /// copy of this program starts the session (Windows asks first) and gives it to this window (`elevate.rs`). The old
+    /// shell ends, and what runs in it with it, so a pane that runs something is asked about first.
+    fn elevate_pane(&mut self) {
+        if elevated() {
+            self.inform_text(Text::TabAlreadyElevated);
+            return;
+        }
+        let Some(tab) = self.tab() else { return };
+        let Some(entry) = tab.focused_entry() else { return };
+        if entry.elevated || entry.exited || self.elevating.is_some() || self.confirmation.is_some() {
+            return;
+        }
+        let (tab_uid, pane) = (tab.uid, entry.id);
+        if entry.pane.is_busy() {
+            let program = entry.job.clone().unwrap_or_else(|| entry.shell.clone());
+            let title = Text::DialogElevatePane.format(self.language(), &[&program]);
+            self.confirm(title, Text::CommonOk, Confirmation::ElevatePane { tab_uid, pane });
+        } else {
+            self.begin_elevating(tab_uid, pane);
+        }
+    }
+
+    /// Asks for the elevated copy: the session of the pane's profile in the folder the pane is in, as big as the pane is.
+    fn begin_elevating(&mut self, tab_uid: u64, pane: PaneId) {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let Some(entry) = self.tabs.iter().find(|tab| tab.uid == tab_uid).and_then(|tab| tab.entry(pane)) else { return };
+        let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
+        // On a mapped network drive it goes as the share: the elevated copy has the drives of its own session, not of this one.
+        let directory = entry.cwd.as_deref().map(|dir| nekominal_pty::netdrive::unc_of(std::path::Path::new(dir)).map_or_else(|| dir.to_owned(), |share| share.display().to_string()));
+        let (cols, rows) = entry.grid;
+        let session = agent::new_session();
+        let config = self.spawn_config(&profile, directory.as_deref(), &session, cols, rows);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match crate::elevate::start(self.hwnd.0 as isize, id, config) {
+            Ok(()) => self.elevating = Some(Elevating { id, tab_uid, pane, session }),
+            Err(e) => self.inform(Text::PaneElevateFailed.format(self.language(), &[&e])),
+        }
+    }
+
+    /// The elevated copy answered (`WM_ELEVATED`): the pane that asked gets the session it gave, in its place.
+    pub(crate) fn elevated_done(&mut self, id: u64) {
+        use crate::elevate::{Outcome, Reply};
+        let Some(outcome) = crate::elevate::take(id) else { return };
+        let Some(elevating) = self.elevating.take_if(|elevating| elevating.id == id) else {
+            if let Outcome::Ready { reply, .. } = outcome {
+                let _ = reply.send(Reply::NotUsed);
+            }
+            return;
+        };
+        match outcome {
+            Outcome::Declined => {}
+            Outcome::Failed(e) => self.inform(Text::PaneElevateFailed.format(self.language(), &[&e])),
+            Outcome::Ready { parts, reply } => {
+                let _ = reply.send(self.adopt_elevated(&elevating, parts));
+            }
+        }
+    }
+
+    /// Puts the session the elevated copy gave in the place of the pane's own: the pane keeps its place, its title and the
+    /// folder it was in, and shows what it showed.
+    fn adopt_elevated(&mut self, elevating: &Elevating, parts: nekominal_pty::handoff::Parts) -> crate::elevate::Reply {
+        use crate::elevate::Reply;
+        let Some((t, entry)) = self.tabs.iter().enumerate().find(|(_, tab)| tab.uid == elevating.tab_uid).and_then(|(t, tab)| Some((t, tab.entry(elevating.pane)?))) else {
+            return Reply::NotUsed;
+        };
+        let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
+        let (size, cwd, title) = ((entry.rect.w.max(1) as u32, entry.rect.h.max(1) as u32), entry.cwd.clone(), entry.title.clone());
+        let (cols, rows) = entry.grid;
+        let screen = entry.pane.term.lock().handoff_screen();
+        // Where it is among the panes of a window is not asked of a state that is not handed over: `tab` and `pane` mean nothing.
+        let state = nekominal_pty::handoff::PaneState { tab: t, pane: 0, session: elevating.session.clone(), title, cols, rows, screen, parts: None };
+        match self.make_entry_starting(elevating.pane, size, &profile, cwd.as_deref(), Start::Elevated(state, parts)) {
+            Ok(mut fresh) => {
+                fresh.cwd = cwd;
+                if let Some(slot) = self.tabs[t].panes.iter_mut().find(|e| e.id == elevating.pane) {
+                    *slot = fresh;
+                }
+                self.relayout();
+                self.sync_focus();
+                self.redraw();
+                Reply::Adopted
+            }
+            Err(e) => {
+                self.inform(Text::PaneElevateFailed.format(self.language(), &[&e]));
+                Reply::AdoptFailed
+            }
+        }
+    }
+
     /// A profile set to run as administrator, opened from a window that is not elevated, gets an elevated window of its
     /// own (Windows asks first) instead of a tab here. A split keeps the window's rights: a pane cannot be elevated alone.
     fn opens_elevated(&self, profile: &Profile, directory: Option<&str>) -> bool {
@@ -5749,9 +5871,9 @@ impl App {
         // The settings tab cannot be renamed or copied.
         let settings = self.tabs.get(index).is_some_and(|tab| tab.settings);
         // A window that runs as administrator has no other to open.
-        let mut rows: Vec<popup::Row> = [Command::TabRename, Command::TabColor, Command::TabDuplicate, Command::TabOpenElevated]
+        let mut rows: Vec<popup::Row> = [Command::TabRename, Command::TabColor, Command::TabDuplicate, Command::TabOpenElevated, Command::PaneElevate]
             .into_iter()
-            .filter(|c| !(settings && settings_tab::needs_pane(*c)) && !(*c == Command::TabOpenElevated && elevated()))
+            .filter(|c| !(settings && settings_tab::needs_pane(*c)) && !(matches!(c, Command::TabOpenElevated | Command::PaneElevate) && elevated()))
             .map(row)
             .collect();
         rows.push(popup::Row::separator());
@@ -5762,8 +5884,10 @@ impl App {
             rows.push(row(Command::TabCloseRight));
         }
         rows.push(row(Command::TabClose));
-        let anchor = self.screen_point(x as f32 + popup::WIDTH * self.scale, y as f32);
-        self.open_popup(rows, popup::Kind::List, anchor);
+        // As wide as its longest row (a label in another language, a shortcut), and never narrower than a menu is.
+        let width = popup::fit_width(&rows, |text| self.ui.measure(text, TEXT_SIZE, false)).max(popup::WIDTH);
+        let anchor = self.screen_point(x as f32 + width * self.scale, y as f32);
+        self.open_popup_fit(rows, popup::Kind::List, anchor, Some(width));
     }
 
     /// A new tab right after the selected one, running what its focused pane was started with, in the folder it is in.
@@ -6400,6 +6524,7 @@ impl App {
                 Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
                 Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
+                Some(Confirmation::ElevatePane { tab_uid, pane }) => self.begin_elevating(tab_uid, pane),
                 Some(Confirmation::RemoveWorktree { path, delete_branch }) => self.remove_worktree(&path, delete_branch),
                 Some(Confirmation::ShowFolder(path)) => self.show_folder(&path),
                 Some(Confirmation::Notice) | None => {}

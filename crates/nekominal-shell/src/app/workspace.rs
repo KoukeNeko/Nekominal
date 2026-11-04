@@ -510,8 +510,9 @@ impl App {
         let mut panes = Vec::new();
         for (index, tab) in tabs.iter().enumerate() {
             for entry in &tab.panes {
-                let parts = entry.pane.hand_off().and_then(|parts| nekominal_pty::handoff::duplicate_into(updater, &parts));
-                let parts = parts.map_err(|e| util::log(&format!("update: pane {}: {e}", entry.session))).ok();
+                // A shell that runs as administrator is not given to the new window, which could not tell it from the others
+                // (nothing is kept of it but its text): it ends with this one.
+                let parts = if entry.elevated { None } else { entry.pane.hand_off().and_then(|parts| nekominal_pty::handoff::duplicate_into(updater, &parts)).map_err(|e| util::log(&format!("update: pane {}: {e}", entry.session))).ok() };
                 handed.extend(parts);
                 let mut core = entry.pane.term.lock();
                 panes.push(nekominal_pty::handoff::PaneState {

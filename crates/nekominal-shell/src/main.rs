@@ -12,6 +12,7 @@ mod clipboard;
 mod design;
 mod editor;
 mod effects;
+mod elevate;
 mod find;
 mod glass;
 mod handoff;
@@ -103,7 +104,8 @@ fn main() {
     }
     // Claude Code's status line command and hooks are this program too: they hand the session over and are gone.
     // A copy of this program holding the tabs while Scoop updates the app (`hold`).
-    if hold::hold_main() || agent::statusline_main() || agent::claude_hook_main() || hooks::hook_main() {
+    // The elevated copy that gives a window the session of a pane that runs as administrator (`elevate`).
+    if elevate::helper_main() || hold::hold_main() || agent::statusline_main() || agent::claude_hook_main() || hooks::hook_main() {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();

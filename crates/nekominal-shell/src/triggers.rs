@@ -76,8 +76,11 @@ pub fn take(event: UiEvent, triggers: &[Trigger], entry: &mut PaneEntry, watched
             }
             None
         }
+        // Output decides what is typed: not into a shell that runs as administrator.
         Effect::Send(text) => {
-            entry.pane.send(text.into_bytes());
+            if !entry.elevated {
+                entry.pane.send(text.into_bytes());
+            }
             None
         }
     }

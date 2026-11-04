@@ -16,6 +16,7 @@ pub(super) fn needs_pane(command: Command) -> bool {
             | Command::PaneClose
             | Command::PaneZoom
             | Command::PaneRestart
+            | Command::PaneElevate
             | Command::PaneFocus(_)
             | Command::PaneResize(_)
             | Command::PaneSwap(_)

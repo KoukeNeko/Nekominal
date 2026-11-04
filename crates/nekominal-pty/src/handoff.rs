@@ -124,6 +124,10 @@ pub enum Message {
     Windows { v: u32, windows: Vec<WindowState> },
     /// The new Nekominal took these sessions (by name); the updater ends the others. Answered `Ok`.
     Adopted { sessions: Vec<String> },
+    /// A window asks the elevated process it started for a session of `config`; answered `Elevated`.
+    Elevate { v: u32, config: crate::conpty::SpawnConfig },
+    /// The elevated process gives the session, its handles duplicated into the window; answered `Ok` once taken.
+    Elevated { v: u32, parts: Parts },
     Ok,
     Error { message: String },
 }
@@ -166,6 +170,14 @@ impl Process {
     pub fn open(pid: u32) -> io::Result<Process> {
         // SAFETY: plain call; a null result is the failure.
         let handle = unsafe { OpenProcess(PROCESS_DUP_HANDLE | PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() { Err(last_error(&format!("OpenProcess {pid}"))) } else { Ok(Process(handle)) }
+    }
+
+    /// Opens process `pid` to wait for it and to ask its program: all a process of lower integrity may ask of one that is
+    /// elevated (duplicating handles into it it may not).
+    pub fn open_to_query(pid: u32) -> io::Result<Process> {
+        // SAFETY: plain call; a null result is the failure.
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() { Err(last_error(&format!("OpenProcess {pid}"))) } else { Ok(Process(handle)) }
     }
 
@@ -382,6 +394,20 @@ mod tests {
             Message::Take { v: PROTOCOL },
             Message::Windows { v: PROTOCOL, windows: bundle.windows.clone() },
             Message::Adopted { sessions: vec!["7-1".into()] },
+            Message::Elevate {
+                v: PROTOCOL,
+                config: crate::conpty::SpawnConfig {
+                    program: r"C:\Windows\System32\cmd.exe".into(),
+                    args: vec!["/k".into()],
+                    cwd: Some(r"\\server\share\.".into()),
+                    env: [("A".to_owned(), "b".to_owned())].into(),
+                    cols: 80,
+                    rows: 24,
+                    width_model: crate::conpty::WidthModel::Graphemes,
+                    inherit_environment: true,
+                },
+            },
+            Message::Elevated { v: PROTOCOL, parts: parts(5) },
             Message::Ok,
             Message::Error { message: "no".into() },
         ] {

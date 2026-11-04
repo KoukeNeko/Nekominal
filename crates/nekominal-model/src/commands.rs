@@ -31,6 +31,9 @@ pub enum Command {
     PaneClose,
     PaneZoom,
     PaneRestart,
+    /// Starts the shell of the focused pane again as administrator (Windows asks first), in the folder it is in, in the
+    /// same pane and under the text it showed; the old shell ends.
+    PaneElevate,
     PaneFocus(Direction),
     PaneResize(Direction),
     /// Trades places with the pane in a direction, which keeps the keyboard; moves the focused pane into a tab of its own;
@@ -135,6 +138,7 @@ impl Command {
         Command::PaneClose,
         Command::PaneZoom,
         Command::PaneRestart,
+        Command::PaneElevate,
         Command::PaneFocus(Direction::Left),
         Command::PaneFocus(Direction::Right),
         Command::PaneFocus(Direction::Up),
@@ -228,6 +232,7 @@ impl Command {
             Command::PaneClose => "pane.close",
             Command::PaneZoom => "pane.zoom",
             Command::PaneRestart => "pane.restart",
+            Command::PaneElevate => "pane.elevate",
             Command::PaneFocus(Direction::Left) => "pane.focusLeft",
             Command::PaneFocus(Direction::Right) => "pane.focusRight",
             Command::PaneFocus(Direction::Up) => "pane.focusUp",
@@ -320,6 +325,7 @@ impl Command {
             Command::PaneClose => Text::PaneClose,
             Command::PaneZoom => Text::PaneZoom,
             Command::PaneRestart => Text::PaneRestart,
+            Command::PaneElevate => Text::PaneElevate,
             Command::PaneFocus(Direction::Left) => Text::PaneFocusLeft,
             Command::PaneFocus(Direction::Right) => Text::PaneFocusRight,
             Command::PaneFocus(Direction::Up) => Text::PaneFocusUp,
@@ -465,6 +471,7 @@ impl Command {
             | Command::TabMoveLeft
             | Command::TabMoveRight
             | Command::PaneRestart
+            | Command::PaneElevate
             | Command::EditClear
             | Command::AppOpenSettingsFile
             | Command::AppReloadSettings
@@ -666,9 +673,10 @@ mod tests {
             Command::ViewAgents => 67,
             Command::TabRemoveWorktree => 68,
             Command::TabOpenElevated => 69,
+            Command::PaneElevate => 70,
         }
     }
-    const VARIANTS: usize = 70;
+    const VARIANTS: usize = 71;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

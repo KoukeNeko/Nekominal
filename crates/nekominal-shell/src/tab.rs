@@ -73,6 +73,9 @@ pub struct PaneEntry {
     pub font_size: Option<f64>,
     /// What the send triggers of the pane sent lately (`triggers.rs`).
     pub sends: nekominal_model::triggers::SendGuard,
+    /// The shell runs as administrator in a window that does not (`elevate.rs`): nothing but the user's own keys and
+    /// pastes may reach it, so the API, the broadcast of a tab and the triggers leave it alone, and it is not handed over.
+    pub elevated: bool,
 }
 
 impl Drop for PaneEntry {
@@ -271,7 +274,7 @@ impl Tab {
         if !self.broadcast {
             return Vec::new();
         }
-        self.panes.iter().filter(|p| p.id != self.focused && !p.exited).map(|p| p.id).collect()
+        self.panes.iter().filter(|p| p.id != self.focused && !p.exited && !p.elevated).map(|p| p.id).collect()
     }
 
     /// Computes the pixel rectangle of every shown pane inside `area` (window pixels); `divider` is the gap between panes.

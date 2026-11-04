@@ -26,6 +26,9 @@ thread_local! {
 /// The answer to a request that would ask the user while the window already asks something.
 const QUESTION_OPEN: &str = "a question is already open in the window";
 
+/// The answer to a request for the text of a pane that runs as administrator, or to type into it.
+const ELEVATED_PANE: &str = "the pane runs as administrator: it takes only what the user types";
+
 fn state_name(state: Option<AgentState>) -> &'static str {
     match state {
         None => "none",
@@ -128,6 +131,9 @@ impl App {
     fn api_on_pane(&mut self, request: &Request, (t, id): (usize, PaneId)) -> Result<Value, String> {
         let gone = || "the pane is gone".to_owned();
         match request {
+            // A program of the user, elevated or not, may drive a pane of this window, which is what UAC keeps from the
+            // shell of a pane that runs as administrator here: it takes what the user types, and gives nothing out.
+            Request::SendText { .. } | Request::GetText { .. } if self.tabs[t].entry(id).is_some_and(|entry| entry.elevated) => Err(ELEVATED_PANE.to_owned()),
             Request::SendText { text, .. } => {
                 let entry = self.tabs[t].entry(id).ok_or_else(gone)?;
                 // The check of a paste of the clipboard (see `api.rs`): what it would ask about, the user is asked.
@@ -250,7 +256,9 @@ impl App {
 
     /// A prompt mark of a pane: the end of a command is an event.
     pub(super) fn api_mark(entry: &PaneEntry, mark: PromptMark) {
+        // The command line of a shell that runs as administrator stays out of the events.
         if let PromptMark::CommandEnd { exit_code } = mark
+            && !entry.elevated
             && api::wants(Topic::CommandFinished)
         {
             let command = entry.pane.term.lock().last_command_line();

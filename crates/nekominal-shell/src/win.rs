@@ -68,9 +68,11 @@ pub(crate) const WM_AGENTS: u32 = WM_APP + 0x40;
 pub(crate) const WM_SHOW_PANE: u32 = WM_APP + 0x41;
 /// Hands every window to the updater that Update and restart started (`handoff.rs`), outside the borrow of the window.
 pub(crate) const WM_HAND_OFF: u32 = WM_APP + 0x42;
+/// The elevated copy answered a window that asked it for the session of a pane (`elevate.rs`): lParam is the id of the request.
+pub(crate) const WM_ELEVATED: u32 = WM_APP + 0x43;
 // The messages of the modules are numbered apart; two with one number would send the second to the handler of the first.
 const _: () = {
-    let all = [crate::app::WM_WAKE, WM_NEW_WINDOW, WM_DESTROY_WINDOW, WM_QUAKE, crate::app::WM_GPU_LOST, WM_AGENTS, WM_SHOW_PANE, WM_HAND_OFF, crate::toast::WM_TOAST];
+    let all = [crate::app::WM_WAKE, WM_NEW_WINDOW, WM_DESTROY_WINDOW, WM_QUAKE, crate::app::WM_GPU_LOST, WM_AGENTS, WM_SHOW_PANE, WM_HAND_OFF, WM_ELEVATED, crate::toast::WM_TOAST];
     let mut i = 0;
     while i < all.len() {
         let mut j = i + 1;
@@ -799,6 +801,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_WAKE => {
             with_app(hwnd, App::on_wake);
+            LRESULT(0)
+        }
+        WM_ELEVATED => {
+            let id = lparam.0 as u64;
+            // The window being busy (a message sent from inside one of its calls) leaves the outcome untaken: the copy is told
+            // that nobody took the session.
+            if with_app(hwnd, |app| app.elevated_done(id)).is_none() {
+                if let Some(crate::elevate::Outcome::Ready { reply, .. }) = crate::elevate::take(id) {
+                    let _ = reply.send(crate::elevate::Reply::NotUsed);
+                }
+            }
             LRESULT(0)
         }
         WM_QUAKE => {
