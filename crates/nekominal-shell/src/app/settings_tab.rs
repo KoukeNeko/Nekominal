@@ -41,6 +41,7 @@ pub(super) fn needs_pane(command: Command) -> bool {
             | Command::PromptNext
             | Command::TabRename
             | Command::TabDuplicate
+            | Command::TabOpenElevated
             | Command::TabNewWorktree
     )
 }
@@ -322,7 +323,7 @@ mod tests {
 
     #[test]
     fn what_needs_a_pane_does_nothing_on_the_settings_tab_and_its_shortcuts_stay_the_terminal_s() {
-        for command in [Command::PaneSplitRight, Command::PaneSplitDown, Command::PaneZoom, Command::PaneBroadcast, Command::EditFind, Command::TabRename, Command::TabDuplicate, Command::ScrollTop] {
+        for command in [Command::PaneSplitRight, Command::PaneSplitDown, Command::PaneZoom, Command::PaneBroadcast, Command::EditFind, Command::TabRename, Command::TabDuplicate, Command::TabOpenElevated, Command::ScrollTop] {
             assert!(needs_pane(command), "{} needs a pane", command.id());
             assert!(!works_on_page(command), "{} is not taken from the page", command.id());
         }

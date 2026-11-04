@@ -81,6 +81,8 @@ pub enum Command {
     TabRename,
     TabColor,
     TabDuplicate,
+    /// Opens a window run as administrator (Windows asks first) with the profile of the focused pane, in the folder it is in.
+    TabOpenElevated,
     TabCloseOthers,
     TabCloseRight,
     ViewZoomIn,
@@ -177,6 +179,7 @@ impl Command {
         Command::TabRename,
         Command::TabColor,
         Command::TabDuplicate,
+        Command::TabOpenElevated,
         Command::TabCloseOthers,
         Command::TabCloseRight,
         Command::ViewZoomIn,
@@ -269,6 +272,7 @@ impl Command {
             Command::TabRename => "tab.rename",
             Command::TabColor => "tab.color",
             Command::TabDuplicate => "tab.duplicate",
+            Command::TabOpenElevated => "tab.openElevated",
             Command::TabCloseOthers => "tab.closeOthers",
             Command::TabCloseRight => "tab.closeRight",
             Command::ViewZoomIn => "view.zoomIn",
@@ -361,6 +365,7 @@ impl Command {
             Command::TabRename => Text::TabRename,
             Command::TabColor => Text::TabColor,
             Command::TabDuplicate => Text::TabDuplicate,
+            Command::TabOpenElevated => Text::TabOpenElevated,
             Command::TabCloseOthers => Text::TabCloseOthers,
             Command::TabCloseRight => Text::TabCloseRight,
             Command::ViewZoomIn => Text::ViewZoomIn,
@@ -448,7 +453,7 @@ impl Command {
             // J: a free letter with Ctrl+Shift that an IME lets through.
             Command::ViewAgents => &["Ctrl+Shift+J"],
             Command::AppUpdate => &[],
-            Command::TabRename | Command::TabColor | Command::TabDuplicate | Command::TabCloseOthers | Command::TabCloseRight => &[],
+            Command::TabRename | Command::TabColor | Command::TabDuplicate | Command::TabOpenElevated | Command::TabCloseOthers | Command::TabCloseRight => &[],
             Command::ViewZoomIn => &["Ctrl+="],
             Command::ViewZoomOut => &["Ctrl+-"],
             Command::ViewZoomReset => &["Ctrl+0"],
@@ -660,9 +665,10 @@ mod tests {
             Command::EditSearchTabs => 66,
             Command::ViewAgents => 67,
             Command::TabRemoveWorktree => 68,
+            Command::TabOpenElevated => 69,
         }
     }
-    const VARIANTS: usize = 69;
+    const VARIANTS: usize = 70;
 
     fn shortcuts_of(command: Command) -> Vec<Shortcut> {
         command

@@ -186,6 +186,8 @@ texts! {
     TabUntitled "tab.untitled";
     TabRename "tab.rename";
     TabDuplicate "tab.duplicate";
+    TabOpenElevated "tab.openElevated";
+    TabAlreadyElevated "tab.alreadyElevated";
     TabCloseOthers "tab.closeOthers";
     TabCloseRight "tab.closeRight";
     TabMoveToNewWindow "tab.moveToNewWindow";

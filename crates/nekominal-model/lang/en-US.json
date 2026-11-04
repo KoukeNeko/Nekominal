@@ -97,6 +97,8 @@
   "tab.untitled": "Terminal",
   "tab.rename": "Rename tab",
   "tab.duplicate": "Duplicate tab",
+  "tab.openElevated": "Open an administrator window here",
+  "tab.alreadyElevated": "This window already runs as administrator",
   "tab.closeOthers": "Close other tabs",
   "tab.closeRight": "Close tabs to the right",
   "tab.moveToNewWindow": "Move to new window",

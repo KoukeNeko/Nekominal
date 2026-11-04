@@ -675,6 +675,7 @@ fn wired(command: Command) -> bool {
             | Command::TabRename
             | Command::TabColor
             | Command::TabDuplicate
+            | Command::TabOpenElevated
             | Command::TabCloseOthers
             | Command::TabCloseRight
             | Command::PaneSwap(_)
@@ -2841,6 +2842,7 @@ impl App {
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
             Command::TabDuplicate => self.duplicate_tab(),
+            Command::TabOpenElevated => self.open_elevated_here(),
             Command::TabCloseOthers => self.request_close_tabs(logic::tabs_other_than(self.tabs.len(), self.selected)),
             Command::TabCloseRight => self.request_close_tabs(logic::tabs_right_of(self.tabs.len(), self.selected)),
             Command::ViewSidebar => {
@@ -5332,9 +5334,24 @@ impl App {
     /// A profile set to run as administrator, opened from a window that is not elevated, gets an elevated window of its
     /// own (Windows asks first) instead of a tab here. A split keeps the window's rights: a pane cannot be elevated alone.
     fn opens_elevated(&self, profile: &Profile, directory: Option<&str>) -> bool {
-        if !profile.options.elevate || elevated() {
-            return false;
+        profile.options.elevate && !elevated() && self.elevated_window(profile, directory)
+    }
+
+    /// An elevated window with the profile of the focused pane, in the folder it is in: what the palette and the menu of a
+    /// tab ask for by hand. A window that is elevated already says so.
+    fn open_elevated_here(&mut self) {
+        if elevated() {
+            self.inform_text(Text::TabAlreadyElevated);
+            return;
         }
+        let Some(entry) = self.focused() else { return };
+        let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
+        self.elevated_window(&profile, entry.cwd.as_deref());
+    }
+
+    /// Starts this program elevated (Windows asks first) with `profile`, in `directory` when there is one; false when
+    /// that did not happen (declined, or failed).
+    fn elevated_window(&self, profile: &Profile, directory: Option<&str>) -> bool {
         let mut args = crate::integration::profile_arguments(&profile.id);
         if let Some(directory) = directory {
             // On a mapped network drive it goes as the share: the elevated window has the drives of its own session, not
@@ -5731,7 +5748,12 @@ impl App {
         let row = |command: Command| popup::Row { label: command.label(lang), hint: self.keymap.shortcut_text(command), action: Some(popup::Action::Command(command)), current: false, mark: None, program: None };
         // The settings tab cannot be renamed or copied.
         let settings = self.tabs.get(index).is_some_and(|tab| tab.settings);
-        let mut rows: Vec<popup::Row> = [Command::TabRename, Command::TabColor, Command::TabDuplicate].into_iter().filter(|c| !(settings && settings_tab::needs_pane(*c))).map(row).collect();
+        // A window that runs as administrator has no other to open.
+        let mut rows: Vec<popup::Row> = [Command::TabRename, Command::TabColor, Command::TabDuplicate, Command::TabOpenElevated]
+            .into_iter()
+            .filter(|c| !(settings && settings_tab::needs_pane(*c)) && !(*c == Command::TabOpenElevated && elevated()))
+            .map(row)
+            .collect();
         rows.push(popup::Row::separator());
         if self.tabs.len() > 1 {
             rows.push(row(Command::TabCloseOthers));
