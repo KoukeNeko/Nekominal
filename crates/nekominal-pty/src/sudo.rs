@@ -128,7 +128,8 @@ mod tests {
     fn a_program_is_found_by_the_path_of_this_terminal_and_anything_else_goes_through_cmd() {
         let found = command_line("cmd /c echo hi");
         assert!(found.starts_with('"') && found.to_lowercase().ends_with(r#"system32\cmd.exe" /c echo hi"#), "{found}");
-        assert_eq!(command_line("dir /b"), r#"cmd.exe /d /s /c "dir /b""#, "a command of cmd, not a program");
+        // `ver` is of cmd and no program anywhere (`dir` is one in the usr\bin of Git, which a runner has on its PATH).
+        assert_eq!(command_line("ver"), r#"cmd.exe /d /s /c "ver""#, "a command of cmd, not a program");
         assert_eq!(command_line("nekominal-no-such-program x"), r#"cmd.exe /d /s /c "nekominal-no-such-program x""#);
     }
 
