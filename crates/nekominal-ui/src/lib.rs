@@ -109,6 +109,8 @@ struct Cached {
 /// A run of instances of one kind drawn with one scissor rect.
 struct Cmd {
     glyphs: bool,
+    /// Quads that take away what is under them (`cutout`).
+    erase: bool,
     range: Range<u32>,
     clip: Option<[u32; 4]>,
 }
@@ -117,6 +119,8 @@ pub struct Ui {
     gpu: Gpu,
     states: DrawStates,
     quad_program: Program,
+    #[cfg(unix)]
+    erase_program: Program,
     glyph_program: Program,
     uniform_buffer: Buffer,
     atlas_gray: AtlasTexture,
@@ -164,6 +168,8 @@ impl Ui {
             gpu: gpu.clone(),
             states: DrawStates::new(gpu)?,
             quad_program: Program::new(gpu, &shaders::UI_QUAD, &QUAD_ATTRS, std::mem::size_of::<QuadInstance>() as u32)?,
+            #[cfg(unix)]
+            erase_program: Program::new(gpu, &shaders::UI_ERASE, &QUAD_ATTRS, std::mem::size_of::<QuadInstance>() as u32)?,
             glyph_program: Program::new(gpu, &shaders::UI_GLYPH, &GLYPH_ATTRS, std::mem::size_of::<GlyphInstance>() as u32)?,
             uniform_buffer: constant_buffer(gpu, std::mem::size_of::<Uniforms>())?,
             atlas_gray: AtlasTexture::new(gpu, TexelFormat::R8, 512, 2048)?,
@@ -262,11 +268,26 @@ impl Ui {
     }
 
     fn extend_cmd(&mut self, glyphs: bool, index: u32) {
+        self.extend_cmd_of(glyphs, false, index);
+    }
+
+    fn extend_cmd_of(&mut self, glyphs: bool, erase: bool, index: u32) {
         let clip = self.clips.last().copied();
         match self.cmds.last_mut() {
-            Some(cmd) if cmd.glyphs == glyphs && cmd.clip == clip => cmd.range.end = index + 1,
-            _ => self.cmds.push(Cmd { glyphs, range: index..index + 1, clip }),
+            Some(cmd) if cmd.glyphs == glyphs && cmd.erase == erase && cmd.clip == clip => cmd.range.end = index + 1,
+            _ => self.cmds.push(Cmd { glyphs, erase, range: index..index + 1, clip }),
         }
+    }
+
+    /// Takes away what is drawn outside the rounded rectangle `r`, to the edge of the frame: the corners of a window that has
+    /// round ones. Only where the surface keeps alpha, and drawn last, over everything.
+    #[cfg(unix)]
+    pub fn cutout(&mut self, r: Rect, radius: f32) {
+        let r = Rect { x: r.x + self.origin.0, y: r.y + self.origin.1, ..r };
+        let s = self.scale;
+        let index = self.quads.len() as u32;
+        self.quads.push(QuadInstance { rect: [r.x * s, r.y * s, r.w * s, r.h * s], rb: [radius * s, 0.0], fill: [0; 4], border: [0; 4], extra: [0.0, 0.0] });
+        self.extend_cmd_of(false, true, index);
     }
 
     // --- text ---------------------------------------------------------------------------------------------------
@@ -461,6 +482,10 @@ impl Ui {
             if cmd.glyphs {
                 set_program(gpu, &self.glyph_program);
                 gpu.draw_instances_from(&self.glyph_buffer.buffer, self.glyph_buffer.stride, cmd.range.clone());
+            } else if cmd.erase {
+                #[cfg(unix)]
+                set_program(gpu, &self.erase_program);
+                gpu.draw_instances_from(&self.quad_buffer.buffer, self.quad_buffer.stride, cmd.range.clone());
             } else {
                 set_program(gpu, &self.quad_program);
                 gpu.draw_instances_from(&self.quad_buffer.buffer, self.quad_buffer.stride, cmd.range.clone());

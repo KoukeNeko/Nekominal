@@ -113,6 +113,9 @@ const TEAR_MARGIN: f32 = 12.0;
 
 /// Corner radius of every rounded rectangle, in DIP: the one of `design.rs`.
 pub const CORNER_RADIUS: f32 = design::RADIUS;
+/// The corners of the window, in DIP: those of GTK 4.
+#[cfg(unix)]
+const WINDOW_RADIUS: f32 = 12.0;
 /// How opaque the settings page is over the glass (of 255): the selected tab above it takes the same.
 const PAGE_ALPHA: u8 = 205;
 const TEXT_SIZE: f32 = 13.0;
@@ -3282,8 +3285,8 @@ impl App {
         self.paint_welcome();
         #[cfg(unix)]
         {
-            self.paint_window_frame();
             self.paint_popup_overlay();
+            self.paint_window_frame();
         }
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
@@ -6707,18 +6710,22 @@ impl App {
         if popup.surface.present() { post_gpu_lost(owner); }
     }
 
-    /// The outline of the window: nothing draws one for a window without decorations, so it is the window's own, as the
-    /// edge DWM gives one on Windows. A window that fills the screen has none.
+    /// The outline of the window, and its corners: nothing draws either for a window without decorations, so they are the
+    /// window's own, as the edge DWM gives one on Windows. Corners are round as the toolkits of the desktop make them where
+    /// the compositor keeps the alpha of the frame. A window that fills the screen has neither.
     #[cfg(unix)]
     fn paint_window_frame(&mut self) {
         if self.maximized || self.is_fullscreen() {
             return;
         }
         let (w, h) = self.surface.size();
-        let (w, h) = (w as f32 / self.scale, h as f32 / self.scale);
-        let line = Color([255, 255, 255, if self.glass.light { 0 } else { 40 }]);
-        let line = if self.glass.light { Color([0, 0, 0, 60]) } else { line };
-        self.ui.rrect(Rect::new(0.0, 0.0, w, h), 0.0, Color::TRANSPARENT, Some((line, 1.0)));
+        let rect = Rect::new(0.0, 0.0, w as f32 / self.scale, h as f32 / self.scale);
+        let radius = if self.surface.translucent() { WINDOW_RADIUS } else { 0.0 };
+        let line = if self.glass.light { Color([0, 0, 0, 60]) } else { Color([255, 255, 255, 40]) };
+        self.ui.rrect(rect, radius, Color::TRANSPARENT, Some((line, 1.0)));
+        if radius > 0.0 {
+            self.ui.cutout(rect, radius);
+        }
     }
 
     /// The pop-up over the frame of the window (Linux): drawn where it opened, with a shadow, after everything else.

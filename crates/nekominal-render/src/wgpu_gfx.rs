@@ -403,6 +403,8 @@ pub struct Shader {
     pub ps: &'static str,
     /// The pixel shader gives per-channel coverage as a second output that the blend takes (LCD text).
     pub dual_source: bool,
+    /// The pixel shader's alpha is how much of what is under it is taken away (round corners of a translucent window).
+    pub erase: bool,
 }
 
 /// A render pipeline: a vertex and a pixel shader, the layout of the instance records that feed them, and the blend.
@@ -443,7 +445,10 @@ impl Program {
                 shader_location: location as u32,
             })
             .collect();
-        let blend = if shader.dual_source {
+        let blend = if shader.erase {
+            let take_away = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
+            wgpu::BlendState { color: take_away, alpha: take_away }
+        } else if shader.dual_source {
             wgpu::BlendState {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::Src1,

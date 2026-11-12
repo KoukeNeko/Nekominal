@@ -57,12 +57,14 @@ pub mod shaders {
 
     const GLYPH_SOURCE: &str = include_str!("shaders/glyph.wgsl");
 
-    pub const RECT: Shader = Shader { sources: &[include_str!("shaders/rect.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false };
-    pub const GLYPH: Shader = Shader { sources: &[GLYPH_SOURCE], vs: "vs_main", ps: "fs_main", dual_source: false };
-    pub const GLYPH_LCD: Shader = Shader { sources: &[GLYPH_SOURCE, include_str!("shaders/glyph_lcd.wgsl")], vs: "vs_main", ps: "fs_lcd", dual_source: true };
-    pub const IMAGE: Shader = Shader { sources: &[include_str!("shaders/image.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false };
-    pub const UI_QUAD: Shader = Shader { sources: &[include_str!("../../nekominal-ui/src/quad.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false };
-    pub const UI_GLYPH: Shader = Shader { sources: &[include_str!("../../nekominal-ui/src/glyph.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false };
+    pub const RECT: Shader = Shader { sources: &[include_str!("shaders/rect.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false, erase: false };
+    pub const GLYPH: Shader = Shader { sources: &[GLYPH_SOURCE], vs: "vs_main", ps: "fs_main", dual_source: false, erase: false };
+    pub const GLYPH_LCD: Shader = Shader { sources: &[GLYPH_SOURCE, include_str!("shaders/glyph_lcd.wgsl")], vs: "vs_main", ps: "fs_lcd", dual_source: true, erase: false };
+    pub const IMAGE: Shader = Shader { sources: &[include_str!("shaders/image.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false, erase: false };
+    pub const UI_QUAD: Shader = Shader { sources: &[include_str!("../../nekominal-ui/src/quad.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false, erase: false };
+    /// The quads of the interface that take away what is under them, for the corners of a window with round ones.
+    pub const UI_ERASE: Shader = Shader { sources: &[include_str!("../../nekominal-ui/src/quad.wgsl")], vs: "vs_main", ps: "fs_erase", dual_source: false, erase: true };
+    pub const UI_GLYPH: Shader = Shader { sources: &[include_str!("../../nekominal-ui/src/glyph.wgsl")], vs: "vs_main", ps: "fs_main", dual_source: false, erase: false };
 }
 pub mod sprites;
 

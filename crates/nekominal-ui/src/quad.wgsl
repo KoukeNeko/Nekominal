@@ -53,6 +53,14 @@ fn sdf_rounded_rect(p: vec2<f32>, half_size: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
 }
 
+// Alpha of what lies outside the rounded rectangle: drawn with the blend that takes away that much of what is under it.
+@fragment
+fn fs_erase(in: VsOut) -> @location(0) vec4<f32> {
+    let r = min(in.rb.x, min(in.half_size.x, in.half_size.y));
+    let d = sdf_rounded_rect(in.local, in.half_size, r);
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0 - clamp(0.5 - d, 0.0, 1.0));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let r = min(in.rb.x, min(in.half_size.x, in.half_size.y));

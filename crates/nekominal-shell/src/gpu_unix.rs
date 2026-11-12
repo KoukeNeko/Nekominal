@@ -67,6 +67,11 @@ fn configure(gpu: Gpu, surface: wgpu::Surface<'static>, size: (u32, u32)) -> Res
 }
 
 impl Surface {
+    /// Whether the compositor keeps the alpha of the frame: only then can the window have round corners.
+    pub fn translucent(&self) -> bool {
+        self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+    }
+
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
     }
