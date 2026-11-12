@@ -730,6 +730,15 @@ impl Settings {
     }
 }
 
+/// The fonts of the terminal until the settings name others: what each system ships, then the monospace of the system.
+#[cfg(windows)]
+pub const DEFAULT_FONT_FAMILY: [&str; 4] = ["Cascadia Mono", "Consolas", "Microsoft JhengHei UI", "Segoe UI Emoji"];
+#[cfg(unix)]
+pub const DEFAULT_FONT_FAMILY: [&str; 5] = ["JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", "monospace"];
+
+/// What is behind the window until the settings say: the blur of Windows; elsewhere nothing blurs, so the window is opaque.
+const DEFAULT_BACKDROP: Backdrop = if cfg!(windows) { Backdrop::Acrylic } else { Backdrop::None };
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -737,9 +746,7 @@ impl Default for Settings {
             theme: themes::DEFAULT_THEME.to_owned(),
             schemes: Vec::new(),
             font: Font {
-                family: ["Cascadia Mono", "Consolas", "Microsoft JhengHei UI", "Segoe UI Emoji"]
-                    .map(String::from)
-                    .to_vec(),
+                family: DEFAULT_FONT_FAMILY.map(String::from).to_vec(),
                 size: 14.0,
                 weight: 400,
                 line_height: 1.1,
@@ -748,7 +755,7 @@ impl Default for Settings {
             },
             // The pace Windows gives a text caret by default.
             cursor: Cursor { style: CursorStyle::Block, blink: true, blink_rate: 530 },
-            appearance: Appearance { backdrop: Backdrop::Acrylic, opacity: 0.72, tab_bar_density: TabBarDensity::Comfortable },
+            appearance: Appearance { backdrop: DEFAULT_BACKDROP, opacity: 0.72, tab_bar_density: TabBarDensity::Comfortable },
             tabs: Tabs::default(),
             scrollback: 10_000,
             default_profile: String::new(),
@@ -1645,9 +1652,9 @@ mod tests {
     }
 
     #[test]
-    fn appearance_defaults_to_translucent_acrylic_and_accepts_every_backdrop() {
+    fn appearance_defaults_to_the_backdrop_of_the_system_and_accepts_every_backdrop() {
         let defaults = Settings::default().appearance;
-        assert_eq!((defaults.backdrop, defaults.opacity), (Backdrop::Acrylic, 0.72));
+        assert_eq!((defaults.backdrop, defaults.opacity), (DEFAULT_BACKDROP, 0.72));
         for (name, expected) in [("acrylic", Backdrop::Acrylic), ("mica", Backdrop::Mica), ("mica-alt", Backdrop::MicaAlt), ("none", Backdrop::None)] {
             let result = parsed(&format!(r#"{{ "appearance": {{ "backdrop": "{name}", "opacity": 0.5 }} }}"#));
             assert!(result.problems.is_empty(), "{name}: {:?}", result.problems);

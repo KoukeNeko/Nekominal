@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY input experiments against the bundled OpenConsole. Run with
 //! `cargo test --test conpty_input -- --ignored --nocapture --test-threads=1`.
 //! Each test prints the matrix it measured; the assertions pin the findings that the design

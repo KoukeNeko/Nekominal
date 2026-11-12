@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 6: what happens to wrapped text when the terminal is resized.
 //! Run with: `cargo test --test conpty_resize -- --ignored --nocapture --test-threads=1`
 

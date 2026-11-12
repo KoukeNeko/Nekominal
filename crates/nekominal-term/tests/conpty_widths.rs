@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 4: which `PSEUDOCONSOLE_GLYPH_WIDTH_*` mode keeps the shell's cursor and
 //! this emulator's cursor in the same column?
 //!

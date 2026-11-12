@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 1: what ConPTY (bundled 1.25.2609.30003) sends at startup and whether it
 //! waits for the DA1 answer. Run with:
 //! `cargo test --test conpty_startup -- --ignored --nocapture --test-threads=1`

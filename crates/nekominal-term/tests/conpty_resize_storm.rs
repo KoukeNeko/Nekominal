@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 7: resizing while the child floods output.
 //! Run with: `cargo test --test conpty_resize_storm -- --ignored --nocapture --test-threads=1`
 //!

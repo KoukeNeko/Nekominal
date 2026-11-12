@@ -1,4 +1,4 @@
-//! Where the settings and the saved session live (`%APPDATA%\Nekominal`) and how they are read and written:
+//! Where the settings and the saved session live (`%APPDATA%\Nekominal`, `~/.config/nekominal`) and how they are read and written:
 //! atomically, with the previous version kept as a `.bak`, and for the settings the first original kept as an `.orig`.
 //! The only part of the model that touches the file system; what the files contain is the business of `settings` and
 //! `session`.
@@ -10,13 +10,41 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The name of the folder of the app in the folders of the user.
+#[cfg(windows)]
 pub const APP_DIR: &str = "Nekominal";
+#[cfg(unix)]
+pub const APP_DIR: &str = "nekominal";
 const SETTINGS_FILE: &str = "settings.json";
 const SESSION_FILE: &str = "session.json";
 
-/// `%APPDATA%\Nekominal`; `None` when the profile has no `APPDATA` (a service account, for one).
+/// The home folder of the user: `USERPROFILE` on Windows, `HOME` on Unix.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)
+}
+
+/// `$XDG_*_HOME` when it is an absolute path, otherwise `~/<fallback>`.
+#[cfg(unix)]
+fn xdg_dir(variable: &str, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(variable).map(PathBuf::from).filter(|dir| dir.is_absolute()).or_else(|| home_dir().map(|home| home.join(fallback)))
+}
+
+/// Where the settings and the saved session are: `%APPDATA%\Nekominal`, `~/.config/nekominal` on Unix; `None` when
+/// the profile has no `APPDATA` (a service account, for one).
 pub fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join(APP_DIR))
+    #[cfg(windows)]
+    return std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join(APP_DIR));
+    #[cfg(unix)]
+    return xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join(APP_DIR));
+}
+
+/// Where the app keeps what it can make again (the texts of the panes, the shell scripts, the files of the agents):
+/// `%LOCALAPPDATA%\Nekominal`, `~/.local/share/nekominal` on Unix.
+pub fn data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return std::env::var_os("LOCALAPPDATA").map(|local| PathBuf::from(local).join(APP_DIR));
+    #[cfg(unix)]
+    return xdg_dir("XDG_DATA_HOME", ".local/share").map(|dir| dir.join(APP_DIR));
 }
 
 pub fn settings_path() -> Option<PathBuf> {
@@ -140,20 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn the_files_live_under_appdata_nekominal() {
-        // Read-only: the real environment names the same directory these functions do.
-        match std::env::var_os("APPDATA") {
-            Some(appdata) => {
-                let dir = PathBuf::from(appdata).join("Nekominal");
-                assert_eq!(config_dir(), Some(dir.clone()));
-                assert_eq!(settings_path(), Some(dir.join("settings.json")));
-                assert_eq!(session_path(), Some(dir.join("session.json")));
-            }
-            None => assert_eq!(
-                (config_dir(), settings_path(), session_path()),
-                (None, None, None)
-            ),
-        }
+    fn the_files_live_in_the_config_folder_of_the_app() {
+        let dir = config_dir().expect("the profile has a config folder");
+        assert!(dir.ends_with(APP_DIR));
+        assert_eq!(settings_path(), Some(dir.join("settings.json")));
+        assert_eq!(session_path(), Some(dir.join("session.json")));
     }
 
     #[test]
@@ -275,6 +294,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_temp_file_is_this_processs_own_so_another_process_writing_its_own_does_not_get_in_the_way() {
         use std::os::windows::fs::OpenOptionsExt;
         let dir = temp_dir("temp-per-process");

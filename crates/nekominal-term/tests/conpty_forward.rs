@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 2: which sequences a child writes survive ConPTY and reach the host.
 //! Run with: `cargo test --test conpty_forward -- --ignored --nocapture --test-threads=1`
 

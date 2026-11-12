@@ -994,7 +994,7 @@ mod tests {
         let row = find("font.family").unwrap();
         assert_eq!(
             (row.get)(&Settings::default()),
-            Value::Text("Cascadia Mono, Consolas, Microsoft JhengHei UI, Segoe UI Emoji".into())
+            Value::Text(crate::settings::DEFAULT_FONT_FAMILY.join(", "))
         );
         let mut settings = Settings::default();
         (row.set)(&mut settings, Value::Text("\"Fira Code\", 'Consolas' ,, ".into()));

@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 5: the recommended threading design under load.
 //! Run with: `cargo test --release --test conpty_threaded -- --ignored --nocapture --test-threads=1`
 

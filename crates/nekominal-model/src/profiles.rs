@@ -21,7 +21,7 @@ pub enum ProfileKind {
 }
 
 impl ProfileKind {
-    /// `name` is the `kind` string the discovery step reports (`powershell`, `cmd`, `bash`, `wsl`, `ssh`).
+    /// `name` is the `kind` string the discovery step reports (`powershell`, `cmd`, `bash`, `wsl`, `ssh`, `shell`).
     pub fn from_name(name: &str) -> ProfileKind {
         match name {
             "powershell" => ProfileKind::PowerShell,
@@ -29,6 +29,7 @@ impl ProfileKind {
             "bash" => ProfileKind::Bash,
             "wsl" => ProfileKind::Wsl,
             "ssh" => ProfileKind::Ssh,
+            "shell" => ProfileKind::Shell,
             _ => ProfileKind::Other,
         }
     }
@@ -513,7 +514,7 @@ mod tests {
         assert!(launch_env(&merged[0], true).is_empty(), "Git Bash needs no variable");
         assert_eq!(&launch_args(&merged[1], true)[4..], ["-e", "sh", "-c", "IFS=; . $NEKOMINAL_BASH_INIT"]);
         let env = launch_env(&merged[1], true);
-        assert!(env["NEKOMINAL_BASH_INIT"].ends_with(r"shell\bash.sh"));
+        assert!(env["NEKOMINAL_BASH_INIT"].ends_with(&format!("shell{}bash.sh", std::path::MAIN_SEPARATOR)));
         assert!(env["WSLENV"].starts_with("NEKOMINAL_SESSION:NEKOMINAL_CLAUDE_SETTINGS/p:NEKOMINAL_BASH_INIT/pu"));
         assert!(launch_env(&merged[1], false).is_empty());
     }

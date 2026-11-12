@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! ConPTY experiments, part 3: queries a child sends, answered by the emulator, delivered back through
 //! ConPTY's input side; plus how host-injected key sequences arrive at the child.
 //! Run with: `cargo test --test conpty_roundtrip -- --ignored --nocapture --test-threads=1`

@@ -197,12 +197,12 @@ fi
 /// The variable that names [`BASH_SCRIPT`] in WSL, which translates it to the Linux path (`WSLENV` with `/p`).
 pub const BASH_INIT_VAR: &str = "NEKOMINAL_BASH_INIT";
 
-/// Writes `text` to `name` in the folder of the shell scripts (`%LOCALAPPDATA%\Nekominal\shell`), unless it is there
-/// already, and returns its path. Line ends are LF whatever the checkout made of this source: bash fails on a CR. Written
+/// Writes `text` to `name` in the folder of the shell scripts (`shell` in `store::data_dir`), unless it is there already,
+/// and returns its path. Line ends are LF whatever the checkout made of this source: bash fails on a CR. Written
 /// beside and moved over, under this process's name: another Nekominal starting a shell at the same moment reads the old
 /// script or the new one, never half of one.
 pub fn script_file(name: &str, text: &str) -> Option<PathBuf> {
-    let file = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("shell").join(name);
+    let file = crate::store::data_dir()?.join("shell").join(name);
     let text = text.replace('\r', "");
     if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
         std::fs::create_dir_all(file.parent()?).ok()?;
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_script_file_is_written_once_with_lf_line_ends() {
-        let file = script_file("test-script.sh", "a\r\nb\n").expect("LOCALAPPDATA is set");
+        let file = script_file("test-script.sh", "a\r\nb\n").expect("the data folder is known");
         assert_eq!(std::fs::read(&file).unwrap(), b"a\nb\n");
         let written = std::fs::metadata(&file).unwrap().modified().unwrap();
         assert_eq!(script_file("test-script.sh", "a\nb\n"), Some(file.clone()));

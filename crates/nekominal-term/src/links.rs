@@ -57,6 +57,11 @@ const EXECUTABLE_EXTENSIONS: &[&str] = &[
     "appinstaller", "msix", "msixbundle", "appx", "appxbundle",
 ];
 
+/// On Linux the files that run code are those with the execute permission (`openable` looks for it) and those whose type
+/// a desktop starts as a program or installs: launchers, packages, scripts of the languages a system runs by itself.
+#[cfg(unix)]
+const UNIX_EXECUTABLE_EXTENSIONS: &[&str] = &["desktop", "appimage", "run", "bin", "command", "bash", "zsh", "fish", "pl", "rb", "php", "jnlp", "flatpakref", "snap", "deb", "rpm"];
+
 /// Characters that show nothing or reorder what is shown around them: a link that has one is not what it looks like.
 fn is_invisible(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
@@ -174,7 +179,10 @@ pub fn drive_start(word: &[char]) -> usize {
 /// Whether a word (without its position) is a path as [`find_paths`] means it.
 pub fn looks_like_path(path: &str) -> bool {
     let bytes = path.as_bytes();
+    // An absolute path of Linux starts at the root and goes into a folder (`/etc`, `/usr/lib/x.so`), not a bare `/`.
+    let absolute = cfg!(unix) && path.len() > 3 && path.starts_with('/') && !path.starts_with("//") && path[1..].chars().any(|c| c != '/');
     let rooted = (bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'))
+        || absolute
         || ["\\\\", "./", "../", ".\\", "..\\", "~/", "~\\"].iter().any(|start| path.starts_with(start));
     let last = path.rsplit(['/', '\\']).next().unwrap_or_default();
     let nested = path.contains(['/', '\\']) && last.contains('.') && !last.starts_with('.') && !last.ends_with('.');
@@ -205,9 +213,9 @@ pub fn position(text: &str) -> Option<(u32, Option<u32>)> {
     }
 }
 
-/// The `file:` link of a Windows path, for [`openable`].
+/// The `file:` link of a path (a Windows path, or an absolute path of Linux), for [`openable`].
 pub fn file_uri(path: &str) -> String {
-    let mut uri = String::from("file:///");
+    let mut uri = String::from(if cfg!(windows) { "file:///" } else { "file://" });
     for c in path.chars() {
         match c {
             '\\' => uri.push('/'),
@@ -275,8 +283,33 @@ pub fn open_target(uri: &str) -> Result<OpenTarget, Refusal> {
     }
 }
 
+/// The path a `file:` link names on Linux, when it is a path on this machine. `rest` is what follows `file:`. Whether the
+/// file runs code is [`openable`]'s to check, with the file in front of it.
+#[cfg(unix)]
+fn local_path(rest: &str) -> Result<String, Refusal> {
+    let after_slashes = rest.strip_prefix("//").ok_or(Refusal::NotLocal)?;
+    let (authority, path) = after_slashes.split_at(after_slashes.find('/').unwrap_or(after_slashes.len()));
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return Err(Refusal::NotLocal);
+    }
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    let decoded = percent_decode(path).ok_or(Refusal::Malformed)?;
+    // `file:////server/share` is a share of the network, which no program of this machine is to reach.
+    if decoded.starts_with("//") {
+        return Err(Refusal::NotLocal);
+    }
+    if !decoded.starts_with('/') || decoded.contains('\\') || decoded.chars().any(|c| c.is_control() || is_invisible(c)) {
+        return Err(Refusal::Malformed);
+    }
+    if runs_code(decoded.rsplit('/').find(|name| !name.is_empty()).unwrap_or_default()) {
+        return Err(Refusal::Executable);
+    }
+    Ok(decoded)
+}
+
 /// The Windows path a `file:` link names, when it is a path on this machine and not a file that runs code.
 /// `rest` is what follows `file:`.
+#[cfg(windows)]
 fn local_path(rest: &str) -> Result<String, Refusal> {
     let after_slashes = rest.strip_prefix("//").ok_or(Refusal::NotLocal)?;
     // `file:///C:/x` has an empty authority, `file://localhost/C:/x` names this machine; any other host is a share.
@@ -317,9 +350,13 @@ fn local_path(rest: &str) -> Result<String, Refusal> {
 /// Whether a file name has a type that runs code. Windows ignores trailing dots and spaces when it opens a file, so
 /// `a.exe.` runs a.exe.
 fn runs_code(name: &str) -> bool {
+    #[cfg(unix)]
+    let extensions = EXECUTABLE_EXTENSIONS.iter().chain(UNIX_EXECUTABLE_EXTENSIONS);
+    #[cfg(windows)]
+    let extensions = EXECUTABLE_EXTENSIONS.iter();
     name.trim_end_matches(['.', ' '])
         .rsplit_once('.')
-        .is_some_and(|(_, extension)| EXECUTABLE_EXTENSIONS.iter().any(|runs| extension.eq_ignore_ascii_case(runs)))
+        .is_some_and(|(_, extension)| extensions.clone().any(|runs| extension.eq_ignore_ascii_case(runs)))
 }
 
 /// What to hand to the shell for a link, or `None` when it may not be opened: [`open_target`]'s target, and for a file
@@ -334,6 +371,15 @@ pub fn openable(uri: &str) -> Option<String> {
     let full = std::fs::canonicalize(&open.target).ok()?;
     if full.file_name().is_some_and(|name| runs_code(&name.to_string_lossy())) {
         return None;
+    }
+    // A file with the execute permission is a program, whatever its name; so is the file a link in the name points at.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&full).ok()?;
+        if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+            return None;
+        }
     }
     let full = full.into_os_string().into_string().ok()?;
     Some(match full.strip_prefix(r"\\?\UNC\") {
@@ -497,6 +543,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_path_becomes_a_file_link_with_what_a_uri_cannot_hold_escaped() {
         assert_eq!(file_uri("C:\\My Docs\\50% #1?.txt"), "file:///C:/My%20Docs/50%25%20%231%3F.txt");
         assert_eq!(open_target(&file_uri("C:\\My Docs\\a.txt")).unwrap().target, "C:\\My Docs\\a.txt");
@@ -507,6 +554,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn web_mail_and_local_file_links_are_accepted() {
         for uri in ["http://example.com", "https://example.com/a?b=c#d", "HTTPS://Example.com", "ftp://files.example.com/pub", "http://[::1]:8080/", "https://user@example.com/x", "http://localhost:3000"] {
             assert_eq!(accepted(uri), OpenTarget { kind: LinkKind::Web, target: uri.to_owned() });
@@ -551,6 +599,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_file_link_must_name_a_path_on_this_machine() {
         for uri in ["file://server/share/x.txt", "file:////server/share/x.txt", "file:///home/me/x.txt", "file:///x.txt", "file://C:/x.txt", "file:C:/x.txt", "file:///C:x.txt", "file:///1:/x.txt"] {
             assert_eq!(open_target(uri), Err(Refusal::NotLocal), "{uri}");
@@ -603,5 +652,45 @@ mod tests {
             assert_eq!(openable(&uri(&short)), None, "{short:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_of_linux_becomes_a_file_link_and_back_with_what_a_uri_cannot_hold_escaped() {
+        assert_eq!(file_uri("/home/me/My Docs/50% #1?.txt"), "file:///home/me/My%20Docs/50%25%20%231%3F.txt");
+        assert_eq!(open_target(&file_uri("/home/me/My Docs/a.txt")).unwrap().target, "/home/me/My Docs/a.txt");
+        assert_eq!(open_target("file://localhost/home/me/a.txt").unwrap().target, "/home/me/a.txt");
+        assert_eq!(open_target("file:///home/%E4%BD%A0%E5%A5%BD.txt").unwrap().target, "/home/你好.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_link_of_linux_must_name_a_path_on_this_machine_that_does_not_run_code() {
+        for uri in ["file://server/share/x.txt", "file:////server/share/x.txt", "file:x.txt", "file:///home/me/x.txt?q#f/../..", "file://C:/x.txt"] {
+            let refused = open_target(uri);
+            assert!(refused.is_err() || refused.as_ref().is_ok_and(|open| open.target == "/home/me/x.txt"), "{uri}: {refused:?}");
+        }
+        for uri in ["file:///home/me/a%5Cb", "file:///home/me/a%00b", "file:///home/me/a%zz", "file:///home/me/a%FF"] {
+            assert_eq!(open_target(uri), Err(Refusal::Malformed), "{uri}");
+        }
+        for uri in ["file:///home/me/run.sh", "file:///home/me/app.desktop", "file:///home/me/Tool.AppImage", "file:///home/me/x.py"] {
+            assert_eq!(open_target(uri), Err(Refusal::Executable), "{uri}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_the_execute_permission_is_not_opened_whatever_it_is_called() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("nekominal-links-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plain = dir.join("notes.txt");
+        let program = dir.join("notes2.txt");
+        std::fs::write(&plain, "x").unwrap();
+        std::fs::write(&program, "x").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(openable(&file_uri(&plain.to_string_lossy())).is_some());
+        assert_eq!(openable(&file_uri(&program.to_string_lossy())), None);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

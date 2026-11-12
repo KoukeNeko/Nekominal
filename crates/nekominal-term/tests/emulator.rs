@@ -1208,6 +1208,7 @@ fn an_osc8_link_that_wraps_is_one_link_on_every_row_and_one_id_joins_separate_ru
 }
 
 #[test]
+#[cfg(windows)]
 fn only_a_link_that_may_be_opened_is_a_link() {
     let mut core = core(60, 4);
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml");
@@ -1228,6 +1229,7 @@ fn only_a_link_that_may_be_opened_is_a_link() {
 }
 
 #[test]
+#[cfg(windows)]
 fn a_printed_path_that_starts_with_a_dot_or_two_opens_from_the_folder_the_shell_reported() {
     // `join` kept the dots, and the link checks refuse a name that is a dot, so these were never links.
     let folder = concat!(env!("CARGO_MANIFEST_DIR"), "\\src");
@@ -1238,6 +1240,39 @@ fn a_printed_path_that_starts_with_a_dot_or_two_opens_from_the_folder_the_shell_
     assert_eq!(here.target, expected(&format!("{folder}\\lib.rs")));
     let above = core.link_at(0, 12).expect("the file one folder up");
     assert_eq!(above.target, expected(concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml")));
+}
+
+#[test]
+#[cfg(unix)]
+fn only_a_link_that_may_be_opened_is_a_link() {
+    let mut core = core(60, 4);
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+    let uri = format!("file://{}", path.replace(' ', "%20"));
+    feed(&mut core, &format!("\x1b]8;;javascript:alert(1)\x07script\x1b]8;;\x07 \x1b]8;;file:///bin/sh\x07program\x1b]8;;\x07 \x1b]8;;{uri}\x07file\x1b]8;;\x07"));
+    assert_eq!(core.link_at(0, 2), None, "a script address is text");
+    assert_eq!(core.link_at(0, 10), None, "so is a program");
+    let link = core.link_at(0, 18).expect("a file that exists");
+    assert_eq!((link.uri.as_str(), link.target.as_str()), (uri.as_str(), path), "what is opened is the checked path");
+    feed(&mut core, "\r\njavascript:alert(1) sh file:///bin/sh http://");
+    for column in [0, 10, 25, 40, 59] {
+        assert_eq!(core.link_at(1, column), None, "column {column}");
+    }
+    feed(&mut core, "\r\n\x1b]8;;file:///nekominal-no-such-dir/x.txt\x07gone\x1b]8;;\x07 file:///nekominal-no-such-dir/x.txt");
+    assert_eq!(core.link_at(2, 1), None, "a file that does not exist is text");
+    assert_eq!(core.link_at(2, 20), None, "in the text too");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_printed_path_that_starts_with_a_dot_or_two_opens_from_the_folder_the_shell_reported() {
+    let folder = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut core = core(60, 3);
+    feed(&mut core, &format!("\x1b]7;file://host{}\x07./lib.rs ../Cargo.toml", folder.replace(' ', "%20")));
+    let expected = |path: &str| std::fs::canonicalize(path).unwrap().to_str().unwrap().to_owned();
+    let here = core.link_at(0, 2).expect("the file in the folder");
+    assert_eq!(here.target, expected(&format!("{folder}/lib.rs")));
+    let above = core.link_at(0, 12).expect("the file one folder up");
+    assert_eq!(above.target, expected(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")));
 }
 
 #[test]
