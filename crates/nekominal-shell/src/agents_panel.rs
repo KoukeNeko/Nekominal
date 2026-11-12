@@ -6,12 +6,9 @@
 //! every window, since a window cannot borrow the others while it handles a key.
 
 use nekominal_model::{layout::PaneId, strings::{Lang, Text}};
-use windows::Win32::{
-    Foundation::{HWND, LPARAM, WPARAM},
-    UI::WindowsAndMessaging::{IsIconic, IsWindowVisible, PostMessageW, SW_RESTORE, SW_SHOW, SetForegroundWindow, ShowWindow},
-};
 
 use super::App;
+use crate::plat::Message;
 use crate::{agent::Usage, hooks, logic::{self, Mark, TabState}, popup, status};
 
 /// The glyph of a row whose agent has said nothing of its state: the one of the programs that are agents.
@@ -85,7 +82,7 @@ pub fn rows(mut seen: Vec<Seen>, here: isize, today: f64, lang: Lang) -> Vec<pop
 impl App {
     /// The panes of this window that run an agent; `window` is the order of this window among those asked.
     pub fn agents_seen(&self, window: usize) -> Vec<Seen> {
-        let home = std::env::var("USERPROFILE").ok();
+        let home = nekominal_model::store::home_dir().map(|home| home.display().to_string());
         let mut seen = Vec::new();
         for (t, tab) in self.tabs.iter().enumerate() {
             for entry in tab.panes.iter().filter(|entry| Self::runs_agent(entry)) {
@@ -133,11 +130,10 @@ impl App {
 
     /// Shows a pane a row of the panel chose: here, or by asking the window that has it.
     pub fn show_agent(&mut self, window: isize, tab: u64, pane: PaneId) {
-        if window == self.hwnd.0 as isize {
+        if window == crate::win::id(self.hwnd) {
             self.show_pane(tab, pane);
         } else {
-            // SAFETY: posting to a window of this thread; a window gone since does not take it.
-            unsafe { let _ = PostMessageW(Some(HWND(window as *mut _)), crate::win::WM_SHOW_PANE, WPARAM(tab as usize), LPARAM(pane as isize)); }
+            crate::win::post(crate::win::from_id(window), Message::ShowPane { tab, pane });
         }
     }
 
@@ -149,15 +145,7 @@ impl App {
             self.sync_focus();
             self.redraw();
         }
-        // SAFETY: plain calls on a window of this thread.
-        unsafe {
-            if IsIconic(self.hwnd).as_bool() {
-                let _ = ShowWindow(self.hwnd, SW_RESTORE);
-            } else if !IsWindowVisible(self.hwnd).as_bool() {
-                let _ = ShowWindow(self.hwnd, SW_SHOW);
-            }
-            let _ = SetForegroundWindow(self.hwnd);
-        }
+        crate::win::raise(self.hwnd);
     }
 }
 

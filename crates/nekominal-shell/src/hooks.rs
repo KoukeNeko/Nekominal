@@ -105,7 +105,7 @@ pub fn environment() -> Vec<(String, String)> {
     if let Some(notify) = codex_notify(&exe) {
         env.push(("NEKOMINAL_CODEX_NOTIFY".to_owned(), notify));
     }
-    if let Some(file) = std::env::var_os("LOCALAPPDATA").map(|dir| Path::new(&dir).join("Nekominal").join("gemini-defaults.json")) {
+    if let Some(file) = nekominal_model::store::data_dir().map(|dir| dir.join("gemini-defaults.json")) {
         crate::agent::write_if_changed(&file, &gemini_settings(&exe));
         env.push(("NEKOMINAL_GEMINI_DEFAULTS".to_owned(), file.to_string_lossy().into_owned()));
     }
@@ -130,7 +130,11 @@ fn aider_command(exe: &Path) -> Option<String> {
 /// state. Gemini runs a hook through PowerShell on Windows: the path single-quoted (`$` and every quote PowerShell takes
 /// are then plain) and run with the call operator.
 fn gemini_settings(exe: &Path) -> String {
+    #[cfg(windows)]
     let command = format!("& {} {FLAG} gemini", crate::update::ps_quote(&exe.to_string_lossy()));
+    // Elsewhere the hook runs through `sh`: the path in single quotes, in which nothing runs.
+    #[cfg(unix)]
+    let command = format!("'{}' {FLAG} gemini", exe.to_string_lossy().replace('\'', r"'\''"));
     let hook = serde_json::json!([{ "hooks": [{ "name": "nekominal", "type": "command", "command": command }] }]);
     serde_json::json!({ "hooks": { "BeforeAgent": hook, "AfterAgent": hook, "Notification": hook } }).to_string()
 }
@@ -190,6 +194,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_hooks_name_this_program_as_each_agent_runs_its_command() {
         let plain = Path::new(r"C:\n\nekominal.exe");
         let spaced = Path::new(r"C:\Program Files\N\n.exe");

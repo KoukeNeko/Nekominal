@@ -16,15 +16,13 @@
 //!
 //! git runs as a process with its arguments, never through a shell, and without a console window.
 
+use crate::util::CommandQuiet;
 use std::{
     ffi::OsString,
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
 };
 
-/// `CREATE_NO_WINDOW`: git is a console program, and this one has no console for it to borrow.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -142,7 +140,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = git_command().arg("-C").arg(dir).args(args).creation_flags(CREATE_NO_WINDOW).output().map_err(git_not_run)?;
+    let output = git_command().arg("-C").arg(dir).args(args).quiet().output().map_err(git_not_run)?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
     }
@@ -162,7 +160,7 @@ fn check_ignore(root: &Path, paths: &[&str]) -> Result<String, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
+        .quiet()
         .spawn()
         .map_err(git_not_run)?;
     let input = paths.join("\0").into_bytes();
@@ -395,7 +393,7 @@ pub fn remote_web(url: &str) -> Option<String> {
 pub fn inspect(dir: &Path) -> Result<Status, Error> {
     let dirs = git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]).map_err(|_| Error::NotRepo)?;
     let [top, git_dir, common] = dirs.lines().collect::<Vec<_>>()[..] else { return Err(Error::NotRepo) };
-    let path = PathBuf::from(top.replace('/', "\\"));
+    let path = PathBuf::from(if cfg!(windows) { top.replace('/', "\\") } else { top.to_owned() });
     let branch = git(&path, ["branch", "--show-current"]).ok().filter(|b| !b.is_empty());
     let porcelain = git(&path, ["-c", "core.quotePath=false", "status", "--porcelain", "--ignored"]).map_err(Error::Git)?;
     let (changed, untracked) = parse_porcelain(&porcelain);
@@ -416,10 +414,14 @@ pub fn inspect(dir: &Path) -> Result<Status, Error> {
     Ok(Status { path, branch, main: same_path(git_dir, common), changed, untracked, ignored, files: parse_files(&porcelain), remote, unpushed, behind, default_branch, merged })
 }
 
-/// Paths git wrote, compared as Windows does: either slash, any case, no trailing separator.
+/// Paths git wrote, compared as the system does: on Windows either slash and any case, on Linux as they are; no trailing
+/// separator.
 fn normalize(path: &str) -> String {
-    path.replace('/', "\\").trim_end_matches('\\').to_lowercase()
+    if cfg!(windows) { path.replace('/', "\\").trim_end_matches('\\').to_lowercase() } else { path.trim_end_matches('/').to_owned() }
 }
+
+/// What parts of a path are separated by in what `normalize` gives.
+const SEPARATOR: char = if cfg!(windows) { '\\' } else { '/' };
 
 fn same_path(a: &str, b: &str) -> bool {
     normalize(a) == normalize(b)
@@ -428,7 +430,7 @@ fn same_path(a: &str, b: &str) -> bool {
 /// Whether the folder `dir` (a pane's working directory) is `root` or inside it.
 pub fn contains(root: &Path, dir: &str) -> bool {
     let (root, dir) = (normalize(&root.to_string_lossy()), normalize(dir));
-    dir == root || dir.strip_prefix(&root).is_some_and(|rest| rest.starts_with('\\'))
+    dir == root || dir.strip_prefix(&root).is_some_and(|rest| rest.starts_with(SEPARATOR))
 }
 
 /// Whether the worktree may be removed: never the main checkout, and not with changes unless `force`.
@@ -511,6 +513,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_folder_of_a_worktree_keeps_spaces_and_unicode_and_a_drive_root_has_one_too() {
         let none = |_: &Path| false;
         assert_eq!(worktree_path(Path::new(r"D:\my src\應用 app"), "功能/登入", none), Path::new(r"D:\my src\應用 app-功能-登入"));
@@ -732,7 +735,7 @@ mod tests {
     /// where git is not on the PATH.
     #[test]
     fn a_real_worktree_is_made_beside_the_repository_and_can_be_removed() {
-        if Command::new("git").arg("--version").creation_flags(CREATE_NO_WINDOW).output().is_err() {
+        if Command::new("git").arg("--version").quiet().output().is_err() {
             eprintln!("git is not on the PATH: skipped");
             return;
         }
@@ -794,6 +797,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_folder_is_in_a_worktree_whatever_its_slashes_and_case() {
         let root = Path::new(r"D:\src\app-fix");
         assert!(contains(root, r"D:\src\app-fix"));
@@ -803,6 +807,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_folder_is_in_a_worktree_only_below_it() {
         let app = Path::new(r"D:\src\app");
         assert!(!contains(app, r"D:\src\app2"), "a name that starts the same");
@@ -833,7 +838,7 @@ mod tests {
 
     /// A fresh repository with one commit on `main` in a temporary folder named `name`; None where git is not on the PATH.
     fn temp_repo(name: &str) -> Option<(PathBuf, PathBuf)> {
-        if Command::new("git").arg("--version").creation_flags(CREATE_NO_WINDOW).output().is_err() {
+        if Command::new("git").arg("--version").quiet().output().is_err() {
             eprintln!("git is not on the PATH: skipped");
             return None;
         }
@@ -891,7 +896,8 @@ mod tests {
         let seen = overview(&clone).unwrap();
         assert_eq!((seen.upstream.as_deref(), seen.status.behind, seen.stashes), (Some("origin/main"), Some(1), 1));
         assert!(seen.url.is_some(), "the address of origin");
-        assert!(overview(&base).unwrap_err().contains("not a git repository"), "git's words when it is no repository");
+        // Git says why in the language of the user, so only that it refuses is held to.
+        assert!(overview(&base).is_err(), "a folder that is no repository");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -934,12 +940,13 @@ mod tests {
 
     /// The shell of a pane that has not exited yet: Windows keeps a folder that is a process's working directory.
     #[test]
+    #[cfg(windows)]
     fn a_worktree_a_process_still_sits_in_loses_its_branch_as_asked() {
         let Some((base, repo)) = temp_repo("held") else { return };
         let made = create(&repo, "agent/held").unwrap().0;
         let status = inspect(&made).unwrap();
         // ping, not cmd running it: killing cmd would leave its ping in the folder.
-        let mut shell = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).current_dir(&made).creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
+        let mut shell = Command::new("ping.exe").args(["-n", "30", "127.0.0.1"]).stdout(std::process::Stdio::null()).current_dir(&made).quiet().spawn().unwrap();
         let removed = remove(&status, false, true);
         shell.kill().unwrap();
         shell.wait().unwrap();
@@ -1107,6 +1114,7 @@ mod tests {
 
     /// The command line as cmd, PowerShell and Git Bash (where installed) read it, run in a folder with the scripts.
     #[test]
+    #[cfg(windows)]
     fn the_setup_command_runs_the_script_in_cmd_powershell_and_git_bash_alike() {
         let dir = std::env::temp_dir().join(format!("nekominal-setup-shells-{}", std::process::id()));
         let scripts = dir.join(".nekominal");
@@ -1120,10 +1128,10 @@ mod tests {
                 std::fs::write(scripts.join("setup.ps1"), "Write-Output ps1-setup-ran").unwrap();
             }
             let line = setup_command(&dir).unwrap();
-            let mut shells = vec![Command::new("cmd.exe").args(["/d", "/c", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap()];
-            shells.push(Command::new("powershell.exe").args(["-NoProfile", "-Command", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap());
+            let mut shells = vec![Command::new("cmd.exe").args(["/d", "/c", &line]).current_dir(&dir).quiet().output().unwrap()];
+            shells.push(Command::new("powershell.exe").args(["-NoProfile", "-Command", &line]).current_dir(&dir).quiet().output().unwrap());
             if let Some(bash) = &bash {
-                shells.push(Command::new(bash).args(["-c", &line]).current_dir(&dir).creation_flags(CREATE_NO_WINDOW).output().unwrap());
+                shells.push(Command::new(bash).args(["-c", &line]).current_dir(&dir).quiet().output().unwrap());
             }
             for output in shells {
                 assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("{script}-setup-ran")), "{line}: {output:?}");

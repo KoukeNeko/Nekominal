@@ -7,14 +7,23 @@
 //! Every record is logged, one line each; `S <hex>` lines carry the UTF-8 of the characters
 //! the key-down records delivered in one read (the VT byte stream in `vt` mode).
 
+#[cfg(windows)]
 use std::{fs::OpenOptions, io::Write};
 
+#[cfg(windows)]
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetStdHandle, ReadConsoleInputW, SetConsoleMode, ENABLE_EXTENDED_FLAGS,
     ENABLE_MOUSE_INPUT, ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_WINDOW_INPUT, FOCUS_EVENT,
     INPUT_RECORD, KEY_EVENT, MOUSE_EVENT, STD_INPUT_HANDLE, WINDOW_BUFFER_SIZE_EVENT,
 };
 
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("winprobe reads the input records of a Windows console");
+    std::process::exit(1);
+}
+
+#[cfg(windows)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let log_path = &args[1];

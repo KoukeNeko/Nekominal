@@ -43,7 +43,7 @@ const REFUSED: u32 = 0xE000_0001;
 const NO_CONSOLE: u32 = 0xE000_0002;
 const NOT_STARTED: u32 = 0xE000_0003;
 
-fn main() {
+pub fn main() {
     // SAFETY: the command line of this process, which lives as long as it.
     let raw = unsafe { GetCommandLineW().to_string().unwrap_or_default() };
     let code = match sudo::helper_request(&raw) {

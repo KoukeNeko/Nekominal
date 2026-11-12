@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::CloseHandle,
@@ -25,9 +26,16 @@ pub fn key(path: &Path) -> u64 {
 /// The first icon of the program at `path`, `px` pixels square, as premultiplied RGBA; `None` when the file has none.
 /// An app execution alias (the `pwsh.exe` of the Store version in `WindowsApps`) is an empty file: the icon is that of the
 /// program it stands for.
+#[cfg(windows)]
 pub fn load(path: &Path, px: u32) -> Option<Vec<u8>> {
     let path = &plain(path);
     from_file(path, px).or_else(|| from_file(&alias_target(path)?, px)).or_else(|| from_file(&sibling(path)?, px))
+}
+
+/// A program of Linux keeps no icon in its file: its tab shows its mark or its glyph.
+#[cfg(unix)]
+pub fn load(_path: &Path, _px: u32) -> Option<Vec<u8>> {
+    None
 }
 
 /// What a tab shows for a program whose file has no icon of its own, in this order: the icon of the program installed
@@ -130,6 +138,7 @@ pub fn brand_pixels(svg: &str, rgb: [u8; 3], px: u32) -> Option<Vec<u8>> {
     Some(coverage.iter().flat_map(|&a| [premultiplied(rgb[0], a), premultiplied(rgb[1], a), premultiplied(rgb[2], a), a]).collect())
 }
 
+#[cfg(windows)]
 /// `path` with its `.` and `..` worked out: a program can be started by such a path (Git's `bin\..\usr\bin\bash.exe`), and
 /// the call that takes the icons out of a file does not work them out itself.
 fn plain(path: &Path) -> std::path::PathBuf {
@@ -147,12 +156,14 @@ fn plain(path: &Path) -> std::path::PathBuf {
     out
 }
 
+#[cfg(windows)]
 /// The program of the table installed beside `path` (the `git-bash.exe` of the Git a `git.exe` belongs to).
 fn sibling(path: &Path) -> Option<std::path::PathBuf> {
     let (beside, up) = program(&path.file_name()?.to_string_lossy())?.sibling?;
     path.ancestors().skip(1).take(up).map(|dir| dir.join(beside)).find(|launcher| launcher.is_file())
 }
 
+#[cfg(windows)]
 fn from_file(path: &Path, px: u32) -> Option<Vec<u8>> {
     let mut name = [0u16; 260];
     let wide: Vec<u16> = path.as_os_str().to_string_lossy().encode_utf16().collect();
@@ -174,6 +185,7 @@ fn from_file(path: &Path, px: u32) -> Option<Vec<u8>> {
     pixels
 }
 
+#[cfg(windows)]
 /// The program an app execution alias stands for. The alias is a reparse point (`IO_REPARSE_TAG_APPEXECLINK`) whose data, after
 /// the header and a version of 3, is NUL-terminated strings: the package, the app and the path of the program.
 fn alias_target(path: &Path) -> Option<std::path::PathBuf> {
@@ -190,6 +202,7 @@ fn alias_target(path: &Path) -> Option<std::path::PathBuf> {
     alias_path(data.get(..read as usize)?, APPEXECLINK)
 }
 
+#[cfg(windows)]
 /// The path in the reparse data of an alias: its third string.
 fn alias_path(data: &[u8], tag: u32) -> Option<std::path::PathBuf> {
     let word = |at: usize| Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?));
@@ -201,6 +214,7 @@ fn alias_path(data: &[u8], tag: u32) -> Option<std::path::PathBuf> {
     (!target.is_empty()).then(|| std::path::PathBuf::from(String::from_utf16_lossy(target)))
 }
 
+#[cfg(windows)]
 /// The rows of a bitmap of the icon as 32-bit BGRA, top down.
 fn bitmap_rows(bitmap: HBITMAP, px: u32) -> Option<Vec<u8>> {
     let mut info = BITMAPINFO {
@@ -225,6 +239,7 @@ fn bitmap_rows(bitmap: HBITMAP, px: u32) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(windows)]
 fn icon_pixels(icon: HICON, px: u32) -> Option<Vec<u8>> {
     let mut info = ICONINFO::default();
     // SAFETY: a valid icon; the bitmaps it hands back are deleted below.
@@ -239,6 +254,7 @@ fn icon_pixels(icon: HICON, px: u32) -> Option<Vec<u8>> {
     Some(premultiplied_rgba(colour?, mask.as_deref()))
 }
 
+#[cfg(windows)]
 /// BGRA with straight alpha to premultiplied RGBA. An old icon without alpha has the transparency in its mask instead
 /// (white where it is clear).
 fn premultiplied_rgba(mut bgra: Vec<u8>, mask: Option<&[u8]>) -> Vec<u8> {
@@ -264,6 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(windows)]
     fn colours_are_premultiplied_and_turned_into_rgba() {
         let half_red = vec![0, 0, 255, 128];
         assert_eq!(premultiplied_rgba(half_red, None), [128, 0, 0, 128]);
@@ -274,6 +291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_bash_of_git_takes_the_icon_of_git_bash() {
         let root = std::env::temp_dir().join(format!("nekominal-git-{}", std::process::id()));
         for dir in ["bin", "usr\\bin"] {
@@ -296,6 +314,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn an_alias_names_its_program_in_its_third_string() {
         let mut data = 0x8000_001Bu32.to_le_bytes().to_vec();
         data.extend([0u8; 4]);
@@ -364,6 +383,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_program_of_the_system_has_an_icon_of_the_size_asked_for() {
         let cmd = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap_or("C:\\Windows".into())).join("System32\\cmd.exe");
         let pixels = load(&cmd, 24).expect("cmd.exe has an icon");

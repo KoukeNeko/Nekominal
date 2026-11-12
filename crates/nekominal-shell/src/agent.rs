@@ -65,8 +65,7 @@ pub fn session_file(session: &str, extension: &str) -> Option<PathBuf> {
     if session.is_empty() || !session.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
         return None;
     }
-    let base = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(base).join("Nekominal").join("agents").join(format!("{session}.{extension}")))
+    Some(nekominal_model::store::data_dir()?.join("agents").join(format!("{session}.{extension}")))
 }
 
 /// Writes beside and moves over, so that the window never reads half a file, and flushed to disk before the move, so that a
@@ -388,7 +387,7 @@ fn model_name(id: &str) -> String {
 
 /// The windows the status line gave per model id, kept for the transcript's answers: `context-windows.json`.
 fn windows_file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("context-windows.json"))
+    Some(nekominal_model::store::data_dir()?.join("context-windows.json"))
 }
 
 fn known_window(model: &str) -> Option<u64> {
@@ -436,6 +435,12 @@ fn clean_stale_in(dir: &Path, now: SystemTime) {
 /// Whether `dir` is on a disk of this machine: a drive letter whose drive is fixed, removable, optical or in memory. This
 /// runs every second on the thread of the window, so nothing else is looked at: a share (`\\host\x`) makes Windows connect
 /// and hand over the user's credentials, and a mapped drive whose server sleeps blocks for seconds.
+#[cfg(unix)]
+fn on_local_disk(_dir: &Path) -> bool {
+    true
+}
+
+#[cfg(windows)]
 fn on_local_disk(dir: &Path) -> bool {
     let text = dir.to_string_lossy();
     let mut chars = text.chars();
@@ -501,7 +506,7 @@ pub struct Claude {
 }
 
 fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(PathBuf::from)
+    nekominal_model::store::home_dir()
 }
 
 /// Claude Code's settings of the user: `CLAUDE_CONFIG_DIR` or `~/.claude`.
@@ -571,10 +576,11 @@ fn canonical_model(id: &str) -> String {
     id
 }
 
-/// Looks for Claude Code: `claude.exe` on the path, then where its own installer puts it.
+/// Looks for Claude Code: `claude.exe` (`claude`) on the path, then where its own installer puts it.
 pub fn claude() -> Claude {
-    let on_path = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|dir| dir.join("claude.exe")).find(|exe| exe.is_file()));
-    let installed = home().map(|h| h.join(".local").join("bin").join("claude.exe")).filter(|exe| exe.is_file());
+    let program = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let on_path = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(program)).find(|exe| exe.is_file()));
+    let installed = home().map(|h| h.join(".local").join("bin").join(program)).filter(|exe| exe.is_file());
     // The native installer keeps every version it has in a folder of its own, named by the version.
     let version = home()
         .and_then(|h| std::fs::read_dir(h.join(".local").join("share").join("claude").join("versions")).ok())
@@ -653,9 +659,10 @@ pub fn write_if_changed(file: &Path, text: &str) -> Option<()> {
 /// for a status line of the user's own, which the shell integration also picks for a project that sets one), each with a
 /// WSL twin `-wsl.json`. Returns the one for a pane.
 pub fn claude_settings_file(own_status_line: bool) -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal");
+    let dir = nekominal_model::store::data_dir()?;
     let exe = std::env::current_exe().ok()?;
-    let powershell = !git_bash();
+    // Claude Code runs a hook in PowerShell only on Windows, where it finds no Git Bash.
+    let powershell = cfg!(windows) && !git_bash();
     for (name, status_line) in [("claude-settings", true), ("claude-hooks", false)] {
         write_if_changed(&dir.join(format!("{name}-wsl.json")), &settings_json(&exe, true, status_line, false)?)?;
         write_if_changed(&dir.join(format!("{name}.json")), &settings_json(&exe, false, status_line, powershell)?)?;
@@ -920,6 +927,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_branch_is_read_from_the_head_of_the_repository_above_the_folder() {
         let root = std::env::temp_dir().join(format!("nekominal-branch-{}", new_session()));
         let deep = root.join("src").join("inner");

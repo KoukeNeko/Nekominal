@@ -2145,7 +2145,8 @@ mod tests {
 
     #[test]
     fn stepping_moves_a_value_by_its_step_wraps_a_choice_and_stays_in_range() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        settings.appearance.backdrop = nekominal_model::settings::Backdrop::ALL[0];
         let opacity = row("appearance.opacity");
         assert_eq!(stepped(opacity, &settings, &[], true, false), Some(Value::Number(73.0)));
         assert_eq!(stepped(opacity, &settings, &[], false, true), Some(Value::Number(67.0)));

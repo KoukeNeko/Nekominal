@@ -7,7 +7,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::atomic::Ordering, t
 use nekominal_model::{layout::{Axis, PaneId}, strings::Text};
 use nekominal_term::{agent_status::AgentState, osc::PromptMark};
 use serde_json::{Value, json};
-use windows::Win32::Foundation::HWND;
+use crate::win::Hwnd;
 
 use super::{App, Confirmation};
 use crate::{
@@ -48,7 +48,7 @@ fn tail(text: &str, lines: usize) -> String {
 
 /// Answers a request from the windows of the process (the one in front first); `None` when a window that may hold the
 /// answer is busy (the request came while one of its handlers runs), for the request to be tried again.
-pub fn answer(windows: &[(HWND, Rc<RefCell<App>>)], request: &Request) -> Option<Result<Value, String>> {
+pub fn answer(windows: &[(Hwnd, Rc<RefCell<App>>)], request: &Request) -> Option<Result<Value, String>> {
     let pane = match request {
         Request::List => {
             let mut listed = Vec::new();

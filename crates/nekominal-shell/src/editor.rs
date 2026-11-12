@@ -72,11 +72,10 @@ fn launch(template: &str, file: &str, line: u32, column: u32) -> Result<(), Stri
         log(&format!("not started ({} is set): {} {args:?}", crate::open::NO_LAUNCH, path.display()));
         return Ok(());
     }
-    use std::os::windows::process::CommandExt;
-    // A `.cmd` runs in cmd.exe: without this a console window flashes up. The standard library quotes each argument for
+    use crate::util::CommandQuiet;
+    // A `.cmd` runs in cmd.exe: without `quiet` a console window flashes up. The standard library quotes each argument for
     // it, and refuses one it cannot pass safely.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    Command::new(&path).args(&args).creation_flags(CREATE_NO_WINDOW).spawn().map(drop).map_err(|e| format!("{}: {e}", path.display()))
+    Command::new(&path).args(&args).quiet().spawn().map(drop).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 #[cfg(test)]

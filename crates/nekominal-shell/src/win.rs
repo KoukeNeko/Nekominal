@@ -308,6 +308,272 @@ pub fn is_maximized(hwnd: HWND) -> bool {
     unsafe { IsZoomed(hwnd).as_bool() }
 }
 
+/// The handle of a window, as the application holds it.
+pub type Hwnd = HWND;
+
+/// The number a window is known by outside the application: its automation id, the target of a thread's wake.
+pub fn id(hwnd: Hwnd) -> isize {
+    hwnd.0 as isize
+}
+
+pub fn from_id(id: isize) -> Hwnd {
+    HWND(id as *mut _)
+}
+
+/// Sends `message` to the window; any thread may. False when it could not be posted (the window is gone).
+pub fn post(hwnd: Hwnd, message: crate::plat::Message) -> bool {
+    use crate::plat::{Message, WindowCommand};
+    let (msg, wparam, lparam) = match message {
+        Message::Wake => (crate::app::WM_WAKE, 0, 0),
+        Message::GpuLost { forced } => (crate::app::WM_GPU_LOST, 0, isize::from(forced)),
+        Message::Close => (WM_CLOSE, 0, 0),
+        Message::DestroyWindow => (WM_DESTROY_WINDOW, 0, 0),
+        Message::NewWindow => (WM_NEW_WINDOW, 0, 0),
+        Message::Quake => (WM_QUAKE, 0, 0),
+        Message::Agents => (WM_AGENTS, 0, 0),
+        Message::ShowPane { tab, pane } => (WM_SHOW_PANE, tab as usize, pane as isize),
+        Message::HandOff => (WM_HAND_OFF, 0, 0),
+        Message::Elevated(id) => (WM_ELEVATED, 0, id as isize),
+        Message::Window(command) => (
+            WM_SYSCOMMAND,
+            match command {
+                WindowCommand::Minimize => SC_MINIMIZE,
+                WindowCommand::Maximize => SC_MAXIMIZE,
+                WindowCommand::Restore => SC_RESTORE,
+                WindowCommand::Move => SC_MOVE,
+                WindowCommand::Size => SC_SIZE,
+                WindowCommand::Close => SC_CLOSE,
+            } as usize,
+            0,
+        ),
+    };
+    // SAFETY: posting to a window from another thread is allowed; a window gone since does not take it.
+    unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam), LPARAM(lparam)) }.is_ok()
+}
+
+/// Asks for a frame of the window: WM_PAINT arrives when the queue is otherwise empty.
+pub fn invalidate(hwnd: Hwnd) {
+    // SAFETY: invalidating a window.
+    unsafe { let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false); }
+}
+
+/// Starts (or restarts) a timer of the window that fires every `ms`.
+pub fn set_timer(hwnd: Hwnd, id: usize, ms: u32) -> bool {
+    // SAFETY: a timer of a window of this thread.
+    unsafe { SetTimer(Some(hwnd), id, ms, None) != 0 }
+}
+
+pub fn kill_timer(hwnd: Hwnd, id: usize) {
+    // SAFETY: a timer of a window of this thread.
+    unsafe { let _ = KillTimer(Some(hwnd), id); }
+}
+
+pub fn set_title(hwnd: Hwnd, title: &str) {
+    // SAFETY: names a window.
+    unsafe { let _ = SetWindowTextW(hwnd, &windows::core::HSTRING::from(title)); }
+}
+
+/// The button of the window on the taskbar flashes until the window is in front.
+pub fn flash(hwnd: Hwnd) {
+    let flash = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 0, dwTimeout: 0 };
+    // SAFETY: the structure lives through the call and names a window.
+    unsafe { let _ = FlashWindowEx(&flash); }
+}
+
+/// Plays the sound of the system for a plain message.
+pub fn beep() {
+    // SAFETY: plays a sound.
+    unsafe { let _ = windows::Win32::System::Diagnostics::Debug::MessageBeep(MESSAGEBOX_STYLE(0)); }
+}
+
+/// Whether the user asked for the sounds of the system to be shown as well (for the deaf).
+pub fn show_sounds() -> bool {
+    // SAFETY: a plain query.
+    unsafe { GetSystemMetrics(SM_SHOWSOUNDS) != 0 }
+}
+
+pub fn is_foreground(hwnd: Hwnd) -> bool {
+    // SAFETY: a plain query.
+    unsafe { GetForegroundWindow() == hwnd }
+}
+
+pub fn is_minimized(hwnd: Hwnd) -> bool {
+    // SAFETY: a plain query of a window of this thread.
+    unsafe { IsIconic(hwnd).as_bool() }
+}
+
+pub fn is_visible(hwnd: Hwnd) -> bool {
+    // SAFETY: a plain query of a window of this thread.
+    unsafe { IsWindowVisible(hwnd).as_bool() }
+}
+
+/// Where the window is on the screen.
+pub fn origin(hwnd: Hwnd) -> Option<(i32, i32)> {
+    let mut rect = RECT::default();
+    // SAFETY: a window of this thread and a rect that lives through the call.
+    unsafe { GetWindowRect(hwnd, &mut rect).ok()? };
+    Some((rect.left, rect.top))
+}
+
+/// Moves a window by `(dx, dy)` pixels without changing its size or its place in front.
+pub fn move_by(hwnd: Hwnd, dx: i32, dy: i32) {
+    let mut at = RECT::default();
+    // SAFETY: plain queries and a move of a window of this thread.
+    unsafe {
+        if GetWindowRect(hwnd, &mut at).is_ok() {
+            let _ = SetWindowPos(hwnd, None, at.left + dx, at.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+}
+
+/// A point of the client area of `popup` (a window of its own on the screen) as a point of the client area of `owner`.
+pub fn popup_point_in_owner(owner: Hwnd, popup: Hwnd, point: (i32, i32)) -> Option<(i32, i32)> {
+    let mut rect = RECT::default();
+    // SAFETY: both windows are owned by this thread.
+    unsafe {
+        GetWindowRect(popup, &mut rect).ok()?;
+        let mut point = POINT { x: rect.left + point.0, y: rect.top + point.1 };
+        ScreenToClient(owner, &mut point).as_bool().then_some((point.x, point.y))
+    }
+}
+
+/// A point of the client area as a point of the screen.
+pub fn client_to_screen(hwnd: Hwnd, (x, y): (i32, i32)) -> (i32, i32) {
+    let mut point = POINT { x, y };
+    // SAFETY: converts a point of a window of this thread.
+    unsafe { let _ = ClientToScreen(hwnd, &mut point); }
+    (point.x, point.y)
+}
+
+/// The rectangle of the whole virtual screen (every monitor).
+pub fn virtual_screen(_hwnd: Hwnd) -> nekominal_model::session::PixelRect {
+    // SAFETY: plain queries.
+    unsafe {
+        nekominal_model::session::PixelRect {
+            x: GetSystemMetrics(SM_XVIRTUALSCREEN),
+            y: GetSystemMetrics(SM_YVIRTUALSCREEN),
+            width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(0) as u32,
+            height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(0) as u32,
+        }
+    }
+}
+
+/// Where the window is when it is not maximized or minimized, and whether it is maximized.
+pub fn placement(hwnd: Hwnd) -> Option<nekominal_model::session::Placement> {
+    let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+    // SAFETY: a window of this thread and a structure that lives through the call.
+    unsafe { GetWindowPlacement(hwnd, &mut placement) }.ok().map(|()| {
+        let rect = placement.rcNormalPosition;
+        nekominal_model::session::Placement {
+            rect: nekominal_model::session::PixelRect { x: rect.left, y: rect.top, width: (rect.right - rect.left).max(0) as u32, height: (rect.bottom - rect.top).max(0) as u32 },
+            maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
+        }
+    })
+}
+
+/// Keeps the window over all the others, or lets it go back among them.
+pub fn set_topmost(hwnd: Hwnd, on: bool) {
+    let after = if on { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    // SAFETY: changes the z-order of a window of this thread only.
+    unsafe { let _ = SetWindowPos(hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+}
+
+/// What full screen needs to put the window back: the placement it had.
+pub type Restore = WINDOWPLACEMENT;
+
+/// The window over the whole monitor it is on, its client area the whole window. The window keeps its style: without
+/// `WS_OVERLAPPEDWINDOW` DWM no longer holds the backdrop, which flickered while what was behind the window redrew.
+pub fn enter_fullscreen(hwnd: Hwnd) -> Option<Restore> {
+    let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
+    let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    // SAFETY: plain Win32 calls on a window of this thread; the structures live through the calls.
+    unsafe {
+        if GetWindowPlacement(hwnd, &mut placement).is_err() || !GetMonitorInfoW(windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool() {
+            return None;
+        }
+        mark_fullscreen(hwnd, true);
+        let r = monitor.rcMonitor;
+        let _ = SetWindowPos(hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+    Some(placement)
+}
+
+/// The way back from [`enter_fullscreen`]: the placement it had.
+pub fn leave_fullscreen(hwnd: Hwnd, placement: Restore) {
+    mark_fullscreen(hwnd, false);
+    // SAFETY: plain Win32 calls on a window of this thread; the structure lives through the call.
+    unsafe {
+        let _ = SetWindowPlacement(hwnd, &placement);
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    }
+}
+
+/// Whether the device of the window was lost (a removed one says why it went).
+pub fn device_lost(gpu: &crate::gpu::Gpu) -> bool {
+    // SAFETY: a query of a device a window holds.
+    unsafe { gpu.device.GetDeviceRemovedReason() }.is_err()
+}
+
+/// The window along the top of the work area of the monitor under the pointer, as wide as it and `share` of its height.
+pub fn dock_at_top(hwnd: Hwnd, share: f32) {
+    // SAFETY: plain queries and a move of a window of this thread; the structures live through the calls.
+    unsafe {
+        let mut pointer = POINT::default();
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pointer);
+        let monitor = windows::Win32::Graphics::Gdi::MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let work = info.rcWork;
+        let height = ((work.bottom - work.top) as f32 * share).round() as i32;
+        let _ = SetWindowPos(hwnd, Some(HWND_TOP), work.left, work.top, work.right - work.left, height, SWP_NOOWNERZORDER);
+    }
+}
+
+/// Destroys a window of this thread (the pop-up's, with its swap chain).
+pub fn destroy(hwnd: Hwnd) {
+    // SAFETY: destroys a window of this thread.
+    unsafe { let _ = DestroyWindow(hwnd); }
+}
+
+/// Brings the window up from wherever it is: restored if it was minimized, shown if it was hidden, and in front.
+pub fn raise(hwnd: Hwnd) {
+    // SAFETY: plain calls on a window of this thread.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+/// The language of the user, as a locale name such as `zh-TW`.
+pub fn locale_name() -> Option<String> {
+    let mut name = [0u16; 85];
+    // SAFETY: the buffer has the room LOCALE_NAME_MAX_LENGTH asks for.
+    let len = unsafe { windows::Win32::Globalization::GetUserDefaultLocaleName(&mut name) };
+    (len > 1).then(|| String::from_utf16_lossy(&name[..(len as usize - 1)]))
+}
+
+/// The modifier keys that are down.
+pub fn held() -> nekominal_model::keymap::Modifiers {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+    // SAFETY: plain queries.
+    let down = |vk: i32| unsafe { GetKeyState(vk) } < 0;
+    nekominal_model::keymap::Modifiers { ctrl: down(0x11), shift: down(0x10), alt: down(0x12), meta: down(0x5B) || down(0x5C) }
+}
+
+/// Whether the key just pressed typed a character: WM_CHAR, which TranslateMessage put in the queue before the key came here.
+pub fn char_follows(hwnd: Hwnd) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_NOREMOVE, PeekMessageW, WM_CHAR};
+    let mut msg = MSG::default();
+    // SAFETY: looks at the queue of our own window without taking anything from it.
+    unsafe { PeekMessageW(&mut msg, Some(hwnd), WM_CHAR, WM_CHAR, PM_NOREMOVE).as_bool() && msg.wParam.0 >= 0x20 }
+}
+
 /// The caption button a non-client hit test code names.
 fn caption_hit(code: u32) -> Option<Hit> {
     match code {

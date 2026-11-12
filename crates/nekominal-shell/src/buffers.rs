@@ -13,6 +13,7 @@ use std::{
 
 use nekominal_model::session;
 use nekominal_term::{TerminalCore, restore::SAVED_BYTES};
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::{FILETIME, SYSTEMTIME},
@@ -23,7 +24,7 @@ use windows::{
 };
 
 pub fn dir() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|base| PathBuf::from(base).join(nekominal_model::store::APP_DIR).join("buffers"))
+    nekominal_model::store::data_dir().map(|dir| dir.join("buffers"))
 }
 
 /// Milliseconds since 1970: what the names of one save start with, so they never meet those of the save before.
@@ -83,7 +84,24 @@ pub fn take(name: &str) -> Option<(String, SystemTime)> {
     read.ok().map(|(bytes, written)| (String::from_utf8_lossy(&bytes).into_owned(), written))
 }
 
+/// `time` as the user's short date and time, in local time; empty when the system cannot say.
+#[cfg(unix)]
+pub fn local_time(time: SystemTime) -> String {
+    let Ok(seconds) = time.duration_since(UNIX_EPOCH).map(|since| since.as_secs() as libc::time_t) else { return String::new() };
+    // SAFETY: plain conversions into structures and a buffer that live through the calls; the format is NUL-terminated.
+    unsafe {
+        let mut local: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&seconds, &mut local).is_null() {
+            return String::new();
+        }
+        let mut text = [0u8; 64];
+        let len = libc::strftime(text.as_mut_ptr().cast(), text.len(), c"%x %H:%M".as_ptr(), &local);
+        String::from_utf8_lossy(&text[..len]).trim().to_owned()
+    }
+}
+
 /// `time` as the user's short date and time, in local time; empty when Windows cannot say.
+#[cfg(windows)]
 pub fn local_time(time: SystemTime) -> String {
     let ticks = time.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_nanos() / 100) as u64 + 116_444_736_000_000_000;
     let file_time = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };

@@ -5,8 +5,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+#[cfg(windows)]
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
+#[cfg(windows)]
 use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5};
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 
 use crate::{clipboard, util::log};
@@ -23,6 +26,8 @@ pub enum Target<'a> {
     PowerShell,
     Bash,
     Wsl(Option<&'a str>),
+    /// A shell of Linux, which takes the paths of its own system: in single quotes when they hold more than plain characters.
+    Posix,
 }
 
 impl Target<'_> {
@@ -30,18 +35,20 @@ impl Target<'_> {
     pub fn of_shell(shell: &str) -> Target<'static> {
         match shell.to_ascii_lowercase().as_str() {
             "pwsh" | "pwsh-preview" | "powershell" => Target::PowerShell,
+            _ if cfg!(unix) => Target::Posix,
             "bash" | "sh" | "zsh" => Target::Bash,
             _ => Target::Windows,
         }
     }
 }
 
-/// The folder the pasted images go in: `%TEMP%\Nekominal\paste`.
+/// The folder the pasted images go in: `%TEMP%\Nekominal\paste` (`/tmp/Nekominal/paste`).
 fn paste_dir() -> PathBuf {
     std::env::temp_dir().join("Nekominal").join("paste")
 }
 
 /// The paths of the files of a drop handle (a drop, or `CF_HDROP` on the clipboard).
+#[cfg(windows)]
 pub fn drop_paths(drop: HDROP) -> Vec<PathBuf> {
     // SAFETY: the handle is valid for the caller; each name is read into a buffer as long as the call says it needs.
     unsafe {
@@ -70,18 +77,7 @@ pub fn clipboard_text(target: Target) -> Option<String> {
 /// The image on the clipboard as a PNG file in the paste folder. A PNG that a program put there is kept as it is (with its
 /// transparency); a bitmap is encoded.
 fn save_clipboard_image() -> Option<PathBuf> {
-    // SAFETY: registering a format name has no other effect; the same name always gives the same number.
-    let png_format = unsafe { RegisterClipboardFormatW(windows::core::w!("PNG")) };
-    let (format, bytes) = clipboard::read_bytes(&[png_format, u32::from(CF_DIBV5.0), u32::from(CF_DIB.0)])?;
-    let png = if format == png_format && bytes.starts_with(b"\x89PNG") {
-        bytes
-    } else {
-        let Some((width, height, rgba)) = dib_to_rgba(&bytes) else {
-            log("paste: a bitmap of a kind that is not read");
-            return None;
-        };
-        encode_png(width, height, &rgba)?
-    };
+    let png = clipboard_png()?;
     let dir = paste_dir();
     let path = dir.join(format!("{}.png", timestamp()));
     match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, png)) {
@@ -93,7 +89,37 @@ fn save_clipboard_image() -> Option<PathBuf> {
     }
 }
 
+/// The picture on the clipboard as the bytes of a PNG file.
+#[cfg(windows)]
+fn clipboard_png() -> Option<Vec<u8>> {
+    // SAFETY: registering a format name has no other effect; the same name always gives the same number.
+    let png_format = unsafe { RegisterClipboardFormatW(windows::core::w!("PNG")) };
+    let (format, bytes) = clipboard::read_bytes(&[png_format, u32::from(CF_DIBV5.0), u32::from(CF_DIB.0)])?;
+    if format == png_format && bytes.starts_with(b"\x89PNG") {
+        return Some(bytes);
+    }
+    let Some((width, height, rgba)) = dib_to_rgba(&bytes) else {
+        log("paste: a bitmap of a kind that is not read");
+        return None;
+    };
+    encode_png(width, height, &rgba)
+}
+
+#[cfg(unix)]
+fn clipboard_png() -> Option<Vec<u8>> {
+    clipboard::read_png()
+}
+
+/// The time to the millisecond, for the name of a file: `20261027-153012-123` (local time on Windows, seconds since the
+/// epoch on Linux).
+#[cfg(unix)]
+fn timestamp() -> String {
+    let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    format!("{}-{:03}", since.as_secs(), since.subsec_millis())
+}
+
 /// The local time to the millisecond, for the name of a file: `20261027-153012-123`.
+#[cfg(windows)]
 fn timestamp() -> String {
     // SAFETY: plain query.
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
@@ -129,13 +155,19 @@ fn one_path(path: &Path, target: Target) -> String {
     let windows = path.to_string_lossy();
     let single_quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     match target {
+        Target::Posix => {
+            if windows.chars().all(|c| c.is_alphanumeric() || "_-./+:@%=,".contains(c)) { windows.into_owned() } else { single_quoted(&windows) }
+        }
         // A location WSL cannot reach (a network share) is typed as Windows names it: better than nothing typed. In
         // single quotes, as in double ones the shell would halve its backslashes and run what `$(…)` names.
+        #[cfg(windows)]
         Target::Wsl(distro) => match nekominal_pty::profiles::windows_path_to_wsl(path, distro) {
             Some(linux) if linux.chars().any(|c| c.is_whitespace() || "'\"\\$`!&()[]{};<>|*?#~^".contains(c)) => single_quoted(&linux),
             Some(linux) => linux,
             None => single_quoted(&windows),
         },
+        #[cfg(unix)]
+        Target::Wsl(_) => single_quoted(&windows),
         // Single quotes, in which nothing runs: PowerShell doubles a quote inside them, and takes the typographic ones
         // (‘’‚‛), which a file name can hold, as quotes too.
         Target::PowerShell if windows.chars().any(|c| c.is_whitespace() || "&()[]{}^=;!'+,`$@#%~\u{2018}\u{2019}\u{201a}\u{201b}".contains(c)) => {
@@ -161,6 +193,7 @@ fn one_path(path: &Path, target: Target) -> String {
 
 /// The pixels of a packed DIB (`CF_DIB`, `CF_DIBV5`: a header, the colour masks or table, then the rows) as RGBA, top row
 /// first. 24 and 32 bits a pixel, the kinds screenshots and browsers put on the clipboard; `None` for the others.
+#[cfg(windows)]
 fn dib_to_rgba(dib: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let u32_at = |at: usize| dib.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let header = u32_at(0)? as usize;
@@ -228,6 +261,7 @@ fn dib_to_rgba(dib: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     Some((w as u32, h as u32, rgba))
 }
 
+#[cfg(windows)]
 fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let mut png = Vec::new();
     let mut encoder = png::Encoder::new(&mut png, width, height);
@@ -241,7 +275,7 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     Some(png)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -480,5 +514,28 @@ mod tests {
         assert!(path.starts_with(paste_dir()), "{text}");
         assert_eq!(decode(&std::fs::read(&path).unwrap()).0, 2);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+
+    #[test]
+    fn a_path_of_plain_characters_is_typed_as_it_is_and_any_other_in_single_quotes() {
+        let text = |path: &str, shell: &str| path_text(&[PathBuf::from(path)], Target::of_shell(shell));
+        assert_eq!(text("/tmp/Nekominal/paste/1.png", "bash"), "/tmp/Nekominal/paste/1.png");
+        assert_eq!(text("/home/jo/My Shots/a.png", "zsh"), "'/home/jo/My Shots/a.png'");
+        assert_eq!(text("/home/jo/it's/$(id).png", "bash"), "'/home/jo/it'\\''s/$(id).png'", "nothing in it runs");
+        assert_eq!(text("/home/jo/圖片/截圖.png", "fish"), "/home/jo/圖片/截圖.png", "letters of any script need no quotes");
+        assert_eq!(text("/home/jo/a b.png", "pwsh"), "'/home/jo/a b.png'", "PowerShell reads single quotes as well");
+    }
+
+    #[test]
+    fn a_pasted_image_is_cleared_once_it_is_a_day_old_and_not_before() {
+        let now = SystemTime::now();
+        assert!(!is_stale(now - Duration::from_secs(23 * 3600), now));
+        assert!(is_stale(now - Duration::from_secs(25 * 3600), now));
+        assert!(!is_stale(now + Duration::from_secs(3600), now), "a file from the future is kept");
     }
 }

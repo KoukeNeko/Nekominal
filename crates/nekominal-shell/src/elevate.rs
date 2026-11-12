@@ -27,14 +27,14 @@ use nekominal_pty::{
 };
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, HWND, LPARAM, WPARAM},
+        Foundation::CloseHandle,
         System::{
             Com::{COINIT_APARTMENTTHREADED, CoInitializeEx},
             Threading::GetProcessId,
         },
         UI::{
             Shell::{SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
-            WindowsAndMessaging::{PostMessageW, SW_HIDE},
+            WindowsAndMessaging::SW_HIDE,
         },
     },
     core::{HRESULT, HSTRING, PCWSTR, w},
@@ -107,8 +107,8 @@ fn talk(hwnd: isize, id: u64, name: &str, pipe: &File, exe: &Path, config: &Spaw
         if let Ok(mut outcomes) = OUTCOMES.lock() {
             outcomes.push((id, outcome));
         }
-        // SAFETY: posting to a window handle from another thread is allowed; a dead window drops it.
-        unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), crate::win::WM_ELEVATED, WPARAM(0), LPARAM(id as isize)).is_ok() }
+        // Posting to a window handle from another thread is allowed; a dead window drops it.
+        crate::win::post(crate::win::from_id(hwnd), crate::plat::Message::Elevated(id))
     };
     let parts = match negotiate(name, pipe, exe, config) {
         Ok(parts) => parts,

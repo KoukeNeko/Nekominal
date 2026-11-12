@@ -4,6 +4,7 @@
 
 use nekominal_model::{commands::Command, settings::Backdrop};
 use nekominal_ui::{Rect, Ui, Color};
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::{HWND, POINT},
@@ -24,7 +25,12 @@ use windows::{
     core::{s, w},
 };
 
-use crate::gpu::{self, Gpu, Surface};
+#[cfg(unix)]
+use crate::win::Hwnd as HWND;
+
+use crate::gpu::Gpu;
+#[cfg(windows)]
+use crate::gpu::{self, Surface};
 use crate::{glass::Glass, logic::Mark};
 
 /// Width of a menu or a list, and of the command palette.
@@ -36,6 +42,7 @@ pub const DIALOG_HEADER: f32 = 112.0;
 /// Height of the query line above the rows of the palette.
 pub const HEADER: f32 = 48.0;
 pub const QUERY_LEFT: f32 = 44.0;
+#[cfg(windows)]
 const WINDOW_STYLE: WINDOW_EX_STYLE = WINDOW_EX_STYLE(WS_EX_NOACTIVATE.0 | WS_EX_NOREDIRECTIONBITMAP.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0);
 /// The rows the palette shows before it scrolls.
 const PALETTE_ROWS: f32 = 8.0;
@@ -74,7 +81,7 @@ pub enum Action {
     /// Use the color scheme at this index of `themes::theme_names` of the settings.
     ColorScheme(usize),
     /// A command of the menu of the window (`SC_MINIMIZE`, `SC_CLOSE`…), for the window the menu was opened on.
-    Window(u32),
+    Window(crate::plat::WindowCommand),
     /// Name the tab the line of the palette is for after what the line holds, or give it back its automatic title.
     RenameTab,
     AutoTitle,
@@ -158,8 +165,13 @@ pub fn check_rect(width: f32) -> Rect {
 }
 
 pub struct Popup {
+    /// The window of the pop-up on Windows; on Linux it is drawn in the window that opened it, which this is.
     pub hwnd: HWND,
+    #[cfg(windows)]
     pub surface: Surface,
+    /// Where its top left corner is in the window that opened it, in pixels.
+    #[cfg(unix)]
+    pub origin: (i32, i32),
     pub rows: Vec<Row>,
     /// The rectangle of each row in DIP, inside the window.
     pub rects: Vec<Rect>,
@@ -361,10 +373,15 @@ pub enum Kind {
 }
 
 /// How much of the scheme's background lies over the acrylic of a pop-up or a panel: enough for text on any wallpaper.
+#[cfg(windows)]
 pub const ACRYLIC_TINT: u8 = 140;
+/// Nothing blurs what lies under a pop-up that is drawn in the window, so the tint is the whole of its fill.
+#[cfg(unix)]
+pub const ACRYLIC_TINT: u8 = 255;
 
-/// Blurs what is behind the window. The system backdrop attribute does not do it for these windows: they never take the
+/// Blurs what is behind the window (Windows). The system backdrop attribute does not do it for these windows: they never take the
 /// focus, and the backdrop of a window that is not the active one is a flat colour. The accent policy keeps blurring.
+#[cfg(windows)]
 pub(crate) fn blur_behind(hwnd: HWND, tint: u32) -> Result<(), String> {
     #[repr(C)]
     struct AccentPolicy {
@@ -404,6 +421,42 @@ pub fn open(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i3
 }
 
 /// `open`, with a confirmation `dialog.1` tall whose buttons start `dialog.0` from its top.
+#[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub fn open_sized(owner: HWND, _gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, _dark: bool, dialog: (f32, f32), fit: Option<f32>) -> Result<Popup, String> {
+    let (width, header, fixed_height, query) = match kind {
+        Kind::Confirm => (DIALOG_WIDTH, dialog.0, Some(dialog.1), None),
+        Kind::List => (fit.unwrap_or(WIDTH), 0.0, None, None),
+        Kind::Wide => (PALETTE_WIDTH, 0.0, None, None),
+        Kind::Palette => (PALETTE_WIDTH, HEADER, Some(HEADER + PALETTE_ROWS * ROW_HEIGHT + 2.0 * PADDING), Some(String::new())),
+        Kind::Find => (FIND_WIDTH, HEADER, Some(HEADER), Some(String::new())),
+    };
+    let (rects, rows_size) = if kind == Kind::Confirm { dialog_buttons(width, rows.len()) } else { layout(&rows, width) };
+    let content_height = rows_size.1;
+    let size = (width, fixed_height.unwrap_or(header + rows_size.1));
+    let (w, h) = ((size.0 * scale).round() as i32, (size.1 * scale).round() as i32);
+    // The anchor is a point of the window (`win::client_to_screen` is the identity here), and the pop-up stays inside it.
+    let (window_w, window_h) = crate::win::client_size(owner);
+    let (window_w, window_h) = (window_w as i32, window_h as i32);
+    let gap = (GAP * scale).round() as i32;
+    let x = (anchor.0 - w).clamp(0, (window_w - w).max(0));
+    // A list taller than the window below the anchor scrolls.
+    let h = if fixed_height.is_some() { h } else { h.min((window_h - anchor.1 - gap - (8.0 * scale) as i32).max(ROW_HEIGHT as i32)) };
+    let size = (size.0, h as f32 / scale);
+    let y = (anchor.1 + gap).clamp(0, (window_h - h).max(0));
+    let mut popup = Popup { hwnd: owner, origin: (x, y), rows: Vec::new(), rects: Vec::new(), size, header, kind, status: String::new(), heading: String::new(), query, preedit: String::new(), caret: (QUERY_LEFT, 16.0, 16.0), content_height, scroll: 0.0, hover: None, cursor: Default::default(), has_keys: true, remove: None, check: None };
+    if popup.query.is_some() {
+        popup.set_rows(rows);
+    } else {
+        popup.rows = rows;
+        popup.rects = rects;
+    }
+    Ok(popup)
+}
+
+/// `open`, with a confirmation `dialog.1` tall whose buttons start `dialog.0` from its top.
+#[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 pub fn open_sized(owner: HWND, gpu: &Gpu, rows: Vec<Row>, kind: Kind, anchor: (i32, i32), scale: f32, dark: bool, dialog: (f32, f32), fit: Option<f32>) -> Result<Popup, String> {
     let (width, header, fixed_height, query) = match kind {
@@ -503,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn opening_a_menu_preserves_the_owner_activation() {
         assert!(WINDOW_STYLE.contains(WS_EX_NOACTIVATE));
     }

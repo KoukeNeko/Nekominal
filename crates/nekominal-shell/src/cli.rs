@@ -157,7 +157,8 @@ pub fn api_request(args: &[String], pane: Option<String>, stdin: impl FnOnce() -
 /// The folder `-d` names, as a path: `D:\x\.` (what Explorer's entry passes) is `D:\x`, and `C:"` is `C:\`, which is what
 /// `"C:\"` becomes on a command line, its backslash escaping the quote (an entry written by an older version).
 fn folder(raw: &str) -> String {
-    let fixed = raw.strip_suffix('"').map_or_else(|| raw.to_owned(), |rest| format!("{rest}\\"));
+    // Only Windows has a command line that makes a quote of the backslash before it.
+    let fixed = if cfg!(windows) { raw.strip_suffix('"').map_or_else(|| raw.to_owned(), |rest| format!("{rest}\\")) } else { raw.to_owned() };
     let path: std::path::PathBuf = std::path::Path::new(&fixed).components().collect();
     // A relative folder (`-d .`) is of the folder this was started in, which an elevated copy of it would not share.
     std::path::absolute(&path).unwrap_or(path).display().to_string()
@@ -177,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_folder_a_profile_and_a_command_line_go_to_the_first_tab() {
         let target = |directory: Option<&str>, profile: Option<&str>, command: &[&str]| Target {
             directory: directory.map(str::to_owned),
@@ -190,6 +192,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_folder_is_the_path_whatever_way_explorer_wrote_it() {
         for (raw, wanted) in [(r"D:\src\.", r"D:\src"), (r"C:\\.", r"C:\"), (r#"C:""#, r"C:\"), (r"D:\a b", r"D:\a b"), (r"C:\", r"C:\")] {
             assert_eq!(folder(raw), wanted, "{raw}");
@@ -269,6 +272,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn more_tabs_and_panes_follow_after_semicolons() {
         let parsed = parse(&args(r"-d D:\a ; nt -p Ubuntu ; sp -H -d D:\b ; split-pane cmd"));
         assert_eq!(parsed.len(), 4);

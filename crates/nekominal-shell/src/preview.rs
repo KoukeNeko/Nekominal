@@ -1,9 +1,10 @@
 //! Previews of the images whose paths a pane shows: the pointer on such a path shows the picture under it. Decoded by the
-//! Windows Imaging Component, which reads every format Windows does (PNG, JPEG, GIF, BMP, TIFF, WebP, icons), scaled by it
-//! to the size the preview is drawn at.
+//! Windows Imaging Component on Windows, which reads every format Windows does (PNG, JPEG, GIF, BMP, TIFF, WebP, icons),
+//! and by the `image` crate on Linux (PNG, JPEG, GIF, BMP, WebP, TIFF), scaled to the size the preview is drawn at.
 
 use std::path::Path;
 
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::GENERIC_READ,
@@ -24,6 +25,7 @@ pub fn is_image(path: &Path) -> bool {
     path.extension().is_some_and(|ext| EXTENSIONS.iter().any(|known| ext.eq_ignore_ascii_case(known)))
 }
 
+#[cfg(windows)]
 fn factory() -> Option<IWICImagingFactory> {
     // SAFETY: COM on the thread that asks (a second call on a thread is harmless); the factory is released when dropped.
     unsafe {
@@ -32,6 +34,7 @@ fn factory() -> Option<IWICImagingFactory> {
     }
 }
 
+#[cfg(windows)]
 fn first_frame(factory: &IWICImagingFactory, path: &Path) -> Option<IWICBitmapFrameDecode> {
     // SAFETY: a decoder of the file, read on demand; it and its frame are released when dropped.
     unsafe {
@@ -41,6 +44,7 @@ fn first_frame(factory: &IWICImagingFactory, path: &Path) -> Option<IWICBitmapFr
 }
 
 /// The size of the image in pixels, read from its header without decoding it; none for a file Windows cannot read.
+#[cfg(windows)]
 pub fn size(path: &Path) -> Option<(u32, u32)> {
     let frame = first_frame(&factory()?, path)?;
     let (mut w, mut h) = (0, 0);
@@ -52,6 +56,7 @@ pub fn size(path: &Path) -> Option<(u32, u32)> {
 /// The image (its first frame) scaled to `w` by `h` pixels, as premultiplied RGBA.
 // shortcut: decodes on the thread of the window, the first time the pointer is on the path (a few tens of milliseconds for
 // a large screenshot); move it to a thread if a photo of many megapixels makes the pointer stutter.
+#[cfg(windows)]
 pub fn pixels(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
     let factory = factory()?;
     let frame = first_frame(&factory, path)?;
@@ -65,6 +70,29 @@ pub fn pixels(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
         converter.CopyPixels(std::ptr::null(), w * 4, &mut rgba).ok()?;
         Some(rgba)
     }
+}
+
+/// The size of the image in pixels, read from its header without decoding it; none for a file that cannot be read.
+#[cfg(unix)]
+pub fn size(path: &Path) -> Option<(u32, u32)> {
+    let (w, h) = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// The image (its first frame) scaled to `w` by `h` pixels, as premultiplied RGBA.
+// shortcut: decodes on the thread of the window, the first time the pointer is on the path (a few tens of milliseconds for
+// a large screenshot); move it to a thread if a photo of many megapixels makes the pointer stutter.
+#[cfg(unix)]
+pub fn pixels(path: &Path, w: u32, h: u32) -> Option<Vec<u8>> {
+    let decoded = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
+    let mut rgba = decoded.resize_exact(w, h, image::imageops::FilterType::Triangle).into_rgba8().into_raw();
+    for px in rgba.as_chunks_mut::<4>().0 {
+        let alpha = u16::from(px[3]);
+        for c in &mut px[..3] {
+            *c = ((u16::from(*c) * alpha + 127) / 255) as u8;
+        }
+    }
+    Some(rgba)
 }
 
 /// The size in DIP a preview of an image of `w` by `h` pixels is drawn at: within `max_w` by `max_h`, its shape kept, and

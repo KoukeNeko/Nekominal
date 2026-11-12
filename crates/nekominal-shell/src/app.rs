@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
 use accesskit_windows::{Adapter, QueuedEvents};
+#[cfg(windows)]
+use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use nekominal_input::{
     KeyEvent, KeyInput, Mods, MouseButton, PointerEvent, PointerGrid, PointerKind, Utf16Assembler, vk,
 };
@@ -20,7 +23,7 @@ use nekominal_model::{
     menu::{APP_MENU, MenuRow},
     profiles::{self, DiscoveredProfile, Profile},
     settings::{self, Backdrop, RightClick, Settings},
-    session::{self, PaneRecord, PixelRect, Placement, Session, TabRecord},
+    session::{self, PaneRecord, Placement, Session, TabRecord},
     settings_ui::{self, Control, Descriptor, Section, Value},
     strings::{Lang, Text},
     store,
@@ -32,23 +35,10 @@ use nekominal_pty::conpty::{SpawnConfig, WidthModel};
 use nekominal_render as r;
 use nekominal_term::alacritty_terminal::grid::Scroll;
 use nekominal_ui::{Color, Rect, Ui};
-use windows::{core::HSTRING, Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Globalization::GetUserDefaultLocaleName,
-    System::Diagnostics::Debug::MessageBeep,
-    Graphics::Gdi::{ClientToScreen, ScreenToClient, GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow},
-    UI::{
-        Input::KeyboardAndMouse::GetKeyState,
-        WindowsAndMessaging::{
-            DestroyWindow, KillTimer, SetTimer, FLASHW_TIMERNOFG, FLASHW_TRAY, FLASHWINFO, FlashWindowEx, GetForegroundWindow, GetSystemMetrics, MESSAGEBOX_STYLE,
-            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SHOWSOUNDS, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOWMAXIMIZED, SetWindowTextW, GetWindowPlacement, GetWindowRect, HWND_TOP, PostMessageW,
-            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPlacement,
-            SetWindowPos, WINDOWPLACEMENT, WM_APP, WM_CLOSE, WM_SYSCOMMAND,
-        },
-    },
-}};
 
 use crate::{
+    plat::{Message, WindowCommand},
+    win::{self, Hwnd},
     access, agent, buffers, clipboard, design, find, icons, mark, motion, notify, textfield, update, welcome,
     settings_page::{self, Page, Part},
     glass::{self, Glass},
@@ -76,18 +66,22 @@ mod trigger_page;
 mod workspace;
 
 /// Posted by a reader thread when a pane has output to draw.
-pub const WM_WAKE: u32 = WM_APP + 1;
+#[cfg(windows)]
+pub const WM_WAKE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 /// The device was lost: posted by a window whose frame did not show, and handled outside every borrow of the windows.
-pub const WM_GPU_LOST: u32 = WM_APP + 5;
+#[cfg(windows)]
+pub const WM_GPU_LOST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 5;
 
 /// How the session of a new pane starts.
 enum Start {
     /// A new session, with the text of a restored pane and the line under it, if any.
     Fresh(Option<(String, String)>),
     /// The session an update handed over: the pane it was, and its handles (in this process).
+    #[cfg(windows)]
     HandedOver(nekominal_pty::handoff::PaneState, nekominal_pty::handoff::Parts),
     /// The session an elevated copy of this program started for the pane (`elevate.rs`): the pane it replaces, the text it
     /// showed (as the state's screen) and the handles of the new session (in this process).
+    #[cfg(windows)]
     Elevated(nekominal_pty::handoff::PaneState, nekominal_pty::handoff::Parts),
 }
 
@@ -183,6 +177,17 @@ fn fitting(ranks: &[u8], widths: &[f32], room: f32) -> Vec<bool> {
 /// Whether this process runs as administrator (elevated by UAC, or an administrator where UAC is off): its shells do too,
 /// which the shield in the bar says, and a profile that asks for administrator needs no window of its own then.
 /// Asked once; elevation does not change while a process runs.
+#[cfg(unix)]
+pub(crate) fn elevated() -> bool {
+    false
+}
+
+#[cfg(unix)]
+pub(crate) fn behind_uac() -> bool {
+    false
+}
+
+#[cfg(windows)]
 pub(crate) fn elevated() -> bool {
     static ELEVATED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     // SAFETY: a plain query of the token of this process.
@@ -193,6 +198,7 @@ pub(crate) fn elevated() -> bool {
 /// the same user that is not elevated cannot reach (it may not drive the window, nor send it most messages). Where UAC
 /// is off, as it often is on a Server, an administrator's token is not split, nothing stands between the programs of the
 /// user, and there is no boundary for the window to guard. When the token cannot be asked, the answer is [`elevated`].
+#[cfg(windows)]
 pub(crate) fn behind_uac() -> bool {
     use windows::Win32::{
         Foundation::{CloseHandle, HANDLE},
@@ -365,7 +371,7 @@ enum Piece {
 }
 
 pub struct App {
-    hwnd: HWND,
+    hwnd: Hwnd,
     gpu: Gpu,
     surface: Surface,
     ui: Ui,
@@ -559,17 +565,18 @@ pub struct App {
     popup: Option<popup::Popup>,
     confirmation: Option<Confirmation>,
     /// The placement and style the window had before full screen, while it is full screen.
-    fullscreen: Option<WINDOWPLACEMENT>,
+    fullscreen: Option<win::Restore>,
     /// The search of the find bar while it is open.
     find: Option<FindState>,
     /// When the find bar last searched again for new output.
     find_at: Option<Instant>,
     /// The window the menu of the window was last opened on: the one its commands go to.
-    window_menu_for: HWND,
+    window_menu_for: Hwnd,
     /// When the menu last closed: the click that closed it (outside it) must not open it again.
     popup_closed: Option<Instant>,
     text: Utf16Assembler,
     /// What a screen reader sees of the window; it asks through WM_GETOBJECT.
+    #[cfg(windows)]
     access: Option<Adapter>,
 }
 
@@ -622,9 +629,8 @@ enum Confirmation {
 }
 
 /// Tells window `hwnd` that the device is gone; it makes everything again once no window is borrowed.
-fn post_gpu_lost(hwnd: HWND) {
-    // SAFETY: posting to a window of this thread.
-    unsafe { let _ = PostMessageW(Some(hwnd), WM_GPU_LOST, WPARAM(0), LPARAM(0)); }
+fn post_gpu_lost(hwnd: Hwnd) {
+    win::post(hwnd, Message::GpuLost { forced: false });
 }
 
 /// Hint mode: the hints of a pane and what of a label has been typed.
@@ -771,17 +777,31 @@ fn discovered(found: &nekominal_pty::profiles::Profile) -> DiscoveredProfile {
     }
 }
 
-/// Whether the key just pressed typed a character: WM_CHAR, which TranslateMessage put in the queue before the key came here.
-fn char_follows(hwnd: HWND) -> bool {
-    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_NOREMOVE, PeekMessageW, WM_CHAR};
-    let mut msg = MSG::default();
-    // SAFETY: looks at the queue of our own window without taking anything from it.
-    unsafe { PeekMessageW(&mut msg, Some(hwnd), WM_CHAR, WM_CHAR, PM_NOREMOVE).as_bool() && msg.wParam.0 >= 0x20 }
+/// The commands the user typed in a shell, one per line: the history of PowerShell on Windows, of zsh or bash elsewhere.
+fn shell_history() -> Option<String> {
+    #[cfg(windows)]
+    {
+        let file = std::env::var_os("APPDATA").map(|appdata| std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"))?;
+        std::fs::read_to_string(file).ok()
+    }
+    #[cfg(unix)]
+    {
+        let home = store::home_dir()?;
+        if let Ok(text) = std::fs::read_to_string(home.join(".zsh_history")) {
+            // The extended format starts a line with `: <time>:<seconds>;`.
+            return Some(text.lines().map(|line| line.strip_prefix(": ").and_then(|rest| rest.split_once(';')).map_or(line, |(_, command)| command)).collect::<Vec<_>>().join("\n"));
+        }
+        std::fs::read_to_string(home.join(".bash_history")).ok()
+    }
+}
+
+/// Whether the key just pressed typed a character.
+fn char_follows(hwnd: Hwnd) -> bool {
+    win::char_follows(hwnd)
 }
 
 fn held() -> Modifiers {
-    let down = |vk: i32| unsafe { GetKeyState(vk) } < 0;
-    Modifiers { ctrl: down(0x11), shift: down(0x10), alt: down(0x12), meta: down(0x5B) || down(0x5C) }
+    win::held()
 }
 
 fn input_mods(m: Modifiers) -> Mods {
@@ -795,7 +815,7 @@ fn input_mods(m: Modifiers) -> Mods {
 }
 
 impl App {
-    pub fn new(hwnd: HWND, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
+    pub fn new(hwnd: Hwnd, size_px: (u32, u32), scale: f32, shared_gpu: Option<Gpu>, first_tab: bool) -> Result<App, String> {
         let (settings, settings_readable, settings_problems) = load_settings();
         let keymap = keymap::build_keymap(commands::default_bindings(), &settings.keybindings).keymap;
         let scheme = themes::find(&settings.schemes, &settings.theme);
@@ -938,6 +958,7 @@ impl App {
             window_menu_for: hwnd,
             popup_closed: None,
             text: Utf16Assembler::default(),
+            #[cfg(windows)]
             access: Some(Adapter::new(hwnd, true, access::NoActions)),
         };
         if first_window && !app.settings.welcomed {
@@ -961,6 +982,7 @@ impl App {
         }
         app.relayout();
         // A window an update handed over (`--adopt`): its tabs, on the sessions the Nekominal before ran.
+        #[cfg(windows)]
         if first_tab && let Some(window) = crate::handoff::take_pending() {
             app.open_handed_over(window);
             if app.tabs.is_empty() {
@@ -1223,21 +1245,27 @@ impl App {
         config.font_size_pt = zoomed(profile.options.font_size.unwrap_or(self.settings.font.size), self.zoom);
         let view = PaneRenderer::new_sharing(&self.gpu, config, self.pane_theme(profile.options.color_scheme.as_deref()), sibling)?;
         let (cols, rows) = match &start {
+            #[cfg(windows)]
             Start::HandedOver(state, _) | Start::Elevated(state, _) => (usize::from(state.cols), usize::from(state.rows)),
             Start::Fresh(_) => view.grid_for(size_px),
         };
-        let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(self.hwnd.0 as isize), pending: AtomicBool::new(false) });
+        let target = Arc::new(WakeTarget { hwnd: AtomicIsize::new(win::id(self.hwnd)), pending: AtomicBool::new(false) });
         let reader_target = target.clone();
         let wake: nekominal_pane::Wake = Arc::new(move || {
             if !reader_target.pending.swap(true, Ordering::AcqRel) {
-                let hwnd = HWND(reader_target.hwnd.load(Ordering::Acquire) as *mut _);
-                // SAFETY: posting to a window handle from another thread is allowed; a dead window drops it.
-                unsafe { PostMessageW(Some(hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
+                // Posting from another thread is allowed; a dead window drops it.
+                win::post(win::from_id(reader_target.hwnd.load(Ordering::Acquire)), Message::Wake);
             }
         });
         let core = logic::core_config(&self.settings);
+        #[cfg(windows)]
         let regrow = matches!(start, Start::HandedOver(..)).then(|| (Instant::now(), false));
+        #[cfg(unix)]
+        let regrow = None;
+        #[cfg(windows)]
         let elevated = matches!(start, Start::Elevated(..));
+        #[cfg(unix)]
+        let elevated = false;
         let (session, pane, title) = match start {
             Start::Fresh(restored) => {
                 let session = agent::new_session();
@@ -1251,6 +1279,7 @@ impl App {
                 });
                 (session, pane, String::new())
             }
+            #[cfg(windows)]
             Start::HandedOver(state, parts) => {
                 agent::reserve_session(&state.session);
                 crate::handoff::consumed(&state.session, false);
@@ -1260,6 +1289,7 @@ impl App {
                 }
                 (state.session.clone(), pane, state.title.clone())
             }
+            #[cfg(windows)]
             Start::Elevated(state, parts) => {
                 // The text of the old shell goes in as that of a restored pane does: without the modes it had set, which the
                 // new shell knows nothing of.
@@ -1380,8 +1410,7 @@ impl App {
             self.page = None;
         }
         if self.tabs.is_empty() {
-            // SAFETY: closes the window of this thread; the message loop ends with it.
-            unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).ok() };
+            win::post(self.hwnd, Message::Close);
             return;
         }
         if self.selected > index || self.selected >= self.tabs.len() {
@@ -1412,8 +1441,7 @@ impl App {
         let tab = self.tabs.remove(index);
         let page = if tab.settings { self.page.take() } else { None };
         if self.tabs.is_empty() {
-            // SAFETY: closes the window of this thread; nothing is left in it to ask about.
-            unsafe { PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)).ok() };
+            win::post(self.hwnd, Message::Close);
             return Some((tab, page));
         }
         if self.selected > index || self.selected >= self.tabs.len() {
@@ -1442,14 +1470,13 @@ impl App {
         }
         for entry in &mut tab.panes {
             // The reader threads now wake this window; output that came in during the move gets one message.
-            entry.wake.hwnd.store(self.hwnd.0 as isize, Ordering::Release);
+            entry.wake.hwnd.store(win::id(self.hwnd), Ordering::Release);
             entry.wake.pending.store(true, Ordering::Release);
             if let Err(e) = entry.view.set_scale(self.scale) {
                 util::log(&format!("scale: {e}"));
             }
         }
-        // SAFETY: posting to our own window.
-        unsafe { PostMessageW(Some(self.hwnd), WM_WAKE, WPARAM(0), LPARAM(0)).ok() };
+        win::post(self.hwnd, Message::Wake);
         tab.mark_seen();
         self.tabs.push(tab);
         self.selected = self.tabs.len() - 1;
@@ -1587,24 +1614,13 @@ impl App {
     /// The window moved (dragged by its title bar, snapped, moved with the keyboard): the pop-up that is open moves with it,
     /// by as much, so that a menu stays hanging from its button and the find bar over its pane.
     pub fn on_move(&mut self) {
-        let mut rect = RECT::default();
-        // SAFETY: plain queries and a move of windows of this thread.
-        unsafe {
-            if GetWindowRect(self.hwnd, &mut rect).is_err() {
-                return;
-            }
-            let origin = (rect.left, rect.top);
-            if let (Some(before), Some(popup)) = (self.origin, self.popup.as_ref())
-                && before != origin
-            {
-                let mut at = RECT::default();
-                if GetWindowRect(popup.hwnd, &mut at).is_ok() {
-                    let (dx, dy) = (origin.0 - before.0, origin.1 - before.1);
-                    let _ = SetWindowPos(popup.hwnd, None, at.left + dx, at.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-                }
-            }
-            self.origin = Some(origin);
+        let Some(origin) = win::origin(self.hwnd) else { return };
+        if let (Some(before), Some(popup)) = (self.origin, self.popup.as_ref())
+            && before != origin
+        {
+            win::move_by(popup.hwnd, origin.0 - before.0, origin.1 - before.1);
         }
+        self.origin = Some(origin);
         // The panels lie on the client area: they go where it went.
         if let Some(layer) = self.panels.as_ref().filter(|layer| layer.shown()) {
             layer.follow(self.hwnd);
@@ -1680,8 +1696,7 @@ impl App {
     }
 
     pub fn redraw(&self) {
-        // SAFETY: invalidating our own window; WM_PAINT arrives when the queue is otherwise empty.
-        unsafe { let _ = InvalidateRect(Some(self.hwnd), None, false); };
+        win::invalidate(self.hwnd);
     }
 
     /// Output arrived (or a pane's program ended): take the events and ask for a frame.
@@ -1705,8 +1720,7 @@ impl App {
         let mut ended: Vec<(usize, PaneId)> = Vec::new();
         let (selected, active) = (self.selected, self.active);
         let mut ring = BellEffects::default();
-        // SAFETY: a plain query.
-        let show_sounds = unsafe { GetSystemMetrics(SM_SHOWSOUNDS) } != 0;
+        let show_sounds = win::show_sounds();
         for (t, tab) in self.tabs.iter_mut().enumerate() {
             // Bells and notifications are for what the user is not looking at.
             let watched = t == selected && active;
@@ -1794,8 +1808,7 @@ impl App {
         if typing || wait.is_zero() {
             self.redraw();
         } else if !self.frame_timer {
-            // SAFETY: a timer of our own window, from its thread.
-            self.frame_timer = unsafe { SetTimer(Some(self.hwnd), crate::win::FRAME_TIMER, wait.as_millis().max(1) as u32, None) } != 0;
+            self.frame_timer = win::set_timer(self.hwnd, win::FRAME_TIMER, wait.as_millis().max(1) as u32);
             if !self.frame_timer {
                 self.redraw();
             }
@@ -1805,8 +1818,7 @@ impl App {
     /// The frame `redraw_output` put off is due.
     pub fn on_frame_timer(&mut self) {
         self.frame_timer = false;
-        // SAFETY: a timer of our own window, from its thread.
-        unsafe { let _ = KillTimer(Some(self.hwnd), crate::win::FRAME_TIMER); }
+        win::kill_timer(self.hwnd, win::FRAME_TIMER);
         self.redraw();
     }
 
@@ -1816,13 +1828,10 @@ impl App {
             return;
         }
         if effects.taskbar_flash {
-            let flash = FLASHWINFO { cbSize: std::mem::size_of::<FLASHWINFO>() as u32, hwnd: self.hwnd, dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG, uCount: 0, dwTimeout: 0 };
-            // SAFETY: the structure lives through the call and names our own window.
-            unsafe { let _ = FlashWindowEx(&flash); }
+            win::flash(self.hwnd);
         }
         if effects.sound {
-            // SAFETY: plays the sound of the system for a plain message.
-            unsafe { let _ = MessageBeep(MESSAGEBOX_STYLE(0)); }
+            win::beep();
         }
         self.last_alert = Some(Instant::now());
     }
@@ -1837,8 +1846,7 @@ impl App {
             .collect();
         let title = logic::window_title("Nekominal", logic::waiting_count(&tabs), self.active);
         if title != self.window_title {
-            // SAFETY: names our own window.
-            unsafe { let _ = SetWindowTextW(self.hwnd, &HSTRING::from(title.as_str())); }
+            win::set_title(self.hwnd, &title);
             self.window_title = title;
         }
     }
@@ -2098,8 +2106,7 @@ impl App {
                 // A click outside the find bar leaves it open, with its marks: the keyboard goes back to the terminal.
                 if let Some(popup) = self.popup.as_mut() {
                     popup.has_keys = false;
-                    // SAFETY: invalidating our own window.
-                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                    win::invalidate(popup.hwnd);
                 }
             } else {
                 // Consume both halves of the outside click; it dismisses the menu without reaching the shell.
@@ -2449,7 +2456,7 @@ impl App {
         // Only a pop-up with a line to type in takes the composition; under a menu it stays the terminal's.
         if self.popup_keeps_owner_active() && let Some(popup) = self.popup.as_mut().filter(|popup| popup.query.is_some()) {
             popup.preedit = text.unwrap_or_default();
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
             return;
         }
         if let Some(entry) = self.tabs.get_mut(self.selected).and_then(Tab::focused_entry_mut) {
@@ -2477,15 +2484,13 @@ impl App {
         }
         if let Some(popup) = self.popup.as_ref() {
             popup.query.as_ref()?;
-            let mut rect = RECT::default();
-            // SAFETY: both windows are owned by this thread; convert the painted caret to the IME owner's coordinates.
-            unsafe {
-                GetWindowRect(popup.hwnd, &mut rect).ok()?;
-                let mut point = POINT { x: rect.left + (popup.caret.0 * self.scale) as i32,
-                                        y: rect.top + (popup.caret.1 * self.scale) as i32 };
-                if !ScreenToClient(self.hwnd, &mut point).as_bool() { return None; }
-                return Some((point.x, point.y, (popup.caret.2 * self.scale) as i32));
-            }
+            // The painted caret, in the coordinates of the window that owns the input method.
+            let caret = ((popup.caret.0 * self.scale) as i32, (popup.caret.1 * self.scale) as i32);
+            #[cfg(windows)]
+            let at = win::popup_point_in_owner(self.hwnd, popup.hwnd, caret)?;
+            #[cfg(unix)]
+            let at = (popup.origin.0 + caret.0, popup.origin.1 + caret.1);
+            return Some((at.0, at.1, (popup.caret.2 * self.scale) as i32));
         }
         let entry = self.focused()?;
         let (x, y, _, height) = entry.view.cursor_cell_px(&entry.pane.term);
@@ -2567,7 +2572,7 @@ impl App {
             state.0 = update::Check::Checking;
         }
         self.page_redraw();
-        let (shared, notes, hwnd) = (Arc::clone(&self.update), Arc::clone(&self.release_notes), self.hwnd.0 as isize);
+        let (shared, notes, hwnd) = (Arc::clone(&self.update), Arc::clone(&self.release_notes), win::id(self.hwnd));
         std::thread::spawn(move || {
             let found = update::check();
             // The notes before the answer: the page drawn for the answer shows them with it. What could not be read keeps
@@ -2581,8 +2586,7 @@ impl App {
             if let Ok(mut state) = shared.lock() {
                 *state = (found, true);
             }
-            // SAFETY: posting to a window that may be gone, which PostMessage reports and nothing else.
-            unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)); }
+            win::post(win::from_id(hwnd), Message::Wake);
         });
     }
 
@@ -2647,6 +2651,7 @@ impl App {
     /// `docs/updater-design.md`). When it cannot be started, or from a window run as administrator (which can hand nothing to a program that is not, nor reach
     /// the other windows), as before: a PowerShell window of its own waits for this process and its OpenConsole to end,
     /// runs the update and starts the app again, while every window here closes and saves the session.
+    #[cfg(windows)]
     fn update_and_restart(&mut self) {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x10;
@@ -2667,8 +2672,7 @@ impl App {
                 Ok(pipe) => {
                     // The hand-off borrows every window, this one included: it runs from the message loop.
                     crate::handoff::give_later(pipe);
-                    // SAFETY: posting to our own window.
-                    unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_HAND_OFF, WPARAM(0), LPARAM(0)); }
+                    win::post(self.hwnd, Message::HandOff);
                     return;
                 }
                 Err(e) if by_msi => {
@@ -2687,6 +2691,16 @@ impl App {
             Ok(_) => crate::win::close_all_windows(),
             Err(e) => util::log(&format!("update: {e}")),
         }
+    }
+
+    /// Without Scoop or an installer to update it, the page of the release to download the new version from.
+    #[cfg(unix)]
+    fn update_and_restart(&mut self) {
+        let to = match self.update_check() {
+            update::Check::Newer(version) => Some(version),
+            _ => None,
+        };
+        open_link(&update::release_page(to.as_deref()));
     }
 
     /// WM_CLOSE may destroy the window only after the same check used by pane and tab close.
@@ -2757,10 +2771,7 @@ impl App {
                 }
                 self.confirmation = Some(action);
                 self.text = Utf16Assembler::default();
-                // SAFETY: the owner retains focus and routes input to this confirmation.
-                unsafe {
-                    let _ = InvalidateRect(Some(popup.hwnd), None, false);
-                }
+                win::invalidate(popup.hwnd);
                 self.popup = Some(popup);
             }
             Err(e) => util::log(&format!("confirmation: {e}")),
@@ -2863,13 +2874,15 @@ impl App {
             Command::EditSuggestions => self.open_suggestions(),
             Command::EditSearchTabs => self.open_search_tabs(),
             // The panel lists the panes of every window: the window code gathers them once this window is free again.
-            // SAFETY: posting to a window of this thread.
-            Command::ViewAgents => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_AGENTS, WPARAM(0), LPARAM(0)); },
+            Command::ViewAgents => {
+                win::post(self.hwnd, Message::Agents);
+            }
             Command::ViewAlwaysOnTop => self.toggle_on_top(),
             Command::ViewFocusMode => self.set_focus_mode(!self.focus_mode),
             // The drop-down window is the process's, not this window's: the window code shows or makes it.
-            // SAFETY: posting to a window of this thread.
-            Command::ViewQuake => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_QUAKE, WPARAM(0), LPARAM(0)); },
+            Command::ViewQuake => {
+                win::post(self.hwnd, Message::Quake);
+            }
             Command::EditCopyFormatted => self.copy_formatted(),
             Command::TabRename => self.open_rename(),
             Command::TabColor => self.open_tab_colors(),
@@ -2917,8 +2930,8 @@ impl App {
             Command::AppSaveLayout => self.open_layout_entry(),
             Command::TabProfiles => self.open_profiles(),
             Command::AppNewWindow => {
-                if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
-                    util::log(&format!("new window request: {e}"));
+                if !win::post(self.hwnd, Message::NewWindow) {
+                    util::log("new window request: the window loop is gone");
                 }
             }
             Command::EditFind => self.open_find(),
@@ -3077,6 +3090,7 @@ impl App {
     // --- drawing ------------------------------------------------------------------------------------------------
 
     /// The window answers WM_GETOBJECT: a screen reader or another client of UI Automation looks at it.
+    #[cfg(windows)]
     pub fn access_getobject(&mut self, wparam: WPARAM, lparam: LPARAM) -> Option<impl Into<LRESULT> + use<>> {
         // Built for every request, because the adapter does not say whether it will need it; clients ask once.
         let mut initial = access::Initial(Some(access::tree(&self.access_view())));
@@ -3085,6 +3099,7 @@ impl App {
 
     /// Tells the clients that listen what changed; nothing is built when none does. The caller raises the events with no
     /// borrow of the window held.
+    #[cfg(windows)]
     pub fn access_update(&mut self) -> Option<QueuedEvents> {
         let mut adapter = self.access.take()?;
         let events = adapter.update_if_active(|| access::tree(&self.access_view()));
@@ -3092,6 +3107,7 @@ impl App {
         events
     }
 
+    #[cfg(windows)]
     pub fn access_focus(&mut self, focused: bool) -> Option<QueuedEvents> {
         self.access.as_mut()?.update_window_focus_state(focused)
     }
@@ -3264,6 +3280,8 @@ impl App {
             self.paint_panels();
         }
         self.paint_welcome();
+        #[cfg(unix)]
+        self.paint_popup_overlay();
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
         if !self.panels_failed {
@@ -3292,8 +3310,7 @@ impl App {
         self.paint_panels();
         if self.panel_shapes.is_empty() {
             if self.panels.as_mut().is_some_and(crate::panels::Layer::hide) {
-                // SAFETY: a timer of this window, from its own thread.
-                unsafe { SetTimer(Some(self.hwnd), crate::win::PANELS_TIMER, PANELS_SHRINK_MS, None) };
+                win::set_timer(self.hwnd, win::PANELS_TIMER, PANELS_SHRINK_MS);
             }
             return;
         }
@@ -3329,8 +3346,7 @@ impl App {
 
     /// The panels have been closed for a while: their swap chain gives its memory back.
     pub fn shrink_panels(&mut self) {
-        // SAFETY: a timer of this window, from its own thread.
-        unsafe { let _ = KillTimer(Some(self.hwnd), crate::win::PANELS_TIMER); }
+        win::kill_timer(self.hwnd, win::PANELS_TIMER);
         if let Some(layer) = self.panels.as_mut() {
             layer.shrink(&self.gpu);
         }
@@ -3606,7 +3622,7 @@ impl App {
     fn place_text(&self, i: usize) -> Option<String> {
         let entry = self.tabs.get(i)?.focused_entry()?;
         let folder = work_folder(entry.usage.as_ref(), entry.cwd.as_ref())?;
-        let home = std::env::var("USERPROFILE").ok();
+        let home = store::home_dir().map(|home| home.display().to_string());
         let mut folder = logic::folder_label(&folder, home.as_deref());
         if folder == self.tab_label(i)
             && let Some(program) = self.tabs[i].job()
@@ -4146,7 +4162,7 @@ impl App {
             }
             let cwd = work_folder(entry.usage.as_ref(), entry.cwd.as_ref());
             if let Some(cwd) = cwd.filter(|_| show.folder) {
-                let home = std::env::var("USERPROFILE").ok();
+                let home = store::home_dir().map(|home| home.display().to_string());
                 pieces.push(Piece::Glyph('\u{E8B7}', logic::folder_label(&cwd, home.as_deref())));
             }
         };
@@ -4268,12 +4284,10 @@ impl App {
     /// screen point (`x`, `y`): restore, move, size, minimize, maximize and close, as Windows has it for a native title
     /// bar, with what the state of the window allows, and in the shell's the settings under them. These windows have no menu
     /// of the system to show: they leave out `WS_SYSMENU` so that DWM draws no caption buttons over theirs.
-    pub fn open_window_menu(&mut self, window: HWND, x: i32, y: i32) {
-        use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsZoomed, SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
+    pub fn open_window_menu(&mut self, window: Hwnd, x: i32, y: i32) {
         let lang = self.language();
-        // SAFETY: plain queries of a window of this thread.
-        let (maximized, minimized) = unsafe { (IsZoomed(window).as_bool(), IsIconic(window).as_bool()) };
-        let row = |text: Text, command: u32, glyph: char, hint: &str| popup::Row {
+        let (maximized, minimized) = (win::is_maximized(window), win::is_minimized(window));
+        let row = |text: Text, command: WindowCommand, glyph: char, hint: &str| popup::Row {
             label: text.get(lang).to_owned(),
             hint: hint.to_owned(),
             action: Some(popup::Action::Window(command)),
@@ -4283,19 +4297,19 @@ impl App {
         };
         let mut rows = Vec::new();
         if maximized || minimized {
-            rows.push(row(Text::CommonRestore, SC_RESTORE, '\u{E923}', ""));
+            rows.push(row(Text::CommonRestore, WindowCommand::Restore, '\u{E923}', ""));
         }
         if !maximized {
             // A blank glyph keeps their labels in the column of the others.
-            rows.push(row(Text::WindowMove, SC_MOVE, ' ', ""));
-            rows.push(row(Text::WindowSize, SC_SIZE, ' ', ""));
+            rows.push(row(Text::WindowMove, WindowCommand::Move, ' ', ""));
+            rows.push(row(Text::WindowSize, WindowCommand::Size, ' ', ""));
         }
-        rows.push(row(Text::WindowMinimize, SC_MINIMIZE, '\u{E921}', ""));
+        rows.push(row(Text::WindowMinimize, WindowCommand::Minimize, '\u{E921}', ""));
         if !maximized {
-            rows.push(row(Text::WindowMaximize, SC_MAXIMIZE, '\u{E922}', ""));
+            rows.push(row(Text::WindowMaximize, WindowCommand::Maximize, '\u{E922}', ""));
         }
         rows.push(popup::Row::separator());
-        rows.push(row(Text::CommonClose, SC_CLOSE, '\u{E8BB}', "Alt+F4"));
+        rows.push(row(Text::CommonClose, WindowCommand::Close, '\u{E8BB}', "Alt+F4"));
         if window == self.hwnd {
             rows.push(popup::Row::separator());
             let settings = Command::AppSettings;
@@ -4307,11 +4321,7 @@ impl App {
     }
 
     fn language(&self) -> Lang {
-        let mut name = [0u16; 85];
-        // SAFETY: the buffer has the room LOCALE_NAME_MAX_LENGTH asks for.
-        let len = unsafe { GetUserDefaultLocaleName(&mut name) };
-        let tag = String::from_utf16_lossy(&name[..(len.max(1) as usize - 1)]);
-        self.settings.language.resolve(&tag)
+        self.settings.language.resolve(&win::locale_name().unwrap_or_default())
     }
 
     /// The rows of the menu: `APP_MENU` without what the shell cannot do yet, and without separators left dangling.
@@ -4376,10 +4386,7 @@ impl App {
     }
 
     fn screen_point(&self, x: f32, y: f32) -> (i32, i32) {
-        let mut point = POINT { x: x.round() as i32, y: y.round() as i32 };
-        // SAFETY: converts a point of our own window.
-        unsafe { let _ = ClientToScreen(self.hwnd, &mut point); }
-        (point.x, point.y)
+        win::client_to_screen(self.hwnd, (x.round() as i32, y.round() as i32))
     }
 
     fn open_menu(&mut self) {
@@ -4449,7 +4456,7 @@ impl App {
             let theme = entry.scheme.as_deref().map_or_else(|| self.theme.clone(), |name| glass::render_theme(themes::find(&self.settings.schemes, name), shown));
             entry.view.set_theme(theme);
         }
-        crate::win::set_backdrop(self.hwnd, backdrop, self.dark());
+        win::set_backdrop(self.hwnd, backdrop, self.dark());
     }
 
     /// The system's settings or displays changed (a Remote Desktop session began or ended, the transparency effects were
@@ -5392,18 +5399,28 @@ impl App {
         let Some(entry) = self.tabs.iter().find(|tab| tab.uid == tab_uid).and_then(|tab| tab.entry(pane)) else { return };
         let profile = self.profiles.iter().find(|p| p.id == entry.profile_id).cloned().unwrap_or_else(|| self.profile.clone());
         // On a mapped network drive it goes as the share: the elevated copy has the drives of its own session, not of this one.
+        #[cfg(windows)]
         let directory = entry.cwd.as_deref().map(|dir| nekominal_pty::netdrive::unc_of(std::path::Path::new(dir)).map_or_else(|| dir.to_owned(), |share| share.display().to_string()));
+        #[cfg(unix)]
+        let directory = entry.cwd.clone();
         let (cols, rows) = entry.grid;
         let session = agent::new_session();
         let config = self.spawn_config(&profile, directory.as_deref(), &session, cols, rows);
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match crate::elevate::start(self.hwnd.0 as isize, id, config) {
+        #[cfg(windows)]
+        match crate::elevate::start(win::id(self.hwnd), id, config) {
             Ok(()) => self.elevating = Some(Elevating { id, tab_uid, pane, session }),
             Err(e) => self.inform(Text::PaneElevateFailed.format(self.language(), &[&e])),
+        }
+        #[cfg(unix)]
+        {
+            let _ = (id, config, tab_uid, pane, session);
+            self.inform(Text::PaneElevateFailed.format(self.language(), &[&"a shell cannot be started as administrator here"]));
         }
     }
 
     /// The elevated copy answered (`WM_ELEVATED`): the pane that asked gets the session it gave, in its place.
+    #[cfg(windows)]
     pub(crate) fn elevated_done(&mut self, id: u64) {
         use crate::elevate::{Outcome, Reply};
         let Some(outcome) = crate::elevate::take(id) else { return };
@@ -5424,6 +5441,7 @@ impl App {
 
     /// Puts the session the elevated copy gave in the place of the pane's own: the pane keeps its place, its title and the
     /// folder it was in, and shows what it showed.
+    #[cfg(windows)]
     fn adopt_elevated(&mut self, elevating: &Elevating, parts: nekominal_pty::handoff::Parts) -> crate::elevate::Reply {
         use crate::elevate::Reply;
         let Some((t, entry)) = self.tabs.iter().enumerate().find(|(_, tab)| tab.uid == elevating.tab_uid).and_then(|(t, tab)| Some((t, tab.entry(elevating.pane)?))) else {
@@ -5478,6 +5496,7 @@ impl App {
         if let Some(directory) = directory {
             // On a mapped network drive it goes as the share: the elevated window has the drives of its own session, not
             // of this one.
+            #[cfg(windows)]
             let directory = nekominal_pty::netdrive::unc_of(std::path::Path::new(directory)).map_or_else(|| directory.to_owned(), |share| share.display().to_string());
             // `\.` so that a drive root (`C:\`) does not escape the closing quote.
             args.push_str(&format!(" -d \"{}\\.\"", directory.trim_end_matches('\\').replace('"', "")));
@@ -5512,26 +5531,12 @@ impl App {
     /// placement it had. The window keeps its style: without `WS_OVERLAPPEDWINDOW` DWM no longer holds the backdrop, which
     /// flickered while what was behind the window redrew.
     fn toggle_fullscreen(&mut self) {
-        // SAFETY: plain Win32 calls on our own window; the structures live through the calls.
-        unsafe {
-            if let Some(placement) = self.fullscreen.take() {
-                crate::win::mark_fullscreen(self.hwnd, false);
-                let _ = SetWindowPlacement(self.hwnd, &placement);
-                let _ = SetWindowPos(self.hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-                self.sync_size();
-                return;
+        match self.fullscreen.take() {
+            Some(placement) => win::leave_fullscreen(self.hwnd, placement),
+            None => {
+                let Some(placement) = win::enter_fullscreen(self.hwnd) else { return };
+                self.fullscreen = Some(placement);
             }
-            let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-            let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            if GetWindowPlacement(self.hwnd, &mut placement).is_err()
-                || !GetMonitorInfoW(MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool()
-            {
-                return;
-            }
-            self.fullscreen = Some(placement);
-            crate::win::mark_fullscreen(self.hwnd, true);
-            let r = monitor.rcMonitor;
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
         }
         self.sync_size();
     }
@@ -5542,8 +5547,7 @@ impl App {
 
     /// Whether the device this window draws with still works (a removed one says why it went).
     pub fn gpu_works(&self) -> bool {
-        // SAFETY: a query of a device this window holds.
-        unsafe { self.gpu.device.GetDeviceRemovedReason() }.is_ok()
+        !win::device_lost(&self.gpu)
     }
 
     /// Makes everything this window draws with again on gpu, the old device being lost: its swap chains, the chrome's
@@ -5570,14 +5574,13 @@ impl App {
     /// Takes the size the window has now. A move this window makes of itself sends WM_SIZE while the application is borrowed,
     /// so the window procedure cannot hand it over: without this the panes and the swap chain keep the old size.
     fn sync_size(&mut self) {
-        self.on_size(crate::win::client_size(self.hwnd), crate::win::is_maximized(self.hwnd));
+        self.on_size(win::client_size(self.hwnd), win::is_maximized(self.hwnd));
     }
 
     fn open_find(&mut self) {
         if let Some(popup) = self.popup.as_mut().filter(|popup| popup.kind == popup::Kind::Find) {
             popup.has_keys = true;
-            // SAFETY: invalidating our own window.
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
             return;
         }
         let anchor = self.screen_point(self.layout.size.0 * self.scale - 24.0 * self.scale, layout::TITLE_HEIGHT * self.scale);
@@ -5616,8 +5619,7 @@ impl App {
         self.find = Some(FindState { matches, current });
         if let Some(popup) = self.popup.as_mut() {
             popup.status = status;
-            // SAFETY: invalidating our own window.
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
         }
     }
 
@@ -5642,8 +5644,7 @@ impl App {
         }
         if let Some(popup) = self.popup.as_mut() {
             popup.status = status;
-            // SAFETY: invalidating our own window.
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
         }
         self.redraw();
     }
@@ -5699,8 +5700,7 @@ impl App {
         if self.renaming.is_some() || self.entry.is_some() {
             popup.hover = Some(0);
         }
-        // SAFETY: invalidating our own window.
-        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        win::invalidate(popup.hwnd);
     }
 
     /// The menu of the right button (the setting `rightClick` is `menu`), with its left edge at the pointer.
@@ -5750,8 +5750,7 @@ impl App {
     /// chosen is typed at the prompt (a snippet as written, a command without running it).
     fn open_suggestions(&mut self) {
         let mut list: Vec<(String, String)> = self.settings.snippets.iter().map(|s| (s.name.clone(), s.input.clone())).collect();
-        let history = std::env::var_os("APPDATA").map(|appdata| std::path::PathBuf::from(appdata).join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"));
-        if let Some(text) = history.and_then(|path| std::fs::read_to_string(path).ok()) {
+        if let Some(text) = shell_history() {
             list.extend(logic::recent_commands(&text, SUGGESTED_COMMANDS).into_iter().map(|command| (command.clone(), command)));
         }
         let anchor = self.screen_point((self.layout.size.0 + popup::PALETTE_WIDTH) / 2.0 * self.scale, (layout::TITLE_HEIGHT + 16.0) * self.scale);
@@ -5921,11 +5920,8 @@ impl App {
 
     /// Keeps the window over all the others, or lets it go back among them.
     fn toggle_on_top(&mut self) {
-        use windows::Win32::UI::WindowsAndMessaging::{HWND_NOTOPMOST, HWND_TOPMOST};
         self.on_top = !self.on_top;
-        let after = if self.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
-        // SAFETY: changes the z-order of our own window only.
-        unsafe { let _ = SetWindowPos(self.hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+        win::set_topmost(self.hwnd, self.on_top);
     }
 
     /// Hides the title bar and the sidebar (focus mode), or shows them again.
@@ -5950,21 +5946,7 @@ impl App {
     /// Puts the window along the top of the work area of the monitor under the pointer, as wide as it and almost half as
     /// tall.
     pub fn dock_at_top(&mut self) {
-        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MonitorFromPoint};
-        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-        // SAFETY: plain queries and a move of our own window; the structures live through the calls.
-        unsafe {
-            let mut pointer = POINT::default();
-            let _ = GetCursorPos(&mut pointer);
-            let monitor = MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST);
-            let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-                return;
-            }
-            let work = info.rcWork;
-            let height = ((work.bottom - work.top) as f32 * logic::QUAKE_SHARE).round() as i32;
-            let _ = SetWindowPos(self.hwnd, Some(HWND_TOP), work.left, work.top, work.right - work.left, height, SWP_NOOWNERZORDER);
-        }
+        win::dock_at_top(self.hwnd, logic::QUAKE_SHARE);
         self.sync_size();
     }
 
@@ -6176,35 +6158,16 @@ impl App {
     /// A modal dialog ran while this window was borrowed: the wakes of the panes in that time were dropped, with their
     /// pending marks left set, so that they would never wake the window again. One wake now takes all of them.
     fn wake_after_dialog(&self) {
-        // SAFETY: posting to our own window.
-        unsafe { let _ = PostMessageW(Some(self.hwnd), WM_WAKE, WPARAM(0), LPARAM(0)); }
+        win::post(self.hwnd, Message::Wake);
     }
 
     /// Writes all the text of the focused pane, its scrollback with it, to a file the save dialog asks for.
     fn export_text(&mut self) {
-        use windows::Win32::UI::Controls::Dialogs::{GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
         let Some(text) = self.focused().map(|entry| entry.pane.term.lock().all_text()) else { return };
-        let mut file = [0u16; 1024];
-        let name: Vec<u16> = logic::export_file_name(&self.tab_label(self.selected)).encode_utf16().take(file.len() - 1).collect();
-        file[..name.len()].copy_from_slice(&name);
-        let mut dialog = OPENFILENAMEW {
-            lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-            hwndOwner: self.hwnd,
-            lpstrFilter: windows::core::w!("Text (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0"),
-            lpstrFile: windows::core::PWSTR(file.as_mut_ptr()),
-            nMaxFile: file.len() as u32,
-            lpstrDefExt: windows::core::w!("txt"),
-            Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
-            ..Default::default()
-        };
-        // SAFETY: the structure and the buffer it points at live through the call, which is modal on this thread.
-        let saved = unsafe { GetSaveFileNameW(&mut dialog) }.as_bool();
+        let name = logic::export_file_name(&self.tab_label(self.selected));
+        let saved = crate::pick::save_text(self.hwnd, &name);
         self.wake_after_dialog();
-        if !saved {
-            return;
-        }
-        let length = file.iter().position(|unit| *unit == 0).unwrap_or(file.len());
-        let path = String::from_utf16_lossy(&file[..length]);
+        let Some(path) = saved else { return };
         if let Err(e) = std::fs::write(&path, logic::with_crlf(&text)) {
             util::log(&format!("export: {path}: {e}"));
         }
@@ -6246,8 +6209,7 @@ impl App {
         match popup::open(self.hwnd, &self.gpu, rows, kind, anchor, self.scale, self.dark(), fit) {
             Ok(popup) => {
                 self.text = Utf16Assembler::default();
-                // SAFETY: invalidating the window just made.
-                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                win::invalidate(popup.hwnd);
                 self.popup = Some(popup);
             }
             Err(e) => util::log(&format!("menu: {e}")),
@@ -6266,8 +6228,7 @@ impl App {
         self.text = Utf16Assembler::default();
         self.find = None;
         self.popup_closed = Some(Instant::now());
-        // SAFETY: destroys a window of this thread; the swap chain goes with the `Popup`.
-        unsafe { let _ = DestroyWindow(popup.hwnd); }
+        win::destroy(popup.hwnd);
         drop(popup);
         self.redraw();
     }
@@ -6280,8 +6241,7 @@ impl App {
     /// The menu lost the activation: another window was clicked, or this one.
     pub fn popup_deactivated(&mut self) {
         self.close_popup();
-        // SAFETY: plain query.
-        if unsafe { GetForegroundWindow() } != self.hwnd {
+        if !win::is_foreground(self.hwnd) {
             self.on_activate(false);
         }
     }
@@ -6295,8 +6255,7 @@ impl App {
         let check_changed = popup.check.as_mut().is_some_and(|check| std::mem::replace(&mut check.hover, over_check || check.focus) != (over_check || check.focus));
         if row != popup.hover || check_changed {
             popup.hover = row;
-            // SAFETY: invalidating our own window.
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
         }
     }
 
@@ -6312,8 +6271,7 @@ impl App {
             if let Some(check) = popup.check.as_mut() {
                 check.on = !check.on;
             }
-            // SAFETY: invalidating our own window.
-            unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+            win::invalidate(popup.hwnd);
             return;
         }
         // A choice of Remove this worktree is taken, and the dialog stays.
@@ -6337,8 +6295,7 @@ impl App {
         if let (Some(remove), Some(Confirmation::RemoveWorktree { delete_branch, .. })) = (&popup.remove, &mut self.confirmation) {
             *delete_branch = remove.dialog.delete_branch();
         }
-        // SAFETY: invalidating our own window.
-        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        win::invalidate(popup.hwnd);
     }
 
     pub fn popup_key(&mut self, vk_code: i32, repeat: bool) {
@@ -6362,8 +6319,7 @@ impl App {
                 if changed {
                     self.query_changed();
                 } else if let Some(popup) = self.popup.as_ref() {
-                    // SAFETY: invalidating our own window.
-                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                    win::invalidate(popup.hwnd);
                 }
                 return;
             }
@@ -6425,13 +6381,13 @@ impl App {
                     } else {
                         popup.hover = popup::step(&popup.rows, popup.hover, forward);
                     }
-                    unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                    win::invalidate(popup.hwnd);
                 }
                 VK_RETURN | 0x20 => {
                     // On the checkbox they tick it; on a button they press it.
                     if let Some(check) = popup.check.as_mut().filter(|check| check.focus) {
                         check.on = !check.on;
-                        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                        win::invalidate(popup.hwnd);
                     } else if let Some(row) = popup.hover {
                         self.choose(row);
                     }
@@ -6470,8 +6426,7 @@ impl App {
                 if let Some(row) = popup.hover {
                     popup.reveal(row);
                 }
-                // SAFETY: invalidating our own window.
-                unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+                win::invalidate(popup.hwnd);
             }
             VK_RETURN => {
                 if let Some(row) = popup.hover {
@@ -6486,8 +6441,7 @@ impl App {
     pub fn popup_wheel(&mut self, delta: i16) {
         let Some(popup) = self.popup.as_mut() else { return };
         popup.scroll_by(-f32::from(delta) / 120.0 * 3.0 * 32.0);
-        // SAFETY: invalidating our own window.
-        unsafe { let _ = InvalidateRect(Some(popup.hwnd), None, false); }
+        win::invalidate(popup.hwnd);
     }
 
     /// Closes the list and does what its row `row` says.
@@ -6523,7 +6477,9 @@ impl App {
                 Some(Confirmation::CloseTab(tab)) => self.close_tab(tab),
                 Some(Confirmation::CloseTabs(uids)) => self.close_tabs(&uids),
                 // Destroyed outside this borrow of the window, so that the last window can still save the session then.
-                Some(Confirmation::CloseWindow) => unsafe { let _ = PostMessageW(Some(self.hwnd), crate::win::WM_DESTROY_WINDOW, WPARAM(0), LPARAM(0)); },
+                Some(Confirmation::CloseWindow) => {
+                    win::post(self.hwnd, Message::DestroyWindow);
+                }
                 Some(Confirmation::ElevatePane { tab_uid, pane }) => self.begin_elevating(tab_uid, pane),
                 Some(Confirmation::RemoveWorktree { path, delete_branch }) => self.remove_worktree(&path, delete_branch),
                 Some(Confirmation::ShowFolder(path)) => self.show_folder(&path),
@@ -6573,8 +6529,9 @@ impl App {
                     self.redraw();
                 }
             }
-            // SAFETY: posting to a window of this thread.
-            Some(popup::Action::Window(command)) => unsafe { let _ = PostMessageW(Some(self.window_menu_for), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)); },
+            Some(popup::Action::Window(command)) => {
+                win::post(self.window_menu_for, Message::Window(command));
+            }
             Some(popup::Action::ColorScheme(index)) => {
                 let name = themes::theme_names(&self.settings.schemes).nth(index).map(str::to_owned);
                 if let Some(name) = name {
@@ -6629,15 +6586,7 @@ impl App {
     /// Where the window was in the session that was restored, once; None when it would be out of reach on the screens.
     pub fn take_placement(&mut self) -> Option<Placement> {
         let placement = self.placement.take()?;
-        // SAFETY: plain queries.
-        let screen = unsafe {
-            PixelRect {
-                x: GetSystemMetrics(SM_XVIRTUALSCREEN),
-                y: GetSystemMetrics(SM_YVIRTUALSCREEN),
-                width: GetSystemMetrics(SM_CXVIRTUALSCREEN).max(0) as u32,
-                height: GetSystemMetrics(SM_CYVIRTUALSCREEN).max(0) as u32,
-            }
-        };
+        let screen = win::virtual_screen(self.hwnd);
         (placement.rect.width >= session::MIN_WINDOW_SIZE && placement.rect.height >= session::MIN_WINDOW_SIZE && placement.is_reachable_on(&[screen])).then_some(placement)
     }
 
@@ -6733,13 +6682,15 @@ impl App {
             cwd: entry.cwd.clone(),
             profile: entry.profile.clone(),
             shell: entry.shell.clone(),
-            home: std::env::var("USERPROFILE").ok(),
+            home: store::home_dir().map(|home| home.display().to_string()),
             untitled: untitled.to_owned(),
             ..Default::default()
         };
         logic::default_title(&parts, &self.settings.tabs.title.parts, false).0
     }
 
+    /// The window of a pop-up draws it (Windows): its own frame, cleared, with the pop-up in it.
+    #[cfg(windows)]
     pub fn popup_paint(&mut self) {
         let owner = self.hwnd;
         let scale = self.scale;
@@ -6747,75 +6698,147 @@ impl App {
         let Some(popup) = self.popup.as_mut() else { return };
         let Some(view) = popup.surface.acquire() else { return };
         self.gpu.clear(&view, [0.0; 4]);
-        let ui = &mut self.ui;
-        ui.begin_frame(popup.surface.size(), scale);
-        // The acrylic is the window; a tint over it keeps the text readable on any wallpaper.
-        let tint = Color([g.background.r, g.background.g, g.background.b, popup::ACRYLIC_TINT]);
-        ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
-        let line = ui.line_height(TEXT_SIZE);
-        let header = popup.header;
-        if let Some(remove) = &popup.remove {
-            crate::remove_dialog::paint(ui, &g, remove, &popup.rows, &popup.rects, popup.hover);
-        } else if popup.kind == popup::Kind::Confirm {
-            popup::paint_confirmation(ui, &popup.heading, popup.check.as_ref(), &popup.rows, popup.hover, popup.size.0, g);
-        }
-        if popup.kind == popup::Kind::Confirm {
-            ui.end_frame(&view);
-            if popup.surface.present() { post_gpu_lost(owner); }
-            return;
-        }
-        // The rows scroll under the query line, so they are clipped to the part below it.
-        ui.push_clip(Rect::new(0.0, header, popup.size.0, popup.size.1 - header));
-        for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
-            let rect = Rect::new(rect.x, header + rect.y - popup.scroll, rect.w, rect.h);
-            if rect.y + rect.h < header || rect.y > popup.size.1 {
-                continue;
-            }
-            if row.is_separator() {
-                ui.fill(Rect::new(rect.x + 8.0, rect.y + rect.h / 2.0, rect.w - 16.0, 1.0), col(g.divider()));
-                continue;
-            }
-            widgets::menu_row(ui, &g, rect, popup.hover == Some(i), row.current);
-            let y = rect.y + (rect.h - line) / 2.0;
-            let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
-            ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
-            let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
-            let mut label_x = rect.x + 12.0;
-            if let Some(mark) = row.mark {
-                let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
-                if !row.program.as_deref().is_some_and(|path| program_icon(ui, path, square)) {
-                    widgets::mark(ui, square, mark, col(g.text_secondary()));
-                }
-                label_x += popup::MARK_SIZE + popup::MARK_GAP;
-            }
-            ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));
-            ui.text(label_x, y, &row.label, TEXT_SIZE, col(g.text()), false);
-            ui.pop_clip();
-        }
-        ui.pop_clip();
-        if let Some(query) = &popup.query {
-            let y = (header - line) / 2.0;
-            let icon_line = ui.line_height(14.0);
-            ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
-            let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
-            let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
-            let area = Rect::new(popup::QUERY_LEFT, 0.0, (end - popup::QUERY_LEFT).max(0.0), header);
-            popup.caret = widgets::line_edit(ui, &g, area, TEXT_SIZE, &widgets::LineEdit { text: query, cursor: Some(popup.cursor), preedit: &popup.preedit, placeholder: "", caret_on: true });
-            if !popup.status.is_empty() {
-                let width = ui.measure(&popup.status, TEXT_SIZE, false);
-                ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);
-            }
-            if popup.kind != popup::Kind::Find {
-                ui.fill(Rect::new(0.0, header - 1.0, popup.size.0, 1.0), col(g.divider()));
-            }
-        }
-        ui.end_frame(&view);
+        self.ui.begin_frame(popup.surface.size(), scale);
+        draw_popup(&mut self.ui, &g, popup);
+        self.ui.end_frame(&view);
         if popup.surface.present() { post_gpu_lost(owner); }
+    }
+
+    /// The pop-up over the frame of the window (Linux): drawn where it opened, with a shadow, after everything else.
+    #[cfg(unix)]
+    fn paint_popup_overlay(&mut self) {
+        let g = self.glass;
+        let scale = self.scale;
+        let Some(popup) = self.popup.as_mut() else { return };
+        let (x, y) = (popup.origin.0 as f32 / scale, popup.origin.1 as f32 / scale);
+        self.ui.shadow(Rect::new(x, y + 4.0, popup.size.0, popup.size.1), CORNER_RADIUS, 12.0, Color([0, 0, 0, 90]));
+        self.ui.set_origin(x, y);
+        draw_popup(&mut self.ui, &g, popup);
+        self.ui.set_origin(0.0, 0.0);
+    }
+
+    /// The rectangle of the pop-up in the window, in pixels: left, top, width, height.
+    #[cfg(unix)]
+    pub fn popup_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        let popup = self.popup.as_ref()?;
+        Some((popup.origin.0, popup.origin.1, (popup.size.0 * self.scale).round() as i32, (popup.size.1 * self.scale).round() as i32))
+    }
+
+    /// The pointer moved, or a button was pressed or let go, in a window with a pop-up open (Linux), where the pop-up is
+    /// part of the window: true when the pop-up took it. A press outside the pop-up closes it and does nothing else, as a
+    /// click outside a menu does; the pointer over it moves its hover, a button let go on it chooses.
+    #[cfg(unix)]
+    pub fn pointer_for_popup(&mut self, x: i32, y: i32, event: PopupPointer) -> bool {
+        let Some((left, top, width, height)) = self.popup_rect() else { return false };
+        let inside = x >= left && x < left + width && y >= top && y < top + height;
+        let local = (x - left, y - top);
+        match event {
+            PopupPointer::Move => {
+                self.popup_move(inside.then_some(local));
+                inside
+            }
+            PopupPointer::Press => {
+                if !inside && self.popup_keeps_owner_active() {
+                    self.close_popup();
+                    return true;
+                }
+                inside
+            }
+            PopupPointer::Release => {
+                if inside {
+                    self.popup_click(local.0, local.1);
+                }
+                inside
+            }
+        }
+    }
+
+    /// The wheel turned over the pop-up (Linux): true when it is the pop-up's.
+    #[cfg(unix)]
+    pub fn wheel_for_popup(&mut self, x: i32, y: i32, delta: i16) -> bool {
+        let Some((left, top, width, height)) = self.popup_rect() else { return false };
+        let inside = x >= left && x < left + width && y >= top && y < top + height;
+        if inside {
+            self.popup_wheel(delta);
+        }
+        inside
     }
 
     fn icon_centered(&mut self, rect: Rect, ch: char, size: f32, color: Color) {
         let line = self.ui.line_height(size);
         let width = self.ui.measure_icon(ch, size);
         self.ui.icon(rect.x + (rect.w - width) / 2.0, rect.y + (rect.h - line) / 2.0 + ICON_NUDGE, ch, size, color);
+    }
+}
+
+/// What the pointer does to a pop-up that is drawn in the window.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupPointer {
+    Move,
+    Press,
+    Release,
+}
+
+/// Draws the pop-up at the origin of `ui`, as large as it is.
+fn draw_popup(ui: &mut Ui, g: &Glass, popup: &mut popup::Popup) {
+    let g = *g;
+    // The acrylic is the window; a tint over it keeps the text readable on any wallpaper.
+    let tint = Color([g.background.r, g.background.g, g.background.b, popup::ACRYLIC_TINT]);
+    ui.rrect(Rect::new(0.0, 0.0, popup.size.0, popup.size.1), CORNER_RADIUS, tint, Some((col(g.divider()), 1.0)));
+    let line = ui.line_height(TEXT_SIZE);
+    let header = popup.header;
+    if let Some(remove) = &popup.remove {
+        crate::remove_dialog::paint(ui, &g, remove, &popup.rows, &popup.rects, popup.hover);
+    } else if popup.kind == popup::Kind::Confirm {
+        popup::paint_confirmation(ui, &popup.heading, popup.check.as_ref(), &popup.rows, popup.hover, popup.size.0, g);
+    }
+    if popup.kind == popup::Kind::Confirm {
+        return;
+    }
+    // The rows scroll under the query line, so they are clipped to the part below it.
+    ui.push_clip(Rect::new(0.0, header, popup.size.0, popup.size.1 - header));
+    for (i, (row, rect)) in popup.rows.iter().zip(&popup.rects).enumerate() {
+        let rect = Rect::new(rect.x, header + rect.y - popup.scroll, rect.w, rect.h);
+        if rect.y + rect.h < header || rect.y > popup.size.1 {
+            continue;
+        }
+        if row.is_separator() {
+            ui.fill(Rect::new(rect.x + 8.0, rect.y + rect.h / 2.0, rect.w - 16.0, 1.0), col(g.divider()));
+            continue;
+        }
+        widgets::menu_row(ui, &g, rect, popup.hover == Some(i), row.current);
+        let y = rect.y + (rect.h - line) / 2.0;
+        let hint_width = ui.measure(&row.hint, TEXT_SIZE, false);
+        ui.text(rect.x + rect.w - 12.0 - hint_width, y, &row.hint, TEXT_SIZE, col(g.text_secondary()), false);
+        let label_end = rect.x + rect.w - 12.0 - hint_width - 8.0;
+        let mut label_x = rect.x + 12.0;
+        if let Some(mark) = row.mark {
+            let square = Rect::new(label_x, rect.y + (rect.h - popup::MARK_SIZE) / 2.0, popup::MARK_SIZE, popup::MARK_SIZE);
+            if !row.program.as_deref().is_some_and(|path| program_icon(ui, path, square)) {
+                widgets::mark(ui, square, mark, col(g.text_secondary()));
+            }
+            label_x += popup::MARK_SIZE + popup::MARK_GAP;
+        }
+        ui.push_clip(Rect::new(rect.x, rect.y.max(header), (label_end - rect.x).max(0.0), rect.h));
+        ui.text(label_x, y, &row.label, TEXT_SIZE, col(g.text()), false);
+        ui.pop_clip();
+    }
+    ui.pop_clip();
+    if let Some(query) = &popup.query {
+        let y = (header - line) / 2.0;
+        let icon_line = ui.line_height(14.0);
+        ui.icon(16.0, (header - icon_line) / 2.0, '\u{E721}', 14.0, col(g.text_secondary()));
+        let status_width = ui.measure(&popup.status, TEXT_SIZE, false);
+        let end = popup.size.0 - 16.0 - if popup.status.is_empty() { 0.0 } else { status_width + 12.0 };
+        let area = Rect::new(popup::QUERY_LEFT, 0.0, (end - popup::QUERY_LEFT).max(0.0), header);
+        popup.caret = widgets::line_edit(ui, &g, area, TEXT_SIZE, &widgets::LineEdit { text: query, cursor: Some(popup.cursor), preedit: &popup.preedit, placeholder: "", caret_on: true });
+        if !popup.status.is_empty() {
+            let width = ui.measure(&popup.status, TEXT_SIZE, false);
+            ui.text(popup.size.0 - 16.0 - width, y, &popup.status, TEXT_SIZE, col(g.text_secondary()), false);
+        }
+        if popup.kind != popup::Kind::Find {
+            ui.fill(Rect::new(0.0, header - 1.0, popup.size.0, 1.0), col(g.divider()));
+        }
     }
 }

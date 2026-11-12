@@ -197,15 +197,15 @@ fn curl_config(url: &str, headers: &[(&'static str, String)], body: &str) -> Str
 /// Sends the request with curl; blocks for up to the five seconds of its time limit and a little more.
 fn post(config: &str) -> Result<(), String> {
     use std::io::Write;
-    use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut child = Command::new("curl.exe")
+
+    use crate::util::CommandQuiet;
+    let mut child = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" })
         .args(["--config", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .quiet()
         .spawn()
         .map_err(|e| format!("curl.exe did not start: {e}"))?;
     child.stdin.take().expect("piped").write_all(config.as_bytes()).map_err(|e| format!("curl.exe: {e}"))?;

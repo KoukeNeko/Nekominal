@@ -16,10 +16,24 @@ type Ledger = BTreeMap<String, BTreeMap<String, f64>>;
 const KEPT_DAYS: usize = 31;
 
 fn ledger_file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("spend.json"))
+    Some(nekominal_model::store::data_dir()?.join("spend.json"))
 }
 
 /// The date of this machine's clock, as the ledger keys it.
+#[cfg(unix)]
+pub fn today() -> String {
+    // SAFETY: plain conversion into a structure that lives through the call.
+    let local = unsafe {
+        let seconds = libc::time(std::ptr::null_mut());
+        let mut local: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&seconds, &mut local);
+        local
+    };
+    format!("{:04}-{:02}-{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday)
+}
+
+/// The date of this machine's clock, as the ledger keys it.
+#[cfg(windows)]
 pub fn today() -> String {
     // SAFETY: fills and returns a plain struct.
     let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
@@ -77,6 +91,7 @@ pub fn record(status: &serde_json::Value) {
 
 /// `file` opened for this process alone (no sharing), waited for a little while another holds it; None when it stays held,
 /// and the write goes on without it rather than not at all.
+#[cfg(windows)]
 fn lock(file: &std::path::Path) -> Option<std::fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     for _ in 0..50 {
@@ -84,6 +99,21 @@ fn lock(file: &std::path::Path) -> Option<std::fs::File> {
             Ok(held) => return Some(held),
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
         }
+    }
+    None
+}
+
+/// `file` locked for this process alone, waited for a little while another holds it; None when it stays held.
+#[cfg(unix)]
+fn lock(file: &std::path::Path) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let held = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(file).ok()?;
+    for _ in 0..50 {
+        // SAFETY: plain call on a descriptor that is open as long as `held` is.
+        if unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Some(held);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     None
 }

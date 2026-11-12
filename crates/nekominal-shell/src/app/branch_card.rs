@@ -102,7 +102,7 @@ impl App {
             }
             (read.root, read.asked, read.running) = (Some(root.to_owned()), Some(now), true);
         }
-        let (shared, root, hwnd) = (Arc::clone(&self.branch_read), root.to_owned(), self.hwnd.0 as isize);
+        let (shared, root, hwnd) = (Arc::clone(&self.branch_read), root.to_owned(), crate::win::id(self.hwnd));
         std::thread::spawn(move || {
             let answer = match worktree::overview(&root) {
                 Ok(seen) => Answer::Overview(Box::new(seen)),
@@ -118,8 +118,7 @@ impl App {
                     (read.answer, read.answered) = (Some(answer), true);
                 }
             }
-            // SAFETY: posting to a window that may be gone, which PostMessage reports and nothing else.
-            unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0)); }
+            crate::win::post(crate::win::from_id(hwnd), crate::plat::Message::Wake);
         });
     }
 
@@ -140,7 +139,7 @@ impl App {
         let (text, quiet) = (col(g.text()), col(g.text_secondary()));
         let (line, small) = (self.ui.line_height(TEXT_SIZE), self.ui.line_height(SMALL_SIZE));
         let inner = WIDTH - 2.0 * PAD;
-        let home = std::env::var("USERPROFILE").ok();
+        let home = nekominal_model::store::home_dir().map(|home| home.display().to_string());
         let folder = logic::folder_label(&git.root.to_string_lossy(), home.as_deref());
         let pr = self.tabs.get(self.selected).and_then(|tab| self.badges.pull_request.get(&tab.uid)).cloned();
 

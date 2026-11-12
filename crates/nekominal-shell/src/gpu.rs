@@ -1,8 +1,8 @@
 //! The device and the swap chain of a window: Direct3D 11 on a DirectComposition visual, premultiplied alpha, so the
 //! DWM backdrop (Mica or acrylic) shows through wherever the shell draws with alpha below one.
 
-pub use nekominal_render::d3d::Gpu;
-use nekominal_render::d3d::AdapterKind;
+pub use nekominal_render::gfx::Gpu;
+use nekominal_render::gfx::AdapterKind;
 use windows::{
     Win32::{
         Foundation::HWND,

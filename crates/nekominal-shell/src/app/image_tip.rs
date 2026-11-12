@@ -88,6 +88,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn only_an_image_that_windows_reads_gets_a_tip_and_the_same_file_is_not_read_again() {
         let anchor = Rect::new(10.0, 20.0, 100.0, 18.0);
         assert_eq!(Tip::of(r"C:\notes.txt", anchor, None), None, "not an image");

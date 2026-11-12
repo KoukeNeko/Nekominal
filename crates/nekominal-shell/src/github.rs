@@ -3,17 +3,15 @@
 //! request, every ten minutes for one merged, closed or without one (and at once for a branch not seen before), and is
 //! stopped after 30 seconds; without `gh`, signed out of it, outside GitHub or without a pull request, there is none.
 
+use crate::util::CommandQuiet;
 use std::{
     collections::HashMap,
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Stdio,
     sync::mpsc::{Receiver, Sender, channel},
     time::{Duration, Instant},
 };
 
-/// `CREATE_NO_WINDOW`: gh is a console program, and this one has no console for it to borrow.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// How long what gh said of an open pull request holds before it is asked again: its checks and review change.
 const FRESH: Duration = Duration::from_secs(60);
 /// How long an answer that rarely changes holds: a pull request merged or closed, or none (gh missing, signed out, not
@@ -150,7 +148,7 @@ fn ask_gh(repo: &Path) -> Option<PullRequest> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .quiet()
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
@@ -408,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn gh_missing_signed_out_or_outside_github_gives_no_pull_request() {
         use std::{os::windows::process::ExitStatusExt, process::{ExitStatus, Output}};
         let run = |code: u32, stdout: &str| Ok(Output { status: ExitStatus::from_raw(code), stdout: stdout.as_bytes().to_vec(), stderr: Vec::new() });

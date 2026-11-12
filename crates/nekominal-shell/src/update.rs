@@ -1,8 +1,13 @@
 //! Whether a newer Nekominal is out: the version the Scoop bucket offers, read in the background with the `curl.exe`
-//! Windows ships, so the app takes no HTTP library for one request. Who has worked on it, as the build took it in. And
-//! where a copy that Scoop installed lives.
+//! Windows ships (`curl` elsewhere), so the app takes no HTTP library for one request. Who has worked on it, as the build
+//! took it in. And where a copy that Scoop installed lives (Windows).
 
 use std::path::{Path, PathBuf};
+
+use crate::util::CommandQuiet;
+
+/// The program that reads a page: the `curl.exe` Windows ships, the `curl` of the system elsewhere.
+const CURL: &str = if cfg!(windows) { "curl.exe" } else { "curl" };
 
 /// The manifest of the app in the bucket the release workflow writes.
 pub const MANIFEST: &str = "https://raw.githubusercontent.com/KoukeNeko/scoop-bucket/main/bucket/nekominal.json";
@@ -43,11 +48,9 @@ pub fn version_of(manifest: &str) -> Option<String> {
 
 /// The body at `url`, or nothing when it cannot be read. Blocks for up to ten seconds: a thread of its own calls it.
 pub fn fetch(url: &str) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let output = std::process::Command::new("curl.exe")
+    let output = std::process::Command::new(CURL)
         .args(["--silent", "--fail", "--location", "--max-time", "10", url])
-        .creation_flags(CREATE_NO_WINDOW)
+        .quiet()
         .output()
         .ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -87,6 +90,7 @@ pub fn contributors() -> Vec<String> {
 
 /// `text` as a single-quoted PowerShell string. PowerShell takes the curly quotes `‘ ’ ‚ ‛` for `'` too, so each of the
 /// five is doubled: `C:\Users\O’Neil` would otherwise end the string early.
+#[cfg(windows)]
 pub fn ps_quote(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('\'');
@@ -105,6 +109,7 @@ pub fn ps_quote(text: &str) -> String {
 /// brings Scoop and its buckets up to date (without that, the bucket on this computer may not know the new version
 /// yet), updates the app, and starts it again. When the version did not change it says so and waits for a key, so that
 /// what Scoop said stays on the screen.
+#[cfg(windows)]
 pub fn update_script(pid: u32, app_dir: &Path) -> String {
     let quoted = |path: &Path| ps_quote(&path.display().to_string());
     let dir = quoted(app_dir);
@@ -147,6 +152,7 @@ Start-Process -FilePath (Join-Path (Prefix) 'Nekominal.exe')
 }
 
 /// `script` as `powershell.exe -EncodedCommand` takes it: UTF-16LE in base64, which no path can break the quoting of.
+#[cfg(windows)]
 pub fn encoded(script: &str) -> String {
     use base64::Engine;
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
@@ -245,10 +251,12 @@ fn plain(text: &str) -> String {
 }
 
 /// The key the installer (`distribution/nekominal.wxs`) writes the folder it installed into under.
+#[cfg(windows)]
 const MSI_KEY: &str = r"Software\KoukeNeko\Nekominal";
 
 /// The folder the installer put the app in (`%LOCALAPPDATA%\Programs\Nekominal`) when this program is the copy it installed:
 /// a newer installer then updates it in place.
+#[cfg(windows)]
 pub fn msi_dir() -> Option<PathBuf> {
     let installed = PathBuf::from(crate::integration::read_string(MSI_KEY, "InstallDir")?);
     let exe = std::env::current_exe().ok()?;
@@ -257,31 +265,33 @@ pub fn msi_dir() -> Option<PathBuf> {
 }
 
 /// Whether two folders are one, whatever their case and a trailing backslash.
+#[cfg(windows)]
 fn same_folder(a: &Path, b: &Path) -> bool {
     let name = |p: &Path| p.to_string_lossy().trim_end_matches('\\').to_lowercase();
     name(a) == name(b)
 }
 
 /// The installer of `version` for the processor this build is for, as the release workflow names it.
+#[cfg(windows)]
 pub fn msi_name(version: &str) -> String {
     let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
     format!("Nekominal-{}-windows-{arch}.msi", version.trim_start_matches('v'))
 }
 
 /// Where the release of `version` keeps the file `name`.
+#[cfg(windows)]
 pub fn release_file(version: &str, name: &str) -> String {
     format!("{REPO}/releases/download/v{}/{name}", version.trim_start_matches('v'))
 }
 
 /// Downloads `url` into `to`. Blocks for up to five minutes: a thread of its own calls it.
+#[cfg(windows)]
 pub fn download(url: &str, to: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let output = std::process::Command::new("curl.exe")
+    let output = std::process::Command::new(CURL)
         .args(["--silent", "--show-error", "--fail", "--location", "--max-time", "300", "--output"])
         .arg(to)
         .arg(url)
-        .creation_flags(CREATE_NO_WINDOW)
+        .quiet()
         .output()
         .map_err(|e| format!("curl: {e}"))?;
     if output.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()) }
@@ -294,6 +304,7 @@ pub fn sha256_of_listing(listing: &str) -> Option<String> {
 }
 
 /// The SHA-256 of `bytes` in lower-case hex.
+#[cfg(windows)]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     nekominal_pty::relocate::sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -330,11 +341,24 @@ pub fn way(elevated: bool) -> Way {
 
 /// The folder Scoop keeps the app in (`...\scoop\apps\nekominal`) when this program is the copy it installed, from
 /// `...\apps\nekominal\<version or current>\Nekominal.exe`.
+#[cfg(windows)]
 pub fn scoop_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     scoop_dir_of(&exe)
 }
 
+/// Scoop and the installer are Windows' ways of updating.
+#[cfg(unix)]
+pub fn scoop_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(unix)]
+pub fn msi_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(windows)]
 fn scoop_dir_of(exe: &Path) -> Option<PathBuf> {
     let app = exe.parent()?.parent()?;
     app.parent()?.file_name()?.eq_ignore_ascii_case("apps").then(|| app.to_owned())
@@ -376,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_installer_of_a_version_is_found_by_name_and_checked_by_its_listing() {
         let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
         assert_eq!(msi_name("v0.2.19"), format!("Nekominal-0.2.19-windows-{arch}.msi"));
@@ -413,6 +438,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_update_script_refreshes_the_buckets_before_the_app_and_quotes_its_paths() {
         let script = update_script(4242, Path::new(r"C:\Users\o'neil\scoop\apps\nekominal"));
         // By line, so that the line ends of a checkout (CRLF on Windows) do not matter.
@@ -434,6 +460,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn windows_powershell_reads_the_encoded_update_script() {
         // Decoded and compiled by the PowerShell the app starts, as it would be, but not run: a script that does not
         // parse would close the app and update nothing.
@@ -444,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn the_version_comes_from_the_manifest_and_the_scoop_folder_from_the_path() {
         assert_eq!(version_of(r#"{ "version": "0.0.13", "bin": "Nekominal.exe" }"#).as_deref(), Some("0.0.13"));
         assert_eq!(version_of("<html>404</html>"), None);

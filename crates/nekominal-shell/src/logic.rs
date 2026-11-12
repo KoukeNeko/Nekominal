@@ -671,6 +671,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_path_becomes_a_file_uri_the_link_checks_take() {
         assert_eq!(file_uri(r"C:\My Files\a#1.txt"), "file:///C:/My%20Files/a%231.txt");
         let dir = std::env::temp_dir().join("nekominal hint test");

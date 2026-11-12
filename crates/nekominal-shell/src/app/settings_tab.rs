@@ -99,6 +99,7 @@ pub(super) fn kept(tabs: &[Tab], selected: usize) -> (Vec<&Tab>, usize) {
 
 /// Where the settings tab goes back among `count` other tabs (`selected` the one in view of them), as an update handed it
 /// over, and which tab is then in view: the inverse of [`kept`].
+#[cfg(windows)]
 pub(super) fn put_back(count: usize, selected: usize, settings: nekominal_pty::handoff::SettingsTab) -> (usize, usize) {
     let at = settings.at.min(count);
     let selected = if settings.selected || count == 0 { at } else if at <= selected { selected + 1 } else { selected };
@@ -292,6 +293,7 @@ mod tests {
 
     /// An update hands the tabs over without the settings, then puts them back: the order and the tab in view are as before.
     #[test]
+    #[cfg(windows)]
     fn the_settings_tab_comes_back_through_an_update_where_it_was_and_as_it_was_in_view() {
         use nekominal_pty::handoff::SettingsTab;
         for (count, settings_at) in [(2, 0), (2, 1), (2, 2), (0, 0), (1, 1)] {

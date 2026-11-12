@@ -331,9 +331,8 @@ impl App {
             }
             LayoutAction::OpenInNewWindow => {
                 PENDING.with(|pending| *pending.borrow_mut() = Some(layout));
-                // SAFETY: posting to our own window.
-                if let Err(e) = unsafe { PostMessageW(Some(self.hwnd), crate::win::WM_NEW_WINDOW, WPARAM(0), LPARAM(0)) } {
-                    util::log(&format!("new window: {e}"));
+                if !win::post(self.hwnd, Message::NewWindow) {
+                    util::log("new window: the window loop is gone");
                 }
             }
             LayoutAction::Rename => self.open_entry(Entry::RenameLayout(name.clone()), name),
@@ -383,8 +382,7 @@ impl App {
 
     /// Whether the window is on screen: a layout opened from the palette, not the session of a window being made.
     fn shown(&self) -> bool {
-        // SAFETY: a plain query of a window of this thread.
-        unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(self.hwnd) }.as_bool()
+        win::is_visible(self.hwnd)
     }
 
     /// The tabs `open_session` left for the window to show first: each gets its elevated window, or opens here when declined.
@@ -445,6 +443,7 @@ impl App {
     /// Opens the tabs of a window an update handed over, each pane on its session when it came with one (the panes keep
     /// their names, so the files of their agents go on), else on a fresh shell under the text it showed. Tabs that ran as
     /// administrator open here like the others: they were in this window already.
+    #[cfg(windows)]
     pub(crate) fn open_handed_over(&mut self, window: nekominal_pty::handoff::WindowState) {
         let parsed = Session::parse(&window.session.to_string());
         for problem in &parsed.problems {
@@ -503,6 +502,7 @@ impl App {
     /// The window as an update hands it over: its session, and each pane with what it shows and its session's handles
     /// duplicated into `updater` (also kept in `handed`, to be closed there if the hand-off goes no further). A pane whose
     /// session cannot be handed over (it ended) goes as its text.
+    #[cfg(windows)]
     pub(crate) fn hand_off_window(&self, updater: &nekominal_pty::handoff::Process, handed: &mut Vec<nekominal_pty::handoff::Parts>) -> nekominal_pty::handoff::WindowState {
         let (records, active_tab) = self.tab_records(|_| None);
         let session = Session { window: self.window_placement(), tabs: records, active_tab };
@@ -532,6 +532,7 @@ impl App {
     }
 
     /// Every pane reads its output again, after a hand-off that went no further.
+    #[cfg(windows)]
     pub(crate) fn resume_panes(&self) {
         for entry in self.tabs.iter().flat_map(|tab| &tab.panes) {
             entry.pane.resume();
@@ -539,6 +540,7 @@ impl App {
     }
 
     /// The hand-off of an update failed: the tabs stay, and the user is told why.
+    #[cfg(windows)]
     pub(crate) fn hand_off_failed(&mut self, error: &str) {
         self.inform(Text::UpdateHandOffFailed.format(self.language(), &[&error]));
     }
@@ -567,15 +569,7 @@ impl App {
 
     /// Where the window is when it is not maximized or minimized, and whether it is maximized.
     pub(super) fn window_placement(&self) -> Option<Placement> {
-        let mut placement = WINDOWPLACEMENT { length: std::mem::size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-        // SAFETY: a window of this thread and a structure that lives through the call.
-        unsafe { GetWindowPlacement(self.hwnd, &mut placement) }.ok().map(|()| {
-            let rect = placement.rcNormalPosition;
-            Placement {
-                rect: PixelRect { x: rect.left, y: rect.top, width: (rect.right - rect.left).max(0) as u32, height: (rect.bottom - rect.top).max(0) as u32 },
-                maximized: placement.showCmd == SW_SHOWMAXIMIZED.0 as u32,
-            }
-        })
+        win::placement(self.hwnd)
     }
 }
 

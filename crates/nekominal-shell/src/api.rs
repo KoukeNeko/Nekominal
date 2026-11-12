@@ -20,15 +20,17 @@
 
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{BufRead, BufReader, Read, Write},
-    os::windows::io::FromRawHandle,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, mpsc},
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+use std::{fs::File, os::windows::io::FromRawHandle};
+
 use serde_json::{Value, json};
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_PIPE_CONNECTED, HANDLE, HLOCAL, HWND, LPARAM, LRESULT, LocalFree, WPARAM},
@@ -61,7 +63,9 @@ const MAX_LINE: u64 = 8 << 20;
 /// How long a client waits for the windows to answer: a window held in a modal loop (a drag of its frame) answers after it.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Posted to the message-only window when a request is queued; the timer tries again what a busy window could not take.
+#[cfg(windows)]
 const WM_API: u32 = WM_APP + 0x60;
+#[cfg(windows)]
 const RETRY_TIMER: usize = 1;
 
 // --- the protocol --------------------------------------------------------------------------------------------------
@@ -262,6 +266,7 @@ pub fn publish(topic: Topic, pane: &str, more: Value) {
 // --- the security of the pipe --------------------------------------------------------------------------------------
 
 /// The SID of the user this process runs as, as text (`S-1-5-21-…`).
+#[cfg(windows)]
 pub fn user_sid() -> Result<String, String> {
     // SAFETY: the token is closed below; the buffer is as large as the first call says and aligned for TOKEN_USER; the
     // string the conversion allocates is freed after it is copied.
@@ -286,16 +291,20 @@ pub fn user_sid() -> Result<String, String> {
 /// The security descriptor of the pipe, in SDDL: owned by the user, and a protected DACL (nothing inherited) with one
 /// entry, all access for the user. Administrators and other users of the machine get nothing; the system's default would
 /// let any of them read it.
+#[cfg(windows)]
 pub fn sddl(sid: &str) -> String {
     format!("O:{sid}D:P(A;;GA;;;{sid})")
 }
 
 /// A security descriptor made from SDDL, freed when dropped.
+#[cfg(windows)]
 pub struct Descriptor(PSECURITY_DESCRIPTOR);
 
 // SAFETY: the descriptor is memory of its own that nothing else points to; it is only read once made.
+#[cfg(windows)]
 unsafe impl Send for Descriptor {}
 
+#[cfg(windows)]
 impl Descriptor {
     pub fn new(sddl: &str) -> Result<Descriptor, String> {
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
@@ -322,6 +331,7 @@ impl Descriptor {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Descriptor {
     fn drop(&mut self) {
         // SAFETY: allocated with LocalAlloc by the conversion.
@@ -330,6 +340,7 @@ impl Drop for Descriptor {
 }
 
 /// The pipe of this process for the user `sid`.
+#[cfg(windows)]
 pub fn pipe_name(sid: &str, pid: u32) -> String {
     format!(r"\\.\pipe\nekominal-{sid}-{pid}")
 }
@@ -341,6 +352,7 @@ pub type Handler = Arc<dyn Fn(Request) -> Result<Value, String> + Send + Sync>;
 
 /// One instance of the pipe, waiting for a client. The first one also claims the name: another process that made a pipe
 /// of this name first (to listen in) makes this fail instead of joining it.
+#[cfg(windows)]
 fn instance(name: &str, descriptor: &Descriptor, first: bool) -> Result<File, String> {
     let attributes = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor.0.0, bInheritHandle: false.into() };
     let first = if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { FILE_FLAGS_AND_ATTRIBUTES(0) };
@@ -365,6 +377,7 @@ fn instance(name: &str, descriptor: &Descriptor, first: bool) -> Result<File, St
 
 /// Serves the pipe `name` on a thread of its own: each client gets a thread, its requests answered by `handler`.
 /// Fails when the pipe cannot be made (the name is taken).
+#[cfg(windows)]
 pub fn serve(name: &str, descriptor: Descriptor, handler: Handler) -> Result<(), String> {
     let mut waiting = instance(name, &descriptor, true)?;
     let name = name.to_owned();
@@ -396,7 +409,10 @@ pub fn serve(name: &str, descriptor: Descriptor, handler: Handler) -> Result<(),
 }
 
 /// Answers the lines of one client until it goes; after `subscribe` only events go to it.
-fn serve_client(pipe: &File, handler: &Handler) {
+fn serve_client<S>(pipe: &S, handler: &Handler)
+where
+    for<'a> &'a S: Read + Write,
+{
     let mut reader = BufReader::new(pipe);
     let mut writer = pipe;
     loop {
@@ -456,8 +472,22 @@ struct Job {
 static QUEUE: Mutex<VecDeque<Job>> = Mutex::new(VecDeque::new());
 static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// The message-only window of the UI thread, the pipe's name, and the file that tells `nekominal cli` about it.
+#[cfg(windows)]
 static WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static NAME: OnceLock<String> = OnceLock::new();
+
+/// Tells the UI thread there is something in the queue.
+#[cfg(windows)]
+fn post_api() -> Result<(), String> {
+    let window = WINDOW.load(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: posting to a window from another thread is allowed.
+    unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_API, WPARAM(0), LPARAM(0)) }.map_err(|e| e.to_string())
+}
+
+#[cfg(unix)]
+fn post_api() -> Result<(), String> {
+    if crate::win::post_api() { Ok(()) } else { Err("the window loop is gone".to_owned()) }
+}
 
 /// Hands a request to the UI thread and waits for its answer. A request the client stopped waiting for is never done
 /// later: one that could not be posted leaves the queue at once, and one that waited past the timeout is dropped by
@@ -466,11 +496,9 @@ fn to_ui(request: Request) -> Result<Value, String> {
     let (sender, answer) = mpsc::channel();
     let id = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     QUEUE.lock().unwrap_or_else(|e| e.into_inner()).push_back(Job { id, asked: Instant::now(), request, answer: sender });
-    let window = WINDOW.load(std::sync::atomic::Ordering::Acquire);
-    // SAFETY: posting to a window from another thread is allowed.
-    if let Err(e) = unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_API, WPARAM(0), LPARAM(0)) } {
+    if let Err(e) = post_api() {
         QUEUE.lock().unwrap_or_else(|e| e.into_inner()).retain(|job| job.id != id);
-        return Err(e.to_string());
+        return Err(e);
     }
     answer.recv_timeout(ANSWER_TIMEOUT).map_err(|_| "the window did not answer in time".to_owned())?
 }
@@ -481,7 +509,7 @@ fn expired(asked: Instant, now: Instant) -> bool {
 }
 
 /// Answers what is queued; false when a window was busy and something waits for the next try.
-fn drain() -> bool {
+pub(crate) fn drain() -> bool {
     let now = Instant::now();
     let jobs: Vec<Job> = QUEUE.lock().unwrap_or_else(|e| e.into_inner()).drain(..).filter(|job| !expired(job.asked, now)).collect();
     let windows = crate::win::apps();
@@ -489,7 +517,10 @@ fn drain() -> bool {
     for job in jobs {
         // Outside any window: it takes them all, and on success the process ends here.
         if let Request::HandOff { pipe } = &job.request {
+            #[cfg(windows)]
             let _ = job.answer.send(Err(crate::handoff::give(pipe)));
+            #[cfg(unix)]
+            let _ = job.answer.send(Err(format!("{pipe}: this system has no updater to hand the windows to")));
             continue;
         }
         match crate::app::automation::answer(&windows, &job.request) {
@@ -507,6 +538,7 @@ fn drain() -> bool {
     done
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn api_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_API || (msg == WM_TIMER && wparam.0 == RETRY_TIMER) {
         // SAFETY: a timer of this window, from its own thread.
@@ -524,7 +556,7 @@ unsafe extern "system" fn api_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
 /// The file in which a running instance writes its pipe's name.
 fn instances_dir() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("Nekominal").join("api"))
+    Some(nekominal_model::store::data_dir()?.join("api"))
 }
 
 /// Removes the file of this instance, for a process that ends without dropping [`Running`] (a hand-off).
@@ -567,6 +599,7 @@ pub fn start() -> Running {
     }
 }
 
+#[cfg(windows)]
 fn try_start() -> Result<Option<PathBuf>, String> {
     let sid = user_sid()?;
     let name = pipe_name(&sid, std::process::id());
@@ -598,6 +631,7 @@ pub fn pane_environment(pane: &str) -> Vec<(String, String)> {
 // --- the client ----------------------------------------------------------------------------------------------------
 
 /// Opens the pipe `name`, waiting a little while every instance is taken (the server makes the next one right away).
+#[cfg(windows)]
 pub fn connect(name: &str) -> std::io::Result<File> {
     const ERROR_PIPE_BUSY: i32 = 231;
     // Only a pipe of this computer: any other name (a broken instance file, a slip in --pipe) would open that file and
@@ -617,6 +651,7 @@ pub fn connect(name: &str) -> std::io::Result<File> {
 
 /// The pipe of the instance a command goes to: `NEKOMINAL_PIPE` (the instance of the pane it runs in), else the newest
 /// running instance. The file of an instance that is gone (it crashed) is removed on the way.
+#[cfg(windows)]
 pub fn connect_default() -> Result<File, String> {
     if let Some(name) = std::env::var(PIPE_VAR).ok().filter(|name| !name.is_empty()) {
         match connect(&name) {
@@ -626,11 +661,12 @@ pub fn connect_default() -> Result<File, String> {
             other => return other.map_err(|e| format!("{name}: {e}")),
         }
     }
-    connect_newest(&instances_dir().ok_or("LOCALAPPDATA is not set")?)
+    connect_newest(&instances_dir().ok_or("the data folder of the app is not known")?)
 }
 
 /// The newest instance whose file in `dir` names a pipe that opens; the files of instances that are gone, or that name
 /// no pipe, are removed on the way.
+#[cfg(windows)]
 fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
     let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .map(|entries| entries.flatten().filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path()))).collect())
@@ -654,6 +690,7 @@ fn connect_newest(dir: &std::path::Path) -> Result<File, String> {
 }
 
 /// Whether the token of `process` is elevated; None when it cannot be asked.
+#[cfg(windows)]
 fn elevated_process(process: HANDLE) -> Option<bool> {
     // SAFETY: the token is closed below; TOKEN_ELEVATION is as large as the size given.
     unsafe {
@@ -669,6 +706,7 @@ fn elevated_process(process: HANDLE) -> Option<bool> {
 
 /// Whether the process that serves `pipe` is elevated, or cannot be asked (a program that is not elevated is refused the
 /// token of one that is): either way not one to send requests to from a program that is not.
+#[cfg(windows)]
 fn server_elevated(pipe: &File) -> bool {
     let mut pid = 0u32;
     // SAFETY: the handle of the File, a client end of a pipe; the process handle is closed below.
@@ -681,6 +719,98 @@ fn server_elevated(pipe: &File) -> bool {
         let _ = CloseHandle(process);
         elevated != Some(false)
     }
+}
+
+// --- the transport on Linux: a socket of the user -----------------------------------------------------------------
+
+/// The socket of this process: in the runtime folder of the user (`XDG_RUNTIME_DIR`, which only the user can enter), else
+/// in a folder of `/tmp` that only the user can enter.
+#[cfg(unix)]
+fn socket_path(pid: u32) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let dir = match std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|dir| dir.is_absolute()) {
+        Some(dir) => dir,
+        None => {
+            // SAFETY: plain query.
+            let dir = PathBuf::from(format!("/tmp/nekominal-{}", unsafe { libc::getuid() }));
+            std::fs::DirBuilder::new().mode(0o700).recursive(true).create(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+            dir
+        }
+    };
+    Ok(dir.join(format!("nekominal-{pid}.sock")))
+}
+
+/// Serves the socket `path` on a thread of its own: each client gets a thread, its requests answered by `handler`.
+#[cfg(unix)]
+pub fn serve(path: &std::path::Path, handler: Handler) -> Result<(), String> {
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Only the user: the permissions of the socket file are what the kernel checks on a connect.
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    std::thread::Builder::new()
+        .name("api socket".into())
+        .spawn(move || {
+            for client in listener.incoming().flatten() {
+                let handler = handler.clone();
+                let _ = std::thread::Builder::new().name("api client".into()).spawn(move || serve_client(&client, &handler));
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn try_start() -> Result<Option<PathBuf>, String> {
+    let path = socket_path(std::process::id())?;
+    serve(&path, Arc::new(to_ui))?;
+    let name = path.display().to_string();
+    let _ = NAME.set(name.clone());
+    let file = instances_dir().map(|dir| dir.join(std::process::id().to_string()));
+    if let Some(file) = &file
+        && let Err(e) = std::fs::create_dir_all(file.parent().unwrap_or(file)).and_then(|_| std::fs::write(file, &name))
+    {
+        crate::util::log(&format!("api: {}: {e}", file.display()));
+    }
+    Ok(file)
+}
+
+/// Opens the socket `name`.
+#[cfg(unix)]
+pub fn connect(name: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
+    if !name.starts_with('/') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not the path of a socket"));
+    }
+    std::os::unix::net::UnixStream::connect(name)
+}
+
+/// The socket of the instance a command goes to: `NEKOMINAL_PIPE` (the instance of the pane it runs in), else the newest
+/// running instance. The file of an instance that is gone (it crashed) is removed on the way.
+#[cfg(unix)]
+pub fn connect_default() -> Result<std::os::unix::net::UnixStream, String> {
+    if let Some(name) = std::env::var(PIPE_VAR).ok().filter(|name| !name.is_empty()) {
+        match connect(&name) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            other => return other.map_err(|e| format!("{name}: {e}")),
+        }
+    }
+    let dir = instances_dir().ok_or("the data folder of the app is not known")?;
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
+        .map(|entries| entries.flatten().filter_map(|entry| Some((entry.metadata().ok()?.modified().ok()?, entry.path()))).collect())
+        .unwrap_or_default();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, file) in found {
+        let Ok(name) = std::fs::read_to_string(&file) else { continue };
+        match connect(name.trim()) {
+            Ok(stream) => return Ok(stream),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::InvalidInput) => {
+                let _ = std::fs::remove_file(&file);
+            }
+            Err(_) => {}
+        }
+    }
+    Err("no running Nekominal was found".to_owned())
 }
 
 /// Sends one request and prints every line that comes back: one answer, or for `subscribe` the answer and then the events
@@ -716,7 +846,7 @@ pub fn run_cli(pipe: Option<&str>, request: &Value) -> i32 {
     code
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 

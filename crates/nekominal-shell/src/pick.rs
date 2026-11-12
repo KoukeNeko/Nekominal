@@ -77,3 +77,28 @@ fn choose(owner: HWND, current: &str, folders: bool) -> Option<String> {
         text
     }
 }
+
+/// Where to save a text file, starting with `name`: the save dialog of Windows. None when it was cancelled.
+pub fn save_text(owner: HWND, name: &str) -> Option<String> {
+    use windows::Win32::UI::Controls::Dialogs::{GetSaveFileNameW, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW};
+    let mut file = [0u16; 1024];
+    let name: Vec<u16> = name.encode_utf16().take(file.len() - 1).collect();
+    file[..name.len()].copy_from_slice(&name);
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        lpstrFilter: windows::core::w!("Text (*.txt)\0*.txt\0All files (*.*)\0*.*\0\0"),
+        lpstrFile: windows::core::PWSTR(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrDefExt: windows::core::w!("txt"),
+        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    // SAFETY: the structure and the buffer it points at live through the call, which is modal on this thread.
+    let saved = unsafe { GetSaveFileNameW(&mut dialog) }.as_bool();
+    if !saved {
+        return None;
+    }
+    let length = file.iter().position(|unit| *unit == 0).unwrap_or(file.len());
+    Some(String::from_utf16_lossy(&file[..length]))
+}

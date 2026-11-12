@@ -47,8 +47,9 @@ pub const SIDE_PAD: f32 = 8.0;
 /// How far from the edge of the sidebar the pointer takes it, each side, in DIP.
 const EDGE_GRIP: f32 = 4.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Hit {
+    #[default]
     None,
     /// Empty title bar: the window can be dragged by it.
     Drag,
