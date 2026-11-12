@@ -706,7 +706,7 @@ fn upload_stream<T: bytemuck::Pod>(
     pick: fn(&RowInstances) -> &Vec<T>,
     scratch: &mut Vec<u8>,
     buf: &mut crate::gpu::GrowBuffer,
-    gpu: &crate::d3d::Gpu,
+    gpu: &crate::gfx::Gpu,
 ) -> usize {
     scratch.clear();
     let mut n = 0usize;
@@ -832,7 +832,7 @@ fn build_overlay(m: &crate::fonts::CellMetrics, theme: &Theme, view: &GridView<'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::d3d::{AdapterKind, Gpu};
+    use crate::gfx::{AdapterKind, Gpu};
     use crate::renderer::RendererConfig;
 
     #[test]

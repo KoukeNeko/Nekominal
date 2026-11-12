@@ -1,7 +1,10 @@
-//! The Direct3D 11 side of the renderer: the device and its immediate context, and the small helpers (buffers,
-//! textures, shaders, draw state) the renderer and the UI layer are built from. One `Gpu` is used from one thread.
+//! The Direct3D 11 side of the renderer (`gfx` on Windows): the device and its immediate context, and the small helpers
+//! (buffers, textures, programs, draw state) the renderer and the UI layer are built from. One `Gpu` is used from one
+//! thread. The wgpu side (`wgpu_gfx.rs`) offers the same names, so the code above this layer is the same on both.
 
 use std::ffi::c_void;
+
+use crate::gpu::{Attribute, BufferKind, Format, TexelFormat};
 
 use windows::{
     Win32::{
@@ -12,7 +15,7 @@ use windows::{
                 Fxc::D3DCompile,
             },
             Direct3D11::*,
-            Dxgi::{Common::DXGI_FORMAT, *},
+            Dxgi::{Common::*, *},
         },
     },
     core::{Interface, PCSTR},
@@ -48,11 +51,20 @@ fn adapter_of_monitor(factory: &IDXGIFactory6, monitor: isize) -> Option<IDXGIAd
     None
 }
 
+/// What a pass draws into.
+pub type RenderTarget = ID3D11RenderTargetView;
+pub type Buffer = ID3D11Buffer;
+pub type Texture = ID3D11Texture2D;
+/// A texture as the shaders read it.
+pub type TextureView = ID3D11ShaderResourceView;
+
 #[derive(Clone)]
 pub struct Gpu {
     pub device: ID3D11Device,
     pub context: ID3D11DeviceContext,
     pub adapter_name: String,
+    /// Bilinear, clamped: how a picture over the grid is scaled.
+    picture_sampler: ID3D11SamplerState,
 }
 
 impl Gpu {
@@ -93,13 +105,32 @@ impl Gpu {
                 Some(&mut context),
             )
             .map_err(|e| format!("D3D11CreateDevice: {e}"))?;
-            Ok(Gpu { device: device.ok_or("no device")?, context: context.ok_or("no context")?, adapter_name })
+            let device: ID3D11Device = device.ok_or("no device")?;
+            let desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            let mut picture_sampler = None;
+            device.CreateSamplerState(&desc, Some(&mut picture_sampler)).map_err(|e| format!("CreateSamplerState: {e}"))?;
+            Ok(Gpu { device, context: context.ok_or("no context")?, adapter_name, picture_sampler: picture_sampler.ok_or("no sampler")? })
         }
     }
 
+    /// Dual-source blending (LCD text) is part of feature level 11.
+    pub fn dual_source_supported(&self) -> bool {
+        true
+    }
+
+    /// Hands the commands recorded so far to the GPU. Direct3D 11 runs them as they come.
+    pub fn flush(&self) {}
+
     /// Makes `target` the render target, with the viewport and the scissor rectangle both set to `rect`
     /// (x, y, width, height in pixels).
-    pub fn bind_target(&self, target: &ID3D11RenderTargetView, rect: [u32; 4]) {
+    pub fn bind_target(&self, target: &RenderTarget, rect: [u32; 4]) {
         // SAFETY: the views and states live through the calls.
         unsafe {
             self.context.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
@@ -126,7 +157,7 @@ impl Gpu {
         unsafe { self.context.RSSetScissorRects(Some(&[rect])) };
     }
 
-    pub fn clear(&self, target: &ID3D11RenderTargetView, color: [f32; 4]) {
+    pub fn clear(&self, target: &RenderTarget, color: [f32; 4]) {
         // SAFETY: the view lives through the call.
         unsafe { self.context.ClearRenderTargetView(target, &color) };
     }
@@ -141,12 +172,12 @@ impl Gpu {
     }
 
     /// Draws `count` instances of a quad, the instance records coming from `buffer`.
-    pub fn draw_instances(&self, buffer: &ID3D11Buffer, stride: u32, count: u32) {
+    pub fn draw_instances(&self, buffer: &Buffer, stride: u32, count: u32) {
         self.draw_instances_from(buffer, stride, 0..count);
     }
 
     /// Draws the instances `range` of `buffer`.
-    pub fn draw_instances_from(&self, buffer: &ID3D11Buffer, stride: u32, range: std::ops::Range<u32>) {
+    pub fn draw_instances_from(&self, buffer: &Buffer, stride: u32, range: std::ops::Range<u32>) {
         let offset = 0u32;
         // SAFETY: the pointers refer to locals that live through the calls.
         unsafe {
@@ -250,46 +281,82 @@ pub fn compile(source: &str, entry: &'static str, target: &'static str) -> Resul
     Ok(unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) }.to_vec())
 }
 
-pub fn vertex_shader(gpu: &Gpu, code: &[u8]) -> Result<ID3D11VertexShader, String> {
-    let mut shader = None;
-    // SAFETY: the bytecode lives through the call.
-    unsafe { gpu.device.CreateVertexShader(code, None, Some(&mut shader)) }.map_err(|e| format!("CreateVertexShader: {e}"))?;
-    shader.ok_or_else(|| "no vertex shader".into())
+/// The bytecode of a vertex shader and of its pixel shader, compiled when building (`build.rs`).
+#[derive(Clone, Copy)]
+pub struct Shader {
+    pub vs: &'static [u8],
+    pub ps: &'static [u8],
 }
 
-pub fn pixel_shader(gpu: &Gpu, code: &[u8]) -> Result<ID3D11PixelShader, String> {
-    let mut shader = None;
-    // SAFETY: the bytecode lives through the call.
-    unsafe { gpu.device.CreatePixelShader(code, None, Some(&mut shader)) }.map_err(|e| format!("CreatePixelShader: {e}"))?;
-    shader.ok_or_else(|| "no pixel shader".into())
+/// A vertex shader, a pixel shader and the layout of the instance records that feed them. The blend state is set apart
+/// (`DrawStates::set_blend`).
+pub struct Program {
+    layout: ID3D11InputLayout,
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
 }
 
-/// One attribute of an instance record: its format and byte offset. The attributes are the semantics `ATTR0`,
-/// `ATTR1`, ... of the vertex shader, in order.
-pub struct Attribute(pub DXGI_FORMAT, pub u32);
+fn dxgi_format(format: Format) -> DXGI_FORMAT {
+    match format {
+        Format::Float32x4 => DXGI_FORMAT_R32G32B32A32_FLOAT,
+        Format::Float32x2 => DXGI_FORMAT_R32G32_FLOAT,
+        Format::Sint32x2 => DXGI_FORMAT_R32G32_SINT,
+        Format::Uint16x2 => DXGI_FORMAT_R16G16_UINT,
+        Format::Unorm8x4 => DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format::Uint32 => DXGI_FORMAT_R32_UINT,
+    }
+}
 
-pub fn input_layout(gpu: &Gpu, vertex_code: &[u8], attributes: &[Attribute]) -> Result<ID3D11InputLayout, String> {
-    let elements: Vec<D3D11_INPUT_ELEMENT_DESC> = attributes
-        .iter()
-        .enumerate()
-        .map(|(i, Attribute(format, offset))| D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: PCSTR(c"ATTR".as_ptr().cast()),
-            SemanticIndex: i as u32,
-            Format: *format,
-            InputSlot: 0,
-            AlignedByteOffset: *offset,
-            InputSlotClass: D3D11_INPUT_PER_INSTANCE_DATA,
-            InstanceDataStepRate: 1,
+impl Program {
+    /// `attributes` are the semantics `ATTR0`, `ATTR1`, ... of the vertex shader, in order, one instance per record of
+    /// `stride` bytes.
+    pub fn new(gpu: &Gpu, shader: &Shader, attributes: &[Attribute], _stride: u32) -> Result<Program, String> {
+        let mut vs = None;
+        let mut ps = None;
+        // SAFETY: the bytecode lives through the calls.
+        unsafe {
+            gpu.device.CreateVertexShader(shader.vs, None, Some(&mut vs)).map_err(|e| format!("CreateVertexShader: {e}"))?;
+            gpu.device.CreatePixelShader(shader.ps, None, Some(&mut ps)).map_err(|e| format!("CreatePixelShader: {e}"))?;
+        }
+        let elements: Vec<D3D11_INPUT_ELEMENT_DESC> = attributes
+            .iter()
+            .enumerate()
+            .map(|(i, Attribute(format, offset))| D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(c"ATTR".as_ptr().cast()),
+                SemanticIndex: i as u32,
+                Format: dxgi_format(*format),
+                InputSlot: 0,
+                AlignedByteOffset: *offset,
+                InputSlotClass: D3D11_INPUT_PER_INSTANCE_DATA,
+                InstanceDataStepRate: 1,
+            })
+            .collect();
+        let mut layout = None;
+        // SAFETY: the descriptors and the bytecode live through the call.
+        unsafe { gpu.device.CreateInputLayout(&elements, shader.vs, Some(&mut layout)) }.map_err(|e| format!("CreateInputLayout: {e}"))?;
+        Ok(Program {
+            layout: layout.ok_or("no input layout")?,
+            vs: vs.ok_or("no vertex shader")?,
+            ps: ps.ok_or("no pixel shader")?,
         })
-        .collect();
-    let mut layout = None;
-    // SAFETY: the descriptors and the bytecode live through the call.
-    unsafe { gpu.device.CreateInputLayout(&elements, vertex_code, Some(&mut layout)) }.map_err(|e| format!("CreateInputLayout: {e}"))?;
-    layout.ok_or_else(|| "no input layout".into())
+    }
+}
+
+pub fn set_program(gpu: &Gpu, program: &Program) {
+    // SAFETY: the objects live through the calls.
+    unsafe {
+        gpu.context.IASetInputLayout(&program.layout);
+        gpu.context.VSSetShader(&program.vs, None);
+        gpu.context.PSSetShader(&program.ps, None);
+    }
 }
 
 /// A buffer the CPU rewrites wholesale: `Map` with discard. An error when the device cannot make it (it was removed).
-pub fn dynamic_buffer(gpu: &Gpu, bind: D3D11_BIND_FLAG, size: u64) -> Result<ID3D11Buffer, String> {
+pub fn dynamic_buffer(gpu: &Gpu, kind: BufferKind, size: u64) -> Result<Buffer, String> {
+    let bind = match kind {
+        BufferKind::Vertex => D3D11_BIND_VERTEX_BUFFER,
+        BufferKind::Constant => D3D11_BIND_CONSTANT_BUFFER,
+    };
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: size as u32,
         Usage: D3D11_USAGE_DYNAMIC,
@@ -303,12 +370,12 @@ pub fn dynamic_buffer(gpu: &Gpu, bind: D3D11_BIND_FLAG, size: u64) -> Result<ID3
     buffer.ok_or_else(|| "CreateBuffer returned no buffer".into())
 }
 
-pub fn constant_buffer(gpu: &Gpu, size: usize) -> Result<ID3D11Buffer, String> {
-    dynamic_buffer(gpu, D3D11_BIND_CONSTANT_BUFFER, size.next_multiple_of(16) as u64)
+pub fn constant_buffer(gpu: &Gpu, size: usize) -> Result<Buffer, String> {
+    dynamic_buffer(gpu, BufferKind::Constant, size.next_multiple_of(16) as u64)
 }
 
 /// Replaces the contents of a dynamic buffer (`bytes` must not be longer than the buffer).
-pub fn write_buffer(gpu: &Gpu, buffer: &ID3D11Buffer, bytes: &[u8]) {
+pub fn write_buffer(gpu: &Gpu, buffer: &Buffer, bytes: &[u8]) {
     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
     // SAFETY: the mapped pointer is valid for the buffer size until `Unmap`, and `bytes` fits in it.
     unsafe {
@@ -320,7 +387,7 @@ pub fn write_buffer(gpu: &Gpu, buffer: &ID3D11Buffer, bytes: &[u8]) {
     }
 }
 
-pub fn bind_uniforms(gpu: &Gpu, buffer: &ID3D11Buffer) {
+pub fn bind_uniforms(gpu: &Gpu, buffer: &Buffer) {
     // SAFETY: the buffer lives through the calls.
     unsafe {
         gpu.context.VSSetConstantBuffers(0, Some(&[Some(buffer.clone())]));
@@ -329,14 +396,17 @@ pub fn bind_uniforms(gpu: &Gpu, buffer: &ID3D11Buffer) {
 }
 
 /// A 2D texture of `size` x `size` texels that is only sampled, with a view of it.
-pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> Result<(ID3D11Texture2D, ID3D11ShaderResourceView), String> {
+pub fn atlas_texture(gpu: &Gpu, format: TexelFormat, size: u32) -> Result<(Texture, TextureView), String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: size,
         Height: size,
         MipLevels: 1,
         ArraySize: 1,
-        Format: format,
-        SampleDesc: windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Format: match format {
+            TexelFormat::R8 => DXGI_FORMAT_R8_UNORM,
+            TexelFormat::Rgba8 => DXGI_FORMAT_R8G8B8A8_UNORM,
+        },
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
         Usage: D3D11_USAGE_DEFAULT,
         BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
         ..Default::default()
@@ -352,9 +422,42 @@ pub fn atlas_texture(gpu: &Gpu, format: DXGI_FORMAT, size: u32) -> Result<(ID3D1
     }
 }
 
-/// Copies the texels of `rect` (x0, y0, x1, y1, exclusive max) from `shadow`, whose rows are `pitch` bytes apart.
-/// Writes `pixels` (rows of `pitch` bytes, starting at the box's corner) into the box `rect` of `texture`.
-pub fn upload_texels(gpu: &Gpu, texture: &ID3D11Texture2D, pixels: &[u8], pitch: u32, rect: (u32, u32, u32, u32)) {
+/// A picture's texture: `width` x `height` RGBA8 texels, `pixels` being their rows without padding.
+pub fn picture_texture(gpu: &Gpu, width: u32, height: u32, pixels: &[u8]) -> Option<TextureView> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_IMMUTABLE,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        ..Default::default()
+    };
+    let data = D3D11_SUBRESOURCE_DATA { pSysMem: pixels.as_ptr().cast(), SysMemPitch: width * 4, SysMemSlicePitch: 0 };
+    let mut texture = None;
+    let mut view = None;
+    // SAFETY: the descriptor and the pixels live through the calls; the view keeps the texture alive.
+    unsafe {
+        gpu.device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)).ok()?;
+        gpu.device.CreateShaderResourceView(&texture?, None, Some(&mut view)).ok()?;
+    }
+    view
+}
+
+/// Binds a picture's texture, to be drawn with the bilinear sampler.
+pub fn bind_picture(gpu: &Gpu, view: &TextureView) {
+    // SAFETY: the sampler and the view live through the calls.
+    unsafe {
+        gpu.context.PSSetSamplers(0, Some(&[Some(gpu.picture_sampler.clone())]));
+        gpu.context.PSSetShaderResources(2, Some(&[Some(view.clone())]));
+    }
+}
+
+/// Writes `pixels` (rows of `pitch` bytes, starting at the box's corner) into the box `rect` (x0, y0, x1, y1, exclusive
+/// max) of `texture`.
+pub fn upload_texels(gpu: &Gpu, texture: &Texture, pixels: &[u8], pitch: u32, rect: (u32, u32, u32, u32)) {
     let (x0, y0, x1, y1) = rect;
     assert!(pixels.len() >= (pitch * (y1 - y0)) as usize, "the pixels cover the box");
     let region = D3D11_BOX { left: x0, top: y0, front: 0, right: x1, bottom: y1, back: 1 };
@@ -363,24 +466,15 @@ pub fn upload_texels(gpu: &Gpu, texture: &ID3D11Texture2D, pixels: &[u8], pitch:
 }
 
 /// Copies the whole of `from` into the top-left corner of the larger `to`.
-pub fn copy_texture(gpu: &Gpu, to: &ID3D11Texture2D, from: &ID3D11Texture2D) {
+pub fn copy_texture(gpu: &Gpu, to: &Texture, from: &Texture) {
     // SAFETY: both textures live through the call.
     unsafe { gpu.context.CopySubresourceRegion(to, 0, 0, 0, 0, from, 0, None) };
 }
 
-pub fn bind_textures(gpu: &Gpu, views: &[&ID3D11ShaderResourceView]) {
+pub fn bind_textures(gpu: &Gpu, views: &[&TextureView]) {
     let views: Vec<Option<ID3D11ShaderResourceView>> = views.iter().map(|v| Some((*v).clone())).collect();
     // SAFETY: the views live through the call.
     unsafe { gpu.context.PSSetShaderResources(0, Some(&views)) };
-}
-
-pub fn set_shaders(gpu: &Gpu, layout: &ID3D11InputLayout, vs: &ID3D11VertexShader, ps: &ID3D11PixelShader) {
-    // SAFETY: the objects live through the calls.
-    unsafe {
-        gpu.context.IASetInputLayout(layout);
-        gpu.context.VSSetShader(vs, None);
-        gpu.context.PSSetShader(ps, None);
-    }
 }
 
 #[cfg(test)]

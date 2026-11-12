@@ -1,9 +1,11 @@
 //! Compiles the HLSL shaders of the renderer and of the interface (`nekominal-ui`) to bytecode when building, so the
 //! program does not load the shader compiler (`d3dcompiler_47.dll`) and compile them at every start. `src/shaders.rs`
-//! includes what this writes: a constant of D3D bytecode for each entry.
+//! includes what this writes: a constant of D3D bytecode for each entry. Only the Windows build has shaders to compile (the
+//! Linux build reads WGSL); a Windows target built from another system gets empty bytecode, enough to type-check.
 
 use std::{fmt::Write as _, path::Path};
 
+#[cfg(windows)]
 use windows::{
     Win32::Graphics::Direct3D::Fxc::D3DCompile,
     core::PCSTR,
@@ -24,6 +26,7 @@ const SHADERS: &[(&str, &str, &str, &str)] = &[
     ("UI_GLYPH_PS", "../nekominal-ui/src/glyph.hlsl", "fs_main", "ps_5_0"),
 ];
 
+#[cfg(windows)]
 fn compile(source: &str, entry: &str, target: &str) -> Result<Vec<u8>, String> {
     let (entry, target) = (format!("{entry}\0"), format!("{target}\0"));
     let (mut blob, mut errors) = (None, None);
@@ -38,15 +41,27 @@ fn compile(source: &str, entry: &str, target: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+#[cfg(windows)]
+fn bytecode(file: &str, entry: &str, target: &str) -> Vec<u8> {
+    let source = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
+    compile(&source, entry, target).unwrap_or_else(|e| panic!("{file} {entry}: {e}"))
+}
+
+#[cfg(not(windows))]
+fn bytecode(_file: &str, _entry: &str, _target: &str) -> Vec<u8> {
+    Vec::new()
+}
+
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     let out = std::env::var("OUT_DIR").unwrap();
     let mut index = String::new();
     for (name, file, entry, target) in SHADERS {
         println!("cargo:rerun-if-changed={file}");
-        let source = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{file}: {e}"));
-        let code = compile(&source, entry, target).unwrap_or_else(|e| panic!("{file} {entry}: {e}"));
         let path = Path::new(&out).join(format!("{name}.cso"));
-        std::fs::write(&path, code).unwrap();
+        std::fs::write(&path, bytecode(file, entry, target)).unwrap();
         writeln!(index, "pub const {name}: &[u8] = include_bytes!(r\"{}\");", path.display()).unwrap();
     }
     std::fs::write(Path::new(&out).join("shaders.rs"), index).unwrap();

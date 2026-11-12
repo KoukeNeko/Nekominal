@@ -7,7 +7,7 @@ use windows::Win32::Graphics::{
     Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
 };
 
-pub use crate::d3d::{AdapterKind, Gpu};
+pub use crate::gfx::{AdapterKind, Gpu};
 
 pub fn create_gpu(kind: AdapterKind) -> Result<Gpu, String> {
     Gpu::new(kind)

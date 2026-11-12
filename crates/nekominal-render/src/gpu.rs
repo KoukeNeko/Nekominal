@@ -1,9 +1,48 @@
 //! GPU-side types: instance layouts, uniforms, pipelines, growable buffers.
 
 use bytemuck::{Pod, Zeroable};
-use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::*};
 
-use crate::d3d::{Attribute, DrawStates, Gpu, dynamic_buffer, input_layout, pixel_shader, vertex_shader, write_buffer};
+use crate::gfx::{Buffer, DrawStates, Gpu, Program, dynamic_buffer, write_buffer};
+use crate::shaders;
+
+/// What a field of an instance record is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Float32x4,
+    Float32x2,
+    Sint32x2,
+    Uint16x2,
+    /// Four bytes as 0..=1 floats.
+    Unorm8x4,
+    Uint32,
+}
+
+/// One field of an instance record: its format and byte offset. The fields are the inputs of the vertex shader, in order.
+pub struct Attribute(pub Format, pub u32);
+
+/// What a buffer is bound as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferKind {
+    /// Instance records.
+    Vertex,
+    Constant,
+}
+
+/// The texel format of an atlas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TexelFormat {
+    R8,
+    Rgba8,
+}
+
+impl TexelFormat {
+    pub const fn bytes(self) -> u32 {
+        match self {
+            TexelFormat::R8 => 1,
+            TexelFormat::Rgba8 => 4,
+        }
+    }
+}
 
 /// One solid rectangle in pane pixels. 20 bytes.
 #[repr(C)]
@@ -79,7 +118,7 @@ pub fn gamma_ratios(gamma: f32) -> [f32; 4] {
 /// Instance buffer that is rewritten wholesale each time and only reallocated when the payload outgrows it
 /// (power-of-two growth).
 pub struct GrowBuffer {
-    pub buffer: ID3D11Buffer,
+    pub buffer: Buffer,
     pub stride: u32,
     capacity: u64,
     pub count: u32,
@@ -88,7 +127,7 @@ pub struct GrowBuffer {
 impl GrowBuffer {
     pub fn new(gpu: &Gpu, stride: u32, capacity: u64) -> Result<Self, String> {
         let capacity = capacity.max(256).next_power_of_two();
-        Ok(GrowBuffer { buffer: dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity)?, stride, capacity, count: 0 })
+        Ok(GrowBuffer { buffer: dynamic_buffer(gpu, BufferKind::Vertex, capacity)?, stride, capacity, count: 0 })
     }
 
     pub fn write(&mut self, gpu: &Gpu, bytes: &[u8], count: u32) {
@@ -98,7 +137,7 @@ impl GrowBuffer {
         }
         if bytes.len() as u64 > self.capacity {
             let capacity = (bytes.len() as u64).next_power_of_two();
-            match dynamic_buffer(gpu, D3D11_BIND_VERTEX_BUFFER, capacity) {
+            match dynamic_buffer(gpu, BufferKind::Vertex, capacity) {
                 Ok(buffer) => (self.buffer, self.capacity) = (buffer, capacity),
                 // The device is gone (it is made again then): draw what the old buffer holds, not past it.
                 Err(_) => {
@@ -123,39 +162,32 @@ impl GrowBuffer {
     }
 }
 
-pub const RECT_ATTRS: [Attribute; 2] = [Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 0), Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 16)];
+pub const RECT_ATTRS: [Attribute; 2] = [Attribute(Format::Float32x4, 0), Attribute(Format::Unorm8x4, 16)];
 pub const GLYPH_ATTRS: [Attribute; 5] = [
-    Attribute(DXGI_FORMAT_R32G32_SINT, 0),
-    Attribute(DXGI_FORMAT_R16G16_UINT, 8),
-    Attribute(DXGI_FORMAT_R16G16_UINT, 12),
-    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 16),
-    Attribute(DXGI_FORMAT_R32_UINT, 20),
+    Attribute(Format::Sint32x2, 0),
+    Attribute(Format::Uint16x2, 8),
+    Attribute(Format::Uint16x2, 12),
+    Attribute(Format::Unorm8x4, 16),
+    Attribute(Format::Uint32, 20),
 ];
 
-/// Shaders, input layouts and blend state of the renderer.
+/// Shaders and blend state of the renderer.
 pub struct Pipelines {
     pub states: DrawStates,
-    pub rect_layout: ID3D11InputLayout,
-    pub rect_vs: ID3D11VertexShader,
-    pub rect_ps: ID3D11PixelShader,
-    pub glyph_layout: ID3D11InputLayout,
-    pub glyph_vs: ID3D11VertexShader,
-    pub glyph_ps: ID3D11PixelShader,
-    pub glyph_lcd_ps: ID3D11PixelShader,
+    pub rect: Program,
+    pub glyph: Program,
+    /// Per-channel coverage text; the plain glyph program where the device cannot blend that way.
+    pub glyph_lcd: Program,
 }
 
 impl Pipelines {
     pub fn new(gpu: &Gpu) -> Result<Self, String> {
-        use crate::shaders::{GLYPH_LCD_PS, GLYPH_PS, GLYPH_VS, RECT_PS, RECT_VS};
+        let stride = std::mem::size_of::<GlyphInstance>() as u32;
         Ok(Pipelines {
             states: DrawStates::new(gpu)?,
-            rect_layout: input_layout(gpu, RECT_VS, &RECT_ATTRS)?,
-            rect_vs: vertex_shader(gpu, RECT_VS)?,
-            rect_ps: pixel_shader(gpu, RECT_PS)?,
-            glyph_layout: input_layout(gpu, GLYPH_VS, &GLYPH_ATTRS)?,
-            glyph_vs: vertex_shader(gpu, GLYPH_VS)?,
-            glyph_ps: pixel_shader(gpu, GLYPH_PS)?,
-            glyph_lcd_ps: pixel_shader(gpu, GLYPH_LCD_PS)?,
+            rect: Program::new(gpu, &shaders::RECT, &RECT_ATTRS, std::mem::size_of::<RectInstance>() as u32)?,
+            glyph: Program::new(gpu, &shaders::GLYPH, &GLYPH_ATTRS, stride)?,
+            glyph_lcd: Program::new(gpu, if gpu.dual_source_supported() { &shaders::GLYPH_LCD } else { &shaders::GLYPH }, &GLYPH_ATTRS, stride)?,
         })
     }
 }

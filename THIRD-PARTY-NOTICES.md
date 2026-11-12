@@ -49,6 +49,14 @@ The others (`github`, `npm`, `pnpm`, `uv`, `esbuild`, `vite`, `curl`, `7zip`) co
 a share-alike licence (Rust's, Neovim's) are left out. Which program takes which mark is the table `PROGRAMS` in
 `crates/nekominal-shell/src/icons.rs`; a test there keeps it, this folder and this list in step.
 
+## Icons of the interface on Linux
+
+The Windows build draws the icons of its interface (the title bar, the settings, the status of a tab) with Segoe Fluent
+Icons, which every Windows has. The Linux build carries 43 glyphs of [Fluent UI System
+Icons](https://github.com/microsoft/fluentui-system-icons) by Microsoft, under the
+[MIT licence](https://github.com/microsoft/fluentui-system-icons/blob/main/LICENSE), as `assets/fonts/FluentIcons.ttf`,
+each at the code point of the Segoe Fluent Icons glyph it stands in for.
+
 ## Rust crates
 
 `Nekominal.exe` is built from Rust crates published on crates.io (among them `alacritty_terminal`, `vte`, `windows`,

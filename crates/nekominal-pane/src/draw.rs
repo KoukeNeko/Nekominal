@@ -3,8 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use nekominal_render::{self as r, d3d::Gpu};
-use windows::Win32::Graphics::Direct3D11::ID3D11RenderTargetView;
+use nekominal_render::{self as r, gfx::{Gpu, RenderTarget}};
 use nekominal_term::{Snapshot, TerminalCore, alacritty_terminal::sync::FairMutex};
 
 use crate::view;
@@ -319,14 +318,14 @@ impl PaneRenderer {
     /// Draws the pane into the `rect` (x, y, width, height in pixels) of a window-sized `target`. The pane paints its
     /// own background, so what the shell draws around it shows the backdrop. `clear` empties the target to transparent
     /// first: true for the first pane of a frame, false for the others.
-    pub fn draw_in(&mut self, target: &ID3D11RenderTargetView, rect: [u32; 4], clear: bool) {
+    pub fn draw_in(&mut self, target: &RenderTarget, rect: [u32; 4], clear: bool) {
         let clear = clear.then_some([0.0; 4]);
         self.renderer.draw(target, clear, &[r::PaneDraw { pane: &self.state, rect }]);
         self.force_draw = false;
     }
 
     /// Draws the pane into `target` (`size_px` is the texture size). Call after a `prepare` that asked for it.
-    pub fn draw(&mut self, target: &ID3D11RenderTargetView, size_px: (u32, u32)) {
+    pub fn draw(&mut self, target: &RenderTarget, size_px: (u32, u32)) {
         let bg = self.theme.background;
         let clear = if self.theme.background_opacity < 1.0 {
             [0.0; 4]

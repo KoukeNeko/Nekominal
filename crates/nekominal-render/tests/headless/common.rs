@@ -14,18 +14,20 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use nekominal_render::{Color, Rgb, Underline};
 
-/// One WARP device per test thread: the immediate context of a device is not thread safe, and the tests run in
+/// One software device per test thread: the immediate context of a device is not thread safe, and the tests run in
 /// parallel.
 pub fn gpu() -> Gpu {
-    thread_local! { static GPU: Gpu = create_gpu(AdapterKind::Warp).expect("WARP adapter"); }
+    thread_local! { static GPU: Gpu = create_gpu(AdapterKind::Warp).expect("software adapter"); }
     GPU.with(Gpu::clone)
 }
 
-/// Consolas ships with every desktop Windows, so the goldens do not depend on an optional font. CJK, emoji and
-/// symbols still come from the default chains (Microsoft JhengHei, Segoe UI Emoji, Segoe UI Symbol).
+/// The family the tests are drawn in: Consolas ships with every desktop Windows, so the goldens do not depend on an
+/// optional font; DejaVu Sans Mono is on nearly every Linux. CJK, emoji and symbols still come from the default chains.
+pub const TEST_FAMILY: &str = if cfg!(windows) { "Consolas" } else { "DejaVu Sans Mono" };
+
 pub fn test_config() -> RendererConfig {
     RendererConfig {
-        fonts: FontConfig { text: vec!["Consolas".into()], ..FontConfig::default() },
+        fonts: FontConfig { text: vec![TEST_FAMILY.into()], ..FontConfig::default() },
         ..RendererConfig::default()
     }
 }

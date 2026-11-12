@@ -107,7 +107,8 @@ fn a_cursor_on_a_wide_character_covers_both_cells() {
     let theme = Theme::campbell();
     for (focused, shape) in [(true, CursorShape::Block), (false, CursorShape::Block), (true, CursorShape::Underline)] {
         let mut scene = Scene::new(8, 1);
-        scene.put(0, 2, "中", Style::new());
+        // A wide character that draws nothing, in any font: the probes read the pixels the cursor leaves.
+        scene.put(0, 2, "\u{3000}", Style::new());
         scene.cursor = Some(view(2, shape, true, focused, true));
         let (frame, _) = frame_of(&scene, &theme);
         let (w, h) = frame.cell;

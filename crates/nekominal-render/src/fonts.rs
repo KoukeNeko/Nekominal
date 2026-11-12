@@ -16,7 +16,6 @@ use std::sync::{Arc, OnceLock};
 use rustc_hash::FxHashMap;
 use swash::{FontRef, tag_from_bytes};
 
-#[cfg(windows)]
 use crate::locator::{Located, Locator};
 
 pub type FaceId = u16;
@@ -98,7 +97,7 @@ impl Face {
 
 #[derive(Clone)]
 pub struct FontConfig {
-    /// Primary text chain, e.g. ["Cascadia Mono", "Consolas"].
+    /// Primary text chain, e.g. ["Cascadia Mono", "Consolas"] (Windows), ["JetBrains Mono", "monospace"] (Linux).
     pub text: Vec<String>,
     /// Traditional Chinese first, then other CJK fonts.
     pub cjk: Vec<String>,
@@ -114,14 +113,21 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect();
-        FontConfig {
-            text: s(&["Cascadia Mono", "Consolas"]),
-            cjk: s(&["Microsoft JhengHei UI", "Microsoft JhengHei", "MingLiU", "Noto Sans TC"]),
-            emoji: s(&["Segoe UI Emoji"]),
-            symbols: s(&["Segoe UI Symbol", "Segoe Fluent Icons"]),
-            embedded: Vec::new(),
-            han_locale: "zh-TW".into(),
-        }
+        #[cfg(windows)]
+        let (text, cjk, emoji, symbols) = (
+            s(&["Cascadia Mono", "Consolas"]),
+            s(&["Microsoft JhengHei UI", "Microsoft JhengHei", "MingLiU", "Noto Sans TC"]),
+            s(&["Segoe UI Emoji"]),
+            s(&["Segoe UI Symbol", "Segoe Fluent Icons"]),
+        );
+        #[cfg(unix)]
+        let (text, cjk, emoji, symbols) = (
+            s(&["JetBrains Mono", "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", "monospace"]),
+            s(&["Noto Sans Mono CJK TC", "Noto Sans CJK TC", "Noto Sans TC", "WenQuanYi Zen Hei Mono", "WenQuanYi Zen Hei"]),
+            s(&["Noto Color Emoji"]),
+            s(&["Symbols Nerd Font Mono", "Noto Sans Symbols 2", "Noto Sans Symbols", "DejaVu Sans"]),
+        );
+        FontConfig { text, cjk, emoji, symbols, embedded: Vec::new(), han_locale: "zh-TW".into() }
     }
 }
 
@@ -132,7 +138,6 @@ pub struct FontStack {
     family_cache: HashMap<(String, Style), Option<FontChoice>>,
     char_cache: FxHashMap<(char, Style, CharClass), Option<FontChoice>>,
     embedded_faces: Vec<FaceId>,
-    #[cfg(windows)]
     locator: Locator,
     pub stats: FontStats,
 }
@@ -154,8 +159,7 @@ pub fn is_cjk(ch: char) -> bool {
 impl FontStack {
     pub fn new(cfg: FontConfig) -> Result<Self, String> {
         let mut stack = FontStack {
-            #[cfg(windows)]
-            locator: Locator::new().map_err(|e| format!("DirectWrite init failed: {e}"))?,
+            locator: Locator::new().map_err(|e| format!("font discovery init failed: {e}"))?,
             cfg,
             faces: Vec::new(),
             by_file: HashMap::new(),
@@ -226,7 +230,6 @@ impl FontStack {
         Some(id)
     }
 
-    #[cfg(windows)]
     fn load_located(&mut self, loc: &Located) -> Option<FaceId> {
         let key = (loc.path.clone(), loc.index);
         if let Some(&id) = self.by_file.get(&key) {
@@ -266,7 +269,6 @@ impl FontStack {
             return *c;
         }
         let mut choice = None;
-        #[cfg(windows)]
         if let Some(loc) = self.locator.resolve(family, style.bold, style.italic)
             && let Some(id) = self.load_located(&loc)
         {
@@ -329,7 +331,6 @@ impl FontStack {
             }
         }
 
-        #[cfg(windows)]
         if found.is_none() {
             self.stats.os_fallback_calls += 1;
             let base = self.cfg.text.first().cloned().unwrap_or_default();

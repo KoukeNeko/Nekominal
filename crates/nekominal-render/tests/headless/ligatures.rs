@@ -36,7 +36,7 @@ fn bar_cursor(col: u16) -> Option<CursorView> {
 
 #[test]
 fn a_font_without_ligatures_draws_the_same_with_them_on() {
-    let (on, off) = both(&arrows(), "Consolas").expect("Consolas ships with Windows");
+    let (on, off) = both(&arrows(), super::common::TEST_FAMILY).expect("the test family is installed");
     assert!(on.rgba == off.rgba);
 }
 

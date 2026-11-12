@@ -10,23 +10,18 @@
 //! frames insert nothing.
 
 use etagere::{BucketedAtlasAllocator, size2};
-use windows::Win32::Graphics::{
-    Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
-    Dxgi::Common::DXGI_FORMAT,
-};
-
-use crate::d3d::{Gpu, atlas_texture, copy_texture, upload_texels};
+use crate::gfx::{Gpu, Texture, TextureView, atlas_texture, copy_texture, upload_texels};
+use crate::gpu::TexelFormat;
 
 pub struct AtlasTexture {
-    pub texture: ID3D11Texture2D,
-    pub view: ID3D11ShaderResourceView,
+    pub texture: Texture,
+    pub view: TextureView,
     alloc: BucketedAtlasAllocator,
     /// The glyphs inserted since the last flush: their box in texels (x0, y0, x1, y1, exclusive max) and their pixels.
     pending: Vec<((u32, u32, u32, u32), Vec<u8>)>,
     pub size: u32,
     max_size: u32,
-    format: DXGI_FORMAT,
-    bytes_per_texel: u32,
+    format: TexelFormat,
     /// Bumped whenever `texture` is replaced so bind groups can be rebuilt.
     pub generation: u32,
     pub clears: u32,
@@ -38,7 +33,7 @@ pub struct AtlasTexture {
 pub struct AtlasFull;
 
 impl AtlasTexture {
-    pub fn new(gpu: &Gpu, format: DXGI_FORMAT, bytes_per_texel: u32, initial: u32, max_size: u32) -> Result<Self, String> {
+    pub fn new(gpu: &Gpu, format: TexelFormat, initial: u32, max_size: u32) -> Result<Self, String> {
         let (texture, view) = atlas_texture(gpu, format, initial)?;
         Ok(AtlasTexture {
             texture,
@@ -48,7 +43,6 @@ impl AtlasTexture {
             size: initial,
             max_size,
             format,
-            bytes_per_texel,
             generation: 0,
             clears: 0,
             grows: 0,
@@ -58,7 +52,7 @@ impl AtlasTexture {
 
     /// GPU texture bytes.
     pub fn memory_bytes(&self) -> u64 {
-        self.size as u64 * self.size as u64 * self.bytes_per_texel as u64
+        self.size as u64 * self.size as u64 * self.format.bytes() as u64
     }
 
     /// Fraction of texels currently allocated (shelf waste included).
@@ -107,7 +101,7 @@ impl AtlasTexture {
 
     /// Keeps a bitmap to be uploaded at the next flush. Returns its atlas position.
     pub fn insert(&mut self, gpu: &Gpu, w: u32, h: u32, data: &[u8]) -> Result<(u16, u16), AtlasFull> {
-        debug_assert_eq!(data.len() as u32, w * h * self.bytes_per_texel);
+        debug_assert_eq!(data.len() as u32, w * h * self.format.bytes());
         let (x, y) = self.allocate(gpu, w, h)?;
         if w > 0 && h > 0 {
             self.pending.push(((x, y, x + w, y + h), data.to_vec()));
@@ -121,7 +115,7 @@ impl AtlasTexture {
             return;
         }
         for (rect, pixels) in self.pending.drain(..) {
-            upload_texels(gpu, &self.texture, &pixels, (rect.2 - rect.0) * self.bytes_per_texel, rect);
+            upload_texels(gpu, &self.texture, &pixels, (rect.2 - rect.0) * self.format.bytes(), rect);
         }
         self.flushes += 1;
     }

@@ -25,7 +25,6 @@ use nekominal_input::{
 };
 use nekominal_pty::{
     conpty::{SpawnConfig, WidthModel},
-    handoff::Parts,
     session::{Event, Session, Sessions, Sink},
 };
 use crate::pointer::{Pointer, PointerEffects};
@@ -89,6 +88,7 @@ pub enum UiEvent {
 const UI_QUEUE: usize = 256;
 
 /// How long a hand-off waits for the output read so far to be shown.
+#[cfg(windows)]
 const HAND_OFF_PAUSE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Whether a command runs in the pane, as far as the prompt marks of the shell (OSC 133) and the input sent to it
@@ -349,10 +349,11 @@ impl Pane {
         Pane::start_prepared(|sessions: &Sessions, sink| sessions.spawn(&config, sink), cols, rows, core, wake, prepare)
     }
 
+    #[cfg(windows)]
     /// A pane for a session another process handed over (`parts`, handles of this process that the pane owns from now
     /// on): its terminal of `cols` by `rows` gets `prepare` (what the pane showed there), then the output of the program,
     /// what it wrote meanwhile first.
-    pub fn adopt_prepared(parts: &Parts, cols: u16, rows: u16, core: CoreConfig, wake: Wake, prepare: impl FnOnce(&mut TerminalCore)) -> std::io::Result<Pane> {
+    pub fn adopt_prepared(parts: &nekominal_pty::handoff::Parts, cols: u16, rows: u16, core: CoreConfig, wake: Wake, prepare: impl FnOnce(&mut TerminalCore)) -> std::io::Result<Pane> {
         Pane::start_prepared(|sessions: &Sessions, sink| sessions.adopt(parts, sink), cols, rows, core, wake, prepare)
     }
 
@@ -580,10 +581,11 @@ impl Pane {
         self.live.borrow().input.send((request.reply)(text).into_bytes()).is_ok()
     }
 
+    #[cfg(windows)]
     /// Stops reading the program's output, with all read so far shown, and gives the handles of the session, for this
     /// process to hand it to another (an update). The program goes on running; what it writes waits in the pipe for the
     /// process that takes it. Fails (and reads on) when the pane has no session left or its output was not taken in.
-    pub fn hand_off(&self) -> std::io::Result<Parts> {
+    pub fn hand_off(&self) -> std::io::Result<nekominal_pty::handoff::Parts> {
         let live = self.live.borrow();
         let session = live.sessions.get(live.id)?;
         if !session.pause(HAND_OFF_PAUSE) {
@@ -593,6 +595,7 @@ impl Pane {
         session.parts().inspect_err(|_| session.resume())
     }
 
+    #[cfg(windows)]
     /// Reads the output again after a [`Pane::hand_off`] that went no further.
     pub fn resume(&self) {
         let live = self.live.borrow();

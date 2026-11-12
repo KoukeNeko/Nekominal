@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! A pane handed over (as an update does) and taken by another pane: the new one shows what the old one showed, and the
 //! same shell goes on in it, at the same prompt. Both panes are in this process here; `nekominal-pty`'s `handoff` test
 //! does it across processes.

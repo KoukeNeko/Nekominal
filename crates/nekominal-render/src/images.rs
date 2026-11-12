@@ -6,14 +6,9 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use windows::Win32::Graphics::{
-    Direct3D11::*,
-    Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_SAMPLE_DESC},
-};
-
 use crate::cell::GridView;
-use crate::d3d::{Attribute, Gpu, input_layout, pixel_shader, set_shaders, vertex_shader};
-use crate::gpu::GrowBuffer;
+use crate::gfx::{Gpu, Program, TextureView, bind_picture, picture_texture, set_program};
+use crate::gpu::{Attribute, Format, GrowBuffer};
 use crate::renderer::{PaneState, Renderer};
 
 /// A picture placed on the grid.
@@ -63,41 +58,20 @@ struct ImageInstance {
     src: [f32; 4],
 }
 
-const IMAGE_ATTRS: [Attribute; 2] =
-    [Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 0), Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 16)];
+const IMAGE_ATTRS: [Attribute; 2] = [Attribute(Format::Float32x4, 0), Attribute(Format::Float32x4, 16)];
 
 pub(crate) struct ImagePipeline {
-    layout: ID3D11InputLayout,
-    vs: ID3D11VertexShader,
-    ps: ID3D11PixelShader,
-    sampler: ID3D11SamplerState,
+    program: Program,
 }
 
 impl ImagePipeline {
     fn new(gpu: &Gpu) -> Result<Self, String> {
-        use crate::shaders::{IMAGE_PS, IMAGE_VS};
-        let desc = D3D11_SAMPLER_DESC {
-            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
-            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
-            MaxLOD: f32::MAX,
-            ..Default::default()
-        };
-        let mut sampler = None;
-        // SAFETY: the descriptor lives through the call.
-        unsafe { gpu.device.CreateSamplerState(&desc, Some(&mut sampler)) }.map_err(|e| format!("CreateSamplerState: {e}"))?;
-        Ok(ImagePipeline {
-            layout: input_layout(gpu, IMAGE_VS, &IMAGE_ATTRS)?,
-            vs: vertex_shader(gpu, IMAGE_VS)?,
-            ps: pixel_shader(gpu, IMAGE_PS)?,
-            sampler: sampler.ok_or("no sampler")?,
-        })
+        Ok(ImagePipeline { program: Program::new(gpu, &crate::shaders::IMAGE, &IMAGE_ATTRS, std::mem::size_of::<ImageInstance>() as u32)? })
     }
 }
 
 /// A picture's pixels on the GPU, premultiplied, so bilinear filtering does not darken its transparent edges.
-fn upload(gpu: &Gpu, image: &ImageView) -> Option<ID3D11ShaderResourceView> {
+fn upload(gpu: &Gpu, image: &ImageView) -> Option<TextureView> {
     let (width, height) = (image.width, image.height);
     if width == 0 || height == 0 || image.pixels.len() < (width * height * 4) as usize {
         return None;
@@ -111,33 +85,14 @@ fn upload(gpu: &Gpu, image: &ImageView) -> Option<ID3D11ShaderResourceView> {
             [scale(r), scale(g), scale(b), a]
         })
         .collect();
-    let desc = D3D11_TEXTURE2D_DESC {
-        Width: width,
-        Height: height,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-        Usage: D3D11_USAGE_IMMUTABLE,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-        ..Default::default()
-    };
-    let data = D3D11_SUBRESOURCE_DATA { pSysMem: premultiplied.as_ptr().cast(), SysMemPitch: width * 4, SysMemSlicePitch: 0 };
-    let mut texture = None;
-    let mut view = None;
-    // SAFETY: the descriptor and the pixels live through the calls; the view keeps the texture alive.
-    unsafe {
-        gpu.device.CreateTexture2D(&desc, Some(&data), Some(&mut texture)).ok()?;
-        gpu.device.CreateShaderResourceView(&texture?, None, Some(&mut view)).ok()?;
-    }
-    view
+    picture_texture(gpu, width, height, &premultiplied)
 }
 
 /// The pictures of one pane on the GPU.
 #[derive(Default)]
 pub(crate) struct PaneImages {
     /// Textures by picture key; one whose key leaves the view is released.
-    textures: Vec<(u64, ID3D11ShaderResourceView)>,
+    textures: Vec<(u64, TextureView)>,
     /// The quads in drawing order (by z, then oldest first) with their layer and texture.
     quads: Vec<(Layer, u64, ImageInstance)>,
     previous: Vec<(Layer, u64, ImageInstance)>,
@@ -211,13 +166,10 @@ impl Renderer {
             }
             let Some((_, texture)) = images.textures.iter().find(|(k, _)| k == key) else { continue };
             if !drew {
-                set_shaders(&self.gpu, &pipeline.layout, &pipeline.vs, &pipeline.ps);
-                // SAFETY: the sampler lives through the call.
-                unsafe { self.gpu.context.PSSetSamplers(0, Some(&[Some(pipeline.sampler.clone())])) };
+                set_program(&self.gpu, &pipeline.program);
                 drew = true;
             }
-            // SAFETY: the view lives through the call.
-            unsafe { self.gpu.context.PSSetShaderResources(2, Some(&[Some(texture.clone())])) };
+            bind_picture(&self.gpu, texture);
             self.gpu.draw_instances_from(&buffer.buffer, buffer.stride, index as u32..index as u32 + 1);
         }
         drew
@@ -237,11 +189,12 @@ mod tests {
         assert_eq!(Layer::of(0), Layer::OverText);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_picture_shader_compiles() {
         let source = include_str!("shaders/image.hlsl");
         for (entry, target) in [("vs_main", "vs_5_0"), ("fs_main", "ps_5_0")] {
-            let code = crate::d3d::compile(source, entry, target).unwrap_or_else(|e| panic!("{e}"));
+            let code = crate::gfx::compile(source, entry, target).unwrap_or_else(|e| panic!("{e}"));
             assert!(code.starts_with(b"DXBC"));
         }
     }

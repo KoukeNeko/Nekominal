@@ -10,16 +10,11 @@
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
-use windows::Win32::Graphics::{
-    Direct3D11::{ID3D11Buffer, ID3D11RenderTargetView},
-    Dxgi::Common::{DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM},
-};
-
 use crate::atlas::{AtlasFull, AtlasTexture};
 use crate::cell::{CellFlags, Theme};
-use crate::d3d::{Gpu, bind_textures, bind_uniforms, constant_buffer, set_shaders, write_buffer};
+use crate::gfx::{Buffer, Gpu, RenderTarget, bind_textures, bind_uniforms, constant_buffer, set_program, write_buffer};
 use crate::fonts::{CellMetrics, FontConfig, FontStack, Style, compute_metrics};
-use crate::gpu::{self, GlyphInstance, GrowBuffer, Pipelines, RectInstance, Uniforms};
+use crate::gpu::{self, GlyphInstance, GrowBuffer, Pipelines, RectInstance, TexelFormat, Uniforms};
 use crate::images::Layer;
 use crate::ligatures::LigatureCache;
 use crate::raster::{GlyphKind, RasterOptions, Rasterizer};
@@ -184,7 +179,7 @@ pub(crate) struct PaneGpu {
     pub overlay: GrowBuffer,
     /// One rect covering the whole pane viewport with the theme background.
     pub pane_bg: GrowBuffer,
-    pub uniforms: ID3D11Buffer,
+    pub uniforms: Buffer,
 }
 
 /// Per-pane CPU caches + GPU buffers. One per terminal viewport.
@@ -282,14 +277,13 @@ impl Renderer {
         cfg: RendererConfig,
         shared: Option<Arc<Pipelines>>,
     ) -> Result<Self, String> {
-        // Dual-source blending is part of feature level 11.
-        let lcd_supported = true;
+        let lcd_supported = gpu.dual_source_supported();
         let pipelines = match shared {
             Some(shared) => shared,
             None => Arc::new(Pipelines::new(gpu)?),
         };
-        let atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, cfg.atlas_initial, cfg.atlas_max)?;
-        let atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, cfg.atlas_initial, cfg.atlas_max)?;
+        let atlas_gray = AtlasTexture::new(gpu, TexelFormat::R8, cfg.atlas_initial, cfg.atlas_max)?;
+        let atlas_rgba = AtlasTexture::new(gpu, TexelFormat::Rgba8, cfg.atlas_initial, cfg.atlas_max)?;
         let fonts = FontStack::new(cfg.fonts.clone())?;
         let mut r = Renderer {
             gpu: gpu.clone(),
@@ -422,8 +416,8 @@ impl Renderer {
     pub fn recreate_gpu(&mut self, gpu: &Gpu) -> Result<(), String> {
         self.gpu = gpu.clone();
         self.pipelines = Arc::new(Pipelines::new(gpu)?);
-        self.atlas_gray = AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, self.cfg.atlas_initial, self.cfg.atlas_max)?;
-        self.atlas_rgba = AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, self.cfg.atlas_initial, self.cfg.atlas_max)?;
+        self.atlas_gray = AtlasTexture::new(gpu, TexelFormat::R8, self.cfg.atlas_initial, self.cfg.atlas_max)?;
+        self.atlas_rgba = AtlasTexture::new(gpu, TexelFormat::Rgba8, self.cfg.atlas_initial, self.cfg.atlas_max)?;
         self.glyph_cache.clear();
         self.sprite_cache.clear();
         self.cluster_cache.clear();
@@ -486,7 +480,7 @@ impl Renderer {
     /// With a translucent theme (`background_opacity < 1`) the target is a premultiplied-alpha surface and
     /// `clear` must be transparent: the pane background rect carries the opacity, and an opaque clear color
     /// underneath would defeat it.
-    pub fn draw(&mut self, target: &ID3D11RenderTargetView, clear: Option<[f32; 4]>, panes: &[PaneDraw<'_>]) {
+    pub fn draw(&mut self, target: &RenderTarget, clear: Option<[f32; 4]>, panes: &[PaneDraw<'_>]) {
         let gpu = &self.gpu;
         self.atlas_gray.flush(gpu);
         self.atlas_rgba.flush(gpu);
@@ -513,27 +507,27 @@ impl Renderer {
             bind_uniforms(gpu, &pane.uniforms);
 
             pipes.states.set_blend(gpu, false);
-            set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            set_program(gpu, &pipes.rect);
             gpu.draw_instances(&pane.pane_bg.buffer, pane.pane_bg.stride, 1);
             if self.draw_images(p.pane, Layer::UnderBackgrounds) {
-                set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+                set_program(gpu, &pipes.rect);
             }
             pane.bg.draw(gpu);
             self.draw_images(p.pane, Layer::UnderText);
 
-            set_shaders(gpu, &pipes.glyph_layout, &pipes.glyph_vs, &pipes.glyph_ps);
+            set_program(gpu, &pipes.glyph);
             pane.glyphs.draw(gpu);
             if pane.lcd.count > 0 {
                 pipes.states.set_blend(gpu, true);
-                set_shaders(gpu, &pipes.glyph_layout, &pipes.glyph_vs, &pipes.glyph_lcd_ps);
+                set_program(gpu, &pipes.glyph_lcd);
                 pane.lcd.draw(gpu);
                 pipes.states.set_blend(gpu, false);
             }
 
-            set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+            set_program(gpu, &pipes.rect);
             pane.deco.draw(gpu);
             if self.draw_images(p.pane, Layer::OverText) {
-                set_shaders(gpu, &pipes.rect_layout, &pipes.rect_vs, &pipes.rect_ps);
+                set_program(gpu, &pipes.rect);
             }
             pane.overlay.draw(gpu);
         }

@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! `Pane` behaviour that needs a running session (ConPTY) but no GPU.
 
 use std::{

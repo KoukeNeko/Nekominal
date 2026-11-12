@@ -1,10 +1,10 @@
-//! The self-drawn UI layer: rounded rectangles, shadows, text and icon glyphs recorded in DIP and drawn with Direct3D 11 in
-//! one pass over whatever the target already holds (the terminal panes).
+//! The self-drawn UI layer: rounded rectangles, shadows, text and icon glyphs recorded in DIP and drawn with Direct3D 11 or
+//! wgpu in one pass over whatever the target already holds (the terminal panes).
 //!
 //! A frame is `begin_frame`, any number of `rrect` / `shadow` / `text` / `icon` calls in painting order (with
 //! `push_clip` / `pop_clip` around clipped parts), then `end_frame`. Every coordinate and size is in DIP; the scale
 //! factor given to `begin_frame` turns them into pixels, and glyphs are placed on whole pixels. Text comes from
-//! the font stack of the terminal renderer (DirectWrite lookup, per-character fallback for CJK and emoji), rasterized
+//! the font stack of the terminal renderer (DirectWrite or fontconfig lookup, per-character fallback for CJK and emoji), rasterized
 //! with swash into a shared glyph atlas.
 
 use std::ops::Range;
@@ -12,19 +12,13 @@ use std::ops::Range;
 use bytemuck::{Pod, Zeroable};
 use nekominal_render::{
     atlas::AtlasTexture,
-    d3d::{
-        Attribute, DrawStates, Gpu, bind_textures, bind_uniforms, constant_buffer, input_layout, pixel_shader,
-        set_shaders, vertex_shader, write_buffer,
-    },
     fonts::{CharClass, FaceId, FontChoice, FontConfig, FontStack, Style, is_cjk},
-    gpu::{GLYPH_ATTRS, GlyphInstance, GrowBuffer, KIND_COLOR, KIND_MASK},
+    gfx::{Buffer, DrawStates, Gpu, Program, RenderTarget, bind_textures, bind_uniforms, constant_buffer, set_program, write_buffer},
+    gpu::{Attribute, Format, GLYPH_ATTRS, GlyphInstance, GrowBuffer, KIND_COLOR, KIND_MASK, TexelFormat},
     raster::{GlyphKind, RasterOptions, Rasterizer},
+    shaders,
 };
 use rustc_hash::FxHashMap;
-use windows::Win32::Graphics::{
-    Direct3D11::{ID3D11Buffer, ID3D11InputLayout, ID3D11PixelShader, ID3D11RenderTargetView, ID3D11VertexShader},
-    Dxgi::Common::{DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM},
-};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
@@ -74,11 +68,11 @@ struct QuadInstance {
 }
 
 const QUAD_ATTRS: [Attribute; 5] = [
-    Attribute(DXGI_FORMAT_R32G32B32A32_FLOAT, 0),
-    Attribute(DXGI_FORMAT_R32G32_FLOAT, 16),
-    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 24),
-    Attribute(DXGI_FORMAT_R8G8B8A8_UNORM, 28),
-    Attribute(DXGI_FORMAT_R32G32_FLOAT, 32),
+    Attribute(Format::Float32x4, 0),
+    Attribute(Format::Float32x2, 16),
+    Attribute(Format::Unorm8x4, 24),
+    Attribute(Format::Unorm8x4, 28),
+    Attribute(Format::Float32x2, 32),
 ];
 
 #[repr(C)]
@@ -122,13 +116,9 @@ struct Cmd {
 pub struct Ui {
     gpu: Gpu,
     states: DrawStates,
-    quad_layout: ID3D11InputLayout,
-    quad_vs: ID3D11VertexShader,
-    quad_ps: ID3D11PixelShader,
-    glyph_layout: ID3D11InputLayout,
-    glyph_vs: ID3D11VertexShader,
-    glyph_ps: ID3D11PixelShader,
-    uniform_buffer: ID3D11Buffer,
+    quad_program: Program,
+    glyph_program: Program,
+    uniform_buffer: Buffer,
     atlas_gray: AtlasTexture,
     atlas_rgba: AtlasTexture,
     quad_buffer: GrowBuffer,
@@ -144,30 +134,40 @@ pub struct Ui {
     clips: Vec<[u32; 4]>,
     scale: f32,
     size: (u32, u32),
+    /// Where what is recorded is moved to, in DIP (see `set_origin`).
+    origin: (f32, f32),
 }
+
+/// The family of the icon glyphs of the interface.
+const ICON_FAMILY: &str = "Segoe Fluent Icons";
 
 /// The families the UI text is set in, before the CJK, emoji and symbol fallbacks of the stack.
 fn ui_fonts() -> FontConfig {
     let names = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect();
-    FontConfig { text: names(&["Segoe UI Variable Text", "Segoe UI"]), ..FontConfig::default() }
+    #[cfg(windows)]
+    let text = names(&["Segoe UI Variable Text", "Segoe UI"]);
+    #[cfg(unix)]
+    let text = names(&["Inter", "Noto Sans", "Cantarell", "Ubuntu", "DejaVu Sans", "sans-serif"]);
+    // The icons of the interface are glyphs of Segoe Fluent Icons, which only Windows has: elsewhere the same code points are
+    // those of a subset of Fluent UI System Icons (MIT) that ships in the program, under the name they are asked for by.
+    #[cfg(unix)]
+    let embedded: Vec<(String, nekominal_render::fonts::FontData)> =
+        vec![(ICON_FAMILY.to_owned(), std::sync::Arc::new(include_bytes!("../../../assets/fonts/FluentIcons.ttf").as_slice()))];
+    #[cfg(windows)]
+    let embedded = Vec::new();
+    FontConfig { text, embedded, ..FontConfig::default() }
 }
 
 impl Ui {
     pub fn new(gpu: &Gpu) -> Result<Self, String> {
-        // Compiled when building, by the renderer's build script.
-        use nekominal_render::shaders::{UI_GLYPH_PS, UI_GLYPH_VS, UI_QUAD_PS, UI_QUAD_VS};
         Ok(Ui {
             gpu: gpu.clone(),
             states: DrawStates::new(gpu)?,
-            quad_layout: input_layout(gpu, UI_QUAD_VS, &QUAD_ATTRS)?,
-            quad_vs: vertex_shader(gpu, UI_QUAD_VS)?,
-            quad_ps: pixel_shader(gpu, UI_QUAD_PS)?,
-            glyph_layout: input_layout(gpu, UI_GLYPH_VS, &GLYPH_ATTRS)?,
-            glyph_vs: vertex_shader(gpu, UI_GLYPH_VS)?,
-            glyph_ps: pixel_shader(gpu, UI_GLYPH_PS)?,
+            quad_program: Program::new(gpu, &shaders::UI_QUAD, &QUAD_ATTRS, std::mem::size_of::<QuadInstance>() as u32)?,
+            glyph_program: Program::new(gpu, &shaders::UI_GLYPH, &GLYPH_ATTRS, std::mem::size_of::<GlyphInstance>() as u32)?,
             uniform_buffer: constant_buffer(gpu, std::mem::size_of::<Uniforms>())?,
-            atlas_gray: AtlasTexture::new(gpu, DXGI_FORMAT_R8_UNORM, 1, 512, 2048)?,
-            atlas_rgba: AtlasTexture::new(gpu, DXGI_FORMAT_R8G8B8A8_UNORM, 4, 256, 1024)?,
+            atlas_gray: AtlasTexture::new(gpu, TexelFormat::R8, 512, 2048)?,
+            atlas_rgba: AtlasTexture::new(gpu, TexelFormat::Rgba8, 256, 1024)?,
             quad_buffer: GrowBuffer::new(gpu, std::mem::size_of::<QuadInstance>() as u32, 4096)?,
             glyph_buffer: GrowBuffer::new(gpu, std::mem::size_of::<GlyphInstance>() as u32, 4096)?,
             fonts: FontStack::new(ui_fonts())?,
@@ -180,6 +180,7 @@ impl Ui {
             clips: Vec::new(),
             scale: 1.0,
             size: (1, 1),
+            origin: (0.0, 0.0),
         })
     }
 
@@ -191,12 +192,20 @@ impl Ui {
         self.glyphs.clear();
         self.cmds.clear();
         self.clips.clear();
+        self.origin = (0.0, 0.0);
+    }
+
+    /// Moves everything recorded from now on by `(x, y)` DIP, so that something drawn in its own coordinates (a pop-up) lands
+    /// where it is in the window. `(0, 0)` puts the frame back as it was.
+    pub fn set_origin(&mut self, x: f32, y: f32) {
+        self.origin = (x, y);
     }
 
     // --- shapes -------------------------------------------------------------------------------------------------
 
     /// A rounded rectangle; `border` is the colour and width (DIP) of an inner outline.
     pub fn rrect(&mut self, r: Rect, radius: f32, fill: Color, border: Option<(Color, f32)>) {
+        let r = Rect { x: r.x + self.origin.0, y: r.y + self.origin.1, ..r };
         let s = self.scale;
         let (border_color, border_width) = border.map_or((Color::TRANSPARENT, 0.0), |(c, w)| (c, w * s));
         self.push_quad(QuadInstance {
@@ -214,6 +223,7 @@ impl Ui {
 
     /// A soft shadow of a rounded rectangle, `blur` DIP wide on each side.
     pub fn shadow(&mut self, r: Rect, radius: f32, blur: f32, color: Color) {
+        let r = Rect { x: r.x + self.origin.0, y: r.y + self.origin.1, ..r };
         let s = self.scale;
         self.push_quad(QuadInstance {
             rect: [r.x * s, r.y * s, r.w * s, r.h * s],
@@ -225,6 +235,7 @@ impl Ui {
     }
 
     pub fn push_clip(&mut self, r: Rect) {
+        let r = Rect { x: r.x + self.origin.0, y: r.y + self.origin.1, ..r };
         let s = self.scale;
         let (x0, y0) = ((r.x * s).floor().max(0.0) as u32, (r.y * s).floor().max(0.0) as u32);
         let (x1, y1) = (((r.x + r.w) * s).ceil().max(0.0) as u32, ((r.y + r.h) * s).ceil().max(0.0) as u32);
@@ -340,7 +351,7 @@ impl Ui {
     /// Width in DIP of an icon glyph set at `size` DIP.
     pub fn measure_icon(&mut self, ch: char, size: f32) -> f32 {
         let px = size * self.scale;
-        match self.fonts.family_choice("Segoe Fluent Icons", Style::REGULAR) {
+        match self.fonts.family_choice(ICON_FAMILY, Style::REGULAR) {
             Some(choice) => self.glyph(choice, ch, px, true).advance / self.scale,
             None => 0.0,
         }
@@ -374,6 +385,7 @@ impl Ui {
             }
         };
         let Some(b) = bitmap else { return false };
+        let (x, y) = (x + self.origin.0, y + self.origin.1);
         let s = self.scale;
         let index = self.glyphs.len() as u32;
         self.glyphs.push(GlyphInstance { dst: [(x * s).round() as i32, (y * s).round() as i32], size: b.size, src: b.src, fg: [255; 4], kind: b.kind });
@@ -383,7 +395,7 @@ impl Ui {
 
     /// Draws one glyph of the Segoe Fluent Icons font (a code point such as `'\u{E713}'`).
     pub fn icon(&mut self, x: f32, y: f32, ch: char, size: f32, color: Color) -> f32 {
-        self.run(Some("Segoe Fluent Icons"), x, y, &ch.to_string(), size, color, false)
+        self.run(Some(ICON_FAMILY), x, y, &ch.to_string(), size, color, false)
     }
 
     /// Draws `text` in Cascadia Mono (a path, a file name), each character it lacks in the UI font; returns its width.
@@ -392,12 +404,13 @@ impl Ui {
     }
 
     fn run(&mut self, family: Option<&str>, x: f32, y: f32, text: &str, size: f32, color: Color, bold: bool) -> f32 {
+        let (x, y) = (x + self.origin.0, y + self.origin.1);
         let s = self.scale;
         let px = size * s;
         let baseline = (y * s + self.primary_metrics(px).0).round() as i32;
         let family_choice = family.and_then(|f| self.fonts.family_choice(f, Style::REGULAR));
         // Only the icons are fitted to the pixel grid (see `glyph`).
-        let hint = family == Some("Segoe Fluent Icons");
+        let hint = family == Some(ICON_FAMILY);
         let mut pen = x * s;
         for ch in text.chars().filter(|c| !c.is_control()) {
             let own = family_choice.filter(|c| self.fonts.face(c.face).glyph(ch) != 0);
@@ -422,7 +435,7 @@ impl Ui {
     // --- drawing ------------------------------------------------------------------------------------------------
 
     /// Draws everything recorded since `begin_frame` over `target` (loaded, not cleared).
-    pub fn end_frame(&mut self, target: &ID3D11RenderTargetView) {
+    pub fn end_frame(&mut self, target: &RenderTarget) {
         if self.cmds.is_empty() {
             return;
         }
@@ -446,19 +459,19 @@ impl Ui {
             }
             gpu.set_scissor([x, y, w, h]);
             if cmd.glyphs {
-                set_shaders(gpu, &self.glyph_layout, &self.glyph_vs, &self.glyph_ps);
+                set_program(gpu, &self.glyph_program);
                 gpu.draw_instances_from(&self.glyph_buffer.buffer, self.glyph_buffer.stride, cmd.range.clone());
             } else {
-                set_shaders(gpu, &self.quad_layout, &self.quad_vs, &self.quad_ps);
+                set_program(gpu, &self.quad_program);
                 gpu.draw_instances_from(&self.quad_buffer.buffer, self.quad_buffer.stride, cmd.range.clone());
             }
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod shader_tests {
-    use nekominal_render::d3d::compile;
+    use nekominal_render::gfx::compile;
 
     /// The shaders are compiled when the window starts, so a mistake in one would show only then: this makes it show in the
     /// tests.

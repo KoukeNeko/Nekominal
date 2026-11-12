@@ -1,6 +1,6 @@
 [package]
 name = "nekominal-render"
-description = "Direct3D 11 terminal grid renderer: font stack, glyph atlas, procedural glyphs, overlays"
+description = "Terminal grid renderer (Direct3D 11, wgpu): font stack, glyph atlas, procedural glyphs, overlays"
 version.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -21,7 +21,7 @@ memmap2 = { workspace = true }
 rustc-hash = { workspace = true }
 unicode-width = { workspace = true }
 
-[build-dependencies]
+[target.'cfg(windows)'.build-dependencies]
 # `build.rs` compiles the shaders with the system's D3DCompile, once, instead of the program at every start.
 windows = { workspace = true, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc"] }
 
@@ -47,3 +47,8 @@ windows = { workspace = true, features = [
 ] }
 # #[implement] expands to ::windows_core paths; this is the 0.62 generation that `windows` uses.
 windows-core = "=0.62.2"
+
+[target.'cfg(unix)'.dependencies]
+wgpu = { workspace = true }
+pollster = { workspace = true }
+fontconfig-sys = { workspace = true }

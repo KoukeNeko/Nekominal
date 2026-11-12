@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! A restored pane against a real shell under ConPTY: the text of the last session stays in the scrollback above the
 //! separator, and the new shell's prompt comes below it on a clean screen.
 //! Run with `cargo test -p nekominal-pane --test restore_session -- --ignored --nocapture`.

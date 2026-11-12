@@ -1,6 +1,6 @@
 [package]
 name = "nekominal-ui"
-description = "Self-drawn UI layer: rounded rectangles, shadows and text on Direct3D 11, in DIP with a scale factor"
+description = "Self-drawn UI layer: rounded rectangles, shadows and text on Direct3D 11 or wgpu, in DIP with a scale factor"
 version.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 nekominal-render = { workspace = true }
-windows = { workspace = true, features = ["Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi_Common"] }
 bytemuck = { workspace = true }
 rustc-hash = { workspace = true }
 

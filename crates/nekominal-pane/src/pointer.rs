@@ -591,6 +591,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn ctrl_click_on_a_file_link_opens_the_checked_path_and_not_the_address_as_written() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "\\Cargo.toml");
         let uri = format!("file:///{}", path.replace('\\', "/").replace(' ', "%20"));
@@ -602,6 +603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn ctrl_click_on_a_printed_path_with_its_line_opens_the_file_in_the_folder_the_shell_reported() {
         let folder = env!("CARGO_MANIFEST_DIR");
         let osc7 = format!("\x1b]7;file:///{}\x07", folder.replace('\\', "/").replace(' ', "%20"));
