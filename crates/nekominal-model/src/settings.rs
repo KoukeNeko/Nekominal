@@ -550,11 +550,17 @@ pub enum Backdrop {
 
 impl Backdrop {
     /// The choices in the order every list of them shows (the quick flyout, the settings drawer).
+    #[cfg(windows)]
     pub const ALL: [Backdrop; 4] = [Backdrop::Acrylic, Backdrop::Mica, Backdrop::MicaAlt, Backdrop::None];
+    /// Mica is Windows' own material: elsewhere the window is translucent or it is not.
+    #[cfg(unix)]
+    pub const ALL: [Backdrop; 2] = [Backdrop::Acrylic, Backdrop::None];
 
-    /// Position in [`Backdrop::ALL`], the selected index of a list of the choices.
+    /// Position in [`Backdrop::ALL`], the selected index of a list of the choices. A Mica of a settings file that came from
+    /// Windows shows as the translucency it is drawn with elsewhere.
     pub fn index(self) -> i32 {
-        Backdrop::ALL.iter().position(|choice| *choice == self).map_or(-1, |at| at as i32)
+        let shown = if cfg!(unix) && matches!(self, Backdrop::Mica | Backdrop::MicaAlt) { Backdrop::Acrylic } else { self };
+        Backdrop::ALL.iter().position(|choice| *choice == shown).map_or(-1, |at| at as i32)
     }
 
     pub fn text(self) -> Text {

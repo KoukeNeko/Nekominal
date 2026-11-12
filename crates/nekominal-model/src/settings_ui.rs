@@ -224,7 +224,10 @@ macro_rules! count {
     };
 }
 
+#[cfg(windows)]
 const BACKDROPS: [Text; 4] = [Text::BackdropAcrylic, Text::BackdropMica, Text::BackdropMicaAlt, Text::BackdropNone];
+#[cfg(unix)]
+const BACKDROPS: [Text; 2] = [Text::BackdropAcrylic, Text::BackdropNone];
 const CURSOR_STYLES: [Text; 3] = [Text::CursorBlock, Text::CursorBar, Text::CursorUnderline];
 const RIGHT_CLICKS: [Text; 2] = [Text::RightClickSmart, Text::RightClickMenu];
 const BELL_SOUNDS: [Text; 3] = [Text::BackdropNone, Text::BellSoundBackground, Text::BellSoundAlways];
@@ -1039,7 +1042,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(ids("壓克力", Lang::ZhTw)[0], "appearance.backdrop");
-        assert_eq!(ids("mica alt", Lang::EnUs)[0], "appearance.backdrop");
+        // Mica is an option of Windows only.
+        if cfg!(windows) {
+            assert_eq!(ids("mica alt", Lang::EnUs)[0], "appearance.backdrop");
+        }
         assert_eq!(ids("nord", Lang::EnUs)[0], "theme");
         assert_eq!(ids("kittyProtocol", Lang::ZhTw)[0], "keyboard.kittyProtocol");
         assert!(ids("Read and write", Lang::EnUs).contains(&"osc52"));
