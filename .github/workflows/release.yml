@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a tag vX.Y.Z, where X.Y.Z is the workspace version of Cargo.toml, builds the Windows archives and installers (MSI) for
-# x64, tested, and ARM64, cross-compiled, publishes them as a release, and then writes the Scoop manifest into
+# x64, tested, and ARM64, cross-compiled, and the Debian packages (amd64 and arm64, each built on its own architecture),
+# publishes them as a release, and then writes the Scoop manifest into
 # KoukeNeko/scoop-bucket. Run by hand it does everything up to publishing and keeps the files as an artifact, which is how to
 # try the pipeline.
 #
@@ -96,8 +97,54 @@ jobs:
             dist/*.msi.sha256
           if-no-files-found: error
 
+  # The Debian package, built on the architecture it is for, on the oldest image that is still run: a program built against
+  # a newer glibc would not start on an older system.
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the system libraries
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers fonts-dejavu-core
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The same contributors file as the Windows build, written from GitHub; a failed look keeps the copy in the repository.
+      - name: Write the contributors
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if logins=$(gh api "repos/$GITHUB_REPOSITORY/contributors" --paginate --jq '[.[] | select(.type != "Bot") | .login]' | jq -c -s 'add') && [ "$logins" != "null" ] && [ "$logins" != "[]" ]; then
+            echo "$logins" > crates/nekominal-shell/contributors.json
+            echo "contributors: $logins"
+          else
+            echo "::warning::the contributors could not be read; the copy in the repository is used"
+          fi
+      - name: Test
+        run: >
+          cargo test --locked
+          -p nekominal-model -p nekominal-input -p nekominal-term
+          -p nekominal-render -p nekominal-pane -p nekominal-ui -p nekominal-shell -p nekominal-pty
+      - name: Package
+        run: scripts/package-deb.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-${{ matrix.runner }}
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
+
   publish:
-    needs: build
+    needs: [build, deb]
     # Only for a pushed tag: a run by hand on a tag stops before publishing, as the header says.
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
@@ -111,6 +158,13 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: windows
+          path: dist
+      # The packages of both architectures, next to the Windows files: the release of this repository carries them all; the bucket
+      # takes only the archives.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: deb-*
+          merge-multiple: true
           path: dist
       - name: Check the token
         env:

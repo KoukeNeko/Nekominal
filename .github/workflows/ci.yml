@@ -69,6 +69,18 @@ jobs:
         run: cargo build --workspace --all-targets --locked
       - name: Test
         run: cargo test --workspace --locked
+      # The package a release ships, built and kept as an artifact so that a change that breaks packaging shows before a tag does.
+      - name: Package
+        if: github.event_name != 'pull_request'
+        run: scripts/package-deb.sh
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
+        with:
+          name: deb
+          path: |
+            dist/*.deb
+            dist/*.deb.sha256
+          if-no-files-found: error
 
   # The archive a release ships, built and kept as an artifact so that a change that breaks packaging shows before a tag does.
   package:
