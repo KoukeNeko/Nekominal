@@ -13,8 +13,10 @@ use std::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
+#[cfg(windows)]
+use std::time::Instant;
 
 use crate::conpty::{Pty, SpawnConfig};
 
@@ -99,6 +101,7 @@ impl Flow {
         self.state.lock().unwrap().paused
     }
 
+    #[cfg(windows)]
     /// Stops the reader (a read under way is cancelled on `reader`, the thread doing it, which loses nothing: a
     /// cancelled read took no bytes) and waits until all it read was acknowledged, that is, taken in by the consumer.
     /// False when that did not happen within `timeout`; the session stays paused either way.
@@ -122,6 +125,7 @@ impl Flow {
         }
     }
 
+    #[cfg(windows)]
     fn resume(&self) {
         self.state.lock().unwrap().paused = false;
         self.changed.notify_all();
@@ -132,10 +136,12 @@ pub struct Session {
     pty: Arc<Pty>,
     flow: Arc<Flow>,
     /// The thread that reads the output, for [`Session::pause`] to cancel its read.
+    #[cfg_attr(not(windows), allow(dead_code))]
     reader: thread::JoinHandle<()>,
 }
 
 impl Session {
+    #[cfg(windows)]
     /// Stops reading the output until [`Session::resume`], with everything read so far taken in by the consumer, so
     /// that what the consumer shows is all the program wrote: the session can then be handed to another process
     /// ([`Session::parts`]), which reads on from there. False when the consumer did not take it all within `timeout`.
@@ -144,10 +150,12 @@ impl Session {
         self.flow.pause(self.reader.as_raw_handle(), timeout)
     }
 
+    #[cfg(windows)]
     pub fn resume(&self) {
         self.flow.resume();
     }
 
+    #[cfg(windows)]
     /// The handles of the session, to hand it over; see [`Pty::parts`].
     pub fn parts(&self) -> io::Result<crate::handoff::Parts> {
         self.pty.parts()
@@ -194,6 +202,7 @@ impl Sessions {
         self.start(pty, output, sink)
     }
 
+    #[cfg(windows)]
     /// Takes over a session another process handed to this one (`parts` are handles of this process, which the session
     /// owns from now on, closed if this fails). Output the program wrote meanwhile waits in the pipe and comes first.
     pub fn adopt(&self, parts: &crate::handoff::Parts, sink: Sink) -> io::Result<(u32, u32)> {
@@ -357,9 +366,9 @@ fn forward_loop(rx: &Receiver<Message>, mut sink: Sink, pty: &Pty, flow: &Flow) 
     pty.close_console();
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
-    use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, sync::mpsc::channel};
+    use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, sync::mpsc::channel, time::Instant};
 
     use super::*;
     use crate::conpty::{WidthModel, test_support::ProcessWatch};
@@ -600,6 +609,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn a_paused_session_reads_nothing_until_it_is_resumed_and_loses_nothing() {
         let sessions = Sessions::default();
         let config = cmd_config(&["/d", "/c", "for /L %i in (1,1,3000) do @echo tick-%i"]);
@@ -882,5 +892,136 @@ mod tests {
         let (output, code) = drive(&session, &rx, Duration::from_secs(30));
         assert!(output.contains("pwsh-ready"), "output was {output:?}");
         assert_eq!(code, 3);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        sync::mpsc::{Receiver, channel},
+        time::Instant,
+    };
+
+    use super::*;
+    use crate::conpty::{WidthModel, test_support::ProcessWatch};
+
+    fn sh_config(script: &str) -> SpawnConfig {
+        SpawnConfig {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), script.into()],
+            cwd: None,
+            env: BTreeMap::new(),
+            cols: 100,
+            rows: 30,
+            width_model: WidthModel::default(),
+            inherit_environment: true,
+        }
+    }
+
+    fn start(sessions: &Sessions, config: &SpawnConfig) -> (u32, u32, Arc<Session>, Receiver<Event>) {
+        let (tx, rx) = channel();
+        let sink: Sink = Box::new(move |event| tx.send(event).is_ok());
+        let (id, pid) = sessions.spawn(config, sink).expect("spawn");
+        (id, pid, sessions.get(id).unwrap(), rx)
+    }
+
+    /// Acknowledges the output until the child exits.
+    fn drive(session: &Session, rx: &Receiver<Event>, timeout: Duration) -> (String, u32) {
+        let deadline = Instant::now() + timeout;
+        let mut output = Vec::new();
+        loop {
+            let left = deadline.checked_duration_since(Instant::now()).expect("timed out waiting for exit");
+            match rx.recv_timeout(left).expect("event") {
+                Event::Data(bytes) => {
+                    session.ack(bytes.len());
+                    output.extend(bytes);
+                }
+                Event::Exit(code) => return (String::from_utf8_lossy(&output).into_owned(), code),
+            }
+        }
+    }
+
+    #[test]
+    fn runs_a_command_and_reports_its_exit_code() {
+        let sessions = Sessions::default();
+        let (_, _, session, rx) = start(&sessions, &sh_config("echo hello-nekominal; exit 7"));
+        let (output, code) = drive(&session, &rx, Duration::from_secs(20));
+        assert!(output.contains("hello-nekominal"), "output was {output:?}");
+        assert_eq!(code, 7);
+    }
+
+    #[test]
+    fn writes_input_and_exits_when_the_shell_exits() {
+        let sessions = Sessions::default();
+        let (_, _, session, rx) = start(&sessions, &sh_config("read line; echo got-$line; exit 0"));
+        session.write(b"ping\n").unwrap();
+        let (output, code) = drive(&session, &rx, Duration::from_secs(20));
+        assert!(output.contains("got-ping"), "output was {output:?}");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn the_size_of_the_pty_is_the_size_asked_for_and_follows_a_resize() {
+        let sessions = Sessions::default();
+        for resize in [None, Some((57, 21))] {
+            let (_, _, session, rx) = start(&sessions, &sh_config("read line; stty size"));
+            if let Some((cols, rows)) = resize {
+                session.resize(cols, rows).unwrap();
+            }
+            session.write(b"go\n").unwrap();
+            let (output, _) = drive(&session, &rx, Duration::from_secs(20));
+            let expected = if resize.is_some() { "21 57" } else { "30 100" };
+            assert!(output.contains(expected), "output was {output:?}");
+        }
+    }
+
+    #[test]
+    fn starts_in_the_requested_directory_and_falls_back_to_home() {
+        let sessions = Sessions::default();
+        let mut config = sh_config("pwd");
+        config.cwd = Some(PathBuf::from("/usr"));
+        let (_, _, session, rx) = start(&sessions, &config);
+        let (output, _) = drive(&session, &rx, Duration::from_secs(20));
+        assert!(output.contains("/usr"), "output was {output:?}");
+
+        let mut config = sh_config("pwd");
+        config.cwd = Some(PathBuf::from("/no/such/folder"));
+        let (_, _, session, rx) = start(&sessions, &config);
+        let (output, _) = drive(&session, &rx, Duration::from_secs(20));
+        let home = std::env::var("HOME").unwrap();
+        assert!(output.contains(&home), "output was {output:?}");
+    }
+
+    #[test]
+    fn closing_a_session_kills_the_process_tree() {
+        let sessions = Sessions::default();
+        let (id, pid, session, rx) = start(&sessions, &sh_config("sleep 300 & echo $!; wait"));
+        let Event::Data(bytes) = rx.recv_timeout(Duration::from_secs(20)).expect("the pid of the grandchild") else { panic!("exit first") };
+        session.ack(bytes.len());
+        let grandchild: u32 = String::from_utf8_lossy(&bytes).trim().parse().expect("a pid");
+        let watch = ProcessWatch::open(grandchild).expect("the grandchild runs");
+        let shell = ProcessWatch::open(pid).expect("the shell runs");
+        assert!(session.job_process_ids().contains(&grandchild), "the grandchild is in the job");
+        sessions.close(id);
+        assert!(watch.exited_within(Duration::from_secs(10)), "the grandchild is gone");
+        assert!(shell.exited_within(Duration::from_secs(10)), "the shell is gone");
+    }
+
+    #[test]
+    fn the_job_is_the_program_that_started_last() {
+        let sessions = Sessions::default();
+        let (id, _, session, rx) = start(&sessions, &sh_config("sleep 300; echo never"));
+        let _ = rx;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match session.job() {
+                Some(job) if job.name == "sleep" && !job.root => break,
+                other => assert!(Instant::now() < deadline, "the job was {other:?}"),
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        sessions.close(id);
     }
 }

@@ -41,3 +41,6 @@ features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ]
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

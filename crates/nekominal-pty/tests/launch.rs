@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! Launches discovered profiles through the public API: the environment contract, the working
 //! directory and the Visual Studio developer shells. Profiles that are not installed on the
 //! machine are skipped.
