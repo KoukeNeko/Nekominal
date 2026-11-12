@@ -85,7 +85,7 @@ Remote Control 時，也能在那裡開啟或複製連結。
 | 提示模式 | Ctrl+Shift+E |
 
 所有命令都能在命令選擇區找到，所有快速鍵都可以在設定中修改。
-設定檔位於 `%APPDATA%\Nekominal\settings.json`。
+設定檔位於 `%APPDATA%\Nekominal\settings.json`（Linux 為 `~/.config/nekominal/settings.json`）。
 
 ## 建置
 
@@ -96,6 +96,21 @@ cargo test --workspace
 ```
 
 需要 Rust 1.95+ 與 Visual Studio Build Tools。[版本說明](distribution/release-notes)。
+
+### Linux
+
+Nekominal 也能在 Linux（Wayland 與 X11）上執行：winit 視窗搭配 wgpu（Vulkan）繪圖，殼層跑在 pty 上，字型透過
+fontconfig 尋找。目前需自行從原始碼建置。
+
+```sh
+sudo apt install libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers
+cargo build --release -p nekominal-shell
+target/release/nekominal-next
+```
+
+啟動器為 `distribution/nekominal.desktop`。有兩張顯示卡時，視窗由開機時顯示輸出所在的那張繪製；可用
+`NEKOMINAL_ADAPTER=<名稱的一部分>` 指定另一張。尚未支援：原地更新、以系統管理員身分執行窗格、下拉式視窗（Wayland
+不允許程式攔截全域按鍵），以及還原視窗位置。
 
 ## 支持
 

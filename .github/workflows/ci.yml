@@ -48,6 +48,28 @@ jobs:
       - name: Test the ConPTY host
         run: cargo test --locked -p nekominal-pty -- --skip unacknowledged_output_pauses_the_reader
 
+  # The Linux build: the whole workspace builds, and the tests that do not need a Windows run, the renderer on the software
+  # Vulkan driver (lavapipe) of Mesa.
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the system libraries
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers fonts-dejavu-core
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      - name: Test
+        run: cargo test --workspace --locked
+
   # The archive a release ships, built and kept as an artifact so that a change that breaks packaging shows before a tag does.
   package:
     needs: test

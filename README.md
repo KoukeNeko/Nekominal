@@ -94,7 +94,7 @@ acrylic, and colour schemes imported from Windows Terminal and iTerm2.
 | Hints | Ctrl+Shift+E |
 
 Every command is in the palette, and any shortcut can be changed in Settings.
-Settings live in `%APPDATA%\Nekominal\settings.json`.
+Settings live in `%APPDATA%\Nekominal\settings.json` (`~/.config/nekominal/settings.json` on Linux).
 
 ## Build
 
@@ -105,6 +105,22 @@ cargo test --workspace
 ```
 
 Requires Rust 1.95+ and the Visual Studio Build Tools. [Release notes](distribution/release-notes).
+
+### Linux
+
+Nekominal also runs on Linux (Wayland and X11): a winit window drawn with wgpu (Vulkan), the shells on a pty, fonts found
+through fontconfig. It is built from source for now.
+
+```sh
+sudo apt install libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers
+cargo build --release -p nekominal-shell
+target/release/nekominal-next
+```
+
+Settings live in `~/.config/nekominal/settings.json`; `distribution/nekominal.desktop` is the launcher. On a computer with
+two graphics cards the window is drawn by the one the display started on; `NEKOMINAL_ADAPTER=<part of its name>` picks
+another. Not there yet: updating in place, running a pane as administrator, the drop-down window (no program can hold a
+global key on Wayland), and a window cannot be put where it was.
 
 ## Support
 

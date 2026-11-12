@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Nekominal
+GenericName=Terminal
+Comment=A terminal that stays light
+Exec=nekominal-next
+Icon=nekominal
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=nekominal
+Keywords=terminal;shell;console;agent;
