@@ -100,7 +100,13 @@ cargo test --workspace
 ### Linux
 
 Nekominal 也能在 Linux（Wayland 與 X11）上執行：winit 視窗搭配 wgpu（Vulkan）繪圖，殼層跑在 pty 上，字型透過
-fontconfig 尋找。目前需自行從原始碼建置。
+fontconfig 尋找。發行版附有 amd64 與 arm64 的 Debian 套件（Ubuntu 22.04 以上）：
+
+```sh
+sudo apt install ./nekominal_<版本>_amd64.deb
+```
+
+也可自行從原始碼建置：
 
 ```sh
 sudo apt install libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers

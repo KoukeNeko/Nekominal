@@ -109,7 +109,13 @@ Requires Rust 1.95+ and the Visual Studio Build Tools. [Release notes](distribut
 ### Linux
 
 Nekominal also runs on Linux (Wayland and X11): a winit window drawn with wgpu (Vulkan), the shells on a pty, fonts found
-through fontconfig. It is built from source for now.
+through fontconfig. Releases carry a Debian package for amd64 and arm64 (Ubuntu 22.04 and later):
+
+```sh
+sudo apt install ./nekominal_<version>_amd64.deb
+```
+
+Or build it from source:
 
 ```sh
 sudo apt install libwayland-dev libxkbcommon-dev libx11-dev libfontconfig1 libvulkan1 mesa-vulkan-drivers
