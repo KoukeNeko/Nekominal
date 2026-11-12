@@ -132,7 +132,9 @@ impl Material {
 
     /// The material as the system gives it now: no effects where it draws no backdrop (`effects`).
     pub fn current(window_active: bool) -> Material {
-        Material { window_active, effects_on: crate::effects::on() }
+        // Only Windows makes a backdrop flat while its window is not active: elsewhere the window is as translucent while it
+        // is dragged (the compositor takes its focus) as at any other time.
+        Material { window_active: window_active || cfg!(unix), effects_on: crate::effects::on() }
     }
 
     /// Nothing shows through whatever the backdrop is: it is none, or the system made it flat.

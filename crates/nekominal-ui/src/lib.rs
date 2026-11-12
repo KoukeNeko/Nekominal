@@ -439,8 +439,17 @@ impl Ui {
             let cached = self.glyph(choice, ch, px, hint && own.is_some());
             if let Some(b) = cached.bitmap {
                 let index = self.glyphs.len() as u32;
+                #[cfg_attr(windows, allow(unused_mut))]
+                let mut dst = [pen.round() as i32 + b.left, baseline - b.top];
+                // The icons of Linux are not set on the baseline of the text: their ink is centred in the box of the line and
+                // of the advance, however the glyphs sit in their font.
+                #[cfg(unix)]
+                if hint && own.is_some() {
+                    let line = self.primary_metrics(px).1;
+                    dst = [(pen + (cached.advance - f32::from(b.size[0])) / 2.0).round() as i32, (y * s + (line - f32::from(b.size[1])) / 2.0).round() as i32];
+                }
                 self.glyphs.push(GlyphInstance {
-                    dst: [pen.round() as i32 + b.left, baseline - b.top],
+                    dst,
                     size: b.size,
                     src: b.src,
                     fg: color.0,

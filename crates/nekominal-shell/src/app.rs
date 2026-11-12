@@ -122,7 +122,9 @@ const TEXT_SIZE: f32 = 13.0;
 const ICON_SIZE: f32 = 10.0;
 /// How far an icon moves down so that its glyph, not its line of text, is what sits in the middle, in DIP: the glyphs of the
 /// icon font are drawn above the middle of their line.
-const ICON_NUDGE: f32 = 1.5;
+/// How far an icon is moved down from the middle of its line: what the glyphs of Segoe Fluent Icons ask for. The icons of Linux
+/// are centred by their ink (`Ui::icon`), which needs none.
+const ICON_NUDGE: f32 = if cfg!(windows) { 1.5 } else { 0.0 };
 /// The icon of the program a tab runs, in DIP.
 const TAB_ICON: f32 = 16.0;
 /// The most recent commands the suggestions offer.
