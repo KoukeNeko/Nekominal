@@ -3281,7 +3281,10 @@ impl App {
         }
         self.paint_welcome();
         #[cfg(unix)]
-        self.paint_popup_overlay();
+        {
+            self.paint_window_frame();
+            self.paint_popup_overlay();
+        }
         self.ui.end_frame(&view);
         if self.surface.present() { self.report_gpu_lost(); }
         if !self.panels_failed {
@@ -6702,6 +6705,20 @@ impl App {
         draw_popup(&mut self.ui, &g, popup);
         self.ui.end_frame(&view);
         if popup.surface.present() { post_gpu_lost(owner); }
+    }
+
+    /// The outline of the window: nothing draws one for a window without decorations, so it is the window's own, as the
+    /// edge DWM gives one on Windows. A window that fills the screen has none.
+    #[cfg(unix)]
+    fn paint_window_frame(&mut self) {
+        if self.maximized || self.is_fullscreen() {
+            return;
+        }
+        let (w, h) = self.surface.size();
+        let (w, h) = (w as f32 / self.scale, h as f32 / self.scale);
+        let line = Color([255, 255, 255, if self.glass.light { 0 } else { 40 }]);
+        let line = if self.glass.light { Color([0, 0, 0, 60]) } else { line };
+        self.ui.rrect(Rect::new(0.0, 0.0, w, h), 0.0, Color::TRANSPARENT, Some((line, 1.0)));
     }
 
     /// The pop-up over the frame of the window (Linux): drawn where it opened, with a shadow, after everything else.

@@ -2151,7 +2151,7 @@ mod tests {
         assert_eq!(stepped(opacity, &settings, &[], true, false), Some(Value::Number(73.0)));
         assert_eq!(stepped(opacity, &settings, &[], false, true), Some(Value::Number(67.0)));
         let backdrop = row("appearance.backdrop");
-        assert_eq!(stepped(backdrop, &settings, &[], false, false), Some(Value::Index(3)), "before the first option is the last one");
+        assert_eq!(stepped(backdrop, &settings, &[], false, false), Some(Value::Index(nekominal_model::settings::Backdrop::ALL.len() - 1)), "before the first option is the last one");
         let size = row("font.size");
         let mut small = Settings::default();
         (size.set)(&mut small, Value::Number(1.0));
